@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "markers": {
+    "1": {
+      "label": "тест 1",
+      "color": "charts.orange",
+      "badge": "Т",
+      "order": 1
+    },
+    "2": {
+      "label": "тест 2",
+      "color": "charts.purple",
+      "badge": "Т2",
+      "order": 2
+    }
+  },
+  "items": {
+    "media/map-icon.svg": [
+      "1"
+    ],
+    "media/map.css": [
+      "1"
+    ],
+    "media/map.js": [
+      "1"
+    ],
+    "node_modules/binaryextensions": [
+      "1"
+    ],
+    "node_modules/bl": [
+      "2"
+    ],
+    "node_modules/braces": [
+      "1"
+    ]
+  }
+}

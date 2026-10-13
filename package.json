@@ -1,0 +1,616 @@
+{
+  "name": "vgroup",
+  "displayName": "VGroup",
+  "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
+  "version": "0.11.0",
+  "publisher": "easybusy",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "explorer",
+    "markers",
+    "tags",
+    "groups",
+    "bookmarks"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onWebviewPanel:vgroupMapPanel"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "vgroupPanel",
+          "title": "VGroup",
+          "icon": "media/map-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "vgroupPanel": [
+        {
+          "type": "webview",
+          "id": "vgroupMapBottom",
+          "name": "VGroup",
+          "icon": "media/map-icon.svg"
+        }
+      ],
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "vgroupMap",
+          "name": "VGroup",
+          "visibility": "visible",
+          "icon": "media/map-icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "vgroup.assign",
+        "title": "Mark…",
+        "category": "VGroup",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "vgroup.unassign",
+        "title": "Remove Marker",
+        "category": "VGroup",
+        "icon": "$(close)"
+      },
+      {
+        "command": "vgroup.unassignFromExplorer",
+        "title": "Remove Markers",
+        "category": "VGroup"
+      },
+      {
+        "command": "vgroup.rename",
+        "title": "Rename…",
+        "category": "VGroup",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "vgroup.reveal",
+        "title": "Reveal in Explorer View",
+        "category": "VGroup"
+      },
+      {
+        "command": "vgroup.relink",
+        "title": "Relink to File…",
+        "category": "VGroup",
+        "icon": "$(link)"
+      },
+      {
+        "command": "vgroup.createMarker",
+        "title": "Create Marker",
+        "category": "VGroup",
+        "icon": "$(add)"
+      },
+      {
+        "command": "vgroup.editMarker",
+        "title": "Edit Marker…",
+        "category": "VGroup",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "vgroup.deleteMarker",
+        "title": "Delete Marker",
+        "category": "VGroup",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "vgroup.moveMarkerUp",
+        "title": "Move Up",
+        "category": "VGroup",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "vgroup.moveMarkerDown",
+        "title": "Move Down",
+        "category": "VGroup",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "vgroup.openConfig",
+        "title": "Open Markers File",
+        "category": "VGroup",
+        "icon": "$(json)"
+      },
+      {
+        "command": "vgroup.refresh",
+        "title": "Refresh",
+        "category": "VGroup",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "vgroup.openMap",
+        "title": "Open Map",
+        "category": "VGroup",
+        "icon": "$(map)"
+      },
+      {
+        "command": "vgroup.map.toggleLayout",
+        "title": "Toggle Map Layout (Chips / List)",
+        "category": "VGroup",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "vgroup.map.move",
+        "title": "Move Map…",
+        "category": "VGroup",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "vgroup.map.toggleColumn",
+        "title": "Toggle Map Column Beside Explorer",
+        "category": "VGroup",
+        "icon": "$(layout-sidebar-left)"
+      },
+      {
+        "command": "vgroup.map.openBottom",
+        "title": "Open Map in Bottom Panel",
+        "category": "VGroup",
+        "icon": "$(layout-panel)"
+      },
+      {
+        "command": "vgroup.changeColor",
+        "title": "Change Color…",
+        "category": "VGroup",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "vgroup.changeIcon",
+        "title": "Change Icon…",
+        "category": "VGroup",
+        "icon": "$(smiley)"
+      },
+      {
+        "command": "vgroup.changeBadge",
+        "title": "Change Badge…",
+        "category": "VGroup",
+        "icon": "$(tag)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "vgroup.assign",
+          "group": "7_modification@90"
+        },
+        {
+          "command": "vgroup.unassignFromExplorer",
+          "group": "7_modification@91"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "vgroup.refresh",
+          "when": "view == vgroupMap || view == vgroupMapBottom",
+          "group": "more@1"
+        },
+        {
+          "command": "vgroup.openConfig",
+          "when": "view == vgroupMap || view == vgroupMapBottom",
+          "group": "more@2"
+        },
+        {
+          "command": "vgroup.map.toggleLayout",
+          "when": "view == vgroupMap || view == vgroupMapBottom",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.createMarker",
+          "when": "view == vgroupMap || view == vgroupMapBottom",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vgroup.map.openBottom",
+          "when": "view == vgroupMap",
+          "group": "navigation@8"
+        },
+        {
+          "command": "vgroup.map.move",
+          "when": "view == vgroupMap",
+          "group": "navigation@3"
+        },
+        {
+          "command": "vgroup.map.toggleColumn",
+          "when": "view == vgroupMap",
+          "group": "navigation@9"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "vgroup.reveal",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'item'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.rename",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'item'",
+          "group": "7_modification@1"
+        },
+        {
+          "command": "vgroup.relink",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'missing'",
+          "group": "7_modification@2"
+        },
+        {
+          "command": "vgroup.unassign",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing)$/",
+          "group": "7_modification@3"
+        },
+        {
+          "command": "vgroup.editMarker",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@1"
+        },
+        {
+          "command": "vgroup.moveMarkerUp",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@5"
+        },
+        {
+          "command": "vgroup.moveMarkerDown",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@6"
+        },
+        {
+          "command": "vgroup.deleteMarker",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "2_danger@1"
+        },
+        {
+          "command": "vgroup.changeColor",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@2"
+        },
+        {
+          "command": "vgroup.changeIcon",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@3"
+        },
+        {
+          "command": "vgroup.changeBadge",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "vgroup.unassign",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.unassignFromExplorer",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.rename",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.reveal",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.relink",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.editMarker",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.deleteMarker",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.moveMarkerUp",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.moveMarkerDown",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.changeColor",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.changeIcon",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.changeBadge",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "vgroup.map.toggleLayout",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.createMarker",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel'",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "VGroup",
+      "properties": {
+        "vgroup.configPath": {
+          "type": "string",
+          "default": ".vscode/vgroup.json",
+          "description": "Path to the markers file, relative to the workspace folder. Commit it to share markers with the team."
+        },
+        "vgroup.map.columnWidth": {
+          "type": "number",
+          "default": 260,
+          "minimum": 120,
+          "description": "Width in pixels of the map column opened beside the Explorer (VGroup: Toggle Map Column Beside Explorer)."
+        },
+        "vgroup.showDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show marker badges and colors in the standard Explorer."
+        }
+      }
+    },
+    "colors": [
+      {
+        "id": "vgroup.red",
+        "description": "VGroup marker color: Red",
+        "defaults": {
+          "dark": "#e5484d",
+          "light": "#e5484d",
+          "highContrast": "#e5484d",
+          "highContrastLight": "#e5484d"
+        }
+      },
+      {
+        "id": "vgroup.tomato",
+        "description": "VGroup marker color: Tomato",
+        "defaults": {
+          "dark": "#e54d2e",
+          "light": "#e54d2e",
+          "highContrast": "#e54d2e",
+          "highContrastLight": "#e54d2e"
+        }
+      },
+      {
+        "id": "vgroup.orange",
+        "description": "VGroup marker color: Orange",
+        "defaults": {
+          "dark": "#f76b15",
+          "light": "#f76b15",
+          "highContrast": "#f76b15",
+          "highContrastLight": "#f76b15"
+        }
+      },
+      {
+        "id": "vgroup.amber",
+        "description": "VGroup marker color: Amber",
+        "defaults": {
+          "dark": "#ffb224",
+          "light": "#ffb224",
+          "highContrast": "#ffb224",
+          "highContrastLight": "#ffb224"
+        }
+      },
+      {
+        "id": "vgroup.yellow",
+        "description": "VGroup marker color: Yellow",
+        "defaults": {
+          "dark": "#f5d90a",
+          "light": "#f5d90a",
+          "highContrast": "#f5d90a",
+          "highContrastLight": "#f5d90a"
+        }
+      },
+      {
+        "id": "vgroup.lime",
+        "description": "VGroup marker color: Lime",
+        "defaults": {
+          "dark": "#99d52a",
+          "light": "#99d52a",
+          "highContrast": "#99d52a",
+          "highContrastLight": "#99d52a"
+        }
+      },
+      {
+        "id": "vgroup.green",
+        "description": "VGroup marker color: Green",
+        "defaults": {
+          "dark": "#30a46c",
+          "light": "#30a46c",
+          "highContrast": "#30a46c",
+          "highContrastLight": "#30a46c"
+        }
+      },
+      {
+        "id": "vgroup.emerald",
+        "description": "VGroup marker color: Emerald",
+        "defaults": {
+          "dark": "#10b981",
+          "light": "#10b981",
+          "highContrast": "#10b981",
+          "highContrastLight": "#10b981"
+        }
+      },
+      {
+        "id": "vgroup.teal",
+        "description": "VGroup marker color: Teal",
+        "defaults": {
+          "dark": "#12a594",
+          "light": "#12a594",
+          "highContrast": "#12a594",
+          "highContrastLight": "#12a594"
+        }
+      },
+      {
+        "id": "vgroup.cyan",
+        "description": "VGroup marker color: Cyan",
+        "defaults": {
+          "dark": "#00a2c7",
+          "light": "#00a2c7",
+          "highContrast": "#00a2c7",
+          "highContrastLight": "#00a2c7"
+        }
+      },
+      {
+        "id": "vgroup.sky",
+        "description": "VGroup marker color: Sky",
+        "defaults": {
+          "dark": "#4cc3ff",
+          "light": "#4cc3ff",
+          "highContrast": "#4cc3ff",
+          "highContrastLight": "#4cc3ff"
+        }
+      },
+      {
+        "id": "vgroup.blue",
+        "description": "VGroup marker color: Blue",
+        "defaults": {
+          "dark": "#3e63dd",
+          "light": "#3e63dd",
+          "highContrast": "#3e63dd",
+          "highContrastLight": "#3e63dd"
+        }
+      },
+      {
+        "id": "vgroup.indigo",
+        "description": "VGroup marker color: Indigo",
+        "defaults": {
+          "dark": "#5b5bd6",
+          "light": "#5b5bd6",
+          "highContrast": "#5b5bd6",
+          "highContrastLight": "#5b5bd6"
+        }
+      },
+      {
+        "id": "vgroup.violet",
+        "description": "VGroup marker color: Violet",
+        "defaults": {
+          "dark": "#8e4ec6",
+          "light": "#8e4ec6",
+          "highContrast": "#8e4ec6",
+          "highContrastLight": "#8e4ec6"
+        }
+      },
+      {
+        "id": "vgroup.purple",
+        "description": "VGroup marker color: Purple",
+        "defaults": {
+          "dark": "#ab4aba",
+          "light": "#ab4aba",
+          "highContrast": "#ab4aba",
+          "highContrastLight": "#ab4aba"
+        }
+      },
+      {
+        "id": "vgroup.plum",
+        "description": "VGroup marker color: Plum",
+        "defaults": {
+          "dark": "#b658c4",
+          "light": "#b658c4",
+          "highContrast": "#b658c4",
+          "highContrastLight": "#b658c4"
+        }
+      },
+      {
+        "id": "vgroup.pink",
+        "description": "VGroup marker color: Pink",
+        "defaults": {
+          "dark": "#d6409f",
+          "light": "#d6409f",
+          "highContrast": "#d6409f",
+          "highContrastLight": "#d6409f"
+        }
+      },
+      {
+        "id": "vgroup.rose",
+        "description": "VGroup marker color: Rose",
+        "defaults": {
+          "dark": "#f43f5e",
+          "light": "#f43f5e",
+          "highContrast": "#f43f5e",
+          "highContrastLight": "#f43f5e"
+        }
+      },
+      {
+        "id": "vgroup.brown",
+        "description": "VGroup marker color: Brown",
+        "defaults": {
+          "dark": "#ad7f58",
+          "light": "#ad7f58",
+          "highContrast": "#ad7f58",
+          "highContrastLight": "#ad7f58"
+        }
+      },
+      {
+        "id": "vgroup.bronze",
+        "description": "VGroup marker color: Bronze",
+        "defaults": {
+          "dark": "#a18072",
+          "light": "#a18072",
+          "highContrast": "#a18072",
+          "highContrastLight": "#a18072"
+        }
+      },
+      {
+        "id": "vgroup.gold",
+        "description": "VGroup marker color: Gold",
+        "defaults": {
+          "dark": "#978365",
+          "light": "#978365",
+          "highContrast": "#978365",
+          "highContrastLight": "#978365"
+        }
+      },
+      {
+        "id": "vgroup.gray",
+        "description": "VGroup marker color: Gray",
+        "defaults": {
+          "dark": "#8b8d98",
+          "light": "#8b8d98",
+          "highContrast": "#8b8d98",
+          "highContrastLight": "#8b8d98"
+        }
+      },
+      {
+        "id": "vgroup.slate",
+        "description": "VGroup marker color: Slate",
+        "defaults": {
+          "dark": "#64748b",
+          "light": "#64748b",
+          "highContrast": "#64748b",
+          "highContrastLight": "#64748b"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run typecheck && node esbuild.js --production && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
