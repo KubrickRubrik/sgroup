@@ -2,7 +2,7 @@
   "name": "vgroup",
   "displayName": "VGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "0.11.0",
+  "version": "0.12.6",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -176,6 +176,24 @@
         "title": "Change Badge…",
         "category": "VGroup",
         "icon": "$(tag)"
+      },
+      {
+        "command": "vgroup.map.columns.flow",
+        "title": "Columns: Flow — click for 2 columns",
+        "category": "VGroup",
+        "icon": "$(word-wrap)"
+      },
+      {
+        "command": "vgroup.map.columns.2",
+        "title": "Columns: 2 — click for 3 columns",
+        "category": "VGroup",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "vgroup.map.columns.3",
+        "title": "Columns: 3 — click for flow",
+        "category": "VGroup",
+        "icon": "$(table)"
       }
     ],
     "menus": {
@@ -203,7 +221,7 @@
         {
           "command": "vgroup.map.toggleLayout",
           "when": "view == vgroupMap || view == vgroupMapBottom",
-          "group": "navigation@1"
+          "group": "navigation@0"
         },
         {
           "command": "vgroup.createMarker",
@@ -216,14 +234,24 @@
           "group": "navigation@8"
         },
         {
-          "command": "vgroup.map.move",
-          "when": "view == vgroupMap",
-          "group": "navigation@3"
-        },
-        {
           "command": "vgroup.map.toggleColumn",
           "when": "view == vgroupMap",
           "group": "navigation@9"
+        },
+        {
+          "command": "vgroup.map.columns.flow",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && (vgroup.map.columns == flow || !vgroup.map.columns)",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.map.columns.2",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.columns == 2",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.map.columns.3",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.columns == 3",
+          "group": "navigation@1"
         }
       ],
       "webview/context": [
@@ -331,18 +359,45 @@
         {
           "command": "vgroup.changeBadge",
           "when": "false"
+        },
+        {
+          "command": "vgroup.map.columns.flow",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.map.columns.2",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.map.columns.3",
+          "when": "false"
         }
       ],
       "editor/title": [
         {
           "command": "vgroup.map.toggleLayout",
           "when": "activeWebviewPanelId == 'vgroupMapPanel'",
-          "group": "navigation@1"
+          "group": "navigation@0"
         },
         {
           "command": "vgroup.createMarker",
           "when": "activeWebviewPanelId == 'vgroupMapPanel'",
           "group": "navigation@2"
+        },
+        {
+          "command": "vgroup.map.columns.flow",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && (vgroup.map.columns == flow || !vgroup.map.columns)",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.map.columns.2",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.columns == 2",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.map.columns.3",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.columns == 3",
+          "group": "navigation@1"
         }
       ]
     },
@@ -604,7 +659,7 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
-    "package": "npm run typecheck && node esbuild.js --production && vsce package --no-dependencies --allow-missing-repository"
+    "package": "npm run typecheck && node esbuild.js --production && mkdir -p version && vsce package --no-dependencies --allow-missing-repository --out version/"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

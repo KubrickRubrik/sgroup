@@ -5,8 +5,13 @@ import { MarkerStore } from './markerStore';
 import { cssColor, normalizeHex } from './palette';
 
 type Layout = 'chips' | 'list';
+type Columns = 'flow' | '2' | '3';
 
 const LAYOUT_KEY = 'vgroup.map.layout';
+const COLUMNS_KEY = 'vgroup.map.columns';
+const COLUMNS_CYCLE: Columns[] = ['flow', '2', '3'];
+/** Context key that selects which columns button is shown in view/editor titles. */
+const COLUMNS_CONTEXT = 'vgroup.map.columns';
 
 interface MapItem {
   relPath: string;
@@ -132,6 +137,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   // ---- shared ----
 
+  /** Flow (as many per row as fit) → 2 columns → 3 columns → flow. */
+  async cycleColumns(): Promise<void> {
+    const next = COLUMNS_CYCLE[(COLUMNS_CYCLE.indexOf(this.columns) + 1) % COLUMNS_CYCLE.length];
+    await this.memento.update(COLUMNS_KEY, next);
+    await this.syncColumnsContext();
+    this.refresh();
+  }
+
+  syncColumnsContext(): Thenable<unknown> {
+    return vscode.commands.executeCommand('setContext', COLUMNS_CONTEXT, this.columns);
+  }
+
   async toggleLayout(): Promise<void> {
     await this.memento.update(LAYOUT_KEY, this.layout === 'chips' ? 'list' : 'chips');
     this.refresh();
@@ -146,6 +163,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private get layout(): Layout {
     return this.memento.get<Layout>(LAYOUT_KEY, 'chips');
+  }
+
+  private get columns(): Columns {
+    const value = this.memento.get<Columns>(COLUMNS_KEY, 'flow');
+    return COLUMNS_CYCLE.includes(value) ? value : 'flow';
   }
 
   private adoptPanel(panel: vscode.WebviewPanel): void {
@@ -253,6 +275,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       type: 'state',
       groups,
       layout: this.layout,
+      columns: this.columns,
       active: this.activeRelPath(),
       error: this.store.lastError,
     });

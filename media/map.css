@@ -5,6 +5,12 @@ body {
   padding: 0;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   /* Levels: group title > folder > file. */
   --size-group: calc(var(--vscode-font-size, 13px) * 1.15);
@@ -183,28 +189,60 @@ body {
   }
 }
 
-/* chips */
+/* blocks: folders on top, files below; each block is laid out by the columns mode */
 
-.layout-chips .items {
+.block + .block {
+  margin-top: 4px;
+}
+
+.layout-chips.columns-flow .block {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.columns-2 .block,
+.columns-3 .block {
   display: grid;
   gap: 4px;
-  grid-template-columns: repeat(2, minmax(0, max-content));
   justify-items: start;
 }
 
+.columns-2 .block > .item,
+.columns-3 .block > .item {
+  min-width: 0;
+}
+
+.layout-list.columns-2 .block,
+.layout-list.columns-3 .block {
+  column-gap: 12px;
+  justify-items: stretch;
+  row-gap: 0;
+}
+
+.columns-2 .block {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.columns-3 .block {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* chips */
+
 .layout-chips .item {
-  background: color-mix(in srgb, var(--group-color) 14%, transparent);
+  background: color-mix(in srgb, var(--group-color) 5%, transparent);
   border-radius: 10px;
   max-width: 100%;
   padding: 1px 8px;
 }
 
 .layout-chips .item.dir {
-  background: color-mix(in srgb, var(--group-color) 24%, transparent);
+  background: color-mix(in srgb, var(--group-color) 4%, transparent);
 }
 
 .layout-chips .item:hover {
-  background: color-mix(in srgb, var(--group-color) 32%, transparent);
+  background: color-mix(in srgb, var(--group-color) 14%, transparent);
 }
 
 /* list */

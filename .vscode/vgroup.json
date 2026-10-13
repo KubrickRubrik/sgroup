@@ -2,19 +2,29 @@
   "version": 1,
   "markers": {
     "1": {
-      "label": "тест 1",
-      "color": "charts.orange",
-      "badge": "Т",
+      "label": "Тест 1",
+      "color": "#f6ebff",
+      "badge": "Силикон",
+      "icon": "🍀",
       "order": 1
     },
     "2": {
-      "label": "тест 2",
+      "label": "Тест 2",
       "color": "charts.purple",
       "badge": "Т2",
       "order": 2
     }
   },
   "items": {
+    ".gitignore": [
+      "1"
+    ],
+    ".vscode": [
+      "1"
+    ],
+    "LICENSE": [
+      "1"
+    ],
     "media/map-icon.svg": [
       "1"
     ],
@@ -32,6 +42,23 @@
     ],
     "node_modules/braces": [
       "1"
+    ],
+    "src": [
+      "1"
     ]
+  },
+  "added": {
+    ".gitignore": {
+      "1": 1791901510101
+    },
+    ".vscode": {
+      "1": 1791901524327
+    },
+    "LICENSE": {
+      "1": 1791901505621
+    },
+    "src": {
+      "1": 1791901517508
+    }
   }
 }

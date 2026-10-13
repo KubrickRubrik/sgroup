@@ -89,6 +89,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('vgroup.map.toggleLayout', () => map.toggleLayout()),
+    ...['flow', '2', '3'].map((state) => {
+      return vscode.commands.registerCommand(`vgroup.map.columns.${state}`, () => map.cycleColumns());
+    }),
     vscode.commands.registerCommand('vgroup.map.move', async () => {
       await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       await vscode.commands.executeCommand('workbench.action.moveFocusedView');
@@ -117,6 +120,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
+  await map.syncColumnsContext();
   await store.init();
 }
 

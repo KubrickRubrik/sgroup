@@ -21,7 +21,7 @@
 
   function render() {
     root.textContent = '';
-    root.className = 'layout-' + data.layout;
+    root.className = 'layout-' + data.layout + ' columns-' + (data.columns || 'flow');
 
     if (data.error) {
       root.append(el('div', 'error', data.error));
@@ -82,8 +82,17 @@
     }
 
     const items = el('div', 'items');
-    for (const item of group.items) {
-      items.append(renderItem(item, group.id));
+    const dirs = group.items.filter((item) => item.isDir);
+    const files = group.items.filter((item) => !item.isDir);
+    for (const [kind, list] of [['dirs', dirs], ['files', files]]) {
+      if (list.length === 0) {
+        continue;
+      }
+      const block = el('div', 'block block-' + kind);
+      for (const item of list) {
+        block.append(renderItem(item, group.id));
+      }
+      items.append(block);
     }
     section.append(items);
     return section;

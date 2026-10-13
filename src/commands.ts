@@ -6,7 +6,7 @@ import { PALETTE, normalizeHex, themeColorId } from './palette';
 import { ItemNode, MarkersTreeProvider, Node } from './markersTree';
 
 const BADGE_MIN = 2;
-const BADGE_MAX = 10;
+const BADGE_MAX = 40;
 
 export function registerCommands(
   store: MarkerStore,
