@@ -2,7 +2,7 @@
   "name": "vgroup",
   "displayName": "VGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "0.12.6",
+  "version": "0.13.4",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -194,6 +194,18 @@
         "title": "Columns: 3 — click for flow",
         "category": "VGroup",
         "icon": "$(table)"
+      },
+      {
+        "command": "vgroup.createSubgroup",
+        "title": "New Subgroup…",
+        "category": "VGroup",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "vgroup.unnestMarker",
+        "title": "Move Up a Level",
+        "category": "VGroup",
+        "icon": "$(arrow-up)"
       }
     ],
     "menus": {
@@ -283,12 +295,12 @@
         {
           "command": "vgroup.moveMarkerUp",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
-          "group": "1_marker@5"
+          "group": "1_marker@6"
         },
         {
           "command": "vgroup.moveMarkerDown",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
-          "group": "1_marker@6"
+          "group": "1_marker@7"
         },
         {
           "command": "vgroup.deleteMarker",
@@ -298,17 +310,27 @@
         {
           "command": "vgroup.changeColor",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
-          "group": "1_marker@2"
+          "group": "1_marker@3"
         },
         {
           "command": "vgroup.changeIcon",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
-          "group": "1_marker@3"
+          "group": "1_marker@4"
         },
         {
           "command": "vgroup.changeBadge",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
-          "group": "1_marker@4"
+          "group": "1_marker@5"
+        },
+        {
+          "command": "vgroup.createSubgroup",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2",
+          "group": "1_marker@2"
+        },
+        {
+          "command": "vgroup.unnestMarker",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && depth > 0",
+          "group": "1_marker@8"
         }
       ],
       "commandPalette": [
@@ -370,6 +392,14 @@
         },
         {
           "command": "vgroup.map.columns.3",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.createSubgroup",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.unnestMarker",
           "when": "false"
         }
       ],
@@ -434,6 +464,16 @@
         }
       },
       {
+        "id": "vgroup.red.label",
+        "description": "VGroup Explorer label tint: Red",
+        "defaults": {
+          "dark": "#e7c5c6",
+          "light": "#5e3234",
+          "highContrast": "#e7c5c6",
+          "highContrastLight": "#5e3234"
+        }
+      },
+      {
         "id": "vgroup.tomato",
         "description": "VGroup marker color: Tomato",
         "defaults": {
@@ -441,6 +481,16 @@
           "light": "#e54d2e",
           "highContrast": "#e54d2e",
           "highContrastLight": "#e54d2e"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label",
+        "description": "VGroup Explorer label tint: Tomato",
+        "defaults": {
+          "dark": "#e7c6bf",
+          "light": "#5e342b",
+          "highContrast": "#e7c6bf",
+          "highContrastLight": "#5e342b"
         }
       },
       {
@@ -454,6 +504,16 @@
         }
       },
       {
+        "id": "vgroup.orange.label",
+        "description": "VGroup Explorer label tint: Orange",
+        "defaults": {
+          "dark": "#ebcdba",
+          "light": "#633c24",
+          "highContrast": "#ebcdba",
+          "highContrastLight": "#633c24"
+        }
+      },
+      {
         "id": "vgroup.amber",
         "description": "VGroup marker color: Amber",
         "defaults": {
@@ -461,6 +521,16 @@
           "light": "#ffb224",
           "highContrast": "#ffb224",
           "highContrastLight": "#ffb224"
+        }
+      },
+      {
+        "id": "vgroup.amber.label",
+        "description": "VGroup Explorer label tint: Amber",
+        "defaults": {
+          "dark": "#eddcbd",
+          "light": "#665028",
+          "highContrast": "#eddcbd",
+          "highContrastLight": "#665028"
         }
       },
       {
@@ -474,6 +544,16 @@
         }
       },
       {
+        "id": "vgroup.yellow.label",
+        "description": "VGroup Explorer label tint: Yellow",
+        "defaults": {
+          "dark": "#ebe5b7",
+          "light": "#635b21",
+          "highContrast": "#ebe5b7",
+          "highContrastLight": "#635b21"
+        }
+      },
+      {
         "id": "vgroup.lime",
         "description": "VGroup marker color: Lime",
         "defaults": {
@@ -481,6 +561,16 @@
           "light": "#99d52a",
           "highContrast": "#99d52a",
           "highContrastLight": "#99d52a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label",
+        "description": "VGroup Explorer label tint: Lime",
+        "defaults": {
+          "dark": "#d7e4be",
+          "light": "#495a2a",
+          "highContrast": "#d7e4be",
+          "highContrastLight": "#495a2a"
         }
       },
       {
@@ -494,6 +584,16 @@
         }
       },
       {
+        "id": "vgroup.green.label",
+        "description": "VGroup Explorer label tint: Green",
+        "defaults": {
+          "dark": "#c0d9cd",
+          "light": "#2c4c3c",
+          "highContrast": "#c0d9cd",
+          "highContrastLight": "#2c4c3c"
+        }
+      },
+      {
         "id": "vgroup.emerald",
         "description": "VGroup marker color: Emerald",
         "defaults": {
@@ -501,6 +601,16 @@
           "light": "#10b981",
           "highContrast": "#10b981",
           "highContrastLight": "#10b981"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label",
+        "description": "VGroup Explorer label tint: Emerald",
+        "defaults": {
+          "dark": "#b8ded1",
+          "light": "#235242",
+          "highContrast": "#b8ded1",
+          "highContrastLight": "#235242"
         }
       },
       {
@@ -514,6 +624,16 @@
         }
       },
       {
+        "id": "vgroup.teal.label",
+        "description": "VGroup Explorer label tint: Teal",
+        "defaults": {
+          "dark": "#b9d9d6",
+          "light": "#234c48",
+          "highContrast": "#b9d9d6",
+          "highContrastLight": "#234c48"
+        }
+      },
+      {
         "id": "vgroup.cyan",
         "description": "VGroup marker color: Cyan",
         "defaults": {
@@ -521,6 +641,16 @@
           "light": "#00a2c7",
           "highContrast": "#00a2c7",
           "highContrastLight": "#00a2c7"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label",
+        "description": "VGroup Explorer label tint: Cyan",
+        "defaults": {
+          "dark": "#b5d9e1",
+          "light": "#1e4c56",
+          "highContrast": "#b5d9e1",
+          "highContrastLight": "#1e4c56"
         }
       },
       {
@@ -534,6 +664,16 @@
         }
       },
       {
+        "id": "vgroup.sky.label",
+        "description": "VGroup Explorer label tint: Sky",
+        "defaults": {
+          "dark": "#c6e0ed",
+          "light": "#345566",
+          "highContrast": "#c6e0ed",
+          "highContrastLight": "#345566"
+        }
+      },
+      {
         "id": "vgroup.blue",
         "description": "VGroup marker color: Blue",
         "defaults": {
@@ -541,6 +681,16 @@
           "light": "#3e63dd",
           "highContrast": "#3e63dd",
           "highContrastLight": "#3e63dd"
+        }
+      },
+      {
+        "id": "vgroup.blue.label",
+        "description": "VGroup Explorer label tint: Blue",
+        "defaults": {
+          "dark": "#c3cbe6",
+          "light": "#303a5c",
+          "highContrast": "#c3cbe6",
+          "highContrastLight": "#303a5c"
         }
       },
       {
@@ -554,6 +704,16 @@
         }
       },
       {
+        "id": "vgroup.indigo.label",
+        "description": "VGroup Explorer label tint: Indigo",
+        "defaults": {
+          "dark": "#c9c9e4",
+          "light": "#38385a",
+          "highContrast": "#c9c9e4",
+          "highContrastLight": "#38385a"
+        }
+      },
+      {
         "id": "vgroup.violet",
         "description": "VGroup marker color: Violet",
         "defaults": {
@@ -561,6 +721,16 @@
           "light": "#8e4ec6",
           "highContrast": "#8e4ec6",
           "highContrastLight": "#8e4ec6"
+        }
+      },
+      {
+        "id": "vgroup.violet.label",
+        "description": "VGroup Explorer label tint: Violet",
+        "defaults": {
+          "dark": "#d4c6e1",
+          "light": "#463456",
+          "highContrast": "#d4c6e1",
+          "highContrastLight": "#463456"
         }
       },
       {
@@ -574,6 +744,16 @@
         }
       },
       {
+        "id": "vgroup.purple.label",
+        "description": "VGroup Explorer label tint: Purple",
+        "defaults": {
+          "dark": "#dbc5de",
+          "light": "#4e3352",
+          "highContrast": "#dbc5de",
+          "highContrastLight": "#4e3352"
+        }
+      },
+      {
         "id": "vgroup.plum",
         "description": "VGroup marker color: Plum",
         "defaults": {
@@ -581,6 +761,16 @@
           "light": "#b658c4",
           "highContrast": "#b658c4",
           "highContrastLight": "#b658c4"
+        }
+      },
+      {
+        "id": "vgroup.plum.label",
+        "description": "VGroup Explorer label tint: Plum",
+        "defaults": {
+          "dark": "#ddc8e0",
+          "light": "#513755",
+          "highContrast": "#ddc8e0",
+          "highContrastLight": "#513755"
         }
       },
       {
@@ -594,6 +784,16 @@
         }
       },
       {
+        "id": "vgroup.pink.label",
+        "description": "VGroup Explorer label tint: Pink",
+        "defaults": {
+          "dark": "#e4c3d8",
+          "light": "#5a304b",
+          "highContrast": "#e4c3d8",
+          "highContrastLight": "#5a304b"
+        }
+      },
+      {
         "id": "vgroup.rose",
         "description": "VGroup marker color: Rose",
         "defaults": {
@@ -601,6 +801,16 @@
           "light": "#f43f5e",
           "highContrast": "#f43f5e",
           "highContrastLight": "#f43f5e"
+        }
+      },
+      {
+        "id": "vgroup.rose.label",
+        "description": "VGroup Explorer label tint: Rose",
+        "defaults": {
+          "dark": "#ebc3ca",
+          "light": "#633039",
+          "highContrast": "#ebc3ca",
+          "highContrastLight": "#633039"
         }
       },
       {
@@ -614,6 +824,16 @@
         }
       },
       {
+        "id": "vgroup.brown.label",
+        "description": "VGroup Explorer label tint: Brown",
+        "defaults": {
+          "dark": "#dbd1c8",
+          "light": "#4f4237",
+          "highContrast": "#dbd1c8",
+          "highContrastLight": "#4f4237"
+        }
+      },
+      {
         "id": "vgroup.bronze",
         "description": "VGroup marker color: Bronze",
         "defaults": {
@@ -621,6 +841,16 @@
           "light": "#a18072",
           "highContrast": "#a18072",
           "highContrastLight": "#a18072"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label",
+        "description": "VGroup Explorer label tint: Bronze",
+        "defaults": {
+          "dark": "#d8d1ce",
+          "light": "#4b423e",
+          "highContrast": "#d8d1ce",
+          "highContrastLight": "#4b423e"
         }
       },
       {
@@ -634,6 +864,16 @@
         }
       },
       {
+        "id": "vgroup.gold.label",
+        "description": "VGroup Explorer label tint: Gold",
+        "defaults": {
+          "dark": "#d6d2cb",
+          "light": "#49433b",
+          "highContrast": "#d6d2cb",
+          "highContrastLight": "#49433b"
+        }
+      },
+      {
         "id": "vgroup.gray",
         "description": "VGroup marker color: Gray",
         "defaults": {
@@ -644,6 +884,16 @@
         }
       },
       {
+        "id": "vgroup.gray.label",
+        "description": "VGroup Explorer label tint: Gray",
+        "defaults": {
+          "dark": "#d4d4d6",
+          "light": "#454649",
+          "highContrast": "#d4d4d6",
+          "highContrastLight": "#454649"
+        }
+      },
+      {
         "id": "vgroup.slate",
         "description": "VGroup marker color: Slate",
         "defaults": {
@@ -651,6 +901,16 @@
           "light": "#64748b",
           "highContrast": "#64748b",
           "highContrastLight": "#64748b"
+        }
+      },
+      {
+        "id": "vgroup.slate.label",
+        "description": "VGroup Explorer label tint: Slate",
+        "defaults": {
+          "dark": "#cbced4",
+          "light": "#3a3f45",
+          "highContrast": "#cbced4",
+          "highContrastLight": "#3a3f45"
         }
       }
     ]

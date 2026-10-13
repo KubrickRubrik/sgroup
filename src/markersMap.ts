@@ -27,6 +27,11 @@ interface MapGroup {
   badge?: string;
   icon?: string;
   color?: string;
+  parent?: string;
+  depth: number;
+  /** Height of nested subgroup tree (0 if no children). */
+  subtreeHeight: number;
+  children: string[];
   items: MapItem[];
 }
 
@@ -44,7 +49,11 @@ type IncomingMessage =
   | { type: 'ready' }
   | { type: 'open'; relPath: string }
   | { type: 'reveal'; relPath: string }
-  | { type: 'setColor'; markerId: string; color: string };
+  | { type: 'setColor'; markerId: string; color: string }
+  | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
+  | { type: 'placeMarker'; id: string; target: string; position: 'before' | 'after' }
+  | { type: 'nestMarker'; id: string; parent: string }
+  | { type: 'dropUris'; uris: string[]; to: string };
 
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
   static readonly viewId = 'vgroupMap';
@@ -228,6 +237,63 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    if (message.type === 'moveItem') {
+      if (!this.store.marker(message.to) || !message.relPath) {
+        return;
+      }
+      if (message.copy) {
+        await this.store.assign([message.relPath], message.to);
+      } else if (message.from && message.from !== message.to) {
+        await this.store.moveItem(message.relPath, message.from, message.to);
+      }
+      return;
+    }
+    if (message.type === 'placeMarker') {
+      try {
+        await this.store.placeMarker(message.id, message.target, message.position);
+      } catch (error) {
+        void vscode.window.showWarningMessage(`VGroup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    if (message.type === 'nestMarker') {
+      const check = this.store.canNest(message.id, message.parent);
+      if (!check.ok) {
+        void vscode.window.showWarningMessage(`VGroup: ${check.reason}`);
+        return;
+      }
+      try {
+        await this.store.nestMarker(message.id, message.parent);
+      } catch (error) {
+        void vscode.window.showWarningMessage(`VGroup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    if (message.type === 'dropUris') {
+      if (!this.store.marker(message.to)) {
+        return;
+      }
+      const relPaths = message.uris
+        .map((raw) => {
+          try {
+            return this.store.toRelative(vscode.Uri.parse(raw));
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((p): p is string => p !== undefined);
+      if (relPaths.length === 0) {
+        void vscode.window.showWarningMessage(
+          'VGroup: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
+        );
+        return;
+      }
+      await this.store.assign(relPaths, message.to);
+      return;
+    }
+    if (message.type !== 'open' && message.type !== 'reveal') {
+      return;
+    }
     const uri = this.store.toUri(message.relPath);
     if (message.type === 'reveal') {
       await vscode.commands.executeCommand('revealInExplorer', uri);
@@ -268,6 +334,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         badge: def.badge,
         icon: def.icon,
         color: def.color ? cssColor(def.color) : undefined,
+        parent: def.parent,
+        depth: this.store.depthOf(id),
+        subtreeHeight: this.store.subtreeHeight(id),
+        children: this.store.children(id).map(([childId]) => childId),
         items: await Promise.all(this.store.itemsOf(id).map((relPath) => this.mapItem(relPath))),
       })),
     );

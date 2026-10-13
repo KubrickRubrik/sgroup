@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { EMOJI } from './emoji';
-import { MarkerDef, MarkerStore } from './markerStore';
+import { MAX_MARKER_DEPTH, MarkerDef, MarkerStore } from './markerStore';
 import { PALETTE, normalizeHex, themeColorId } from './palette';
 import { ItemNode, MarkersTreeProvider, Node } from './markersTree';
 
@@ -131,9 +131,16 @@ export function registerCommands(
     return Array.from(label.trim().replace(/\s+/g, '')).slice(0, BADGE_MIN).join('').toLocaleUpperCase();
   }
 
-  async function createMarkerFlow(): Promise<string | undefined> {
+  async function createMarkerFlow(parentId?: string): Promise<string | undefined> {
+    if (parentId) {
+      const parentDepth = store.depthOf(parentId);
+      if (parentDepth >= MAX_MARKER_DEPTH) {
+        void vscode.window.showWarningMessage(`VGroup: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+        return undefined;
+      }
+    }
     const label = await vscode.window.showInputBox({
-      title: 'New marker',
+      title: parentId ? 'New subgroup' : 'New marker',
       prompt: 'Marker name',
       placeHolder: 'e.g. Ads, Shells, Placeholders',
       validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
@@ -153,18 +160,22 @@ export function registerCommands(
     if (badge === null) {
       return undefined;
     }
-    return store.createMarker({ label: label.trim(), color, icon, badge });
+    return store.createMarker({ label: label.trim(), color, icon, badge, parent: parentId });
   }
 
   async function pickMarker(title: string): Promise<string | undefined> {
     const NEW = '__new__';
     const items = [
-      ...store.markers().map(([id, def]) => ({
-        label: def.icon ? `${def.icon} ${def.label}` : def.label,
-        description: def.badge,
-        id,
-        iconPath: new vscode.ThemeIcon('tag', def.color ? new vscode.ThemeColor(themeColorId(def.color)) : undefined),
-      })),
+      ...store.markers().map(([id, def]) => {
+        const depth = store.depthOf(id);
+        const indent = depth > 0 ? `${'··'.repeat(depth)} ` : '';
+        return {
+          label: `${indent}${def.icon ? `${def.icon} ` : ''}${def.label}`,
+          description: def.badge,
+          id,
+          iconPath: new vscode.ThemeIcon('tag', def.color ? new vscode.ThemeColor(themeColorId(def.color)) : undefined),
+        };
+      }),
       { label: 'New marker…', description: undefined, id: NEW, iconPath: new vscode.ThemeIcon('add') },
     ];
     const picked = await vscode.window.showQuickPick(items, { title, placeHolder: 'Choose a marker' });
@@ -342,6 +353,24 @@ export function registerCommands(
     };
   }
 
+  async function createSubgroup(node?: Node): Promise<void> {
+    if (node?.kind !== 'marker') {
+      return;
+    }
+    await createMarkerFlow(node.markerId);
+  }
+
+  async function unnestMarker(node?: Node): Promise<void> {
+    if (node?.kind !== 'marker') {
+      return;
+    }
+    const def = store.marker(node.markerId);
+    if (!def?.parent) {
+      return;
+    }
+    await store.unnestMarker(node.markerId);
+  }
+
   async function deleteMarker(node?: Node): Promise<void> {
     const target = node;
     if (!target || target.kind !== 'marker') {
@@ -349,9 +378,17 @@ export function registerCommands(
     }
     const def = store.marker(target.markerId);
     const count = store.itemsOf(target.markerId).length;
+    const childCount = store.children(target.markerId).length;
+    const details: string[] = [];
+    if (count > 0) {
+      details.push(`It will be removed from ${count} item(s). Files are not touched.`);
+    }
+    if (childCount > 0) {
+      details.push(`${childCount} subgroup(s) will move up one level.`);
+    }
     const answer = await vscode.window.showWarningMessage(
       `Delete marker "${def?.label ?? target.markerId}"?`,
-      { modal: true, detail: count > 0 ? `It will be removed from ${count} item(s). Files are not touched.` : undefined },
+      { modal: true, detail: details.length > 0 ? details.join(' ') : undefined },
       'Delete',
     );
     if (answer === 'Delete') {
@@ -411,7 +448,9 @@ export function registerCommands(
       }),
     ),
     vscode.commands.registerCommand('vgroup.relink', withNode(relink)),
-    vscode.commands.registerCommand('vgroup.createMarker', createMarkerFlow),
+    vscode.commands.registerCommand('vgroup.createMarker', () => createMarkerFlow()),
+    vscode.commands.registerCommand('vgroup.createSubgroup', withNode(createSubgroup)),
+    vscode.commands.registerCommand('vgroup.unnestMarker', withNode(unnestMarker)),
     vscode.commands.registerCommand('vgroup.editMarker', withNode(editMarker)),
     vscode.commands.registerCommand('vgroup.deleteMarker', withNode(deleteMarker)),
     vscode.commands.registerCommand('vgroup.changeColor', withNode(editMarkerField('color', pickColor))),

@@ -3,7 +3,7 @@
   "markers": {
     "1": {
       "label": "Тест 1",
-      "color": "#f6ebff",
+      "color": "#ff1900",
       "badge": "Силикон",
       "icon": "🍀",
       "order": 1
@@ -12,7 +12,23 @@
       "label": "Тест 2",
       "color": "charts.purple",
       "badge": "Т2",
+      "order": 1,
+      "parent": "2-2"
+    },
+    "3": {
+      "label": "Тест 3",
+      "color": "vgroup.sky",
+      "badge": "Тест 3",
+      "icon": "🔥",
       "order": 2
+    },
+    "2-2": {
+      "label": "Тест 2",
+      "color": "#e5ea99",
+      "badge": "вложенность 2",
+      "icon": "🔥",
+      "order": 1,
+      "parent": "3"
     }
   },
   "items": {

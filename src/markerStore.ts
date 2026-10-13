@@ -2,6 +2,9 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { normalizeHex } from './palette';
 
+/** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
+export const MAX_MARKER_DEPTH = 2;
+
 export interface MarkerDef {
   label: string;
   /** Theme color id (`vgroup.red`, `charts.red`) or `#rrggbb`. */
@@ -9,8 +12,13 @@ export interface MarkerDef {
   badge?: string;
   /** Emoji shown before the group name. */
   icon?: string;
+  /** Parent marker id; omitted for top-level groups. */
+  parent?: string;
+  /** Order among siblings that share the same parent. */
   order: number;
 }
+
+export type NestResult = { ok: true } | { ok: false; reason: string };
 
 interface MarkersFile {
   version: 1;
@@ -116,14 +124,76 @@ export class MarkerStore implements vscode.Disposable {
 
   // ---- queries ----
 
+  /** Flat list in tree pre-order (parents before children). */
   markers(): Array<[string, MarkerDef]> {
-    return Object.entries(this.data.markers).sort((a, b) => {
-      return a[1].order - b[1].order || a[1].label.localeCompare(b[1].label);
-    });
+    const result: Array<[string, MarkerDef]> = [];
+    const visit = (parentId: string | undefined) => {
+      for (const [id, def] of this.children(parentId)) {
+        result.push([id, def]);
+        visit(id);
+      }
+    };
+    visit(undefined);
+    return result;
   }
 
   marker(id: string): MarkerDef | undefined {
     return this.data.markers[id];
+  }
+
+  /** Siblings that share the same parent, sorted by order. */
+  children(parentId?: string | undefined): Array<[string, MarkerDef]> {
+    return Object.entries(this.data.markers)
+      .filter(([, def]) => (def.parent ?? undefined) === (parentId ?? undefined))
+      .sort((a, b) => a[1].order - b[1].order || a[1].label.localeCompare(b[1].label));
+  }
+
+  depthOf(id: string): number {
+    let depth = 0;
+    let current = this.data.markers[id]?.parent;
+    const seen = new Set<string>();
+    while (current && this.data.markers[current] && !seen.has(current)) {
+      seen.add(current);
+      depth++;
+      current = this.data.markers[current].parent;
+    }
+    return depth;
+  }
+
+  /** Height of the subtree rooted at `id` (0 if no children). */
+  subtreeHeight(id: string): number {
+    const kids = this.children(id);
+    if (kids.length === 0) {
+      return 0;
+    }
+    return 1 + Math.max(...kids.map(([childId]) => this.subtreeHeight(childId)));
+  }
+
+  canNest(id: string, parentId: string): NestResult {
+    if (!this.data.markers[id] || !this.data.markers[parentId]) {
+      return { ok: false, reason: 'Group not found.' };
+    }
+    if (id === parentId) {
+      return { ok: false, reason: 'A group cannot be nested inside itself.' };
+    }
+    let ancestor: string | undefined = parentId;
+    const seen = new Set<string>();
+    while (ancestor) {
+      if (ancestor === id) {
+        return { ok: false, reason: 'A group cannot be nested inside its own subgroup.' };
+      }
+      if (seen.has(ancestor)) {
+        break;
+      }
+      seen.add(ancestor);
+      ancestor = this.data.markers[ancestor]?.parent;
+    }
+    const parentDepth = this.depthOf(parentId);
+    const height = this.subtreeHeight(id);
+    if (parentDepth + 1 + height > MAX_MARKER_DEPTH) {
+      return { ok: false, reason: `Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.` };
+    }
+    return { ok: true };
   }
 
   /** Items of a marker in the order they were added; items without a date come first, alphabetically. */
@@ -145,7 +215,13 @@ export class MarkerStore implements vscode.Disposable {
 
   markersOf(relPath: string): string[] {
     const ids = this.data.items[relPath] ?? [];
-    return ids.slice().sort((a, b) => (this.data.markers[a]?.order ?? 0) - (this.data.markers[b]?.order ?? 0));
+    return ids.slice().sort((a, b) => {
+      const da = this.depthOf(a) - this.depthOf(b);
+      if (da !== 0) {
+        return da;
+      }
+      return (this.data.markers[a]?.order ?? 0) - (this.data.markers[b]?.order ?? 0);
+    });
   }
 
   hasAnyMarkedUnder(relPath: string): boolean {
@@ -157,8 +233,18 @@ export class MarkerStore implements vscode.Disposable {
 
   async createMarker(def: Omit<MarkerDef, 'order'>): Promise<string> {
     const id = this.uniqueId(def.label);
-    const maxOrder = Math.max(0, ...Object.values(this.data.markers).map((m) => m.order));
-    this.data.markers[id] = { ...def, label: capitalize(def.label), order: maxOrder + 1 };
+    const parent = def.parent && this.data.markers[def.parent] ? def.parent : undefined;
+    if (parent !== undefined && this.depthOf(parent) >= MAX_MARKER_DEPTH) {
+      throw new Error(`Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+    }
+    const siblings = this.children(parent);
+    const maxOrder = Math.max(0, ...siblings.map(([, m]) => m.order));
+    this.data.markers[id] = {
+      ...def,
+      label: capitalize(def.label),
+      parent,
+      order: maxOrder + 1,
+    };
     await this.commit();
     return id;
   }
@@ -168,12 +254,33 @@ export class MarkerStore implements vscode.Disposable {
     if (!current) {
       return;
     }
-    this.data.markers[id] = { ...current, ...patch, label: capitalize(patch.label ?? current.label) };
+    const next: MarkerDef = { ...current, ...patch, label: capitalize(patch.label ?? current.label) };
+    if (patch.parent !== undefined) {
+      next.parent = patch.parent || undefined;
+    }
+    this.data.markers[id] = next;
     await this.commit();
   }
 
   async deleteMarker(id: string): Promise<void> {
+    const def = this.data.markers[id];
+    if (!def) {
+      return;
+    }
+    const grandParent = def.parent;
+    const children = this.children(id);
+    const siblings = this.children(grandParent)
+      .map(([markerId]) => markerId)
+      .filter((markerId) => markerId !== id);
+    const insertAt = siblings.length;
+    // Lift children to the deleted marker's parent, keeping relative order.
+    const lifted = children.map(([childId]) => childId);
+    const ordered = [...siblings.slice(0, insertAt), ...lifted, ...siblings.slice(insertAt)];
+    for (const childId of lifted) {
+      this.data.markers[childId].parent = grandParent;
+    }
     delete this.data.markers[id];
+    this.applyOrder(ordered);
     for (const [relPath, ids] of Object.entries(this.data.items)) {
       this.setItem(relPath, ids.filter((x) => x !== id));
     }
@@ -181,7 +288,11 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   async moveMarker(id: string, delta: -1 | 1): Promise<void> {
-    const ordered = this.markers().map(([markerId]) => markerId);
+    const def = this.data.markers[id];
+    if (!def) {
+      return;
+    }
+    const ordered = this.children(def.parent).map(([markerId]) => markerId);
     const index = ordered.indexOf(id);
     const target = index + delta;
     if (index < 0 || target < 0 || target >= ordered.length) {
@@ -192,16 +303,74 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  async placeMarkerBefore(id: string, beforeId: string): Promise<void> {
-    if (id === beforeId) {
+  async placeMarker(id: string, targetId: string, position: 'before' | 'after'): Promise<void> {
+    if (id === targetId || !this.data.markers[id] || !this.data.markers[targetId]) {
       return;
     }
-    const ordered = this.markers()
+    const parent = this.data.markers[targetId].parent;
+    const oldParent = this.data.markers[id].parent;
+    if (parent !== oldParent) {
+      if (parent) {
+        const check = this.canNest(id, parent);
+        if (!check.ok) {
+          throw new Error(check.reason);
+        }
+      } else if (this.subtreeHeight(id) > MAX_MARKER_DEPTH) {
+        throw new Error(`Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+      }
+    }
+    this.data.markers[id].parent = parent;
+    const ordered = this.children(parent)
       .map(([markerId]) => markerId)
       .filter((markerId) => markerId !== id);
-    const index = ordered.indexOf(beforeId);
-    ordered.splice(index < 0 ? ordered.length : index, 0, id);
+    let index = ordered.indexOf(targetId);
+    if (index < 0) {
+      index = ordered.length;
+    } else if (position === 'after') {
+      index += 1;
+    }
+    ordered.splice(index, 0, id);
     this.applyOrder(ordered);
+    if (oldParent !== parent) {
+      this.applyOrder(this.children(oldParent).map(([markerId]) => markerId));
+    }
+    await this.commit();
+  }
+
+  async nestMarker(id: string, parentId: string): Promise<void> {
+    const check = this.canNest(id, parentId);
+    if (!check.ok) {
+      throw new Error(check.reason);
+    }
+    const oldParent = this.data.markers[id].parent;
+    this.data.markers[id].parent = parentId;
+    const ordered = this.children(parentId)
+      .map(([markerId]) => markerId)
+      .filter((markerId) => markerId !== id);
+    ordered.push(id);
+    this.applyOrder(ordered);
+    if (oldParent !== parentId) {
+      this.applyOrder(this.children(oldParent).map(([markerId]) => markerId));
+    }
+    await this.commit();
+  }
+
+  async unnestMarker(id: string): Promise<void> {
+    const def = this.data.markers[id];
+    if (!def?.parent) {
+      return;
+    }
+    const parentId = def.parent;
+    const grandParent = this.data.markers[parentId]?.parent;
+    const siblings = this.children(grandParent)
+      .map(([markerId]) => markerId)
+      .filter((markerId) => markerId !== id);
+    const parentIndex = siblings.indexOf(parentId);
+    const insertAt = parentIndex < 0 ? siblings.length : parentIndex + 1;
+    this.data.markers[id].parent = grandParent;
+    siblings.splice(insertAt, 0, id);
+    this.applyOrder(siblings);
+    this.applyOrder(this.children(parentId).map(([markerId]) => markerId));
     await this.commit();
   }
 
@@ -228,6 +397,9 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   async moveItem(relPath: string, fromMarkerId: string, toMarkerId: string): Promise<void> {
+    if (fromMarkerId === toMarkerId) {
+      return;
+    }
     const ids = (this.data.items[relPath] ?? []).filter((x) => x !== fromMarkerId);
     if (!ids.includes(toMarkerId)) {
       ids.push(toMarkerId);
@@ -286,7 +458,8 @@ export class MarkerStore implements vscode.Disposable {
   private async save(): Promise<void> {
     const markers: Record<string, MarkerDef> = {};
     for (const [id, def] of this.markers()) {
-      markers[id] = def;
+      const { parent, ...rest } = def;
+      markers[id] = parent ? { ...rest, parent } : { ...rest };
     }
     const items: Record<string, string[]> = {};
     const added: Record<string, Record<string, number>> = {};
@@ -332,7 +505,9 @@ export class MarkerStore implements vscode.Disposable {
 
   private applyOrder(ordered: string[]): void {
     ordered.forEach((markerId, index) => {
-      this.data.markers[markerId].order = index + 1;
+      if (this.data.markers[markerId]) {
+        this.data.markers[markerId].order = index + 1;
+      }
     });
   }
 
@@ -366,15 +541,19 @@ function normalize(raw: unknown): MarkersFile {
         continue;
       }
       const def = value as Partial<MarkerDef>;
+      const parent = typeof def.parent === 'string' && def.parent ? def.parent : undefined;
       result.markers[id] = {
         label: capitalize(typeof def.label === 'string' && def.label.trim() ? def.label : id),
         color: typeof def.color === 'string' && def.color ? (normalizeHex(def.color) ?? def.color) : undefined,
         badge: typeof def.badge === 'string' && def.badge.trim() ? def.badge.trim() : undefined,
         icon: typeof def.icon === 'string' && def.icon.trim() ? def.icon.trim() : undefined,
+        parent,
         order: typeof def.order === 'number' ? def.order : index,
       };
     }
   }
+
+  repairParents(result.markers);
 
   if (source.items && typeof source.items === 'object') {
     for (const [relPath, value] of Object.entries(source.items as Record<string, unknown>)) {
@@ -408,6 +587,44 @@ function normalize(raw: unknown): MarkersFile {
   }
 
   return result;
+}
+
+function repairParents(markers: Record<string, MarkerDef>): void {
+  for (const [id, def] of Object.entries(markers)) {
+    if (def.parent && !(def.parent in markers)) {
+      def.parent = undefined;
+    }
+    // Break cycles.
+    const seen = new Set<string>([id]);
+    let current = def.parent;
+    while (current) {
+      if (seen.has(current)) {
+        def.parent = undefined;
+        break;
+      }
+      seen.add(current);
+      current = markers[current]?.parent;
+    }
+  }
+  // Flatten anything deeper than MAX_MARKER_DEPTH.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [id, def] of Object.entries(markers)) {
+      let depth = 0;
+      let current = def.parent;
+      const seen = new Set<string>();
+      while (current && markers[current] && !seen.has(current)) {
+        seen.add(current);
+        depth++;
+        current = markers[current].parent;
+      }
+      if (depth > MAX_MARKER_DEPTH && def.parent) {
+        def.parent = markers[def.parent]?.parent;
+        changed = true;
+      }
+    }
+  }
 }
 
 function normalizePath(relPath: string): string {

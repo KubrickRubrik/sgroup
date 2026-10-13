@@ -17,6 +17,10 @@ body {
   --size-folder: calc(var(--vscode-font-size, 13px) * 1.02);
   --size-file: calc(var(--vscode-font-size, 13px) * 0.94);
   --size-meta: calc(var(--vscode-font-size, 13px) * 0.8);
+  /* chevron(10) + gap(6) + bar(5) */
+  --tree-gutter: 21px;
+  --branch-gap: 10px;
+  --drop-color: var(--vscode-list-focusOutline, var(--vscode-focusBorder, #4daafc));
 
   color: var(--vscode-foreground);
   font-family: var(--vscode-font-family);
@@ -25,23 +29,238 @@ body {
   padding: 6px 10px 14px 8px;
 }
 
+/* ---- top-level cards ---- */
+
 .group {
   --group-color: var(--vscode-descriptionForeground);
   margin-bottom: 10px;
+  position: relative;
+}
+
+.group:not(.nested) {
+  background: color-mix(in srgb, var(--group-color) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--group-color) 35%, transparent);
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.group.nested {
+  background: transparent;
+  border: none;
+  margin-bottom: 2px;
+  padding: 0;
+}
+
+/* ---- tree: one .children list of .node ---- */
+
+.children {
+  /* Parent's color — stubs/verticals to children stay this color even if a child has its own. */
+  --branch: color-mix(in srgb, var(--group-color) 50%, transparent);
+  margin: 2px 0 0 var(--tree-gutter);
+  padding-left: var(--branch-gap);
+  position: relative;
+}
+
+.children > .node {
+  position: relative;
+}
+
+/* Horizontal stub to the node. */
+.children > .node::before {
+  background: var(--branch);
+  content: '';
+  height: 2px;
+  left: calc(-1 * var(--branch-gap));
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--size-file) * 0.775);
+  transform: translateY(-50%);
+  width: var(--branch-gap);
+  z-index: 1;
+}
+
+.children > .node.block-dirs::before {
+  top: calc(var(--size-folder) * 0.775);
+}
+
+.children > .node.group::before {
+  top: calc(var(--size-group) * 0.775);
+}
+
+/* Vertical segment: full height for middle nodes. */
+.children > .node::after {
+  background: var(--branch);
+  bottom: -2px;
+  content: '';
+  left: calc(-1 * var(--branch-gap));
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 2px;
+}
+
+/* Last node: vertical stops at the stub (no tail below). */
+.children > .node:last-child::after {
+  bottom: auto;
+  height: calc(var(--size-file) * 0.775);
+}
+
+.children > .node.block-dirs:last-child::after {
+  height: calc(var(--size-folder) * 0.775);
+}
+
+.children > .node.group:last-child::after {
+  height: calc(var(--size-group) * 0.775);
+}
+
+/* List mode without columns: stub per file/folder row; block-level connectors off. */
+.layout-list.columns-flow .children > .block::before,
+.layout-list.columns-flow .children > .block::after {
+  display: none;
+}
+
+.layout-list.columns-flow .children > .block > .item {
+  overflow: visible;
+  position: relative;
+}
+
+.layout-list.columns-flow .children > .block > .item::before {
+  background: var(--branch);
+  content: '';
+  height: 2px;
+  left: calc(-1 * var(--branch-gap));
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--branch-gap);
+  z-index: 1;
+}
+
+.layout-list.columns-flow .children > .block > .item::after {
+  background: var(--branch);
+  bottom: -1px;
+  content: '';
+  left: calc(-1 * var(--branch-gap));
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 2px;
+}
+
+/* First row: vertical starts at the stub. */
+.layout-list.columns-flow .children > .block:first-child > .item:first-child::after {
+  top: 50%;
+}
+
+/* Last row of the whole tree: vertical ends at the stub. */
+.layout-list.columns-flow .children > .block:last-child > .item:last-child::after {
+  bottom: auto;
+  height: 50%;
+  top: 0;
+}
+
+.layout-list.columns-flow .children > .block:first-child:last-child > .item:only-child::after,
+.layout-list.columns-flow .children > .block:last-child > .item:only-child:first-child::after {
+  display: none;
+}
+
+/* Sole item that is also the last node overall — only the stub, no vertical. */
+.layout-list.columns-flow .children > .block:only-child > .item:only-child::after {
+  display: none;
 }
 
 .group-header {
   align-items: center;
   border-radius: 4px;
-  cursor: pointer;
+  cursor: grab;
   display: flex;
   gap: 6px;
   padding: 2px 3px;
+  position: relative;
   user-select: none;
 }
 
 .group-header:hover {
   background: var(--vscode-list-hoverBackground);
+}
+
+.group.dragging,
+.item.dragging {
+  opacity: 0.4;
+}
+
+body.is-dragging .group:not(.drop-target):not(.dragging) {
+  opacity: 0.6;
+}
+
+/* ---- drop highlight (outline, does not fight card border) ---- */
+
+.group.drop-target {
+  background: color-mix(in srgb, var(--drop-color) 22%, transparent) !important;
+  box-shadow: 0 0 14px 2px color-mix(in srgb, var(--drop-color) 55%, transparent);
+  outline: 3px solid var(--drop-color);
+  outline-offset: 2px;
+  z-index: 3;
+}
+
+.group.drop-into {
+  outline-style: dashed;
+}
+
+.group.drop-blocked {
+  background: color-mix(in srgb, var(--vscode-errorForeground) 16%, transparent) !important;
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--vscode-errorForeground) 40%, transparent);
+  outline-color: var(--vscode-errorForeground);
+}
+
+.group-header.drop-into {
+  background: color-mix(in srgb, var(--drop-color) 28%, transparent);
+}
+
+/* Insert line with circular end caps (before / after). */
+.group-header.drop-before::before,
+.group-header.drop-after::after {
+  background:
+    radial-gradient(circle 4px at 4px 50%, var(--drop-color) 95%, transparent 96%),
+    radial-gradient(circle 4px at calc(100% - 4px) 50%, var(--drop-color) 95%, transparent 96%),
+    linear-gradient(var(--drop-color), var(--drop-color)) center / calc(100% - 8px) 4px no-repeat;
+  content: '';
+  height: 8px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  z-index: 4;
+}
+
+.group-header.drop-before::before {
+  top: -8px;
+}
+
+.group-header.drop-after::after {
+  bottom: -8px;
+}
+
+.drop-hint {
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--drop-color);
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  font-size: var(--size-meta);
+  font-weight: 600;
+  max-width: 240px;
+  padding: 3px 8px;
+  pointer-events: none;
+  position: fixed;
+  white-space: nowrap;
+  z-index: 1000;
+}
+
+.drop-hint.blocked {
+  border-color: var(--vscode-errorForeground);
+  color: var(--vscode-errorForeground);
 }
 
 .chevron {
@@ -115,16 +334,10 @@ body {
   text-align: right;
 }
 
-.items {
-  border-left: 1px solid color-mix(in srgb, var(--group-color) 45%, transparent);
-  margin: 3px 0 0 19px;
-  padding-left: 8px;
-}
-
 .item {
   align-items: center;
   border-radius: 4px;
-  cursor: pointer;
+  cursor: grab;
   display: flex;
   font-size: var(--size-file);
   gap: 5px;
@@ -173,7 +386,7 @@ body {
   font-style: italic;
 }
 
-/* wide host (bottom panel): groups side by side */
+/* wide host (bottom panel): top-level groups side by side */
 
 @media (min-width: 640px) {
   #root {

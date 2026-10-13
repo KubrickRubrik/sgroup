@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { MarkerStore } from './markerStore';
-import { themeColorId } from './palette';
+import { themeLabelColorId } from './palette';
 
 export class MarkerDecorationProvider implements vscode.FileDecorationProvider, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
@@ -42,7 +42,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
     return new vscode.FileDecoration(
       shortBadge(primary?.badge),
       `VGroup: ${labels}`,
-      primary?.color ? new vscode.ThemeColor(themeColorId(primary.color)) : undefined,
+      primary?.color ? new vscode.ThemeColor(themeLabelColorId(primary.color)) : undefined,
     );
   }
 }
