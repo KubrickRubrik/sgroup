@@ -29,6 +29,13 @@ const COMMAND_IDS = [
   'vgroup.map.move',
   'vgroup.map.toggleColumn',
   'vgroup.map.openBottom',
+  'vgroup.map.groups.flow',
+  'vgroup.map.groups.1',
+  'vgroup.map.groups.2',
+  'vgroup.map.groups.3',
+  'vgroup.setColumns.flow',
+  'vgroup.setColumns.2',
+  'vgroup.setColumns.3',
 ];
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -94,8 +101,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('vgroup.map.toggleLayout', () => map.toggleLayout()),
-    ...['flow', '2', '3'].map((state) => {
-      return vscode.commands.registerCommand(`vgroup.map.columns.${state}`, () => map.cycleColumns());
+    ...['flow', '1', '2', '3'].map((state) => {
+      return vscode.commands.registerCommand(`vgroup.map.groups.${state}`, () => map.cycleGroupsLayout());
     }),
     vscode.commands.registerCommand('vgroup.map.move', async () => {
       await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
@@ -125,7 +132,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  await map.syncColumnsContext();
+  await map.syncGroupsLayoutContext();
   await store.init();
 }
 

@@ -1,17 +1,17 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { MarkerStore } from './markerStore';
+import { ColumnsMode, MarkerStore } from './markerStore';
 import { cssColor, normalizeHex } from './palette';
 
 type Layout = 'chips' | 'list';
-type Columns = 'flow' | '2' | '3';
+type GroupsLayout = 'flow' | '1' | '2' | '3';
 
 const LAYOUT_KEY = 'vgroup.map.layout';
-const COLUMNS_KEY = 'vgroup.map.columns';
-const COLUMNS_CYCLE: Columns[] = ['flow', '2', '3'];
-/** Context key that selects which columns button is shown in view/editor titles. */
-const COLUMNS_CONTEXT = 'vgroup.map.columns';
+const GROUPS_LAYOUT_KEY = 'vgroup.map.groupsLayout';
+const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
+/** Context key that selects which groups-layout button is shown in view/editor titles. */
+const GROUPS_LAYOUT_CONTEXT = 'vgroup.map.groupsLayout';
 
 interface MapItem {
   relPath: string;
@@ -28,6 +28,7 @@ interface MapGroup {
   icon?: string;
   color?: string;
   parent?: string;
+  columns: ColumnsMode;
   depth: number;
   /** Height of nested subgroup tree (0 if no children). */
   subtreeHeight: number;
@@ -146,16 +147,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   // ---- shared ----
 
-  /** Flow (as many per row as fit) → 2 columns → 3 columns → flow. */
-  async cycleColumns(): Promise<void> {
-    const next = COLUMNS_CYCLE[(COLUMNS_CYCLE.indexOf(this.columns) + 1) % COLUMNS_CYCLE.length];
-    await this.memento.update(COLUMNS_KEY, next);
-    await this.syncColumnsContext();
+  /** Flow → 1 → 2 → 3 → flow for top-level group placement. */
+  async cycleGroupsLayout(): Promise<void> {
+    const next =
+      GROUPS_LAYOUT_CYCLE[(GROUPS_LAYOUT_CYCLE.indexOf(this.groupsLayout) + 1) % GROUPS_LAYOUT_CYCLE.length];
+    await this.memento.update(GROUPS_LAYOUT_KEY, next);
+    await this.syncGroupsLayoutContext();
     this.refresh();
   }
 
-  syncColumnsContext(): Thenable<unknown> {
-    return vscode.commands.executeCommand('setContext', COLUMNS_CONTEXT, this.columns);
+  syncGroupsLayoutContext(): Thenable<unknown> {
+    return vscode.commands.executeCommand('setContext', GROUPS_LAYOUT_CONTEXT, this.groupsLayout);
   }
 
   async toggleLayout(): Promise<void> {
@@ -174,9 +176,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return this.memento.get<Layout>(LAYOUT_KEY, 'chips');
   }
 
-  private get columns(): Columns {
-    const value = this.memento.get<Columns>(COLUMNS_KEY, 'flow');
-    return COLUMNS_CYCLE.includes(value) ? value : 'flow';
+  private get groupsLayout(): GroupsLayout {
+    const value = this.memento.get<GroupsLayout>(GROUPS_LAYOUT_KEY, 'flow');
+    return GROUPS_LAYOUT_CYCLE.includes(value) ? value : 'flow';
   }
 
   private adoptPanel(panel: vscode.WebviewPanel): void {
@@ -335,6 +337,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         icon: def.icon,
         color: def.color ? cssColor(def.color) : undefined,
         parent: def.parent,
+        columns: def.columns ?? 'flow',
         depth: this.store.depthOf(id),
         subtreeHeight: this.store.subtreeHeight(id),
         children: this.store.children(id).map(([childId]) => childId),
@@ -345,7 +348,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       type: 'state',
       groups,
       layout: this.layout,
-      columns: this.columns,
+      groupsLayout: this.groupsLayout,
       active: this.activeRelPath(),
       error: this.store.lastError,
     });

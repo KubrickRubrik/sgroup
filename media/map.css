@@ -137,17 +137,17 @@ body {
 }
 
 /* List mode without columns: stub per file/folder row; block-level connectors off. */
-.layout-list.columns-flow .children > .block::before,
-.layout-list.columns-flow .children > .block::after {
+.layout-list .group.columns-flow > .children > .block::before,
+.layout-list .group.columns-flow > .children > .block::after {
   display: none;
 }
 
-.layout-list.columns-flow .children > .block > .item {
+.layout-list .group.columns-flow > .children > .block > .item {
   overflow: visible;
   position: relative;
 }
 
-.layout-list.columns-flow .children > .block > .item::before {
+.layout-list .group.columns-flow > .children > .block > .item::before {
   background: var(--branch);
   content: '';
   height: 2px;
@@ -160,7 +160,7 @@ body {
   z-index: 1;
 }
 
-.layout-list.columns-flow .children > .block > .item::after {
+.layout-list .group.columns-flow > .children > .block > .item::after {
   background: var(--branch);
   bottom: -1px;
   content: '';
@@ -172,24 +172,24 @@ body {
 }
 
 /* First row: vertical starts at the stub. */
-.layout-list.columns-flow .children > .block:first-child > .item:first-child::after {
+.layout-list .group.columns-flow > .children > .block:first-child > .item:first-child::after {
   top: 50%;
 }
 
 /* Last row of the whole tree: vertical ends at the stub. */
-.layout-list.columns-flow .children > .block:last-child > .item:last-child::after {
+.layout-list .group.columns-flow > .children > .block:last-child > .item:last-child::after {
   bottom: auto;
   height: 50%;
   top: 0;
 }
 
-.layout-list.columns-flow .children > .block:first-child:last-child > .item:only-child::after,
-.layout-list.columns-flow .children > .block:last-child > .item:only-child:first-child::after {
+.layout-list .group.columns-flow > .children > .block:first-child:last-child > .item:only-child::after,
+.layout-list .group.columns-flow > .children > .block:last-child > .item:only-child:first-child::after {
   display: none;
 }
 
 /* Sole item that is also the last node overall — only the stub, no vertical. */
-.layout-list.columns-flow .children > .block:only-child > .item:only-child::after {
+.layout-list .group.columns-flow > .children > .block:only-child > .item:only-child::after {
   display: none;
 }
 
@@ -416,58 +416,77 @@ body.is-dragging * {
   font-style: italic;
 }
 
-/* wide host (bottom panel): top-level groups side by side */
+/* Top-level groups placement */
+
+#root.groups-1 {
+  display: block;
+}
+
+#root.groups-2,
+#root.groups-3 {
+  align-items: start;
+  column-gap: 10px;
+  display: grid;
+}
+
+#root.groups-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#root.groups-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 
 @media (min-width: 640px) {
-  #root {
+  #root.groups-flow {
     align-items: start;
     column-gap: 18px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   }
-
-  #root > .empty,
-  #root > .error {
-    grid-column: 1 / -1;
-  }
 }
 
-/* blocks: folders on top, files below; each block is laid out by the columns mode */
+#root > .empty,
+#root > .error {
+  grid-column: 1 / -1;
+}
+
+/* blocks: folders on top, files below; each block is laid out by the group's columns mode */
 
 .block + .block {
   margin-top: 4px;
 }
 
-.layout-chips.columns-flow .block {
+.layout-chips .group.columns-flow > .children > .block {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
 }
 
-.columns-2 .block,
-.columns-3 .block {
+.group.columns-2 > .children > .block,
+.group.columns-3 > .children > .block {
   display: grid;
   gap: 4px;
   justify-items: start;
 }
 
-.columns-2 .block > .item,
-.columns-3 .block > .item {
+.group.columns-2 > .children > .block > .item,
+.group.columns-3 > .children > .block > .item {
   min-width: 0;
 }
 
-.layout-list.columns-2 .block,
-.layout-list.columns-3 .block {
+.layout-list .group.columns-2 > .children > .block,
+.layout-list .group.columns-3 > .children > .block {
   column-gap: 12px;
   justify-items: stretch;
   row-gap: 0;
 }
 
-.columns-2 .block {
+.group.columns-2 > .children > .block {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.columns-3 .block {
+.group.columns-3 > .children > .block {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 

@@ -459,6 +459,16 @@ export function registerCommands(
       'vgroup.changeBadge',
       withNode(editMarkerField('badge', (current) => askBadge(current ?? ''))),
     ),
+    ...(['flow', '2', '3'] as const).map((columns) =>
+      vscode.commands.registerCommand(
+        `vgroup.setColumns.${columns}`,
+        withNode(async (node) => {
+          if (node?.kind === 'marker') {
+            await store.setColumns(node.markerId, columns);
+          }
+        }),
+      ),
+    ),
     vscode.commands.registerCommand('vgroup.moveMarkerUp', withNode((node) => moveMarker(node, -1))),
     vscode.commands.registerCommand('vgroup.moveMarkerDown', withNode((node) => moveMarker(node, 1))),
     vscode.commands.registerCommand('vgroup.openConfig', openConfig),

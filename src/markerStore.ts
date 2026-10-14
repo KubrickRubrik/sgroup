@@ -5,6 +5,14 @@ import { normalizeHex } from './palette';
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
 export const MAX_MARKER_DEPTH = 2;
 
+/** Chip/list columns inside a single group. */
+export type ColumnsMode = 'flow' | '2' | '3';
+export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '2', '3'];
+
+export function normalizeColumns(value: unknown): ColumnsMode | undefined {
+  return value === 'flow' || value === '2' || value === '3' ? value : undefined;
+}
+
 export interface MarkerDef {
   label: string;
   /** Theme color id (`vgroup.red`, `charts.red`) or `#rrggbb`. */
@@ -14,6 +22,8 @@ export interface MarkerDef {
   icon?: string;
   /** Parent marker id; omitted for top-level groups. */
   parent?: string;
+  /** Item columns inside this group. Absent means flow. */
+  columns?: ColumnsMode;
   /** Order among siblings that share the same parent. */
   order: number;
 }
@@ -239,10 +249,15 @@ export class MarkerStore implements vscode.Disposable {
     }
     const siblings = this.children(parent);
     const maxOrder = Math.max(0, ...siblings.map(([, m]) => m.order));
+    let columns = normalizeColumns(def.columns);
+    if (columns === undefined && parent !== undefined) {
+      columns = normalizeColumns(this.data.markers[parent].columns);
+    }
     this.data.markers[id] = {
       ...def,
       label: capitalize(def.label),
       parent,
+      columns,
       order: maxOrder + 1,
     };
     await this.commit();
@@ -258,8 +273,18 @@ export class MarkerStore implements vscode.Disposable {
     if (patch.parent !== undefined) {
       next.parent = patch.parent || undefined;
     }
+    if ('columns' in patch) {
+      next.columns = normalizeColumns(patch.columns);
+    }
     this.data.markers[id] = next;
     await this.commit();
+  }
+
+  async setColumns(id: string, columns: ColumnsMode): Promise<void> {
+    if (!this.data.markers[id]) {
+      return;
+    }
+    await this.updateMarker(id, { columns });
   }
 
   async deleteMarker(id: string): Promise<void> {
@@ -548,6 +573,7 @@ function normalize(raw: unknown): MarkersFile {
         badge: typeof def.badge === 'string' && def.badge.trim() ? def.badge.trim() : undefined,
         icon: typeof def.icon === 'string' && def.icon.trim() ? def.icon.trim() : undefined,
         parent,
+        columns: normalizeColumns(def.columns),
         order: typeof def.order === 'number' ? def.order : index,
       };
     }

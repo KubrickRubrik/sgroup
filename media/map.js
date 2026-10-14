@@ -37,7 +37,7 @@
 
   function render() {
     root.textContent = '';
-    root.className = 'layout-' + data.layout + ' columns-' + (data.columns || 'flow');
+    root.className = 'layout-' + data.layout + ' groups-' + (data.groupsLayout || 'flow');
     clearDropHighlights();
 
     if (data.error) {
@@ -66,9 +66,11 @@
     const childIds = group.children || [];
     const isEmpty = group.items.length === 0 && childIds.length === 0;
     const collapsed = !isEmpty && !!uiState.collapsed[group.id];
+    const columns = group.columns || 'flow';
     const section = el(
       'section',
-      'group' +
+      'group columns-' +
+        columns +
         (collapsed ? ' collapsed' : '') +
         (group.depth ? ' nested node' : '') +
         (isEmpty ? ' empty-group' : ''),
@@ -87,6 +89,7 @@
       markerId: group.id,
       depth: group.depth || 0,
       canNest: (group.depth || 0) < MAX_DEPTH,
+      columns,
     });
     const bar = el('span', 'bar');
     bar.title = 'Change color';

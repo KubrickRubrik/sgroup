@@ -2,7 +2,7 @@
   "name": "vgroup",
   "displayName": "VGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "0.13.6",
+  "version": "0.14.0",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -178,22 +178,43 @@
         "icon": "$(tag)"
       },
       {
-        "command": "vgroup.map.columns.flow",
-        "title": "Columns: Flow — click for 2 columns",
+        "command": "vgroup.map.groups.flow",
+        "title": "Groups: Flow — click for 1 column",
         "category": "VGroup",
         "icon": "$(word-wrap)"
       },
       {
-        "command": "vgroup.map.columns.2",
-        "title": "Columns: 2 — click for 3 columns",
+        "command": "vgroup.map.groups.1",
+        "title": "Groups: 1 column — click for 2 columns",
+        "category": "VGroup",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "vgroup.map.groups.2",
+        "title": "Groups: 2 columns — click for 3 columns",
         "category": "VGroup",
         "icon": "$(split-horizontal)"
       },
       {
-        "command": "vgroup.map.columns.3",
-        "title": "Columns: 3 — click for flow",
+        "command": "vgroup.map.groups.3",
+        "title": "Groups: 3 columns — click for flow",
         "category": "VGroup",
         "icon": "$(table)"
+      },
+      {
+        "command": "vgroup.setColumns.flow",
+        "title": "Flow",
+        "category": "VGroup"
+      },
+      {
+        "command": "vgroup.setColumns.2",
+        "title": "2 Columns",
+        "category": "VGroup"
+      },
+      {
+        "command": "vgroup.setColumns.3",
+        "title": "3 Columns",
+        "category": "VGroup"
       },
       {
         "command": "vgroup.createSubgroup",
@@ -206,6 +227,12 @@
         "title": "Move Up a Level",
         "category": "VGroup",
         "icon": "$(arrow-up)"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "vgroup.columns",
+        "label": "Columns"
       }
     ],
     "menus": {
@@ -251,18 +278,23 @@
           "group": "navigation@9"
         },
         {
-          "command": "vgroup.map.columns.flow",
-          "when": "(view == vgroupMap || view == vgroupMapBottom) && (vgroup.map.columns == flow || !vgroup.map.columns)",
+          "command": "vgroup.map.groups.flow",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && (vgroup.map.groupsLayout == flow || !vgroup.map.groupsLayout)",
           "group": "navigation@1"
         },
         {
-          "command": "vgroup.map.columns.2",
-          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.columns == 2",
+          "command": "vgroup.map.groups.1",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.groupsLayout == 1",
           "group": "navigation@1"
         },
         {
-          "command": "vgroup.map.columns.3",
-          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.columns == 3",
+          "command": "vgroup.map.groups.2",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.groupsLayout == 2",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.map.groups.3",
+          "when": "(view == vgroupMap || view == vgroupMapBottom) && vgroup.map.groupsLayout == 3",
           "group": "navigation@1"
         }
       ],
@@ -323,6 +355,11 @@
           "group": "1_marker@5"
         },
         {
+          "submenu": "vgroup.columns",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@5.5"
+        },
+        {
           "command": "vgroup.createSubgroup",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2",
           "group": "1_marker@2"
@@ -331,6 +368,23 @@
           "command": "vgroup.unnestMarker",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && depth > 0",
           "group": "1_marker@8"
+        }
+      ],
+      "vgroup.columns": [
+        {
+          "command": "vgroup.setColumns.flow",
+          "group": "1_columns@1",
+          "toggled": "columns == 'flow'"
+        },
+        {
+          "command": "vgroup.setColumns.2",
+          "group": "1_columns@2",
+          "toggled": "columns == '2'"
+        },
+        {
+          "command": "vgroup.setColumns.3",
+          "group": "1_columns@3",
+          "toggled": "columns == '3'"
         }
       ],
       "commandPalette": [
@@ -383,15 +437,31 @@
           "when": "false"
         },
         {
-          "command": "vgroup.map.columns.flow",
+          "command": "vgroup.map.groups.flow",
           "when": "false"
         },
         {
-          "command": "vgroup.map.columns.2",
+          "command": "vgroup.map.groups.1",
           "when": "false"
         },
         {
-          "command": "vgroup.map.columns.3",
+          "command": "vgroup.map.groups.2",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.map.groups.3",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.setColumns.flow",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.setColumns.2",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.setColumns.3",
           "when": "false"
         },
         {
@@ -415,18 +485,23 @@
           "group": "navigation@2"
         },
         {
-          "command": "vgroup.map.columns.flow",
-          "when": "activeWebviewPanelId == 'vgroupMapPanel' && (vgroup.map.columns == flow || !vgroup.map.columns)",
+          "command": "vgroup.map.groups.flow",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && (vgroup.map.groupsLayout == flow || !vgroup.map.groupsLayout)",
           "group": "navigation@1"
         },
         {
-          "command": "vgroup.map.columns.2",
-          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.columns == 2",
+          "command": "vgroup.map.groups.1",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.groupsLayout == 1",
           "group": "navigation@1"
         },
         {
-          "command": "vgroup.map.columns.3",
-          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.columns == 3",
+          "command": "vgroup.map.groups.2",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.groupsLayout == 2",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.map.groups.3",
+          "when": "activeWebviewPanelId == 'vgroupMapPanel' && vgroup.map.groupsLayout == 3",
           "group": "navigation@1"
         }
       ]

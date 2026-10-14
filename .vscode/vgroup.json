@@ -6,6 +6,7 @@
       "color": "#ff1900",
       "badge": "Силикон",
       "icon": "🍀",
+      "columns": "3",
       "order": 1
     },
     "2": {
@@ -21,6 +22,18 @@
       "badge": "Тест 3",
       "icon": "🔥",
       "order": 2
+    },
+    "4": {
+      "label": "Тест 4",
+      "badge": "тест 4",
+      "order": 3
+    },
+    "5": {
+      "label": "Тест 5",
+      "color": "vgroup.blue",
+      "badge": "тест 5",
+      "icon": "📌",
+      "order": 4
     },
     "2-2": {
       "label": "Тест 2",
