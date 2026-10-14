@@ -607,3 +607,60 @@ body.is-dragging * {
 .error {
   color: var(--vscode-errorForeground);
 }
+
+/* folder peek popover */
+
+.dir-popover {
+  background: var(--vscode-editorWidget-background, var(--vscode-menu-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-menu-border, var(--vscode-widget-border)));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  box-sizing: border-box;
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  min-width: 200px;
+  max-width: min(320px, calc(100vw - 8px));
+  padding: 3px;
+  position: fixed;
+  z-index: 1000;
+}
+
+.dir-popover-status {
+  color: var(--vscode-descriptionForeground);
+  font-size: var(--size-meta);
+  padding: 6px 8px;
+}
+
+.dir-popover-list {
+  --dir-row: 24px;
+  max-height: calc(10 * var(--dir-row));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.dir-popover-item {
+  align-items: center;
+  border-radius: 3px;
+  cursor: default;
+  display: flex;
+  font-size: var(--size-file);
+  gap: 5px;
+  height: var(--dir-row);
+  overflow: hidden;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.dir-popover-item.dir {
+  font-size: var(--size-folder);
+  font-weight: 500;
+}
+
+.dir-popover-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.dir-popover-item .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

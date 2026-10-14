@@ -65,12 +65,19 @@ type IncomingMessage =
   | { type: 'open'; relPath: string }
   | { type: 'openClass'; classId: string }
   | { type: 'reveal'; relPath: string }
+  | { type: 'listDir'; relPath: string }
   | { type: 'setColor'; markerId: string; color: string }
   | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
   | { type: 'moveClass'; classId: string; from: string; to: string; copy?: boolean }
   | { type: 'placeMarker'; id: string; target: string; position: 'before' | 'after' }
   | { type: 'nestMarker'; id: string; parent: string }
   | { type: 'dropUris'; uris: string[]; to: string };
+
+interface DirListingEntry {
+  name: string;
+  relPath: string;
+  isDir: boolean;
+}
 
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
   static readonly viewId = 'vgroupMap';
@@ -330,6 +337,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.store.assign(relPaths, message.to);
       return;
     }
+    if (message.type === 'listDir') {
+      await this.postDirListing(webview, message.relPath);
+      return;
+    }
     if (message.type !== 'open' && message.type !== 'reveal') {
       return;
     }
@@ -350,6 +361,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: this.targetColumn() });
+  }
+
+  private async postDirListing(webview: vscode.Webview, relPath: string): Promise<void> {
+    if (!relPath) {
+      return;
+    }
+    const uri = this.store.toUri(relPath);
+    try {
+      const listing = await vscode.workspace.fs.readDirectory(uri);
+      const entries: DirListingEntry[] = listing
+        .map(([name, type]) => ({
+          name,
+          relPath: path.posix.join(relPath, name),
+          isDir: (type & vscode.FileType.Directory) !== 0,
+        }))
+        .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+      await webview.postMessage({ type: 'dirListing', relPath, entries });
+    } catch {
+      void vscode.window.showWarningMessage(`VGroup: cannot read folder ${relPath}`);
+      await webview.postMessage({ type: 'dirListing', relPath, entries: [], error: true });
+    }
   }
 
   /** Files must never open inside the map's own column. */

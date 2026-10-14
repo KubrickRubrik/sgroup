@@ -18,16 +18,68 @@
   dropHint.hidden = true;
   document.body.append(dropHint);
 
+  const dirPopover = el('div', 'dir-popover');
+  dirPopover.hidden = true;
+  dirPopover.setAttribute('role', 'menu');
+  document.body.append(dirPopover);
+
+  /** @type {{ relPath: string, anchor: HTMLElement } | null} */
+  let dirPopoverState = null;
+
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'state') {
+      closeDirPopover();
       data = message;
       render();
     } else if (message.type === 'active' && data) {
       data.active = message.active;
       updateActive(true);
+    } else if (message.type === 'dirListing') {
+      fillDirPopover(message);
     }
   });
+
+  document.addEventListener('pointerdown', (event) => {
+    if (!dirPopoverState) {
+      return;
+    }
+    const target = /** @type {Node | null} */ (event.target);
+    if (
+      target &&
+      (dirPopover.contains(target) || dirPopoverState.anchor.contains(target))
+    ) {
+      return;
+    }
+    closeDirPopover();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && dirPopoverState) {
+      closeDirPopover();
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (dirPopoverState) {
+      positionDirPopover(dirPopoverState.anchor);
+    }
+  });
+
+  document.addEventListener(
+    'scroll',
+    (event) => {
+      if (!dirPopoverState) {
+        return;
+      }
+      const target = /** @type {Node | null} */ (event.target);
+      if (target && dirPopover.contains(/** @type {Node} */ (target))) {
+        return;
+      }
+      closeDirPopover();
+    },
+    true,
+  );
 
   document.addEventListener('dragleave', (event) => {
     if (event.relatedTarget === null) {
@@ -232,9 +284,12 @@
   function bindItem(node, item, groupId) {
     node.dataset.rel = item.relPath;
     const aliasLine = item.alias ? item.alias + '\n' : '';
+    const clickHint = item.isDir
+      ? 'Click: list contents · Alt+Click: reveal in Explorer'
+      : 'Click: open · Alt+Click: reveal in Explorer';
     node.title =
       aliasLine +
-      (item.exists ? item.relPath + '\nClick: open · Alt+Click: reveal in Explorer' : item.relPath + '\nMissing') +
+      (item.exists ? item.relPath + '\n' + clickHint : item.relPath + '\nMissing') +
       '\nDrag to another group · Alt+Drag to copy';
     setContext(node, {
       webviewSection: item.exists ? 'item' : 'missing',
@@ -246,6 +301,15 @@
     node.addEventListener('click', (event) => {
       event.stopPropagation();
       if (!item.exists) {
+        return;
+      }
+      if (item.isDir) {
+        if (event.altKey) {
+          closeDirPopover();
+          vscode.postMessage({ type: 'reveal', relPath: item.relPath });
+          return;
+        }
+        toggleDirPopover(node, item.relPath);
         return;
       }
       vscode.postMessage({ type: event.altKey ? 'reveal' : 'open', relPath: item.relPath });
@@ -264,6 +328,84 @@
       node.classList.remove('dragging');
       endDrag();
     });
+  }
+
+  function toggleDirPopover(anchor, relPath) {
+    if (dirPopoverState && dirPopoverState.relPath === relPath) {
+      closeDirPopover();
+      return;
+    }
+    dirPopoverState = { relPath, anchor };
+    dirPopover.hidden = false;
+    dirPopover.classList.add('loading');
+    dirPopover.replaceChildren(el('div', 'dir-popover-status', 'Loading…'));
+    positionDirPopover(anchor);
+    vscode.postMessage({ type: 'listDir', relPath });
+  }
+
+  function closeDirPopover() {
+    dirPopoverState = null;
+    dirPopover.hidden = true;
+    dirPopover.classList.remove('loading');
+    dirPopover.replaceChildren();
+  }
+
+  function fillDirPopover(message) {
+    if (!dirPopoverState || dirPopoverState.relPath !== message.relPath) {
+      return;
+    }
+    if (message.error) {
+      closeDirPopover();
+      return;
+    }
+    dirPopover.classList.remove('loading');
+    const entries = Array.isArray(message.entries) ? message.entries : [];
+    if (entries.length === 0) {
+      dirPopover.replaceChildren(el('div', 'dir-popover-status', 'Empty'));
+      positionDirPopover(dirPopoverState.anchor);
+      return;
+    }
+    const list = el('div', 'dir-popover-list');
+    for (const entry of entries) {
+      const row = el('div', 'dir-popover-item' + (entry.isDir ? ' dir' : ''));
+      row.setAttribute('role', 'menuitem');
+      row.append(entry.isDir ? folderIcon() : fileIcon(entry.name), el('span', 'name', entry.name));
+      row.title = entry.relPath;
+      row.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closeDirPopover();
+        vscode.postMessage({
+          type: entry.isDir ? 'reveal' : 'open',
+          relPath: entry.relPath,
+        });
+      });
+      list.append(row);
+    }
+    dirPopover.replaceChildren(list);
+    positionDirPopover(dirPopoverState.anchor);
+  }
+
+  function positionDirPopover(anchor) {
+    const rect = anchor.getBoundingClientRect();
+    const pad = 4;
+    dirPopover.style.visibility = 'hidden';
+    dirPopover.hidden = false;
+    const popW = dirPopover.offsetWidth || 180;
+    const popH = dirPopover.offsetHeight || 120;
+    let left = rect.left;
+    let top = rect.bottom + pad;
+    if (left + popW > window.innerWidth - pad) {
+      left = Math.max(pad, window.innerWidth - popW - pad);
+    }
+    if (top + popH > window.innerHeight - pad) {
+      top = Math.max(pad, rect.top - popH - pad);
+    }
+    if (left < pad) {
+      left = pad;
+    }
+    dirPopover.style.left = left + 'px';
+    dirPopover.style.top = top + 'px';
+    dirPopover.style.visibility = '';
   }
 
   function bindClass(node, cls, groupId) {
