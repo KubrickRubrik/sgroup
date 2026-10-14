@@ -6,7 +6,8 @@
       "color": "#ff1900",
       "badge": "Силикон",
       "icon": "🍀",
-      "columns": "3",
+      "alias": "тестовая группа 1",
+      "columns": "2",
       "order": 1
     },
     "2": {
@@ -88,6 +89,60 @@
     },
     "src": {
       "1": 1791901517508
+    }
+  },
+  "aliases": {
+    ".vscode": "Настройки vs code",
+    "LICENSE": "Лицензия"
+  },
+  "classes": {
+    "cls-csscolor": {
+      "relPath": "src/palette.ts",
+      "name": "cssColor",
+      "line": 127
+    },
+    "cls-nearestbyhex": {
+      "relPath": "src/palette.ts",
+      "name": "nearestByHex",
+      "line": 111
+    },
+    "cls-palette": {
+      "relPath": "src/palette.ts",
+      "name": "PALETTE",
+      "line": 8
+    },
+    "cls-rgb": {
+      "relPath": "src/palette.ts",
+      "name": "rgb",
+      "line": 134
+    }
+  },
+  "classItems": {
+    "cls-csscolor": [
+      "4"
+    ],
+    "cls-nearestbyhex": [
+      "3"
+    ],
+    "cls-palette": [
+      "1"
+    ],
+    "cls-rgb": [
+      "1"
+    ]
+  },
+  "classAdded": {
+    "cls-csscolor": {
+      "4": 1792000723090
+    },
+    "cls-nearestbyhex": {
+      "3": 1792000810310
+    },
+    "cls-palette": {
+      "1": 1792000709967
+    },
+    "cls-rgb": {
+      "1": 1792000790151
     }
   }
 }

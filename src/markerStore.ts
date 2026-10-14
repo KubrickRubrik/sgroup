@@ -20,6 +20,8 @@ export interface MarkerDef {
   badge?: string;
   /** Emoji shown before the group name. */
   icon?: string;
+  /** Display alias shown above the group label. */
+  alias?: string;
   /** Parent marker id; omitted for top-level groups. */
   parent?: string;
   /** Item columns inside this group. Absent means flow. */
@@ -30,16 +32,41 @@ export interface MarkerDef {
 
 export type NestResult = { ok: true } | { ok: false; reason: string };
 
+export interface ClassDef {
+  relPath: string;
+  name: string;
+  /** 1-based line hint; may become stale. */
+  line?: number;
+  /** Display alias shown above the class name. */
+  alias?: string;
+}
+
 interface MarkersFile {
   version: 1;
   markers: Record<string, MarkerDef>;
   items: Record<string, string[]>;
   /** relPath → markerId → epoch ms when the item was added to that marker. */
   added: Record<string, Record<string, number>>;
+  /** relPath → display alias shown above the real name. */
+  aliases: Record<string, string>;
+  classes: Record<string, ClassDef>;
+  /** classId → markerIds */
+  classItems: Record<string, string[]>;
+  /** classId → markerId → epoch ms */
+  classAdded: Record<string, Record<string, number>>;
 }
 
 function emptyData(): MarkersFile {
-  return { version: 1, markers: {}, items: {}, added: {} };
+  return {
+    version: 1,
+    markers: {},
+    items: {},
+    added: {},
+    aliases: {},
+    classes: {},
+    classItems: {},
+    classAdded: {},
+  };
 }
 
 /** Group names always start with a capital letter. */
@@ -236,7 +263,58 @@ export class MarkerStore implements vscode.Disposable {
 
   hasAnyMarkedUnder(relPath: string): boolean {
     const prefix = relPath + '/';
-    return Object.keys(this.data.items).some((p) => p === relPath || p.startsWith(prefix) || relPath.startsWith(p + '/'));
+    return (
+      Object.keys(this.data.items).some((p) => p === relPath || p.startsWith(prefix) || relPath.startsWith(p + '/')) ||
+      Object.values(this.data.classes).some((c) => c.relPath === relPath || c.relPath.startsWith(prefix))
+    );
+  }
+
+  aliasOf(relPath: string): string | undefined {
+    const alias = this.data.aliases[relPath];
+    return alias || undefined;
+  }
+
+  classAliasOf(classId: string): string | undefined {
+    const alias = this.data.classes[classId]?.alias;
+    return alias || undefined;
+  }
+
+  markerAliasOf(markerId: string): string | undefined {
+    const alias = this.data.markers[markerId]?.alias;
+    return alias || undefined;
+  }
+
+  classDef(id: string): ClassDef | undefined {
+    return this.data.classes[id];
+  }
+
+  /** Classes of a marker in the order they were added. */
+  classesOf(markerId: string): Array<[string, ClassDef]> {
+    const addedAt = (classId: string) => this.data.classAdded[classId]?.[markerId] ?? 0;
+    return Object.entries(this.data.classItems)
+      .filter(([, ids]) => ids.includes(markerId))
+      .map(([classId]) => [classId, this.data.classes[classId]] as [string, ClassDef])
+      .filter((entry): entry is [string, ClassDef] => !!entry[1])
+      .sort((a, b) => {
+        return (
+          addedAt(a[0]) - addedAt(b[0]) ||
+          a[1].name.localeCompare(b[1].name) ||
+          a[1].relPath.localeCompare(b[1].relPath)
+        );
+      });
+  }
+
+  /** All descendant marker ids including `markerId` itself when `includeSelf`. */
+  descendantMarkers(markerId: string, includeSelf = true): string[] {
+    const result: string[] = includeSelf ? [markerId] : [];
+    const visit = (id: string) => {
+      for (const [childId] of this.children(id)) {
+        result.push(childId);
+        visit(childId);
+      }
+    };
+    visit(markerId);
+    return result;
   }
 
   // ---- markers ----
@@ -308,6 +386,9 @@ export class MarkerStore implements vscode.Disposable {
     this.applyOrder(ordered);
     for (const [relPath, ids] of Object.entries(this.data.items)) {
       this.setItem(relPath, ids.filter((x) => x !== id));
+    }
+    for (const [classId, ids] of Object.entries(this.data.classItems)) {
+      this.setClassItem(classId, ids.filter((x) => x !== id));
     }
     await this.commit();
   }
@@ -434,6 +515,101 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
+  async setAlias(relPath: string, alias: string | undefined): Promise<void> {
+    const key = normalizePath(relPath);
+    const trimmed = alias?.trim();
+    if (!trimmed) {
+      delete this.data.aliases[key];
+    } else {
+      this.data.aliases[key] = trimmed;
+    }
+    await this.commit();
+  }
+
+  async setClassAlias(classId: string, alias: string | undefined): Promise<void> {
+    const def = this.data.classes[classId];
+    if (!def) {
+      return;
+    }
+    const trimmed = alias?.trim();
+    if (!trimmed) {
+      delete def.alias;
+    } else {
+      def.alias = trimmed;
+    }
+    await this.commit();
+  }
+
+  async setMarkerAlias(markerId: string, alias: string | undefined): Promise<void> {
+    const def = this.data.markers[markerId];
+    if (!def) {
+      return;
+    }
+    const trimmed = alias?.trim();
+    if (!trimmed) {
+      delete def.alias;
+    } else {
+      def.alias = trimmed;
+    }
+    await this.commit();
+  }
+
+  /** Find or create a class def and assign it to a marker. Returns class id. */
+  async assignClass(
+    def: { relPath: string; name: string; line?: number },
+    markerId: string,
+  ): Promise<string | undefined> {
+    if (!this.data.markers[markerId]) {
+      return undefined;
+    }
+    const relPath = normalizePath(def.relPath);
+    const name = def.name.trim();
+    if (!relPath || !name) {
+      return undefined;
+    }
+    const line = typeof def.line === 'number' && def.line > 0 ? Math.floor(def.line) : undefined;
+    let classId = Object.entries(this.data.classes).find(
+      ([, c]) => c.relPath === relPath && c.name === name,
+    )?.[0];
+    if (!classId) {
+      classId = this.uniqueClassId(name);
+      this.data.classes[classId] = { relPath, name, line };
+    } else if (line !== undefined) {
+      this.data.classes[classId].line = line;
+    }
+    const ids = this.data.classItems[classId] ?? [];
+    if (!ids.includes(markerId)) {
+      this.setClassItem(classId, [...ids, markerId]);
+      this.setClassAdded(classId, markerId, Date.now());
+    }
+    await this.commit();
+    return classId;
+  }
+
+  async unassignClass(entries: Array<{ classId: string; markerId?: string }>): Promise<void> {
+    for (const { classId, markerId } of entries) {
+      if (!this.data.classes[classId]) {
+        continue;
+      }
+      const ids = this.data.classItems[classId] ?? [];
+      this.setClassItem(classId, markerId ? ids.filter((x) => x !== markerId) : []);
+    }
+    await this.commit();
+  }
+
+  async moveClass(classId: string, fromMarkerId: string, toMarkerId: string): Promise<void> {
+    if (fromMarkerId === toMarkerId || !this.data.classes[classId] || !this.data.markers[toMarkerId]) {
+      return;
+    }
+    const ids = (this.data.classItems[classId] ?? []).filter((x) => x !== fromMarkerId);
+    if (!ids.includes(toMarkerId)) {
+      ids.push(toMarkerId);
+      this.setClassAdded(classId, toMarkerId, Date.now());
+    }
+    this.setClassItem(classId, ids);
+    await this.commit();
+  }
+
   /** Renames a path and everything nested under it. Returns true if anything changed. */
   renamePath(oldRel: string, newRel: string): boolean {
     let changed = false;
@@ -458,6 +634,31 @@ export class MarkerStore implements vscode.Disposable {
       this.data.items[next] = merged;
       this.data.added[next] = addedMerged;
       changed = true;
+    }
+    for (const key of Object.keys(this.data.aliases)) {
+      let next: string | undefined;
+      if (key === oldRel) {
+        next = newRel;
+      } else if (key.startsWith(prefix)) {
+        next = newRel + key.slice(oldRel.length);
+      }
+      if (next === undefined || next === key) {
+        continue;
+      }
+      if (!this.data.aliases[next]) {
+        this.data.aliases[next] = this.data.aliases[key];
+      }
+      delete this.data.aliases[key];
+      changed = true;
+    }
+    for (const def of Object.values(this.data.classes)) {
+      if (def.relPath === oldRel) {
+        def.relPath = newRel;
+        changed = true;
+      } else if (def.relPath.startsWith(prefix)) {
+        def.relPath = newRel + def.relPath.slice(oldRel.length);
+        changed = true;
+      }
     }
     return changed;
   }
@@ -502,7 +703,52 @@ export class MarkerStore implements vscode.Disposable {
         added[relPath] = dates;
       }
     }
-    const json = JSON.stringify({ version: 1, markers, items, added }, null, 2) + '\n';
+    const aliases: Record<string, string> = {};
+    for (const key of Object.keys(this.data.aliases).sort()) {
+      const value = this.data.aliases[key]?.trim();
+      if (value) {
+        aliases[key] = value;
+      }
+    }
+    const classes: Record<string, ClassDef> = {};
+    const classItems: Record<string, string[]> = {};
+    const classAdded: Record<string, Record<string, number>> = {};
+    for (const classId of Object.keys(this.data.classes).sort()) {
+      const def = this.data.classes[classId];
+      const markerIds = (this.data.classItems[classId] ?? []).filter((id) => id in this.data.markers);
+      if (!def || markerIds.length === 0) {
+        continue;
+      }
+      classes[classId] = {
+        relPath: def.relPath,
+        name: def.name,
+        ...(def.line !== undefined ? { line: def.line } : {}),
+        ...(def.alias ? { alias: def.alias } : {}),
+      };
+      classItems[classId] = markerIds;
+      const dates: Record<string, number> = {};
+      for (const markerId of markerIds) {
+        const at = this.data.classAdded[classId]?.[markerId];
+        if (at !== undefined) {
+          dates[markerId] = at;
+        }
+      }
+      if (Object.keys(dates).length > 0) {
+        classAdded[classId] = dates;
+      }
+    }
+    const payload: Record<string, unknown> = { version: 1, markers, items, added };
+    if (Object.keys(aliases).length > 0) {
+      payload.aliases = aliases;
+    }
+    if (Object.keys(classes).length > 0) {
+      payload.classes = classes;
+      payload.classItems = classItems;
+      if (Object.keys(classAdded).length > 0) {
+        payload.classAdded = classAdded;
+      }
+    }
+    const json = JSON.stringify(payload, null, 2) + '\n';
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.configUri, '..'));
     await vscode.workspace.fs.writeFile(this.configUri, Buffer.from(json, 'utf8'));
   }
@@ -524,8 +770,30 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
+  private setClassItem(classId: string, ids: string[]): void {
+    if (ids.length === 0) {
+      delete this.data.classItems[classId];
+      delete this.data.classAdded[classId];
+      delete this.data.classes[classId];
+      return;
+    }
+    this.data.classItems[classId] = ids;
+    const dates = this.data.classAdded[classId];
+    if (dates) {
+      for (const markerId of Object.keys(dates)) {
+        if (!ids.includes(markerId)) {
+          delete dates[markerId];
+        }
+      }
+    }
+  }
+
   private setAdded(relPath: string, markerId: string, at: number): void {
     this.data.added[relPath] = { ...this.data.added[relPath], [markerId]: at };
+  }
+
+  private setClassAdded(classId: string, markerId: string, at: number): void {
+    this.data.classAdded[classId] = { ...this.data.classAdded[classId], [markerId]: at };
   }
 
   private applyOrder(ordered: string[]): void {
@@ -549,6 +817,21 @@ export class MarkerStore implements vscode.Disposable {
     }
     return id;
   }
+
+  private uniqueClassId(name: string): string {
+    const base =
+      'cls-' +
+      (name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'class');
+    let id = base;
+    let counter = 2;
+    while (this.data.classes[id]) {
+      id = `${base}-${counter++}`;
+    }
+    return id;
+  }
 }
 
 function normalize(raw: unknown): MarkersFile {
@@ -556,7 +839,15 @@ function normalize(raw: unknown): MarkersFile {
   if (!raw || typeof raw !== 'object') {
     return result;
   }
-  const source = raw as { markers?: unknown; items?: unknown; added?: unknown };
+  const source = raw as {
+    markers?: unknown;
+    items?: unknown;
+    added?: unknown;
+    aliases?: unknown;
+    classes?: unknown;
+    classItems?: unknown;
+    classAdded?: unknown;
+  };
 
   if (source.markers && typeof source.markers === 'object') {
     let index = 0;
@@ -572,6 +863,7 @@ function normalize(raw: unknown): MarkersFile {
         color: typeof def.color === 'string' && def.color ? (normalizeHex(def.color) ?? def.color) : undefined,
         badge: typeof def.badge === 'string' && def.badge.trim() ? def.badge.trim() : undefined,
         icon: typeof def.icon === 'string' && def.icon.trim() ? def.icon.trim() : undefined,
+        alias: typeof def.alias === 'string' && def.alias.trim() ? def.alias.trim() : undefined,
         parent,
         columns: normalizeColumns(def.columns),
         order: typeof def.order === 'number' ? def.order : index,
@@ -608,6 +900,72 @@ function normalize(raw: unknown): MarkersFile {
       }
       if (Object.keys(dates).length > 0) {
         result.added[key] = dates;
+      }
+    }
+  }
+
+  if (source.aliases && typeof source.aliases === 'object') {
+    for (const [relPath, value] of Object.entries(source.aliases as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.trim()) {
+        result.aliases[normalizePath(relPath)] = value.trim();
+      }
+    }
+  }
+
+  if (source.classes && typeof source.classes === 'object') {
+    for (const [classId, value] of Object.entries(source.classes as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object') {
+        continue;
+      }
+      const def = value as Partial<ClassDef>;
+      const relPath = typeof def.relPath === 'string' ? normalizePath(def.relPath) : '';
+      const name = typeof def.name === 'string' ? def.name.trim() : '';
+      if (!relPath || !name) {
+        continue;
+      }
+      const line =
+        typeof def.line === 'number' && Number.isFinite(def.line) && def.line > 0
+          ? Math.floor(def.line)
+          : undefined;
+      const alias = typeof def.alias === 'string' && def.alias.trim() ? def.alias.trim() : undefined;
+      result.classes[classId] = { relPath, name, line, ...(alias ? { alias } : {}) };
+    }
+  }
+
+  if (source.classItems && typeof source.classItems === 'object') {
+    for (const [classId, value] of Object.entries(source.classItems as Record<string, unknown>)) {
+      if (!result.classes[classId] || !Array.isArray(value)) {
+        continue;
+      }
+      const ids = value.filter((id): id is string => typeof id === 'string' && id in result.markers);
+      if (ids.length > 0) {
+        result.classItems[classId] = [...new Set(ids)];
+      } else {
+        delete result.classes[classId];
+      }
+    }
+  }
+
+  for (const classId of Object.keys(result.classes)) {
+    if (!result.classItems[classId]?.length) {
+      delete result.classes[classId];
+    }
+  }
+
+  if (source.classAdded && typeof source.classAdded === 'object') {
+    for (const [classId, value] of Object.entries(source.classAdded as Record<string, unknown>)) {
+      const ids = result.classItems[classId];
+      if (!ids || !value || typeof value !== 'object') {
+        continue;
+      }
+      const dates: Record<string, number> = {};
+      for (const [markerId, at] of Object.entries(value as Record<string, unknown>)) {
+        if (ids.includes(markerId) && typeof at === 'number' && Number.isFinite(at)) {
+          dates[markerId] = at;
+        }
+      }
+      if (Object.keys(dates).length > 0) {
+        result.classAdded[classId] = dates;
       }
     }
   }

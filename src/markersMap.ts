@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ColumnsMode, MarkerStore } from './markerStore';
+import { openClassAt } from './openClass';
 import { cssColor, normalizeHex } from './palette';
 
 type Layout = 'chips' | 'list';
@@ -19,6 +20,17 @@ interface MapItem {
   dir: string;
   isDir: boolean;
   exists: boolean;
+  alias?: string;
+}
+
+interface MapClass {
+  id: string;
+  name: string;
+  relPath: string;
+  fileName: string;
+  line?: number;
+  exists: boolean;
+  alias?: string;
 }
 
 interface MapGroup {
@@ -27,6 +39,7 @@ interface MapGroup {
   badge?: string;
   icon?: string;
   color?: string;
+  alias?: string;
   parent?: string;
   columns: ColumnsMode;
   depth: number;
@@ -34,6 +47,7 @@ interface MapGroup {
   subtreeHeight: number;
   children: string[];
   items: MapItem[];
+  classes: MapClass[];
 }
 
 interface EditorGroupLayout {
@@ -49,9 +63,11 @@ interface EditorLayout {
 type IncomingMessage =
   | { type: 'ready' }
   | { type: 'open'; relPath: string }
+  | { type: 'openClass'; classId: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'setColor'; markerId: string; color: string }
   | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
+  | { type: 'moveClass'; classId: string; from: string; to: string; copy?: boolean }
   | { type: 'placeMarker'; id: string; target: string; position: 'before' | 'after' }
   | { type: 'nestMarker'; id: string; parent: string }
   | { type: 'dropUris'; uris: string[]; to: string };
@@ -250,6 +266,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    if (message.type === 'moveClass') {
+      if (!this.store.marker(message.to) || !this.store.classDef(message.classId)) {
+        return;
+      }
+      if (message.copy) {
+        const def = this.store.classDef(message.classId);
+        if (def) {
+          await this.store.assignClass(def, message.to);
+        }
+      } else if (message.from && message.from !== message.to) {
+        await this.store.moveClass(message.classId, message.from, message.to);
+      }
+      return;
+    }
+    if (message.type === 'openClass') {
+      const def = this.store.classDef(message.classId);
+      if (def) {
+        await openClassAt(this.store, def, this.targetColumn());
+      }
+      return;
+    }
     if (message.type === 'placeMarker') {
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
@@ -336,12 +373,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         badge: def.badge,
         icon: def.icon,
         color: def.color ? cssColor(def.color) : undefined,
+        alias: def.alias,
         parent: def.parent,
         columns: def.columns ?? 'flow',
         depth: this.store.depthOf(id),
         subtreeHeight: this.store.subtreeHeight(id),
         children: this.store.children(id).map(([childId]) => childId),
         items: await Promise.all(this.store.itemsOf(id).map((relPath) => this.mapItem(relPath))),
+        classes: await Promise.all(
+          this.store.classesOf(id).map(([classId, classDef]) => this.mapClass(classId, classDef)),
+        ),
       })),
     );
     await webview.postMessage({
@@ -376,7 +417,35 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       exists = false;
     }
     const dir = path.posix.dirname(relPath);
-    return { relPath, name: path.posix.basename(relPath), dir: dir === '.' ? '' : dir, isDir, exists };
+    return {
+      relPath,
+      name: path.posix.basename(relPath),
+      dir: dir === '.' ? '' : dir,
+      isDir,
+      exists,
+      alias: this.store.aliasOf(relPath),
+    };
+  }
+
+  private async mapClass(
+    id: string,
+    def: { relPath: string; name: string; line?: number; alias?: string },
+  ): Promise<MapClass> {
+    let exists = true;
+    try {
+      await vscode.workspace.fs.stat(this.store.toUri(def.relPath));
+    } catch {
+      exists = false;
+    }
+    return {
+      id,
+      name: def.name,
+      relPath: def.relPath,
+      fileName: path.posix.basename(def.relPath),
+      line: def.line,
+      exists,
+      alias: def.alias,
+    };
   }
 
   private html(webview: vscode.Webview): string {

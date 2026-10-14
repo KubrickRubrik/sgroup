@@ -328,8 +328,26 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   width: 1px;
 }
 
-.label {
+.group-text {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.group-header .alias {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  font-weight: 500;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.label {
   font-size: var(--size-group);
   font-weight: 600;
   overflow: hidden;
@@ -375,10 +393,34 @@ body.is-dragging * {
   cursor: grabbing;
 }
 
+.item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.item .alias {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .item .name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.item.class-item .name {
+  font-weight: 500;
+}
+
+.layout-chips .item.class-item {
+  background: color-mix(in srgb, var(--group-color) 8%, transparent);
 }
 
 .icon {

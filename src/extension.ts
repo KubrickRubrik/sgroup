@@ -36,6 +36,13 @@ const COMMAND_IDS = [
   'vgroup.setColumns.flow',
   'vgroup.setColumns.2',
   'vgroup.setColumns.3',
+  'vgroup.markClass',
+  'vgroup.markClassManual',
+  'vgroup.setAlias',
+  'vgroup.clearAlias',
+  'vgroup.openClass',
+  'vgroup.openItem',
+  'vgroup.openFull',
 ];
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {

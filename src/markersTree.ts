@@ -23,7 +23,14 @@ export type ChildNode = {
   parent: ItemNode | ChildNode;
 };
 
-export type Node = MarkerNode | ItemNode | ChildNode;
+export type ClassNode = {
+  kind: 'class';
+  id: string;
+  markerId: string;
+  classId: string;
+};
+
+export type Node = MarkerNode | ItemNode | ChildNode | ClassNode;
 
 const ALWAYS_HIDDEN = new Set(['.git', '.DS_Store']);
 
@@ -55,6 +62,9 @@ export class MarkersTreeProvider implements vscode.TreeDataProvider<Node>, vscod
     if (node.kind === 'marker') {
       return Promise.all(this.store.itemsOf(node.markerId).map((relPath) => this.itemNode(node.markerId, relPath)));
     }
+    if (node.kind === 'class') {
+      return [];
+    }
     if (node.isDir && (node.kind === 'child' || node.exists)) {
       return this.readChildren(node);
     }
@@ -65,7 +75,7 @@ export class MarkersTreeProvider implements vscode.TreeDataProvider<Node>, vscod
     if (node.kind === 'marker') {
       return undefined;
     }
-    if (node.kind === 'item') {
+    if (node.kind === 'item' || node.kind === 'class') {
       return this.markerNode(node.markerId);
     }
     return node.parent;
@@ -77,6 +87,16 @@ export class MarkersTreeProvider implements vscode.TreeDataProvider<Node>, vscod
     }
     if (node.kind === 'item') {
       return this.itemItem(node);
+    }
+    if (node.kind === 'class') {
+      const def = this.store.classDef(node.classId);
+      const item = new vscode.TreeItem(def?.name ?? node.classId, vscode.TreeItemCollapsibleState.None);
+      item.id = node.id;
+      item.contextValue = 'class';
+      item.description = def?.relPath;
+      item.iconPath = new vscode.ThemeIcon('symbol-class');
+      item.command = { command: 'vgroup.openClass', title: 'Open Class', arguments: [node] };
+      return item;
     }
     const item = new vscode.TreeItem(
       node.uri,
@@ -115,12 +135,20 @@ export class MarkersTreeProvider implements vscode.TreeDataProvider<Node>, vscod
     return this.intern<ItemNode>({ kind: 'item', id: `i:${markerId}:${relPath}`, markerId, relPath, isDir, exists });
   }
 
+  classNode(markerId: string, classId: string): ClassNode {
+    return this.intern<ClassNode>({ kind: 'class', id: `c:${markerId}:${classId}`, markerId, classId });
+  }
+
   uriOf(node: Node): vscode.Uri | undefined {
     if (node.kind === 'item') {
       return node.exists ? this.store.toUri(node.relPath) : undefined;
     }
     if (node.kind === 'child') {
       return node.uri;
+    }
+    if (node.kind === 'class') {
+      const def = this.store.classDef(node.classId);
+      return def ? this.store.toUri(def.relPath) : undefined;
     }
     return undefined;
   }
@@ -210,6 +238,9 @@ function nodeKey(node: Node): unknown {
   }
   if (node.kind === 'child') {
     return [node.isDir];
+  }
+  if (node.kind === 'class') {
+    return [node.classId];
   }
   return [];
 }

@@ -2,8 +2,10 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { EMOJI } from './emoji';
 import { MAX_MARKER_DEPTH, MarkerDef, MarkerStore } from './markerStore';
+import { openTargets, targetsForDirectory, targetsForMarker } from './openBatch';
+import { openClassAt, symbolAtCursor } from './openClass';
 import { PALETTE, normalizeHex, themeColorId } from './palette';
-import { ItemNode, MarkersTreeProvider, Node } from './markersTree';
+import { ClassNode, ItemNode, MarkersTreeProvider, Node } from './markersTree';
 
 const BADGE_MIN = 2;
 const BADGE_MAX = 40;
@@ -200,11 +202,164 @@ export function registerCommands(
   }
 
   async function unassign(node?: Node, nodes?: readonly Node[]): Promise<void> {
-    const entries = selected(node, nodes)
+    const nodesList = selected(node, nodes);
+    const items = nodesList
       .filter((n): n is ItemNode => n.kind === 'item')
       .map((n) => ({ relPath: n.relPath, markerId: n.markerId }));
-    if (entries.length > 0) {
-      await store.unassign(entries);
+    const classes = nodesList
+      .filter((n): n is ClassNode => n.kind === 'class')
+      .map((n) => ({ classId: n.classId, markerId: n.markerId }));
+    if (items.length > 0) {
+      await store.unassign(items);
+    }
+    if (classes.length > 0) {
+      await store.unassignClass(classes);
+    }
+  }
+
+  async function markClass(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      void vscode.window.showWarningMessage('VGroup: open a file and place the cursor on a class.');
+      return;
+    }
+    const relPath = store.toRelative(editor.document.uri);
+    if (!relPath) {
+      void vscode.window.showWarningMessage('VGroup: file must be inside the workspace folder.');
+      return;
+    }
+    const symbol = await symbolAtCursor(editor);
+    if (!symbol?.name) {
+      void vscode.window.showWarningMessage('VGroup: no symbol under the cursor.');
+      return;
+    }
+    const markerId = await pickMarker(`Mark class ${symbol.name}`);
+    if (!markerId) {
+      return;
+    }
+    await store.assignClass({ relPath, name: symbol.name, line: symbol.line }, markerId);
+  }
+
+  async function markClassManual(uri?: vscode.Uri): Promise<void> {
+    let fileUri = uri;
+    if (!fileUri) {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        defaultUri: store.root,
+        openLabel: 'Select file',
+      });
+      fileUri = picked?.[0];
+    }
+    if (!fileUri) {
+      return;
+    }
+    const relPath = store.toRelative(fileUri);
+    if (!relPath) {
+      void vscode.window.showWarningMessage('VGroup: file must be inside the workspace folder.');
+      return;
+    }
+    const name = await vscode.window.showInputBox({
+      title: 'Class name',
+      prompt: 'Name of the class / type / interface',
+      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
+    });
+    if (!name) {
+      return;
+    }
+    const lineRaw = await vscode.window.showInputBox({
+      title: 'Line number (optional)',
+      prompt: '1-based line hint. Leave empty to skip.',
+      validateInput: (v) => {
+        if (!v.trim()) {
+          return undefined;
+        }
+        const n = Number(v);
+        return Number.isInteger(n) && n > 0 ? undefined : 'Enter a positive integer or leave empty';
+      },
+    });
+    if (lineRaw === undefined) {
+      return;
+    }
+    const line = lineRaw.trim() ? Number(lineRaw.trim()) : undefined;
+    const markerId = await pickMarker(`Mark class ${name.trim()}`);
+    if (!markerId) {
+      return;
+    }
+    await store.assignClass({ relPath, name: name.trim(), line }, markerId);
+  }
+
+  async function setAlias(node?: Node): Promise<void> {
+    if (!node) {
+      return;
+    }
+    let current = '';
+    let prompt = 'Display name shown above the real name. Leave empty to clear.';
+    if (node.kind === 'item') {
+      current = store.aliasOf(node.relPath) ?? '';
+      prompt = 'Display name shown above the real file/folder name. Leave empty to clear.';
+    } else if (node.kind === 'class') {
+      current = store.classAliasOf(node.classId) ?? '';
+      prompt = 'Display name shown above the class name. Leave empty to clear.';
+    } else if (node.kind === 'marker') {
+      current = store.markerAliasOf(node.markerId) ?? '';
+      prompt = 'Display name shown above the group label. Leave empty to clear.';
+    } else {
+      return;
+    }
+    const value = await vscode.window.showInputBox({
+      title: 'Set alias',
+      prompt,
+      value: current,
+    });
+    if (value === undefined) {
+      return;
+    }
+    const next = value.trim() || undefined;
+    if (node.kind === 'item') {
+      await store.setAlias(node.relPath, next);
+    } else if (node.kind === 'class') {
+      await store.setClassAlias(node.classId, next);
+    } else {
+      await store.setMarkerAlias(node.markerId, next);
+    }
+  }
+
+  async function clearAlias(node?: Node): Promise<void> {
+    if (!node) {
+      return;
+    }
+    if (node.kind === 'item') {
+      await store.setAlias(node.relPath, undefined);
+    } else if (node.kind === 'class') {
+      await store.setClassAlias(node.classId, undefined);
+    } else if (node.kind === 'marker') {
+      await store.setMarkerAlias(node.markerId, undefined);
+    }
+  }
+
+  async function openClassCommand(node?: Node): Promise<void> {
+    if (node?.kind !== 'class') {
+      return;
+    }
+    const def = store.classDef(node.classId);
+    if (!def) {
+      return;
+    }
+    await openClassAt(store, def);
+  }
+
+  async function openItemOrFull(node: Node | undefined, full: boolean): Promise<void> {
+    if (!node) {
+      return;
+    }
+    if (node.kind === 'marker') {
+      await openTargets(store, targetsForMarker(store, node.markerId, full));
+      return;
+    }
+    if (node.kind === 'item' && node.isDir) {
+      await openTargets(store, await targetsForDirectory(store, node.markerId, node.relPath, full));
     }
   }
 
@@ -225,7 +380,7 @@ export function registerCommands(
       return;
     }
     const oldName = path.posix.basename(oldUri.path);
-    const isDir = node.kind !== 'marker' && node.isDir;
+    const isDir = (node.kind === 'item' || node.kind === 'child') && node.isDir;
     const ext = isDir ? '' : path.posix.extname(oldName);
     const parentUri = vscode.Uri.joinPath(oldUri, '..');
 
@@ -416,9 +571,12 @@ export function registerCommands(
     if ('kind' in arg) {
       return arg as Node;
     }
-    const context = arg as { markerId?: unknown; relPath?: unknown };
+    const context = arg as { markerId?: unknown; relPath?: unknown; classId?: unknown };
     if (typeof context.markerId !== 'string') {
       return undefined;
+    }
+    if (typeof context.classId === 'string') {
+      return tree.classNode(context.markerId, context.classId);
     }
     if (typeof context.relPath === 'string') {
       return tree.itemNode(context.markerId, context.relPath);
@@ -469,6 +627,13 @@ export function registerCommands(
         }),
       ),
     ),
+    vscode.commands.registerCommand('vgroup.markClass', () => markClass()),
+    vscode.commands.registerCommand('vgroup.markClassManual', (uri?: vscode.Uri) => markClassManual(uri)),
+    vscode.commands.registerCommand('vgroup.setAlias', withNode(setAlias)),
+    vscode.commands.registerCommand('vgroup.clearAlias', withNode(clearAlias)),
+    vscode.commands.registerCommand('vgroup.openClass', withNode(openClassCommand)),
+    vscode.commands.registerCommand('vgroup.openItem', withNode((node) => openItemOrFull(node, false))),
+    vscode.commands.registerCommand('vgroup.openFull', withNode((node) => openItemOrFull(node, true))),
     vscode.commands.registerCommand('vgroup.moveMarkerUp', withNode((node) => moveMarker(node, -1))),
     vscode.commands.registerCommand('vgroup.moveMarkerDown', withNode((node) => moveMarker(node, 1))),
     vscode.commands.registerCommand('vgroup.openConfig', openConfig),

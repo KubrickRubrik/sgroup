@@ -2,7 +2,7 @@
   "name": "vgroup",
   "displayName": "VGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "0.14.0",
+  "version": "0.15.1",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -58,6 +58,47 @@
         "title": "Mark…",
         "category": "VGroup",
         "icon": "$(tag)"
+      },
+      {
+        "command": "vgroup.markClass",
+        "title": "Mark Class…",
+        "category": "VGroup",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "vgroup.markClassManual",
+        "title": "Mark Class Manually…",
+        "category": "VGroup",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "vgroup.setAlias",
+        "title": "Set Alias…",
+        "category": "VGroup",
+        "icon": "$(whole-word)"
+      },
+      {
+        "command": "vgroup.clearAlias",
+        "title": "Clear Alias",
+        "category": "VGroup"
+      },
+      {
+        "command": "vgroup.openClass",
+        "title": "Open Class",
+        "category": "VGroup",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "vgroup.openItem",
+        "title": "Open Item",
+        "category": "VGroup",
+        "icon": "$(files)"
+      },
+      {
+        "command": "vgroup.openFull",
+        "title": "Open Full",
+        "category": "VGroup",
+        "icon": "$(folder-opened)"
       },
       {
         "command": "vgroup.unassign",
@@ -242,8 +283,19 @@
           "group": "7_modification@90"
         },
         {
+          "command": "vgroup.markClassManual",
+          "when": "!explorerResourceIsFolder",
+          "group": "7_modification@90.5"
+        },
+        {
           "command": "vgroup.unassignFromExplorer",
           "group": "7_modification@91"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "vgroup.markClass",
+          "group": "7_modification@90"
         }
       ],
       "view/title": [
@@ -305,9 +357,49 @@
           "group": "navigation@1"
         },
         {
+          "command": "vgroup.openClass",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'class'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.reveal",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'class'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vgroup.openItem",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vgroup.openFull",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vgroup.openItem",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'item' && isDir",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vgroup.openFull",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'item' && isDir",
+          "group": "navigation@3"
+        },
+        {
           "command": "vgroup.rename",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'item'",
           "group": "7_modification@1"
+        },
+        {
+          "command": "vgroup.setAlias",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/",
+          "group": "7_modification@1.5"
+        },
+        {
+          "command": "vgroup.clearAlias",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/ && hasAlias",
+          "group": "7_modification@1.6"
         },
         {
           "command": "vgroup.relink",
@@ -316,13 +408,23 @@
         },
         {
           "command": "vgroup.unassign",
-          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing)$/",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing|class|missingClass)$/",
           "group": "7_modification@3"
         },
         {
           "command": "vgroup.editMarker",
           "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@1"
+        },
+        {
+          "command": "vgroup.setAlias",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "group": "1_marker@1.5"
+        },
+        {
+          "command": "vgroup.clearAlias",
+          "when": "webviewId =~ /^vgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && hasAlias",
+          "group": "1_marker@1.6"
         },
         {
           "command": "vgroup.moveMarkerUp",
@@ -470,6 +572,30 @@
         },
         {
           "command": "vgroup.unnestMarker",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.setAlias",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.clearAlias",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.openClass",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.openItem",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.openFull",
+          "when": "false"
+        },
+        {
+          "command": "vgroup.markClassManual",
           "when": "false"
         }
       ],

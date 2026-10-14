@@ -64,7 +64,8 @@
   function renderGroup(group, byId) {
     group.items.sort((a, b) => Number(b.isDir) - Number(a.isDir));
     const childIds = group.children || [];
-    const isEmpty = group.items.length === 0 && childIds.length === 0;
+    const classList = group.classes || [];
+    const isEmpty = group.items.length === 0 && childIds.length === 0 && classList.length === 0;
     const collapsed = !isEmpty && !!uiState.collapsed[group.id];
     const columns = group.columns || 'flow';
     const section = el(
@@ -90,6 +91,7 @@
       depth: group.depth || 0,
       canNest: (group.depth || 0) < MAX_DEPTH,
       columns,
+      hasAlias: !!group.alias,
     });
     const bar = el('span', 'bar');
     bar.title = 'Change color';
@@ -101,12 +103,18 @@
     if (group.icon) {
       header.append(el('span', 'group-icon', group.icon));
     }
-    header.append(el('span', 'label', group.label));
+    const labelWrap = el('span', 'group-text' + (group.alias ? ' has-alias' : ''));
+    if (group.alias) {
+      labelWrap.append(el('span', 'alias', group.alias));
+    }
+    labelWrap.append(el('span', 'label', group.label));
+    header.append(labelWrap);
     if (group.badge) {
       header.append(el('span', 'badge', group.badge));
     }
-    header.append(el('span', 'count', String(group.items.length + childIds.length)));
-    header.title = group.label + '\nDrag to reorder or nest';
+    header.append(el('span', 'count', String(group.items.length + classList.length + childIds.length)));
+    header.title =
+      (group.alias ? group.alias + '\n' : '') + group.label + '\nDrag to reorder or nest';
     header.addEventListener('click', () => {
       if (isEmpty) {
         return;
@@ -129,6 +137,11 @@
         bindItem(dot, item, group.id);
         dots.append(dot);
       }
+      for (const cls of classList) {
+        const dot = el('span', 'dot class-dot' + (cls.exists ? '' : ' missing'));
+        bindClass(dot, cls, group.id);
+        dots.append(dot);
+      }
       section.append(dots);
       return section;
     }
@@ -146,6 +159,13 @@
       const block = el('div', 'node block block-' + kind);
       for (const item of list) {
         block.append(renderItem(item, group.id));
+      }
+      children.append(block);
+    }
+    if (classList.length > 0) {
+      const block = el('div', 'node block block-classes');
+      for (const cls of classList) {
+        block.append(renderClass(cls, group.id));
       }
       children.append(block);
     }
@@ -170,10 +190,18 @@
     if (!item.exists) {
       classes.push('missing');
     }
+    if (item.alias) {
+      classes.push('has-alias');
+    }
     const node = el('div', classes.join(' '));
     node.draggable = true;
     const name = data.layout === 'chips' && !item.isDir ? stripExtension(item.name) : item.name;
-    node.append(item.isDir ? folderIcon() : fileIcon(item.name), el('span', 'name', name));
+    const textWrap = el('span', 'item-text');
+    if (item.alias) {
+      textWrap.append(el('span', 'alias', item.alias));
+    }
+    textWrap.append(el('span', 'name', name));
+    node.append(item.isDir ? folderIcon() : fileIcon(item.name), textWrap);
     if (data.layout === 'list' && item.dir) {
       node.append(el('span', 'path', item.dir));
     }
@@ -181,15 +209,39 @@
     return node;
   }
 
+  function renderClass(cls, groupId) {
+    const classes = ['item', 'class-item'];
+    if (!cls.exists) {
+      classes.push('missing');
+    }
+    if (cls.alias) {
+      classes.push('has-alias');
+    }
+    const node = el('div', classes.join(' '));
+    node.draggable = true;
+    const textWrap = el('span', 'item-text');
+    if (cls.alias) {
+      textWrap.append(el('span', 'alias', cls.alias));
+    }
+    textWrap.append(el('span', 'name', cls.name));
+    node.append(classIcon(), textWrap, el('span', 'path', cls.fileName));
+    bindClass(node, cls, groupId);
+    return node;
+  }
+
   function bindItem(node, item, groupId) {
     node.dataset.rel = item.relPath;
+    const aliasLine = item.alias ? item.alias + '\n' : '';
     node.title =
+      aliasLine +
       (item.exists ? item.relPath + '\nClick: open · Alt+Click: reveal in Explorer' : item.relPath + '\nMissing') +
       '\nDrag to another group · Alt+Drag to copy';
     setContext(node, {
       webviewSection: item.exists ? 'item' : 'missing',
       markerId: groupId,
       relPath: item.relPath,
+      isDir: !!item.isDir,
+      hasAlias: !!item.alias,
     });
     node.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -205,6 +257,47 @@
         { kind: 'item', relPath: item.relPath, from: groupId },
         'copyMove',
         item.relPath,
+      );
+      node.classList.add('dragging');
+    });
+    node.addEventListener('dragend', () => {
+      node.classList.remove('dragging');
+      endDrag();
+    });
+  }
+
+  function bindClass(node, cls, groupId) {
+    node.dataset.classId = cls.id;
+    const aliasLine = cls.alias ? cls.alias + '\n' : '';
+    node.title =
+      aliasLine +
+      cls.name +
+      ' · ' +
+      cls.relPath +
+      (cls.line ? ':' + cls.line : '') +
+      (cls.exists ? '\nClick: open at class' : '\nMissing file') +
+      '\nDrag to another group · Alt+Drag to copy';
+    setContext(node, {
+      webviewSection: cls.exists ? 'class' : 'missingClass',
+      markerId: groupId,
+      classId: cls.id,
+      relPath: cls.relPath,
+      hasAlias: !!cls.alias,
+    });
+    node.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!cls.exists) {
+        return;
+      }
+      vscode.postMessage({ type: 'openClass', classId: cls.id });
+    });
+    node.addEventListener('dragstart', (event) => {
+      event.stopPropagation();
+      beginDrag(
+        event,
+        { kind: 'class', classId: cls.id, from: groupId },
+        'copyMove',
+        cls.name,
       );
       node.classList.add('dragging');
     });
@@ -325,8 +418,8 @@
       };
     }
 
-    if ((payload && payload.kind === 'item') || isExternal(event)) {
-      const copy = !!(payload && payload.kind === 'item' && event.altKey);
+    if ((payload && (payload.kind === 'item' || payload.kind === 'class')) || isExternal(event)) {
+      const copy = !!(payload && (payload.kind === 'item' || payload.kind === 'class') && event.altKey);
       const verb = copy ? 'Copy to' : 'Move to';
       return {
         action: 'item',
@@ -430,6 +523,19 @@
       vscode.postMessage({
         type: 'moveItem',
         relPath: payload.relPath,
+        from: payload.from,
+        to,
+        copy: !!event.altKey,
+      });
+      return;
+    }
+    if (payload && payload.kind === 'class') {
+      if (payload.from === to && !event.altKey) {
+        return;
+      }
+      vscode.postMessage({
+        type: 'moveClass',
+        classId: payload.classId,
         from: payload.from,
         to,
         copy: !!event.altKey,
@@ -647,6 +753,31 @@
           d: 'M1.5 5.5h13v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z',
           fill: FOLDER_COLOR,
           opacity: '0.85',
+        },
+      ],
+    ]);
+  }
+
+  function classIcon() {
+    return svgIcon('icon class-icon', [
+      [
+        'path',
+        {
+          d: 'M3 2.5h7.5L13 5v8.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5z',
+          fill: 'var(--group-color)',
+          'fill-opacity': '0.2',
+          stroke: 'var(--group-color)',
+          'stroke-width': '1',
+        },
+      ],
+      ['circle', { cx: '8', cy: '9', r: '2.2', fill: 'var(--group-color)' }],
+      [
+        'path',
+        {
+          d: 'M8 4.2v1.4M8 12.4v1.4M4.2 9H5.6M10.4 9h1.4M5.4 6.4l1 1M9.6 10.6l1 1M10.6 6.4l-1 1M6.4 10.6l-1 1',
+          stroke: 'var(--group-color)',
+          'stroke-width': '1',
+          'stroke-linecap': 'round',
         },
       ],
     ]);
