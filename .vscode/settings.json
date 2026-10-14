@@ -1,0 +1,21 @@
+{
+    "actionButtons": {
+        "commands": [
+            {
+                "name": "🦊 GitLab",
+                "color": "#FF7575FF",
+                "singleInstance": true,
+                "command": "sh ./sh_gitlab.sh"
+            },
+            {
+                "name": "🎲 Maestro",
+                "color": "#51FF00FF",
+                "singleInstance": true,
+                "command": "sh ./sh_maestro.sh"
+            }
+        ],
+        "defaultColor": "white",
+        "reloadButton": "🆗 Update ▶️",
+        "loadNpmCommands": false
+    },
+}

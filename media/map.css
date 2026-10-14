@@ -38,10 +38,33 @@ body {
 }
 
 .group:not(.nested) {
-  background: color-mix(in srgb, var(--group-color) 4%, transparent);
-  border: 1px solid color-mix(in srgb, var(--group-color) 35%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--group-color) 9%, transparent) 0%,
+    color-mix(in srgb, var(--group-color) 2%, transparent) 55%,
+    transparent 100%
+  );
+  border: 1px solid transparent;
   border-radius: 8px;
   padding: 6px;
+}
+
+.group:not(.nested)::before {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--group-color) 55%, transparent) 0%,
+    color-mix(in srgb, var(--group-color) 18%, transparent) 50%,
+    color-mix(in srgb, var(--group-color) 6%, transparent) 100%
+  );
+  border-radius: inherit;
+  content: '';
+  inset: -1px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  pointer-events: none;
+  position: absolute;
 }
 
 .group.nested {
@@ -173,7 +196,7 @@ body {
 .group-header {
   align-items: center;
   border-radius: 4px;
-  cursor: grab;
+  cursor: default;
   display: flex;
   gap: 6px;
   padding: 2px 3px;
@@ -337,12 +360,19 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
 .item {
   align-items: center;
   border-radius: 4px;
-  cursor: grab;
+  cursor: default;
   display: flex;
   font-size: var(--size-file);
   gap: 5px;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.item:active,
+.group-header:active,
+body.is-dragging,
+body.is-dragging * {
+  cursor: grabbing;
 }
 
 .item .name {
