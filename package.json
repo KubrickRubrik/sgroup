@@ -2,7 +2,7 @@
   "name": "syngroup",
   "displayName": "SynGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "2.0.6",
+  "version": "2.0.8",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -28,7 +28,7 @@
       "panel": [
         {
           "id": "sgroupPanel",
-          "title": "SGROUP",
+          "title": "SGroup",
           "icon": "media/map-icon.svg"
         }
       ]
@@ -38,7 +38,8 @@
         {
           "type": "webview",
           "id": "sgroupMapBottom",
-          "name": "SGROUP",
+          "name": "SGroup",
+          "contextualTitle": "Explorer",
           "icon": "media/map-icon.svg"
         }
       ],
@@ -46,7 +47,8 @@
         {
           "type": "webview",
           "id": "sgroupMap",
-          "name": "SGROUP",
+          "name": "SGroup",
+          "contextualTitle": "Explorer",
           "visibility": "visible",
           "icon": "media/map-icon.svg"
         }
@@ -56,229 +58,229 @@
       {
         "command": "sgroup.assign",
         "title": "Mark…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(tag)"
       },
       {
         "command": "sgroup.markClass",
         "title": "Mark Class…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(symbol-class)"
       },
       {
         "command": "sgroup.markClassManual",
         "title": "Mark Class Manually…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(symbol-class)"
       },
       {
         "command": "sgroup.setAlias",
         "title": "Set Alias…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(whole-word)"
       },
       {
         "command": "sgroup.clearAlias",
         "title": "Clear Alias",
-        "category": "SGROUP"
+        "category": "SGroup"
       },
       {
         "command": "sgroup.openClass",
         "title": "Open Class",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(go-to-file)"
       },
       {
         "command": "sgroup.openItem",
         "title": "Open Item",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(files)"
       },
       {
         "command": "sgroup.openFull",
         "title": "Open Full",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(folder-opened)"
       },
       {
         "command": "sgroup.unassign",
         "title": "Remove Marker",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(close)"
       },
       {
         "command": "sgroup.unassignFromExplorer",
         "title": "Remove Markers",
-        "category": "SGROUP"
+        "category": "SGroup"
       },
       {
         "command": "sgroup.rename",
         "title": "Rename…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(edit)"
       },
       {
         "command": "sgroup.reveal",
         "title": "Reveal in Explorer View",
-        "category": "SGROUP"
+        "category": "SGroup"
       },
       {
         "command": "sgroup.relink",
         "title": "Relink to File…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(link)"
       },
       {
         "command": "sgroup.createMarker",
         "title": "Create Marker",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(add)"
       },
       {
         "command": "sgroup.editMarker",
         "title": "Edit Marker…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(edit)"
       },
       {
         "command": "sgroup.deleteMarker",
         "title": "Delete Marker",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(trash)"
       },
       {
         "command": "sgroup.moveMarkerUp",
         "title": "Move Up",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(arrow-up)"
       },
       {
         "command": "sgroup.moveMarkerDown",
         "title": "Move Down",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(arrow-down)"
       },
       {
         "command": "sgroup.openConfig",
         "title": "Open Markers File",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(json)"
       },
       {
         "command": "sgroup.openSettings",
         "title": "Open Settings",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(gear)"
       },
       {
         "command": "sgroup.vsix",
         "title": "Package / Install VSIX…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(package)"
       },
       {
         "command": "sgroup.refresh",
         "title": "Refresh",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(refresh)"
       },
       {
         "command": "sgroup.openMap",
         "title": "Open Map",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(map)"
       },
       {
         "command": "sgroup.map.toggleLayout",
         "title": "Toggle Map Layout (Chips / List)",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(list-flat)"
       },
       {
         "command": "sgroup.map.move",
         "title": "Move Map…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(layout-sidebar-right)"
       },
       {
         "command": "sgroup.map.toggleColumn",
         "title": "Toggle Map Column Beside Explorer",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(layout-sidebar-left)"
       },
       {
         "command": "sgroup.map.openBottom",
         "title": "Open Map in Bottom Panel",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(layout-panel)"
       },
       {
         "command": "sgroup.changeColor",
         "title": "Change Color…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(symbol-color)"
       },
       {
         "command": "sgroup.changeIcon",
         "title": "Change Icon…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(smiley)"
       },
       {
         "command": "sgroup.changeBadge",
         "title": "Change Badge…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(tag)"
       },
       {
         "command": "sgroup.map.groups.flow",
         "title": "Groups: Flow — click for 1 column",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(word-wrap)"
       },
       {
         "command": "sgroup.map.groups.1",
         "title": "Groups: 1 column — click for 2 columns",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(list-flat)"
       },
       {
         "command": "sgroup.map.groups.2",
         "title": "Groups: 2 columns — click for 3 columns",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(split-horizontal)"
       },
       {
         "command": "sgroup.map.groups.3",
         "title": "Groups: 3 columns — click for flow",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(table)"
       },
       {
         "command": "sgroup.setColumns.flow",
         "title": "Flow",
-        "category": "SGROUP"
+        "category": "SGroup"
       },
       {
         "command": "sgroup.setColumns.2",
         "title": "2 Columns",
-        "category": "SGROUP"
+        "category": "SGroup"
       },
       {
         "command": "sgroup.setColumns.3",
         "title": "3 Columns",
-        "category": "SGROUP"
+        "category": "SGroup"
       },
       {
         "command": "sgroup.createSubgroup",
         "title": "New Subgroup…",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(new-folder)"
       },
       {
         "command": "sgroup.unnestMarker",
         "title": "Move Up a Level",
-        "category": "SGROUP",
+        "category": "SGroup",
         "icon": "$(arrow-up)"
       }
     ],
@@ -650,13 +652,13 @@
       ]
     },
     "configuration": {
-      "title": "SGROUP",
+      "title": "SGroup",
       "properties": {
         "sgroup.map.columnWidth": {
           "type": "number",
           "default": 260,
           "minimum": 120,
-          "description": "Width in pixels of the map column opened beside the Explorer (SGROUP: Toggle Map Column Beside Explorer)."
+          "description": "Width in pixels of the map column opened beside the Explorer (SGroup: Toggle Map Column Beside Explorer)."
         },
         "sgroup.showDecorations": {
           "type": "boolean",
@@ -668,7 +670,7 @@
     "colors": [
       {
         "id": "sgroup.red",
-        "description": "SGROUP marker color: Red",
+        "description": "SGroup marker color: Red",
         "defaults": {
           "dark": "#e5484d",
           "light": "#e5484d",
@@ -678,7 +680,7 @@
       },
       {
         "id": "sgroup.red.label",
-        "description": "SGROUP Explorer label tint: Red",
+        "description": "SGroup Explorer label tint: Red",
         "defaults": {
           "dark": "#e7c8c9",
           "light": "#4f3031",
@@ -688,7 +690,7 @@
       },
       {
         "id": "sgroup.tomato",
-        "description": "SGROUP marker color: Tomato",
+        "description": "SGroup marker color: Tomato",
         "defaults": {
           "dark": "#e54d2e",
           "light": "#e54d2e",
@@ -698,7 +700,7 @@
       },
       {
         "id": "sgroup.tomato.label",
-        "description": "SGROUP Explorer label tint: Tomato",
+        "description": "SGroup Explorer label tint: Tomato",
         "defaults": {
           "dark": "#e7c9c3",
           "light": "#4f312b",
@@ -708,7 +710,7 @@
       },
       {
         "id": "sgroup.orange",
-        "description": "SGROUP marker color: Orange",
+        "description": "SGroup marker color: Orange",
         "defaults": {
           "dark": "#f76b15",
           "light": "#f76b15",
@@ -718,7 +720,7 @@
       },
       {
         "id": "sgroup.orange.label",
-        "description": "SGROUP Explorer label tint: Orange",
+        "description": "SGroup Explorer label tint: Orange",
         "defaults": {
           "dark": "#ebcfbe",
           "light": "#533726",
@@ -728,7 +730,7 @@
       },
       {
         "id": "sgroup.amber",
-        "description": "SGROUP marker color: Amber",
+        "description": "SGroup marker color: Amber",
         "defaults": {
           "dark": "#ffb224",
           "light": "#ffb224",
@@ -738,7 +740,7 @@
       },
       {
         "id": "sgroup.amber.label",
-        "description": "SGROUP Explorer label tint: Amber",
+        "description": "SGroup Explorer label tint: Amber",
         "defaults": {
           "dark": "#edddc1",
           "light": "#554529",
@@ -748,7 +750,7 @@
       },
       {
         "id": "sgroup.yellow",
-        "description": "SGROUP marker color: Yellow",
+        "description": "SGroup marker color: Yellow",
         "defaults": {
           "dark": "#f5d90a",
           "light": "#f5d90a",
@@ -758,7 +760,7 @@
       },
       {
         "id": "sgroup.yellow.label",
-        "description": "SGROUP Explorer label tint: Yellow",
+        "description": "SGroup Explorer label tint: Yellow",
         "defaults": {
           "dark": "#ebe5bc",
           "light": "#534d24",
@@ -768,7 +770,7 @@
       },
       {
         "id": "sgroup.lime",
-        "description": "SGROUP marker color: Lime",
+        "description": "SGroup marker color: Lime",
         "defaults": {
           "dark": "#99d52a",
           "light": "#99d52a",
@@ -778,7 +780,7 @@
       },
       {
         "id": "sgroup.lime.label",
-        "description": "SGROUP Explorer label tint: Lime",
+        "description": "SGroup Explorer label tint: Lime",
         "defaults": {
           "dark": "#d8e4c2",
           "light": "#404c2a",
@@ -788,7 +790,7 @@
       },
       {
         "id": "sgroup.green",
-        "description": "SGROUP marker color: Green",
+        "description": "SGroup marker color: Green",
         "defaults": {
           "dark": "#30a46c",
           "light": "#30a46c",
@@ -798,7 +800,7 @@
       },
       {
         "id": "sgroup.green.label",
-        "description": "SGROUP Explorer label tint: Green",
+        "description": "SGroup Explorer label tint: Green",
         "defaults": {
           "dark": "#c3dacf",
           "light": "#2b4237",
@@ -808,7 +810,7 @@
       },
       {
         "id": "sgroup.emerald",
-        "description": "SGROUP marker color: Emerald",
+        "description": "SGroup marker color: Emerald",
         "defaults": {
           "dark": "#10b981",
           "light": "#10b981",
@@ -818,7 +820,7 @@
       },
       {
         "id": "sgroup.emerald.label",
-        "description": "SGROUP Explorer label tint: Emerald",
+        "description": "SGroup Explorer label tint: Emerald",
         "defaults": {
           "dark": "#bddfd3",
           "light": "#25473b",
@@ -828,7 +830,7 @@
       },
       {
         "id": "sgroup.teal",
-        "description": "SGROUP marker color: Teal",
+        "description": "SGroup marker color: Teal",
         "defaults": {
           "dark": "#12a594",
           "light": "#12a594",
@@ -838,7 +840,7 @@
       },
       {
         "id": "sgroup.teal.label",
-        "description": "SGROUP Explorer label tint: Teal",
+        "description": "SGroup Explorer label tint: Teal",
         "defaults": {
           "dark": "#bddbd7",
           "light": "#25433f",
@@ -848,7 +850,7 @@
       },
       {
         "id": "sgroup.cyan",
-        "description": "SGROUP marker color: Cyan",
+        "description": "SGroup marker color: Cyan",
         "defaults": {
           "dark": "#00a2c7",
           "light": "#00a2c7",
@@ -858,7 +860,7 @@
       },
       {
         "id": "sgroup.cyan.label",
-        "description": "SGROUP Explorer label tint: Cyan",
+        "description": "SGroup Explorer label tint: Cyan",
         "defaults": {
           "dark": "#badae1",
           "light": "#224249",
@@ -868,7 +870,7 @@
       },
       {
         "id": "sgroup.sky",
-        "description": "SGROUP marker color: Sky",
+        "description": "SGroup marker color: Sky",
         "defaults": {
           "dark": "#4cc3ff",
           "light": "#4cc3ff",
@@ -878,7 +880,7 @@
       },
       {
         "id": "sgroup.sky.label",
-        "description": "SGROUP Explorer label tint: Sky",
+        "description": "SGroup Explorer label tint: Sky",
         "defaults": {
           "dark": "#c9e1ed",
           "light": "#314955",
@@ -888,7 +890,7 @@
       },
       {
         "id": "sgroup.blue",
-        "description": "SGROUP marker color: Blue",
+        "description": "SGroup marker color: Blue",
         "defaults": {
           "dark": "#3e63dd",
           "light": "#3e63dd",
@@ -898,7 +900,7 @@
       },
       {
         "id": "sgroup.blue.label",
-        "description": "SGROUP Explorer label tint: Blue",
+        "description": "SGroup Explorer label tint: Blue",
         "defaults": {
           "dark": "#c6cde6",
           "light": "#2e354e",
@@ -908,7 +910,7 @@
       },
       {
         "id": "sgroup.indigo",
-        "description": "SGROUP marker color: Indigo",
+        "description": "SGroup marker color: Indigo",
         "defaults": {
           "dark": "#5b5bd6",
           "light": "#5b5bd6",
@@ -918,7 +920,7 @@
       },
       {
         "id": "sgroup.indigo.label",
-        "description": "SGROUP Explorer label tint: Indigo",
+        "description": "SGroup Explorer label tint: Indigo",
         "defaults": {
           "dark": "#cccce4",
           "light": "#34344c",
@@ -928,7 +930,7 @@
       },
       {
         "id": "sgroup.violet",
-        "description": "SGROUP marker color: Violet",
+        "description": "SGroup marker color: Violet",
         "defaults": {
           "dark": "#8e4ec6",
           "light": "#8e4ec6",
@@ -938,7 +940,7 @@
       },
       {
         "id": "sgroup.violet.label",
-        "description": "SGROUP Explorer label tint: Violet",
+        "description": "SGroup Explorer label tint: Violet",
         "defaults": {
           "dark": "#d6c9e1",
           "light": "#3e3149",
@@ -948,7 +950,7 @@
       },
       {
         "id": "sgroup.purple",
-        "description": "SGROUP marker color: Purple",
+        "description": "SGroup marker color: Purple",
         "defaults": {
           "dark": "#ab4aba",
           "light": "#ab4aba",
@@ -958,7 +960,7 @@
       },
       {
         "id": "sgroup.purple.label",
-        "description": "SGROUP Explorer label tint: Purple",
+        "description": "SGroup Explorer label tint: Purple",
         "defaults": {
           "dark": "#dcc8df",
           "light": "#443047",
@@ -968,7 +970,7 @@
       },
       {
         "id": "sgroup.plum",
-        "description": "SGROUP marker color: Plum",
+        "description": "SGroup marker color: Plum",
         "defaults": {
           "dark": "#b658c4",
           "light": "#b658c4",
@@ -978,7 +980,7 @@
       },
       {
         "id": "sgroup.plum.label",
-        "description": "SGROUP Explorer label tint: Plum",
+        "description": "SGroup Explorer label tint: Plum",
         "defaults": {
           "dark": "#decbe1",
           "light": "#463349",
@@ -988,7 +990,7 @@
       },
       {
         "id": "sgroup.pink",
-        "description": "SGROUP marker color: Pink",
+        "description": "SGroup marker color: Pink",
         "defaults": {
           "dark": "#d6409f",
           "light": "#d6409f",
@@ -998,7 +1000,7 @@
       },
       {
         "id": "sgroup.pink.label",
-        "description": "SGROUP Explorer label tint: Pink",
+        "description": "SGroup Explorer label tint: Pink",
         "defaults": {
           "dark": "#e4c6d9",
           "light": "#4c2e41",
@@ -1008,7 +1010,7 @@
       },
       {
         "id": "sgroup.rose",
-        "description": "SGROUP marker color: Rose",
+        "description": "SGroup marker color: Rose",
         "defaults": {
           "dark": "#f43f5e",
           "light": "#f43f5e",
@@ -1018,7 +1020,7 @@
       },
       {
         "id": "sgroup.rose.label",
-        "description": "SGROUP Explorer label tint: Rose",
+        "description": "SGroup Explorer label tint: Rose",
         "defaults": {
           "dark": "#eac6cc",
           "light": "#522e34",
@@ -1028,7 +1030,7 @@
       },
       {
         "id": "sgroup.brown",
-        "description": "SGROUP marker color: Brown",
+        "description": "SGroup marker color: Brown",
         "defaults": {
           "dark": "#ad7f58",
           "light": "#ad7f58",
@@ -1038,7 +1040,7 @@
       },
       {
         "id": "sgroup.brown.label",
-        "description": "SGROUP Explorer label tint: Brown",
+        "description": "SGroup Explorer label tint: Brown",
         "defaults": {
           "dark": "#dcd3cb",
           "light": "#443b33",
@@ -1048,7 +1050,7 @@
       },
       {
         "id": "sgroup.bronze",
-        "description": "SGROUP marker color: Bronze",
+        "description": "SGroup marker color: Bronze",
         "defaults": {
           "dark": "#a18072",
           "light": "#a18072",
@@ -1058,7 +1060,7 @@
       },
       {
         "id": "sgroup.bronze.label",
-        "description": "SGROUP Explorer label tint: Bronze",
+        "description": "SGroup Explorer label tint: Bronze",
         "defaults": {
           "dark": "#dad3d0",
           "light": "#423b38",
@@ -1068,7 +1070,7 @@
       },
       {
         "id": "sgroup.gold",
-        "description": "SGROUP marker color: Gold",
+        "description": "SGroup marker color: Gold",
         "defaults": {
           "dark": "#978365",
           "light": "#978365",
@@ -1078,7 +1080,7 @@
       },
       {
         "id": "sgroup.gold.label",
-        "description": "SGROUP Explorer label tint: Gold",
+        "description": "SGroup Explorer label tint: Gold",
         "defaults": {
           "dark": "#d8d4ce",
           "light": "#403c36",
@@ -1088,7 +1090,7 @@
       },
       {
         "id": "sgroup.gray",
-        "description": "SGROUP marker color: Gray",
+        "description": "SGroup marker color: Gray",
         "defaults": {
           "dark": "#8b8d98",
           "light": "#8b8d98",
@@ -1098,7 +1100,7 @@
       },
       {
         "id": "sgroup.gray.label",
-        "description": "SGROUP Explorer label tint: Gray",
+        "description": "SGroup Explorer label tint: Gray",
         "defaults": {
           "dark": "#d5d6d8",
           "light": "#3d3e40",
@@ -1108,7 +1110,7 @@
       },
       {
         "id": "sgroup.slate",
-        "description": "SGROUP marker color: Slate",
+        "description": "SGroup marker color: Slate",
         "defaults": {
           "dark": "#64748b",
           "light": "#64748b",
@@ -1118,7 +1120,7 @@
       },
       {
         "id": "sgroup.slate.label",
-        "description": "SGROUP Explorer label tint: Slate",
+        "description": "SGroup Explorer label tint: Slate",
         "defaults": {
           "dark": "#ced1d5",
           "light": "#36393d",

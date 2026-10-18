@@ -37,7 +37,7 @@ export async function openClassAt(
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
   }
-  void vscode.window.showWarningMessage(`SGROUP: class "${def.name}" not found in ${def.relPath}.`);
+  void vscode.window.showWarningMessage(`SGroup: class "${def.name}" not found in ${def.relPath}.`);
 }
 
 async function resolveClassRange(doc: vscode.TextDocument, def: ClassDef): Promise<vscode.Range | undefined> {

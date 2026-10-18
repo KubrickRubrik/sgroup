@@ -797,7 +797,7 @@ export class MarkerStore implements vscode.Disposable {
       } catch (error) {
         this.sessionConfigPath = legacyRel;
         void vscode.window.showWarningMessage(
-          `SGROUP: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
+          `SGroup: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -808,7 +808,7 @@ export class MarkerStore implements vscode.Disposable {
     const overwrite = 'Перезаписать';
     const keep = 'Оставить';
     const choice = await vscode.window.showWarningMessage(
-      `SGROUP: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
+      `SGroup: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
       overwrite,
       keep,
     );
@@ -819,7 +819,7 @@ export class MarkerStore implements vscode.Disposable {
         await vscode.workspace.fs.delete(legacyUri);
       } catch (error) {
         void vscode.window.showWarningMessage(
-          `SGROUP: не удалось перезаписать ${CONFIG_PATH}. ${
+          `SGroup: не удалось перезаписать ${CONFIG_PATH}. ${
             error instanceof Error ? error.message : String(error)
           }`,
         );

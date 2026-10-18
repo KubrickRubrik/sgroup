@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка / установка .vsix для SGROUP. Запуск: ./sh_vsix.sh
+# Сборка / установка .vsix для SGroup. Запуск: ./sh_vsix.sh
 # Учитывает уже собранные артефакты в version/syngroup-*.vsix
 if [ -z "${BASH_VERSION:-}" ]; then
     exec /usr/bin/env bash "$0" "$@"
@@ -231,7 +231,7 @@ install_vsix() {
     echo "Установлено: $file"
 }
 
-# CLI/AppleScript не умеют надёжно reload. Расширение SGROUP смотрит этот файл
+# CLI/AppleScript не умеют надёжно reload. Расширение SGroup смотрит этот файл
 # и вызывает workbench.action.reloadWindow (кнопка 📦 Vsix → command sgroup.vsix).
 RELOAD_MARKER="${VERSION_DIR}/.reload-window"
 
@@ -241,7 +241,7 @@ reload_window() {
     rm -f "$RELOAD_MARKER"
     printf '%s\n' "$(date +%s)" > "$RELOAD_MARKER"
     echo "Маркер: $ROOT/$RELOAD_MARKER"
-    echo "SGROUP должен перезагрузить окно сам. Если нет — один раз Cmd+R (после этого заработает)."
+    echo "SGroup должен перезагрузить окно сам. Если нет — один раз Cmd+R (после этого заработает)."
 }
 
 after_build_flow() {
@@ -313,7 +313,7 @@ main_menu() {
     next_p="$(peek_next patch)"
     next_n="$(peek_next minor)"
     next_m="$(peek_next major)"
-    echo "SGROUP vsix"
+    echo "SGroup vsix"
     if vsix_exists "$pkg"; then
         echo "  1) package — v${pkg} (уже есть в version/)"
     else

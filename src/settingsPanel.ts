@@ -37,7 +37,7 @@ export class SettingsPanel implements vscode.Disposable {
 
     const panel = vscode.window.createWebviewPanel(
       SettingsPanel.viewType,
-      'SGROUP Settings',
+      'SGroup Settings',
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
@@ -149,7 +149,7 @@ export class SettingsPanel implements vscode.Disposable {
 </head>
 <body>
   <main>
-    <h1>SGROUP Settings</h1>
+    <h1>SGroup Settings</h1>
     <p class="hint">Сохраняются в <code>.sgroup/sgroup.json</code> этого проекта.</p>
 
     <section>

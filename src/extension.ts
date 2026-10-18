@@ -57,7 +57,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     for (const id of COMMAND_IDS) {
       context.subscriptions.push(
         vscode.commands.registerCommand(id, () => {
-          void vscode.window.showInformationMessage('SGROUP: open a folder first.');
+          void vscode.window.showInformationMessage('SGroup: open a folder first.');
         }),
       );
     }
@@ -94,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const reload = 'Reload Window';
       const choice = await vscode.window.showWarningMessage(
-        'SGROUP: вкладка в нижней панели ещё не зарегистрирована — нужна полная перезагрузка окна.',
+        'SGroup: вкладка в нижней панели ещё не зарегистрирована — нужна полная перезагрузка окна.',
         reload,
       );
       if (choice === reload) {
@@ -110,7 +110,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       } catch (error) {
         void vscode.window.showWarningMessage(
-          'SGROUP: панель SGROUP Map не найдена. Сделай Reload Window. ' +
+          'SGroup: панель SGroup Map не найдена. Сделай Reload Window. ' +
             (error instanceof Error ? error.message : String(error)),
         );
       }
