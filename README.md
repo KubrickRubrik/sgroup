@@ -54,12 +54,25 @@ Activity Bar не нужна. Если карты не видно: `Cmd+Shift+P`
 ```json
 {
   "version": 1,
+  "pages": {
+    "map": {
+      "name": "Карта",
+      "kind": "files",
+      "order": 1,
+      "layout": "chips",
+      "groupsLayout": "flow",
+      "collapsed": {}
+    }
+  },
   "markers": {
-    "ads": { "label": "Реклама", "color": "charts.orange", "order": 1 }
+    "ads": { "label": "Реклама", "color": "charts.orange", "order": 1, "page": "map" }
   },
   "items": {
     "lib/ui/widgets/book_info_ad_banner_section.dart": ["ads"],
     "lib/utils/ads_config_ids.dart": ["ads"]
+  },
+  "notes": {
+    "note-1": { "markerId": "tips", "text": "См. https://example.com", "order": 1 }
   },
   "appearance": {
     "fontGroup": 1.15,
@@ -73,7 +86,9 @@ Activity Bar не нужна. Если карты не видно: `Cmd+Shift+P`
 }
 ```
 
-Файл можно править руками, панель обновится автоматически. Цвет — любой id цвета темы, например `charts.red`, `charts.blue`, `terminal.ansiCyan`. Внешний вид также открывается командой **SGroup: Open Settings**.
+До трёх страниц (`pages`): `kind` — `files` (группы с файлами) или `notes` (группы с текстовыми записями). Корневые маркеры ссылаются на страницу полем `page`. Записи лежат в `notes`. Старый файл без `pages` при открытии получает одну страницу «Карта».
+
+Файл можно править руками, панель обновится автоматически. Цвет — любой id цвета темы, например `charts.red`, `charts.blue`, `terminal.ansiCyan`. Внешний вид также открывается командой **SGroup: Open Settings**. Страницы создаются в меню ⋯ на карте.
 
 ## Настройки
 

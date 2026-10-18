@@ -22,22 +22,19 @@
 
   toolbarLayout?.addEventListener('click', () => {
     closeToolbarMenu();
-    vscode.postMessage({ type: 'toolbar', action: 'toggleLayout' });
+    postToolbar('toggleLayout');
   });
   toolbarGroups?.addEventListener('click', () => {
     closeToolbarMenu();
-    vscode.postMessage({ type: 'toolbar', action: 'cycleGroups' });
+    postToolbar('cycleGroups');
   });
   toolbarCreate?.addEventListener('click', () => {
     closeToolbarMenu();
-    vscode.postMessage({ type: 'toolbar', action: 'createMarker' });
+    postToolbar('createMarker');
   });
   toolbarCollapse?.addEventListener('click', () => {
     closeToolbarMenu();
-    vscode.postMessage({
-      type: 'toolbar',
-      action: allTopCollapsed() ? 'expandGroups' : 'collapseGroups',
-    });
+    postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -48,22 +45,25 @@
   });
   toolbarMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
-    const action = target?.closest('button')?.dataset.action;
-    if (!action) {
+    const button = target?.closest('button');
+    const action = button?.dataset.action;
+    if (!action || button?.disabled) {
       return;
     }
     closeToolbarMenu();
-    vscode.postMessage({ type: 'toolbar', action });
+    postToolbar(action);
   });
   const MIME = 'application/vnd.sgroup';
   const MAX_DEPTH = 2;
+  const PAGE_MIME = 'application/vnd.sgroup.page';
 
-  /** @type {{ collapsed: Record<string, boolean> }} */
-  const uiState = vscode.getState() || { collapsed: {} };
-  if (!uiState.collapsed) {
-    uiState.collapsed = {};
-  }
+  /** @type {{ activePageId?: string }} */
+  const uiState = vscode.getState() || {};
   let data = null;
+  const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
+  /** @type {string | null} */
+  let pageDragId = null;
+  let wheelLock = false;
   /** @type {any} */
   let dragPayload = null;
   /** @type {{ section: HTMLElement, header?: HTMLElement, mode: string } | null} */
@@ -81,30 +81,31 @@
   /** @type {{ relPath: string, anchor: HTMLElement } | null} */
   let dirPopoverState = null;
 
-  /** @type {boolean | null} */
-  let pendingTopGroups = null;
-
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'state') {
       closeDirPopover();
       data = message;
+      ensureActivePage();
       setHistoryButtons(message.history);
-      setToolbar(message);
+      setToolbar(activePage() || message);
+      updatePageMenu();
       applyAppearance(message.appearance);
-      const pending = pendingTopGroups;
-      pendingTopGroups = null;
-      if (pending === null) {
-        render();
-      } else {
-        applyTopGroups(pending);
+      renderPager();
+      render();
+      vscode.postMessage({ type: 'activePage', pageId: uiState.activePageId });
+    } else if (message.type === 'openPage') {
+      if (message.pageId) {
+        uiState.activePageId = message.pageId;
+        vscode.setState(uiState);
+        if (data && pages().some((page) => page.id === message.pageId)) {
+          setToolbar(activePage() || data);
+          updatePageMenu();
+          renderPager();
+          render();
+          vscode.postMessage({ type: 'activePage', pageId: message.pageId });
+        }
       }
-    } else if (message.type === 'setTopGroups') {
-      if (!data) {
-        pendingTopGroups = !!message.collapsed;
-        return;
-      }
-      applyTopGroups(!!message.collapsed);
     } else if (message.type === 'active' && data) {
       data.active = message.active;
       updateActive(true);
@@ -112,6 +113,64 @@
       fillDirPopover(message);
     }
   });
+
+  function postToolbar(action) {
+    vscode.postMessage({ type: 'toolbar', action, pageId: uiState.activePageId });
+  }
+
+  function pages() {
+    return data && Array.isArray(data.pages) ? data.pages : [];
+  }
+
+  function activePage() {
+    const list = pages();
+    return list.find((page) => page.id === uiState.activePageId) || list[0];
+  }
+
+  function ensureActivePage() {
+    const list = pages();
+    if (list.length === 0) {
+      return;
+    }
+    if (!list.some((page) => page.id === uiState.activePageId)) {
+      uiState.activePageId = list[0].id;
+      vscode.setState(uiState);
+    }
+  }
+
+  function setActivePage(pageId) {
+    if (!pages().some((page) => page.id === pageId) || uiState.activePageId === pageId) {
+      return;
+    }
+    uiState.activePageId = pageId;
+    vscode.setState(uiState);
+    setToolbar(activePage() || data);
+    updatePageMenu();
+    renderPager();
+    render();
+    vscode.postMessage({ type: 'activePage', pageId });
+  }
+
+  function pageGroups() {
+    const page = activePage();
+    if (!data || !page) {
+      return [];
+    }
+    return data.groups.filter((group) => (group.page || page.id) === page.id);
+  }
+
+  function updatePageMenu() {
+    const list = pages();
+    const max = typeof data?.maxPages === 'number' ? data.maxPages : 3;
+    const createBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-create-page'));
+    const deleteBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-delete-page'));
+    if (createBtn) {
+      createBtn.disabled = list.length >= max;
+    }
+    if (deleteBtn) {
+      deleteBtn.disabled = list.length <= 1;
+    }
+  }
 
   /** @param {{ back?: number, forward?: number } | undefined} history */
   function setHistoryButtons(history) {
@@ -156,31 +215,37 @@
     }
   }
 
-  /** @type {boolean | null} */
-  let reportedTopCollapsed = null;
-
   function isEmptyGroup(group) {
     return (
-      group.items.length === 0 && (group.children || []).length === 0 && (group.classes || []).length === 0
+      group.items.length === 0 &&
+      (group.children || []).length === 0 &&
+      (group.classes || []).length === 0 &&
+      (group.notes || []).length === 0
     );
   }
 
-  /** Top-level groups that can actually fold. */
+  function pageCollapsed() {
+    const page = activePage();
+    return page && page.collapsed ? page.collapsed : {};
+  }
+
+  function isCollapsed(groupId) {
+    return !!pageCollapsed()[groupId];
+  }
+
+  /** Top-level groups that can actually fold on the active page. */
   function collapsibleTopGroups() {
-    if (!data || !data.groups) {
-      return [];
-    }
-    return data.groups.filter((group) => !group.parent && !isEmptyGroup(group));
+    return pageGroups().filter((group) => !group.parent && !isEmptyGroup(group));
   }
 
   function allTopCollapsed() {
     const groups = collapsibleTopGroups();
-    return groups.length > 0 && groups.every((group) => uiState.collapsed[group.id]);
+    return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
 
   function setCollapseButton() {
     const groups = collapsibleTopGroups();
-    const collapsed = groups.length > 0 && groups.every((group) => uiState.collapsed[group.id]);
+    const collapsed = groups.length > 0 && groups.every((group) => isCollapsed(group.id));
     const mode = collapsed ? 'expand' : 'collapse';
     if (toolbarCollapse) {
       toolbarCollapse.disabled = groups.length === 0;
@@ -190,32 +255,30 @@
         img.hidden = img.getAttribute('data-mode') !== mode;
       });
     }
-    if (groups.length === 0) {
-      if (reportedTopCollapsed !== false) {
-        reportedTopCollapsed = false;
-        vscode.postMessage({ type: 'topGroupsCollapsed', collapsed: false });
-      }
-      return;
-    }
-    if (reportedTopCollapsed === collapsed) {
-      return;
-    }
-    reportedTopCollapsed = collapsed;
-    vscode.postMessage({ type: 'topGroupsCollapsed', collapsed });
   }
 
-  function applyTopGroups(collapsed) {
-    if (!data) {
+  function persistCollapsed(nextCollapsed) {
+    const page = activePage();
+    if (!page) {
       return;
     }
-    for (const group of collapsibleTopGroups()) {
-      if (collapsed) {
-        uiState.collapsed[group.id] = true;
-      } else {
-        delete uiState.collapsed[group.id];
-      }
+    page.collapsed = nextCollapsed;
+    vscode.postMessage({
+      type: 'setCollapsed',
+      pageId: page.id,
+      collapsed: nextCollapsed,
+      allTopCollapsed: allTopCollapsed(),
+    });
+  }
+
+  function toggleCollapsed(groupId) {
+    const next = { ...pageCollapsed() };
+    if (next[groupId]) {
+      delete next[groupId];
+    } else {
+      next[groupId] = true;
     }
-    vscode.setState(uiState);
+    persistCollapsed(next);
     render();
   }
 
@@ -291,38 +354,118 @@
   });
 
   function render() {
+    if (!data) {
+      return;
+    }
     setCollapseButton();
     root.textContent = '';
-    root.className = 'layout-' + data.layout + ' groups-' + (data.groupsLayout || 'flow');
+    const page = activePage();
+    const layout = page?.layout || data.layout || 'chips';
+    const groupsLayout = page?.groupsLayout || data.groupsLayout || 'flow';
+    root.className = 'layout-' + layout + ' groups-' + groupsLayout;
     clearDropHighlights();
 
     if (data.error) {
       root.append(el('div', 'error', data.error));
     }
-    if (data.groups.length === 0) {
-      root.append(
-        el(
-          'div',
-          'empty',
-          'No markers yet. Right-click a file in the Explorer → "Mark…", or drag files here onto a group.',
-        ),
-      );
+    const groups = pageGroups();
+    if (groups.length === 0) {
+      const emptyText =
+        page?.kind === 'notes'
+          ? 'No groups yet. Create a marker, then add notes inside it.'
+          : 'No markers yet. Right-click a file in the Explorer → "Mark…", or drag files here onto a group.';
+      root.append(el('div', 'empty', emptyText));
       return;
     }
 
-    const byId = Object.fromEntries(data.groups.map((g) => [g.id, g]));
-    for (const group of data.groups.filter((g) => !g.parent)) {
+    const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
+    for (const group of groups.filter((g) => !g.parent)) {
       root.append(renderGroup(group, byId));
     }
     updateActive();
+  }
+
+  function renderPager() {
+    if (!pager) {
+      return;
+    }
+    pager.textContent = '';
+    const list = pages();
+    if (list.length === 0) {
+      pager.hidden = true;
+      return;
+    }
+    pager.hidden = false;
+    for (const page of list) {
+      const chip = el('button', 'pager-chip' + (page.id === uiState.activePageId ? ' active' : ''), page.name);
+      chip.type = 'button';
+      chip.draggable = true;
+      chip.dataset.pageId = page.id;
+      chip.title = page.kind === 'notes' ? page.name + ' (записи)' : page.name + ' (файлы)';
+      chip.addEventListener('click', () => setActivePage(page.id));
+      chip.addEventListener('dragstart', (event) => {
+        pageDragId = page.id;
+        event.dataTransfer?.setData(PAGE_MIME, page.id);
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+        }
+        chip.classList.add('dragging');
+      });
+      chip.addEventListener('dragend', () => {
+        pageDragId = null;
+        chip.classList.remove('dragging');
+        pager.querySelectorAll('.pager-chip').forEach((node) => node.classList.remove('drop-before', 'drop-after'));
+      });
+      chip.addEventListener('dragover', (event) => {
+        if (!pageDragId || pageDragId === page.id) {
+          return;
+        }
+        event.preventDefault();
+        const rect = chip.getBoundingClientRect();
+        const before = event.clientX < rect.left + rect.width / 2;
+        chip.classList.toggle('drop-before', before);
+        chip.classList.toggle('drop-after', !before);
+      });
+      chip.addEventListener('dragleave', () => {
+        chip.classList.remove('drop-before', 'drop-after');
+      });
+      chip.addEventListener('drop', (event) => {
+        event.preventDefault();
+        chip.classList.remove('drop-before', 'drop-after');
+        const from = pageDragId || event.dataTransfer?.getData(PAGE_MIME);
+        if (!from || from === page.id) {
+          return;
+        }
+        const ordered = pages().map((item) => item.id);
+        const fromIndex = ordered.indexOf(from);
+        let toIndex = ordered.indexOf(page.id);
+        if (fromIndex < 0 || toIndex < 0) {
+          return;
+        }
+        const rect = chip.getBoundingClientRect();
+        if (event.clientX >= rect.left + rect.width / 2) {
+          toIndex += 1;
+        }
+        ordered.splice(fromIndex, 1);
+        if (fromIndex < toIndex) {
+          toIndex -= 1;
+        }
+        ordered.splice(toIndex, 0, from);
+        vscode.postMessage({ type: 'reorderPages', orderedIds: ordered });
+      });
+      pager.append(chip);
+    }
   }
 
   function renderGroup(group, byId) {
     group.items.sort((a, b) => Number(b.isDir) - Number(a.isDir));
     const childIds = group.children || [];
     const classList = group.classes || [];
-    const isEmpty = group.items.length === 0 && childIds.length === 0 && classList.length === 0;
-    const collapsed = !isEmpty && !!uiState.collapsed[group.id];
+    const noteList = group.notes || [];
+    const page = activePage();
+    const isNotesPage = page?.kind === 'notes';
+    const isEmpty = isEmptyGroup(group);
+    const collapsed = !isEmpty && isCollapsed(group.id);
     const columns = group.columns || 'flow';
     const section = el(
       'section',
@@ -330,7 +473,8 @@
         columns +
         (collapsed ? ' collapsed' : '') +
         (group.depth ? ' nested node' : '') +
-        (isEmpty ? ' empty-group' : ''),
+        (isEmpty ? ' empty-group' : '') +
+        (isNotesPage ? ' notes-page' : ''),
     );
     section.dataset.markerId = group.id;
     section.dataset.depth = String(group.depth || 0);
@@ -365,62 +509,83 @@
     }
     labelWrap.append(el('span', 'label', group.label));
     header.append(labelWrap);
-    header.append(el('span', 'count', String(group.items.length + classList.length + childIds.length)));
+    header.append(
+      el('span', 'count', String(group.items.length + classList.length + noteList.length + childIds.length)),
+    );
     header.title =
       (group.alias ? group.alias + '\n' : '') + group.label + '\nDrag to reorder or nest';
     header.addEventListener('click', () => {
       if (isEmpty) {
         return;
       }
-      uiState.collapsed[group.id] = !collapsed;
-      vscode.setState(uiState);
-      render();
+      toggleCollapsed(group.id);
     });
     section.append(header);
     bindGroupSection(section, header, group);
 
     if (isEmpty) {
+      if (isNotesPage && !collapsed) {
+        section.append(renderNoteComposer(group.id));
+      }
       return section;
     }
 
     if (collapsed) {
       const dots = el('div', 'dots');
-      for (const item of group.items) {
-        const dot = el('span', 'dot' + (item.exists ? '' : ' missing'));
-        bindItem(dot, item, group.id);
-        dots.append(dot);
-      }
-      for (const cls of classList) {
-        const dot = el('span', 'dot class-dot' + (cls.exists ? '' : ' missing'));
-        bindClass(dot, cls, group.id);
-        dots.append(dot);
+      if (isNotesPage) {
+        for (const note of noteList) {
+          const dot = el('span', 'dot note-dot');
+          dot.title = note.text;
+          dots.append(dot);
+        }
+      } else {
+        for (const item of group.items) {
+          const dot = el('span', 'dot' + (item.exists ? '' : ' missing'));
+          bindItem(dot, item, group.id);
+          dots.append(dot);
+        }
+        for (const cls of classList) {
+          const dot = el('span', 'dot class-dot' + (cls.exists ? '' : ' missing'));
+          bindClass(dot, cls, group.id);
+          dots.append(dot);
+        }
       }
       section.append(dots);
       return section;
     }
 
     const children = el('div', 'children');
-    const dirs = group.items.filter((item) => item.isDir);
-    const files = group.items.filter((item) => !item.isDir);
-    for (const [kind, list] of [
-      ['dirs', dirs],
-      ['files', files],
-    ]) {
-      if (list.length === 0) {
-        continue;
+    if (isNotesPage) {
+      if (noteList.length > 0) {
+        const block = el('div', 'node block block-notes');
+        for (const note of noteList) {
+          block.append(renderNote(note, group.id));
+        }
+        children.append(block);
       }
-      const block = el('div', 'node block block-' + kind);
-      for (const item of list) {
-        block.append(renderItem(item, group.id));
+    } else {
+      const dirs = group.items.filter((item) => item.isDir);
+      const files = group.items.filter((item) => !item.isDir);
+      for (const [kind, list] of [
+        ['dirs', dirs],
+        ['files', files],
+      ]) {
+        if (list.length === 0) {
+          continue;
+        }
+        const block = el('div', 'node block block-' + kind);
+        for (const item of list) {
+          block.append(renderItem(item, group.id));
+        }
+        children.append(block);
       }
-      children.append(block);
-    }
-    if (classList.length > 0) {
-      const block = el('div', 'node block block-classes');
-      for (const cls of classList) {
-        block.append(renderClass(cls, group.id));
+      if (classList.length > 0) {
+        const block = el('div', 'node block block-classes');
+        for (const cls of classList) {
+          block.append(renderClass(cls, group.id));
+        }
+        children.append(block);
       }
-      children.append(block);
     }
     for (const childId of childIds) {
       const child = byId[childId];
@@ -428,11 +593,108 @@
         children.append(renderGroup(child, byId));
       }
     }
+    if (isNotesPage) {
+      children.append(renderNoteComposer(group.id));
+    }
     if (children.childElementCount > 0) {
       section.append(children);
     }
 
     return section;
+  }
+
+  function linkify(text) {
+    const fragment = document.createDocumentFragment();
+    const pattern = /(https?:\/\/[^\s<>"']+)/g;
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (match.index > last) {
+        fragment.append(document.createTextNode(text.slice(last, match.index)));
+      }
+      const url = match[1];
+      const link = el('a', 'note-link', url);
+      link.href = url;
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({ type: 'openExternal', url });
+      });
+      fragment.append(link);
+      last = match.index + url.length;
+    }
+    if (last < text.length) {
+      fragment.append(document.createTextNode(text.slice(last)));
+    }
+    return fragment;
+  }
+
+  function renderNote(note, groupId) {
+    const node = el('div', 'note');
+    node.dataset.noteId = note.id;
+    const body = el('div', 'note-body');
+    body.append(linkify(note.text));
+    body.title = 'Click to edit';
+    body.addEventListener('click', () => beginEditNote(node, note, groupId));
+    node.append(body);
+    return node;
+  }
+
+  function beginEditNote(node, note, groupId) {
+    node.textContent = '';
+    const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
+    input.value = note.text;
+    input.rows = Math.min(6, Math.max(2, note.text.split('\n').length));
+    node.append(input);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    const finish = (save) => {
+      input.removeEventListener('keydown', onKey);
+      input.removeEventListener('blur', onBlur);
+      if (save) {
+        vscode.postMessage({ type: 'updateNote', noteId: note.id, text: input.value });
+      } else {
+        const parent = node.parentElement;
+        node.replaceWith(renderNote(note, groupId));
+        void parent;
+      }
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      }
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        finish(true);
+      }
+    };
+    const onBlur = () => finish(true);
+    input.addEventListener('keydown', onKey);
+    input.addEventListener('blur', onBlur);
+  }
+
+  function renderNoteComposer(groupId) {
+    const wrap = el('div', 'note-composer');
+    const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
+    input.rows = 2;
+    input.placeholder = 'Новая запись… Enter — сохранить';
+    const submit = () => {
+      const text = input.value.trim();
+      if (!text) {
+        return;
+      }
+      vscode.postMessage({ type: 'createNote', markerId: groupId, text });
+      input.value = '';
+    };
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        submit();
+      }
+    });
+    wrap.append(input);
+    return wrap;
   }
 
   function renderItem(item, groupId) {
@@ -448,14 +710,15 @@
     }
     const node = el('div', classes.join(' '));
     node.draggable = true;
-    const name = data.layout === 'chips' && !item.isDir ? stripExtension(item.name) : item.name;
+    const layout = activePage()?.layout || data.layout || 'chips';
+    const name = layout === 'chips' && !item.isDir ? stripExtension(item.name) : item.name;
     const textWrap = el('span', 'item-text');
     if (item.alias) {
       textWrap.append(el('span', 'alias', item.alias));
     }
     textWrap.append(el('span', 'name', name));
     node.append(item.isDir ? folderIcon() : fileIcon(item.name), textWrap);
-    if (data.layout === 'list' && item.dir) {
+    if (layout === 'list' && item.dir) {
       node.append(el('span', 'path', item.dir));
     }
     bindItem(node, item, groupId);
@@ -716,6 +979,7 @@
    * @returns {{ action: string, mode: string, hint: string, blocked?: boolean, id?: string, position?: string } | null}
    */
   function decideDrop(event, header, group, payload) {
+    const notesPage = activePage()?.kind === 'notes';
     if (payload && payload.kind === 'marker') {
       if (payload.id === group.id) {
         return null;
@@ -762,6 +1026,14 @@
     }
 
     if ((payload && (payload.kind === 'item' || payload.kind === 'class')) || isExternal(event)) {
+      if (notesPage) {
+        return {
+          action: 'item',
+          mode: 'blocked',
+          hint: 'Эта страница только для записей',
+          blocked: true,
+        };
+      }
       const copy = !!(payload && (payload.kind === 'item' || payload.kind === 'class') && event.altKey);
       const verb = copy ? 'Copy to' : 'Move to';
       return {
@@ -1179,5 +1451,34 @@
     return node;
   }
 
-  vscode.postMessage({ type: 'ready' });
+  document.addEventListener(
+    'wheel',
+    (event) => {
+      if (!data || pages().length < 2) {
+        return;
+      }
+      if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) {
+        return;
+      }
+      event.preventDefault();
+      if (wheelLock) {
+        return;
+      }
+      wheelLock = true;
+      const list = pages();
+      const index = list.findIndex((page) => page.id === uiState.activePageId);
+      if (index >= 0) {
+        const next = event.deltaX > 0 ? index + 1 : index - 1;
+        if (next >= 0 && next < list.length) {
+          setActivePage(list[next].id);
+        }
+      }
+      window.setTimeout(() => {
+        wheelLock = false;
+      }, 280);
+    },
+    { passive: false },
+  );
+
+  vscode.postMessage({ type: 'ready', pageId: uiState.activePageId });
 })();

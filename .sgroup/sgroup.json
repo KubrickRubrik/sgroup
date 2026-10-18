@@ -1,5 +1,23 @@
 {
   "version": 1,
+  "pages": {
+    "map": {
+      "name": "Карта",
+      "kind": "files",
+      "order": 1,
+      "layout": "chips",
+      "groupsLayout": "1",
+      "collapsed": {}
+    },
+    "page-page": {
+      "name": "Доки",
+      "kind": "notes",
+      "order": 2,
+      "layout": "chips",
+      "groupsLayout": "flow",
+      "collapsed": {}
+    }
+  },
   "markers": {
     "1": {
       "label": "Тест 1",
@@ -7,7 +25,8 @@
       "icon": "🍀",
       "alias": "тестовая группа 1",
       "columns": "1",
-      "order": 2
+      "order": 2,
+      "page": "map"
     },
     "2": {
       "label": "Тест 2",
@@ -19,23 +38,27 @@
       "label": "Тест 3",
       "color": "sgroup.sky",
       "icon": "🔥",
-      "order": 3
+      "order": 3,
+      "page": "map"
     },
     "4": {
       "label": "Тест 4",
-      "order": 4
+      "order": 4,
+      "page": "map"
     },
     "5": {
       "label": "Тест 5",
       "color": "sgroup.blue",
       "icon": "📌",
-      "order": 5
+      "order": 5,
+      "page": "map"
     },
     "version": {
       "label": "Version",
       "color": "sgroup.tomato",
       "icon": "🔥",
-      "order": 1
+      "order": 1,
+      "page": "map"
     },
     "2-2": {
       "label": "Тест 2",
@@ -47,11 +70,21 @@
     "ttest-6": {
       "label": "Ttest 6",
       "icon": "⭐",
-      "order": 6
+      "order": 6,
+      "page": "map"
     },
     "test-dir": {
       "label": "Test_dir",
-      "order": 7
+      "order": 7,
+      "page": "map"
+    },
+    "1-2": {
+      "label": "Группа т 1",
+      "color": "sgroup.red",
+      "icon": "⭐",
+      "columns": "flow",
+      "order": 1,
+      "page": "page-page"
     }
   },
   "items": {
@@ -173,6 +206,18 @@
     },
     "cls-rgb": {
       "1": 1792000790151
+    }
+  },
+  "notes": {
+    "note-1": {
+      "markerId": "1-2",
+      "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA",
+      "order": 1
+    },
+    "note-2": {
+      "markerId": "1-2",
+      "text": "Запись 2\nhttps://www.youtube.com/",
+      "order": 2
     }
   }
 }

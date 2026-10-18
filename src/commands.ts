@@ -106,7 +106,7 @@ export function registerCommands(
     return custom.trim() || undefined;
   }
 
-  async function createMarkerFlow(parentId?: string): Promise<string | undefined> {
+  async function createMarkerFlow(parentId?: string, pageId?: string): Promise<string | undefined> {
     if (parentId) {
       const parentDepth = store.depthOf(parentId);
       if (parentDepth >= MAX_MARKER_DEPTH) {
@@ -131,17 +131,36 @@ export function registerCommands(
     if (icon === null) {
       return undefined;
     }
-    return store.createMarker({ label: label.trim(), color, icon, parent: parentId });
+    const page =
+      parentId === undefined
+        ? pageId && store.page(pageId)
+          ? pageId
+          : store.defaultFilesPageId()
+        : undefined;
+    return store.createMarker({ label: label.trim(), color, icon, parent: parentId, page });
+  }
+
+  /** Markers on files pages only; page name when more than one files page exists. */
+  function filesMarkers(): Array<[string, MarkerDef]> {
+    return store.markers().filter(([id]) => {
+      const pageId = store.pageOf(id);
+      return !!pageId && store.page(pageId)?.kind === 'files';
+    });
   }
 
   async function pickMarker(title: string): Promise<string | undefined> {
     const NEW = '__new__';
+    const filesPages = store.pages().filter(([, def]) => def.kind === 'files');
+    const showPage = filesPages.length > 1;
     const items = [
-      ...store.markers().map(([id, def]) => {
+      ...filesMarkers().map(([id, def]) => {
         const depth = store.depthOf(id);
         const indent = depth > 0 ? `${'··'.repeat(depth)} ` : '';
+        const pageId = store.pageOf(id);
+        const pageName = pageId ? store.page(pageId)?.name : undefined;
         return {
           label: `${indent}${def.icon ? `${def.icon} ` : ''}${def.label}`,
+          description: showPage && pageName ? pageName : undefined,
           id,
           iconPath: new vscode.ThemeIcon('tag', def.color ? new vscode.ThemeColor(themeColorId(def.color)) : undefined),
         };
@@ -152,7 +171,7 @@ export function registerCommands(
     if (!picked) {
       return undefined;
     }
-    return picked.id === NEW ? createMarkerFlow() : picked.id;
+    return picked.id === NEW ? createMarkerFlow(undefined, store.defaultFilesPageId()) : picked.id;
   }
 
   async function assign(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<void> {
@@ -570,7 +589,9 @@ export function registerCommands(
       }),
     ),
     vscode.commands.registerCommand('sgroup.relink', withNode(relink)),
-    vscode.commands.registerCommand('sgroup.createMarker', () => createMarkerFlow()),
+    vscode.commands.registerCommand('sgroup.createMarker', (pageId?: string) =>
+      createMarkerFlow(undefined, typeof pageId === 'string' ? pageId : undefined),
+    ),
     vscode.commands.registerCommand('sgroup.createSubgroup', withNode(createSubgroup)),
     vscode.commands.registerCommand('sgroup.unnestMarker', withNode(unnestMarker)),
     vscode.commands.registerCommand('sgroup.editMarker', withNode(editMarker)),

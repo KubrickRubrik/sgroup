@@ -1,15 +1,20 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ColumnsMode, MarkerStore } from './markerStore';
+import {
+  ColumnsMode,
+  GroupsLayout,
+  MapLayout,
+  MAX_PAGES,
+  MarkerStore,
+  PageKind,
+  normalizeGroupsLayout,
+  normalizeMapLayout,
+  normalizePageKind,
+} from './markerStore';
 import { openClassAt } from './openClass';
 import { cssColor, normalizeHex } from './palette';
 
-type Layout = 'chips' | 'list';
-type GroupsLayout = 'flow' | '1' | '2' | '3';
-
-const LAYOUT_KEY = 'sgroup.map.layout';
-const GROUPS_LAYOUT_KEY = 'sgroup.map.groupsLayout';
 const COLUMN_SIDE_KEY = 'sgroup.map.columnSide';
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
@@ -43,6 +48,7 @@ interface MapGroup {
   color?: string;
   alias?: string;
   parent?: string;
+  page?: string;
   columns: ColumnsMode;
   depth: number;
   /** Height of nested subgroup tree (0 if no children). */
@@ -50,6 +56,22 @@ interface MapGroup {
   children: string[];
   items: MapItem[];
   classes: MapClass[];
+  notes: MapNote[];
+}
+
+interface MapPage {
+  id: string;
+  name: string;
+  kind: PageKind;
+  layout: MapLayout;
+  groupsLayout: GroupsLayout;
+  collapsed: Record<string, boolean>;
+}
+
+interface MapNote {
+  id: string;
+  markerId: string;
+  text: string;
 }
 
 interface EditorGroupLayout {
@@ -70,26 +92,36 @@ type IncomingToolbarAction =
   | 'expandGroups'
   | 'refresh'
   | 'openConfig'
-  | 'openSettings';
+  | 'openSettings'
+  | 'createPage'
+  | 'renamePage'
+  | 'deletePage';
 
 type IncomingMessage =
-  | { type: 'ready' }
+  | { type: 'ready'; pageId?: string }
+  | { type: 'activePage'; pageId: string }
   | { type: 'open'; relPath: string }
   | { type: 'openClass'; classId: string }
+  | { type: 'openExternal'; url: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
   | { type: 'history'; direction: 'back' | 'forward' }
-  | { type: 'topGroupsCollapsed'; collapsed: boolean }
+  | { type: 'setCollapsed'; pageId: string; collapsed: Record<string, boolean>; allTopCollapsed: boolean }
   | {
       type: 'toolbar';
       action: IncomingToolbarAction;
+      pageId?: string;
     }
+  | { type: 'reorderPages'; orderedIds: string[] }
   | { type: 'setColor'; markerId: string; color: string }
   | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
   | { type: 'moveClass'; classId: string; from: string; to: string; copy?: boolean }
   | { type: 'placeMarker'; id: string; target: string; position: 'before' | 'after' }
   | { type: 'nestMarker'; id: string; parent: string }
-  | { type: 'dropUris'; uris: string[]; to: string };
+  | { type: 'dropUris'; uris: string[]; to: string }
+  | { type: 'createNote'; markerId: string; text: string }
+  | { type: 'updateNote'; noteId: string; text: string }
+  | { type: 'deleteNote'; noteId: string };
 
 interface DirListingEntry {
   name: string;
@@ -114,11 +146,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   static readonly panelType = 'sgroupMapPanel';
 
   private readonly webviews = new Set<vscode.Webview>();
+  private readonly activePageByWebview = new WeakMap<vscode.Webview, string>();
   private readonly subscriptions: vscode.Disposable[];
   private readonly media: vscode.Uri;
   private panel?: vscode.WebviewPanel;
   private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
+  /** Webview that last talked to the host — drives view-title layout/collapse. */
+  private lastFocusedWebview?: vscode.Webview;
   /** Which edge the map column was opened on. Cleared when that column closes. */
   private columnSide?: 'left' | 'right';
 
@@ -322,24 +357,44 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   // ---- shared ----
 
-  /** Flow → 1 → 2 → 3 → flow for top-level group placement. */
+  /** Flow → 1 → 2 → 3 → flow for top-level group placement on the focused surface's page. */
   async cycleGroupsLayout(): Promise<void> {
-    const next =
-      GROUPS_LAYOUT_CYCLE[(GROUPS_LAYOUT_CYCLE.indexOf(this.groupsLayout) + 1) % GROUPS_LAYOUT_CYCLE.length];
-    await this.memento.update(GROUPS_LAYOUT_KEY, next);
-    await this.syncGroupsLayoutContext();
-    this.refresh();
-  }
-
-  syncGroupsLayoutContext(): Thenable<unknown> {
-    return vscode.commands.executeCommand('setContext', GROUPS_LAYOUT_CONTEXT, this.groupsLayout);
-  }
-
-  /** Collapse or expand every top-level group. Nested groups keep their own state. */
-  async setTopGroups(collapsed: boolean): Promise<void> {
-    for (const webview of this.webviews) {
-      void webview.postMessage({ type: 'setTopGroups', collapsed });
+    const pageId = this.focusedPageId();
+    const page = this.store.page(pageId);
+    if (!page) {
+      return;
     }
+    const current = normalizeGroupsLayout(page.groupsLayout);
+    const next = GROUPS_LAYOUT_CYCLE[(GROUPS_LAYOUT_CYCLE.indexOf(current) + 1) % GROUPS_LAYOUT_CYCLE.length];
+    await this.store.updatePageView(pageId, { groupsLayout: next });
+    await this.syncGroupsLayoutContext(next);
+  }
+
+  syncGroupsLayoutContext(layout?: GroupsLayout): Thenable<unknown> {
+    const value = layout ?? this.store.page(this.focusedPageId())?.groupsLayout ?? 'flow';
+    return vscode.commands.executeCommand('setContext', GROUPS_LAYOUT_CONTEXT, value);
+  }
+
+  /** Collapse or expand every top-level group on the focused surface's page. */
+  async setTopGroups(collapsed: boolean): Promise<void> {
+    const pageId = this.focusedPageId();
+    const page = this.store.page(pageId);
+    if (!page) {
+      return;
+    }
+    const next: Record<string, boolean> = { ...page.collapsed };
+    for (const [id, def] of this.store.markers()) {
+      if (def.parent || this.store.pageOf(id) !== pageId) {
+        continue;
+      }
+      if (collapsed) {
+        next[id] = true;
+      } else {
+        delete next[id];
+      }
+    }
+    await this.store.updatePageView(pageId, { collapsed: next });
+    await this.syncTopCollapsedContext(collapsed);
   }
 
   syncTopCollapsedContext(collapsed: boolean): Thenable<unknown> {
@@ -347,8 +402,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   async toggleLayout(): Promise<void> {
-    await this.memento.update(LAYOUT_KEY, this.layout === 'chips' ? 'list' : 'chips');
-    this.refresh();
+    const pageId = this.focusedPageId();
+    const page = this.store.page(pageId);
+    if (!page) {
+      return;
+    }
+    const next: MapLayout = normalizeMapLayout(page.layout) === 'chips' ? 'list' : 'chips';
+    await this.store.updatePageView(pageId, { layout: next });
   }
 
   /** Re-sends the state, e.g. after marked files appeared or disappeared on disk. */
@@ -358,13 +418,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  private get layout(): Layout {
-    return this.memento.get<Layout>(LAYOUT_KEY, 'chips');
+  private focusedPageId(): string {
+    if (this.lastFocusedWebview) {
+      return this.pageIdFor(this.lastFocusedWebview);
+    }
+    return this.store.defaultFilesPageId();
   }
 
-  private get groupsLayout(): GroupsLayout {
-    const value = this.memento.get<GroupsLayout>(GROUPS_LAYOUT_KEY, 'flow');
-    return GROUPS_LAYOUT_CYCLE.includes(value) ? value : 'flow';
+  private pageIdFor(webview: vscode.Webview): string {
+    const stored = this.activePageByWebview.get(webview);
+    if (stored && this.store.page(stored)) {
+      return stored;
+    }
+    return this.store.defaultFilesPageId();
+  }
+
+  private rememberFocus(webview: vscode.Webview, pageId?: string): void {
+    this.lastFocusedWebview = webview;
+    if (pageId && this.store.page(pageId)) {
+      this.activePageByWebview.set(webview, pageId);
+    }
   }
 
   private adoptPanel(panel: vscode.WebviewPanel): void {
@@ -492,7 +565,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private async onMessage(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
     if (message.type === 'ready') {
+      this.rememberFocus(webview, message.pageId);
       await this.postState(webview);
+      await this.syncFocusContext();
+      return;
+    }
+    if (message.type === 'activePage') {
+      this.rememberFocus(webview, message.pageId);
+      await this.syncFocusContext();
       return;
     }
     if (message.type === 'history') {
@@ -504,11 +584,45 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'toolbar') {
-      await this.onToolbar(message.action);
+      this.rememberFocus(webview, message.pageId);
+      await this.onToolbar(webview, message.action, message.pageId);
       return;
     }
-    if (message.type === 'topGroupsCollapsed') {
-      await this.syncTopCollapsedContext(message.collapsed);
+    if (message.type === 'setCollapsed') {
+      this.rememberFocus(webview, message.pageId);
+      if (this.store.page(message.pageId)) {
+        await this.store.updatePageView(message.pageId, { collapsed: message.collapsed });
+      }
+      if (webview === this.lastFocusedWebview) {
+        await this.syncTopCollapsedContext(message.allTopCollapsed);
+      }
+      return;
+    }
+    if (message.type === 'reorderPages') {
+      await this.store.reorderPages(message.orderedIds);
+      return;
+    }
+    if (message.type === 'openExternal') {
+      try {
+        const uri = vscode.Uri.parse(message.url);
+        if (uri.scheme === 'http' || uri.scheme === 'https') {
+          await vscode.env.openExternal(uri);
+        }
+      } catch {
+        // ignore bad urls
+      }
+      return;
+    }
+    if (message.type === 'createNote') {
+      await this.store.createNote(message.markerId, message.text);
+      return;
+    }
+    if (message.type === 'updateNote') {
+      await this.store.updateNote(message.noteId, message.text);
+      return;
+    }
+    if (message.type === 'deleteNote') {
+      await this.store.deleteNote(message.noteId);
       return;
     }
     if (message.type === 'setColor') {
@@ -522,6 +636,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!this.store.marker(message.to) || !message.relPath) {
         return;
       }
+      if (this.pageKindOfMarker(message.to) === 'notes') {
+        return;
+      }
       if (message.copy) {
         await this.store.assign([message.relPath], message.to);
       } else if (message.from && message.from !== message.to) {
@@ -531,6 +648,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'moveClass') {
       if (!this.store.marker(message.to) || !this.store.classDef(message.classId)) {
+        return;
+      }
+      if (this.pageKindOfMarker(message.to) === 'notes') {
         return;
       }
       if (message.copy) {
@@ -551,6 +671,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'placeMarker') {
+      if (this.store.pageOf(message.id) !== this.store.pageOf(message.target)) {
+        return;
+      }
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
       } catch (error) {
@@ -559,6 +682,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'nestMarker') {
+      if (this.store.pageOf(message.id) !== this.store.pageOf(message.parent)) {
+        return;
+      }
       const check = this.store.canNest(message.id, message.parent);
       if (!check.ok) {
         void vscode.window.showWarningMessage(`SGroup: ${check.reason}`);
@@ -572,7 +698,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'dropUris') {
-      if (!this.store.marker(message.to)) {
+      if (!this.store.marker(message.to) || this.pageKindOfMarker(message.to) === 'notes') {
         return;
       }
       const relPaths = message.uris
@@ -654,6 +780,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async postState(webview: vscode.Webview): Promise<void> {
+    const pages: MapPage[] = this.store.pages().map(([id, def]) => ({
+      id,
+      name: def.name,
+      kind: def.kind,
+      layout: def.layout,
+      groupsLayout: def.groupsLayout,
+      collapsed: { ...def.collapsed },
+    }));
     const groups: MapGroup[] = await Promise.all(
       this.store.markers().map(async ([id, def]) => ({
         id,
@@ -662,6 +796,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         color: def.color ? cssColor(def.color) : undefined,
         alias: def.alias,
         parent: def.parent,
+        page: this.store.pageOf(id),
         columns: def.columns ?? 'flow',
         depth: this.store.depthOf(id),
         subtreeHeight: this.store.subtreeHeight(id),
@@ -670,18 +805,46 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         classes: await Promise.all(
           this.store.classesOf(id).map(([classId, classDef]) => this.mapClass(classId, classDef)),
         ),
+        notes: this.store.notesOf(id).map(([noteId, note]) => ({
+          id: noteId,
+          markerId: note.markerId,
+          text: note.text,
+        })),
       })),
     );
+    const pageId = this.pageIdFor(webview);
+    const page = this.store.page(pageId);
     await webview.postMessage({
       type: 'state',
+      pages,
       groups,
-      layout: this.layout,
-      groupsLayout: this.groupsLayout,
+      maxPages: MAX_PAGES,
+      layout: page?.layout ?? 'chips',
+      groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
       active: this.activeRelPath(),
       error: this.store.lastError,
       history: this.store.historySteps(),
     });
+  }
+
+  private pageKindOfMarker(markerId: string): PageKind | undefined {
+    const pageId = this.store.pageOf(markerId);
+    return pageId ? this.store.page(pageId)?.kind : undefined;
+  }
+
+  private async syncFocusContext(): Promise<void> {
+    const focused = this.focusedPageId();
+    const page = this.store.page(focused);
+    if (!page) {
+      return;
+    }
+    await this.syncGroupsLayoutContext(page.groupsLayout);
+    const tops = this.store
+      .markers()
+      .filter(([id, def]) => !def.parent && this.store.pageOf(id) === focused);
+    const allCollapsed = tops.length > 0 && tops.every(([id]) => !!page.collapsed[id]);
+    await this.syncTopCollapsedContext(allCollapsed);
   }
 
   private postActive(): void {
@@ -737,28 +900,151 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     };
   }
 
-  private async onToolbar(action: IncomingToolbarAction): Promise<void> {
+  private async onToolbar(
+    webview: vscode.Webview,
+    action: IncomingToolbarAction,
+    pageId?: string,
+  ): Promise<void> {
+    const activePage = pageId && this.store.page(pageId) ? pageId : this.pageIdFor(webview);
     if (action === 'toggleLayout') {
-      await this.toggleLayout();
+      const page = this.store.page(activePage);
+      if (page) {
+        await this.store.updatePageView(activePage, {
+          layout: normalizeMapLayout(page.layout) === 'chips' ? 'list' : 'chips',
+        });
+      }
       return;
     }
     if (action === 'cycleGroups') {
-      await this.cycleGroupsLayout();
+      const page = this.store.page(activePage);
+      if (page) {
+        const current = normalizeGroupsLayout(page.groupsLayout);
+        const next =
+          GROUPS_LAYOUT_CYCLE[(GROUPS_LAYOUT_CYCLE.indexOf(current) + 1) % GROUPS_LAYOUT_CYCLE.length];
+        await this.store.updatePageView(activePage, { groupsLayout: next });
+        if (webview === this.lastFocusedWebview) {
+          await this.syncGroupsLayoutContext(next);
+        }
+      }
       return;
     }
     if (action === 'collapseGroups' || action === 'expandGroups') {
-      await this.setTopGroups(action === 'collapseGroups');
+      const collapsed = action === 'collapseGroups';
+      const page = this.store.page(activePage);
+      if (!page) {
+        return;
+      }
+      const next: Record<string, boolean> = { ...page.collapsed };
+      for (const [id, def] of this.store.markers()) {
+        if (def.parent || this.store.pageOf(id) !== activePage) {
+          continue;
+        }
+        if (collapsed) {
+          next[id] = true;
+        } else {
+          delete next[id];
+        }
+      }
+      await this.store.updatePageView(activePage, { collapsed: next });
+      if (webview === this.lastFocusedWebview) {
+        await this.syncTopCollapsedContext(collapsed);
+      }
+      return;
+    }
+    if (action === 'createMarker') {
+      await vscode.commands.executeCommand('sgroup.createMarker', activePage);
+      return;
+    }
+    if (action === 'createPage') {
+      await this.createPageFlow(webview);
+      return;
+    }
+    if (action === 'renamePage') {
+      await this.renamePageFlow(activePage);
+      return;
+    }
+    if (action === 'deletePage') {
+      await this.deletePageFlow(webview, activePage);
       return;
     }
     await vscode.commands.executeCommand(
-      action === 'createMarker'
-        ? 'sgroup.createMarker'
-        : action === 'refresh'
-          ? 'sgroup.refresh'
-          : action === 'openConfig'
-            ? 'sgroup.openConfig'
-            : 'sgroup.openSettings',
+      action === 'refresh'
+        ? 'sgroup.refresh'
+        : action === 'openConfig'
+          ? 'sgroup.openConfig'
+          : 'sgroup.openSettings',
     );
+  }
+
+  private async createPageFlow(webview: vscode.Webview): Promise<void> {
+    if (this.store.pages().length >= MAX_PAGES) {
+      return;
+    }
+    const name = await vscode.window.showInputBox({
+      title: 'New page',
+      prompt: 'Page name',
+      placeHolder: 'e.g. Docs, Rules, Tips',
+      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
+    });
+    if (!name) {
+      return;
+    }
+    const kindPick = await vscode.window.showQuickPick(
+      [
+        { label: 'Карта с файлами', description: 'Группы, папки и файлы', id: 'files' as const },
+        { label: 'Карта с записями', description: 'Группы и текстовые записи', id: 'notes' as const },
+      ],
+      { title: 'Тип страницы', placeHolder: 'Выбери тип' },
+    );
+    if (!kindPick) {
+      return;
+    }
+    const kind = normalizePageKind(kindPick.id) ?? 'files';
+    const id = await this.store.createPage(name, kind);
+    if (id) {
+      this.activePageByWebview.set(webview, id);
+      await webview.postMessage({ type: 'openPage', pageId: id });
+    }
+  }
+
+  private async renamePageFlow(pageId: string): Promise<void> {
+    const page = this.store.page(pageId);
+    if (!page) {
+      return;
+    }
+    const name = await vscode.window.showInputBox({
+      title: 'Rename page',
+      prompt: 'Page name',
+      value: page.name,
+      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
+    });
+    if (!name || name.trim() === page.name) {
+      return;
+    }
+    await this.store.renamePage(pageId, name);
+  }
+
+  private async deletePageFlow(webview: vscode.Webview, pageId: string): Promise<void> {
+    if (this.store.pages().length <= 1) {
+      return;
+    }
+    const page = this.store.page(pageId);
+    if (!page) {
+      return;
+    }
+    const confirm = await vscode.window.showWarningMessage(
+      `Удалить страницу «${page.name}» вместе со всеми группами?`,
+      { modal: true },
+      'Удалить',
+    );
+    if (confirm !== 'Удалить') {
+      return;
+    }
+    const neighbor = await this.store.deletePage(pageId);
+    if (neighbor) {
+      this.activePageByWebview.set(webview, neighbor);
+      await webview.postMessage({ type: 'openPage', pageId: neighbor });
+    }
   }
 
   private toolIcon(webview: vscode.Webview, name: string, mode?: string, hidden = false): string {
@@ -812,6 +1098,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ${icon('ellipsis')}
         </button>
         <div id="toolbar-menu" class="toolbar-menu" hidden role="menu">
+          <button type="button" data-action="createPage" role="menuitem" id="menu-create-page">${icon('add')}New Page</button>
+          <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>
+          <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
           <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>
           <button type="button" data-action="openConfig" role="menuitem">${icon('json')}Open Markers File</button>
           <button type="button" data-action="openSettings" role="menuitem">${icon('gear')}Open Settings</button>
@@ -819,6 +1108,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
     </div>
   </div>
+  <div id="pager" class="pager" hidden></div>
   <div id="root"></div>
   <script nonce="${nonce}" src="${js}"></script>
 </body>
