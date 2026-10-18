@@ -2,7 +2,7 @@
   "name": "syngroup",
   "displayName": "SynGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "2.0.8",
+  "version": "2.1.0",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -185,6 +185,20 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "sgroup.historyBack",
+        "title": "Назад",
+        "category": "SGroup",
+        "icon": "$(arrow-left)",
+        "enablement": "sgroup.canUndo"
+      },
+      {
+        "command": "sgroup.historyForward",
+        "title": "Вперёд",
+        "category": "SGroup",
+        "icon": "$(arrow-right)",
+        "enablement": "sgroup.canRedo"
+      },
+      {
         "command": "sgroup.openMap",
         "title": "Open Map",
         "category": "SGroup",
@@ -313,6 +327,16 @@
         }
       ],
       "view/title": [
+        {
+          "command": "sgroup.historyBack",
+          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "group": "navigation@-2"
+        },
+        {
+          "command": "sgroup.historyForward",
+          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "group": "navigation@-1"
+        },
         {
           "command": "sgroup.refresh",
           "when": "view == sgroupMap || view == sgroupMapBottom",
@@ -620,6 +644,16 @@
       ],
       "editor/title": [
         {
+          "command": "sgroup.historyBack",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "group": "navigation@-2"
+        },
+        {
+          "command": "sgroup.historyForward",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "group": "navigation@-1"
+        },
+        {
           "command": "sgroup.map.toggleLayout",
           "when": "activeWebviewPanelId == 'sgroupMapPanel'",
           "group": "navigation@0"
@@ -651,6 +685,18 @@
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "sgroup.historyBack",
+        "key": "alt+left",
+        "when": "focusedView == sgroupMap || focusedView == sgroupMapBottom || activeWebviewPanelId == sgroupMapPanel"
+      },
+      {
+        "command": "sgroup.historyForward",
+        "key": "alt+right",
+        "when": "focusedView == sgroupMap || focusedView == sgroupMapBottom || activeWebviewPanelId == sgroupMapPanel"
+      }
+    ],
     "configuration": {
       "title": "SGroup",
       "properties": {

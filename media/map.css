@@ -11,6 +11,46 @@ body {
   box-sizing: border-box;
 }
 
+.history-bar {
+  align-items: center;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--vscode-panel-border, transparent);
+  display: flex;
+  gap: 2px;
+  margin: 0 -10px 8px -8px;
+  padding: 4px 10px 4px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.history-btn {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.history-btn:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.history-btn:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.history-btn svg {
+  display: block;
+}
+
 body {
   /* Levels: group > subgroup > folder > file. Overridden from appearance via map.js. */
   --size-group: calc(var(--vscode-font-size, 13px) * 1.15);
@@ -27,7 +67,7 @@ body {
   font-family: var(--vscode-font-family);
   font-size: var(--size-file);
   line-height: 1.55;
-  padding: 6px 10px 14px 8px;
+  padding: 0 10px 14px 8px;
 }
 
 /* ---- top-level cards ---- */

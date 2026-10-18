@@ -1,5 +1,16 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+  decodeHistory,
+  emptyHistory,
+  encodeHistory,
+  fingerprint,
+  HISTORY_PATH,
+  peek,
+  remember,
+  take,
+  type HistoryStacks,
+} from './history';
 import { normalizeHex } from './palette';
 
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
@@ -159,6 +170,17 @@ export class MarkerStore implements vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   /** When migration fails, read this path for the current session instead of CONFIG_PATH. */
   private sessionConfigPath = CONFIG_PATH;
+  /** Canonical markers JSON at the history cursor. */
+  private present = '';
+  /**
+   * On-disk text when it differs from `present` but describes the same map
+   * (older key order). The first undo restores these exact bytes.
+   */
+  private baseline?: string;
+  private history: HistoryStacks = emptyHistory();
+  /** False until the history file has been read, so startup cannot record a step. */
+  private historyReady = false;
+  private queue: Promise<void> = Promise.resolve();
 
   readonly onDidChange = this.changeEmitter.event;
   lastError?: string;
@@ -169,14 +191,34 @@ export class MarkerStore implements vscode.Disposable {
     return vscode.Uri.joinPath(this.root, this.sessionConfigPath);
   }
 
+  get historyUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, HISTORY_PATH);
+  }
+
   get appearance(): Appearance {
     return this.data.appearance;
   }
 
+  get canUndo(): boolean {
+    return this.history.past.length > 0;
+  }
+
+  get canRedo(): boolean {
+    return this.history.future.length > 0;
+  }
+
+  historySteps(): { back: number; forward: number } {
+    return { back: this.history.past.length, forward: this.history.future.length };
+  }
+
   async init(): Promise<void> {
     await this.migrateLegacyConfig();
-    this.watch();
     await this.load();
+    await this.loadHistory();
+    this.historyReady = true;
+    await this.publishHistoryContext();
+    this.watch();
+    this.changeEmitter.fire();
   }
 
   dispose(): void {
@@ -185,19 +227,17 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   async load(): Promise<void> {
-    try {
-      const raw = await vscode.workspace.fs.readFile(this.configUri);
-      this.data = normalize(JSON.parse(Buffer.from(raw).toString('utf8')));
-      this.lastError = undefined;
-    } catch (error) {
-      if (isFileNotFound(error)) {
-        this.data = emptyData();
-        this.lastError = undefined;
-      } else {
-        this.lastError = `Cannot read ${this.sessionConfigPath}: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    }
-    this.changeEmitter.fire();
+    await this.enqueue(() => this.reloadFromDisk(true));
+  }
+
+  /** Restore the markers file to the previous step. */
+  async undo(): Promise<void> {
+    await this.travel(-1);
+  }
+
+  /** Reapply a step that was undone. */
+  async redo(): Promise<void> {
+    await this.travel(1);
   }
 
   async setAppearance(partial: Partial<Appearance>): Promise<void> {
@@ -738,8 +778,7 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   async commit(): Promise<void> {
-    await this.save();
-    this.changeEmitter.fire();
+    await this.enqueue(() => this.commitNow());
   }
 
   // ---- internals ----
@@ -750,7 +789,7 @@ export class MarkerStore implements vscode.Disposable {
       new vscode.RelativePattern(this.root, this.sessionConfigPath),
     );
     const reload = () => {
-      void this.load();
+      void this.enqueue(() => this.reloadFromDisk(false));
     };
     this.watcher.onDidChange(reload);
     this.watcher.onDidCreate(reload);
@@ -835,11 +874,172 @@ export class MarkerStore implements vscode.Disposable {
     this.sessionConfigPath = CONFIG_PATH;
   }
 
-  private async save(): Promise<void> {
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run = this.queue.then(task, task);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async reloadFromDisk(notify: boolean): Promise<void> {
+    let raw: string | undefined;
+    let next: MarkersFile | undefined;
+    try {
+      raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
+      next = normalize(JSON.parse(raw));
+      this.lastError = undefined;
+    } catch (error) {
+      if (isFileNotFound(error)) {
+        next = emptyData();
+        this.lastError = undefined;
+      } else {
+        this.lastError = `Cannot read ${this.sessionConfigPath}: ${error instanceof Error ? error.message : String(error)}`;
+        this.changeEmitter.fire();
+        return;
+      }
+    }
+    const canonical = this.captureFrom(next);
+    const baseline = raw !== undefined && raw !== canonical ? raw : undefined;
+    if (!this.historyReady) {
+      this.data = next;
+      this.present = canonical;
+      this.baseline = baseline;
+      this.changeEmitter.fire();
+      return;
+    }
+    if (canonical === this.present) {
+      if (notify) {
+        this.changeEmitter.fire();
+      }
+      return;
+    }
+    this.data = next;
+    this.present = canonical;
+    this.baseline = baseline;
+    this.history = emptyHistory();
+    await this.persistHistory();
+    this.changeEmitter.fire();
+    await this.publishHistoryContext();
+  }
+
+  private async loadHistory(): Promise<void> {
+    try {
+      const raw = await vscode.workspace.fs.readFile(this.historyUri);
+      this.history = decodeHistory(Buffer.from(raw).toString('utf8'), fingerprint(this.present));
+    } catch (error) {
+      if (!isFileNotFound(error)) {
+        console.error('SGroup history:', error);
+      }
+      this.history = emptyHistory();
+    }
+  }
+
+  private async commitNow(): Promise<void> {
+    const next = this.capture();
+    if (next === this.present) {
+      this.changeEmitter.fire();
+      return;
+    }
+    const previous = this.baseline ?? this.present;
+    await this.writeConfig(next);
+    this.baseline = undefined;
+    if (this.historyReady) {
+      remember(this.history, previous);
+    }
+    this.present = next;
+    if (this.historyReady) {
+      await this.persistHistory();
+      await this.publishHistoryContext();
+    }
+    this.changeEmitter.fire();
+  }
+
+  private async travel(direction: -1 | 1): Promise<void> {
+    await this.enqueue(async () => {
+      const snapshot = peek(this.history, direction);
+      if (snapshot === undefined) {
+        return;
+      }
+      let parsed: MarkersFile;
+      try {
+        parsed = normalize(JSON.parse(snapshot));
+      } catch (error) {
+        console.error('SGroup history:', error);
+        return;
+      }
+      const backup = this.data;
+      const backupBaseline = this.baseline;
+      const leaving = this.baseline ?? this.present;
+      this.data = parsed;
+      try {
+        await this.writeConfig(snapshot);
+        const restored = this.capture();
+        take(this.history, direction, leaving);
+        this.present = restored;
+        this.baseline = restored === snapshot ? undefined : snapshot;
+        await this.persistHistory();
+        this.changeEmitter.fire();
+        await this.publishHistoryContext();
+      } catch (error) {
+        this.data = backup;
+        this.baseline = backupBaseline;
+        throw error;
+      }
+    });
+  }
+
+  private async persistHistory(): Promise<void> {
+    try {
+      const json = encodeHistory(this.history, fingerprint(this.present));
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.historyUri, '..'));
+      await vscode.workspace.fs.writeFile(this.historyUri, Buffer.from(json, 'utf8'));
+    } catch (error) {
+      console.error('SGroup history:', error);
+    }
+  }
+
+  private async publishHistoryContext(): Promise<void> {
+    await vscode.commands.executeCommand('setContext', 'sgroup.canUndo', this.canUndo);
+    await vscode.commands.executeCommand('setContext', 'sgroup.canRedo', this.canRedo);
+  }
+
+  private captureFrom(data: MarkersFile): string {
+    const previous = this.data;
+    this.data = data;
+    try {
+      return this.capture();
+    } finally {
+      this.data = previous;
+    }
+  }
+
+  /** Stable JSON of the markers file. Same text after a reload means the same map. */
+  private capture(): string {
     const markers: Record<string, MarkerDef> = {};
     for (const [id, def] of this.markers()) {
-      const { parent, ...rest } = def;
-      markers[id] = parent ? { ...rest, parent } : { ...rest };
+      const entry = { label: def.label } as MarkerDef;
+      if (def.color) {
+        entry.color = def.color;
+      }
+      if (def.badge) {
+        entry.badge = def.badge;
+      }
+      if (def.icon) {
+        entry.icon = def.icon;
+      }
+      if (def.alias) {
+        entry.alias = def.alias;
+      }
+      if (def.columns) {
+        entry.columns = def.columns;
+      }
+      entry.order = def.order;
+      if (def.parent) {
+        entry.parent = def.parent;
+      }
+      markers[id] = entry;
     }
     const items: Record<string, string[]> = {};
     const added: Record<string, Record<string, number>> = {};
@@ -908,7 +1108,14 @@ export class MarkerStore implements vscode.Disposable {
         payload.classAdded = classAdded;
       }
     }
-    const json = JSON.stringify(payload, null, 2) + '\n';
+    return JSON.stringify(payload, null, 2) + '\n';
+  }
+
+  private async save(): Promise<void> {
+    await this.writeConfig(this.capture());
+  }
+
+  private async writeConfig(json: string): Promise<void> {
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.configUri, '..'));
     await vscode.workspace.fs.writeFile(this.configUri, Buffer.from(json, 'utf8'));
   }

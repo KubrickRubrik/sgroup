@@ -43,6 +43,12 @@
       "icon": "🔥",
       "order": 1,
       "parent": "3"
+    },
+    "ttest-6": {
+      "label": "Ttest 6",
+      "badge": "TT",
+      "icon": "⭐",
+      "order": 5
     }
   },
   "items": {

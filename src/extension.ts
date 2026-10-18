@@ -27,6 +27,8 @@ const COMMAND_IDS = [
   'sgroup.openConfig',
   'sgroup.openSettings',
   'sgroup.refresh',
+  'sgroup.historyBack',
+  'sgroup.historyForward',
   'sgroup.openMap',
   'sgroup.map.toggleLayout',
   'sgroup.map.move',
@@ -77,6 +79,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     map,
     settings,
     vscode.commands.registerCommand('sgroup.openSettings', () => settings.open()),
+    vscode.commands.registerCommand('sgroup.historyBack', () => store.undo()),
+    vscode.commands.registerCommand('sgroup.historyForward', () => store.redo()),
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.viewId, map, {
       webviewOptions: { retainContextWhenHidden: true },

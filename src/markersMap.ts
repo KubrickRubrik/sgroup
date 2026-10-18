@@ -66,6 +66,7 @@ type IncomingMessage =
   | { type: 'openClass'; classId: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
+  | { type: 'history'; direction: 'back' | 'forward' }
   | { type: 'setColor'; markerId: string; color: string }
   | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
   | { type: 'moveClass'; classId: string; from: string; to: string; copy?: boolean }
@@ -298,6 +299,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.postState(webview);
       return;
     }
+    if (message.type === 'history') {
+      if (message.direction === 'back') {
+        await this.store.undo();
+      } else {
+        await this.store.redo();
+      }
+      return;
+    }
     if (message.type === 'setColor') {
       const color = normalizeHex(message.color);
       if (color && this.store.marker(message.markerId)) {
@@ -468,6 +477,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       appearance: this.store.appearance,
       active: this.activeRelPath(),
       error: this.store.lastError,
+      history: this.store.historySteps(),
     });
   }
 
@@ -537,6 +547,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   <link rel="stylesheet" href="${css}">
 </head>
 <body data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+  <div class="history-bar">
+    <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.25 5.25 8 10 12.75" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="history-forward" class="history-btn" type="button" title="Вперёд" aria-label="Вперёд" disabled>
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.25 10.75 8 6 12.75" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
   <div id="root"></div>
   <script nonce="${nonce}" src="${js}"></script>
 </body>

@@ -3,6 +3,15 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
   const root = /** @type {HTMLElement} */ (document.getElementById('root'));
+  const historyBack = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-back'));
+  const historyForward = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-forward'));
+
+  historyBack?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'history', direction: 'back' });
+  });
+  historyForward?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'history', direction: 'forward' });
+  });
   const MIME = 'application/vnd.sgroup';
   const MAX_DEPTH = 2;
 
@@ -31,6 +40,7 @@
     if (message.type === 'state') {
       closeDirPopover();
       data = message;
+      setHistoryButtons(message.history);
       applyAppearance(message.appearance);
       render();
     } else if (message.type === 'active' && data) {
@@ -40,6 +50,20 @@
       fillDirPopover(message);
     }
   });
+
+  /** @param {{ back?: number, forward?: number } | undefined} history */
+  function setHistoryButtons(history) {
+    const back = history && history.back ? history.back : 0;
+    const forward = history && history.forward ? history.forward : 0;
+    if (historyBack) {
+      historyBack.disabled = back === 0;
+      historyBack.title = back ? 'Назад (' + back + ')' : 'Назад';
+    }
+    if (historyForward) {
+      historyForward.disabled = forward === 0;
+      historyForward.title = forward ? 'Вперёд (' + forward + ')' : 'Вперёд';
+    }
+  }
 
   /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number } | undefined} appearance */
   function applyAppearance(appearance) {
