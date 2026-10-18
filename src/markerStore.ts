@@ -5,12 +5,83 @@ import { normalizeHex } from './palette';
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
 export const MAX_MARKER_DEPTH = 2;
 
+/** Fixed markers file relative to the workspace folder. */
+export const CONFIG_PATH = '.vgroup/vgroup.json';
+const LEGACY_CONFIG_PATH = '.vscode/vgroup.json';
+
 /** Chip/list columns inside a single group. */
 export type ColumnsMode = 'flow' | '2' | '3';
 export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '2', '3'];
 
 export function normalizeColumns(value: unknown): ColumnsMode | undefined {
   return value === 'flow' || value === '2' || value === '3' ? value : undefined;
+}
+
+/** Map font scales and Explorer label saturation, stored in the markers file. */
+export interface Appearance {
+  /** Top-level group title scale vs editor font size. */
+  fontGroup: number;
+  /** Nested subgroup title scale. */
+  fontSubgroup: number;
+  /** Marked folder row scale. */
+  fontFolder: number;
+  /** File row scale. */
+  fontFile: number;
+  /** Multiplier applied to all four font scales. */
+  fontScale: number;
+  /** Explorer file-name tint: 0 = theme foreground, 100 = group stripe color. */
+  labelSaturation: number;
+}
+
+export const DEFAULT_APPEARANCE: Appearance = {
+  fontGroup: 1.15,
+  fontSubgroup: 1.05,
+  fontFolder: 0.95,
+  fontFile: 0.9,
+  fontScale: 1,
+  labelSaturation: 20,
+};
+
+const FONT_SCALE_MIN = 0.6;
+const FONT_SCALE_MAX = 2;
+const FONT_SCALE_STEP = 0.05;
+const MULTIPLIER_MIN = 1;
+const MULTIPLIER_MAX = 5;
+const MULTIPLIER_STEP = 0.1;
+const SATURATION_STEP = 5;
+
+export function snapFontScale(value: number): number {
+  return snap(value, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP);
+}
+
+export function snapMultiplier(value: number): number {
+  return snap(value, MULTIPLIER_MIN, MULTIPLIER_MAX, MULTIPLIER_STEP);
+}
+
+export function snapSaturation(value: number): number {
+  return snap(value, 0, 100, SATURATION_STEP);
+}
+
+function snap(value: number, min: number, max: number, step: number): number {
+  const clamped = Math.min(max, Math.max(min, value));
+  const snapped = Math.round(clamped / step) * step;
+  return Math.round(snapped * 1000) / 1000;
+}
+
+export function normalizeAppearance(raw: unknown): Appearance {
+  const source = raw && typeof raw === 'object' ? (raw as Partial<Record<keyof Appearance, unknown>>) : {};
+  return {
+    fontGroup: snapFontScale(numOr(source.fontGroup, DEFAULT_APPEARANCE.fontGroup)),
+    fontSubgroup: snapFontScale(numOr(source.fontSubgroup, DEFAULT_APPEARANCE.fontSubgroup)),
+    fontFolder: snapFontScale(numOr(source.fontFolder, DEFAULT_APPEARANCE.fontFolder)),
+    fontFile: snapFontScale(numOr(source.fontFile, DEFAULT_APPEARANCE.fontFile)),
+    fontScale: snapMultiplier(numOr(source.fontScale, DEFAULT_APPEARANCE.fontScale)),
+    labelSaturation: snapSaturation(numOr(source.labelSaturation, DEFAULT_APPEARANCE.labelSaturation)),
+  };
+}
+
+function numOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 export interface MarkerDef {
@@ -54,6 +125,7 @@ interface MarkersFile {
   classItems: Record<string, string[]>;
   /** classId → markerId → epoch ms */
   classAdded: Record<string, Record<string, number>>;
+  appearance: Appearance;
 }
 
 function emptyData(): MarkersFile {
@@ -66,6 +138,7 @@ function emptyData(): MarkersFile {
     classes: {},
     classItems: {},
     classAdded: {},
+    appearance: { ...DEFAULT_APPEARANCE },
   };
 }
 
@@ -83,29 +156,24 @@ export class MarkerStore implements vscode.Disposable {
   private data: MarkersFile = emptyData();
   private watcher?: vscode.FileSystemWatcher;
   private readonly changeEmitter = new vscode.EventEmitter<void>();
+  /** When migration fails, read this path for the current session instead of CONFIG_PATH. */
+  private sessionConfigPath = CONFIG_PATH;
 
   readonly onDidChange = this.changeEmitter.event;
   lastError?: string;
 
-  constructor(
-    readonly root: vscode.Uri,
-    private configPath: string,
-  ) {}
+  constructor(readonly root: vscode.Uri) {}
 
   get configUri(): vscode.Uri {
-    return vscode.Uri.joinPath(this.root, this.configPath);
+    return vscode.Uri.joinPath(this.root, this.sessionConfigPath);
+  }
+
+  get appearance(): Appearance {
+    return this.data.appearance;
   }
 
   async init(): Promise<void> {
-    this.watch();
-    await this.load();
-  }
-
-  async setConfigPath(configPath: string): Promise<void> {
-    if (configPath === this.configPath) {
-      return;
-    }
-    this.configPath = configPath;
+    await this.migrateLegacyConfig();
     this.watch();
     await this.load();
   }
@@ -125,10 +193,15 @@ export class MarkerStore implements vscode.Disposable {
         this.data = emptyData();
         this.lastError = undefined;
       } else {
-        this.lastError = `Cannot read ${this.configPath}: ${error instanceof Error ? error.message : String(error)}`;
+        this.lastError = `Cannot read ${this.sessionConfigPath}: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
     this.changeEmitter.fire();
+  }
+
+  async setAppearance(partial: Partial<Appearance>): Promise<void> {
+    this.data.appearance = normalizeAppearance({ ...this.data.appearance, ...partial });
+    await this.commit();
   }
 
   async ensureConfigExists(): Promise<void> {
@@ -672,13 +745,84 @@ export class MarkerStore implements vscode.Disposable {
 
   private watch(): void {
     this.watcher?.dispose();
-    this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.root, this.configPath));
+    this.watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(this.root, this.sessionConfigPath),
+    );
     const reload = () => {
       void this.load();
     };
     this.watcher.onDidChange(reload);
     this.watcher.onDidCreate(reload);
     this.watcher.onDidDelete(reload);
+  }
+
+  /**
+   * Move `.vscode/vgroup.json` (or a previously configured path) into `.vgroup/vgroup.json`.
+   * On write failure keeps reading the legacy file for this session.
+   */
+  private async migrateLegacyConfig(): Promise<void> {
+    const newUri = vscode.Uri.joinPath(this.root, CONFIG_PATH);
+    const configured = vscode.workspace.getConfiguration('vgroup').get<string>('configPath');
+    const legacyRel =
+      configured && configured !== CONFIG_PATH && configured !== LEGACY_CONFIG_PATH
+        ? configured
+        : LEGACY_CONFIG_PATH;
+    const legacyUri = vscode.Uri.joinPath(this.root, legacyRel);
+
+    const newExists = await fileExists(newUri);
+    const legacyExists = await fileExists(legacyUri);
+
+    if (!legacyExists) {
+      this.sessionConfigPath = CONFIG_PATH;
+      return;
+    }
+
+    if (!newExists) {
+      try {
+        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(newUri, '..'));
+        const raw = await vscode.workspace.fs.readFile(legacyUri);
+        await vscode.workspace.fs.writeFile(newUri, raw);
+        await vscode.workspace.fs.delete(legacyUri);
+        this.sessionConfigPath = CONFIG_PATH;
+      } catch (error) {
+        this.sessionConfigPath = legacyRel;
+        void vscode.window.showWarningMessage(
+          `VGroup: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return;
+    }
+
+    const overwrite = 'Перезаписать';
+    const keep = 'Оставить';
+    const choice = await vscode.window.showWarningMessage(
+      `VGroup: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
+      overwrite,
+      keep,
+    );
+    if (choice === overwrite) {
+      try {
+        const raw = await vscode.workspace.fs.readFile(legacyUri);
+        await vscode.workspace.fs.writeFile(newUri, raw);
+        await vscode.workspace.fs.delete(legacyUri);
+      } catch (error) {
+        void vscode.window.showWarningMessage(
+          `VGroup: не удалось перезаписать ${CONFIG_PATH}. ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    } else if (choice === keep) {
+      const bakUri = vscode.Uri.joinPath(this.root, `${legacyRel}.bak`);
+      try {
+        await vscode.workspace.fs.rename(legacyUri, bakUri, { overwrite: true });
+      } catch {
+        // Leaving the legacy file is fine; next launch will ask again.
+      }
+    }
+    this.sessionConfigPath = CONFIG_PATH;
   }
 
   private async save(): Promise<void> {
@@ -737,7 +881,13 @@ export class MarkerStore implements vscode.Disposable {
         classAdded[classId] = dates;
       }
     }
-    const payload: Record<string, unknown> = { version: 1, markers, items, added };
+    const payload: Record<string, unknown> = {
+      version: 1,
+      markers,
+      items,
+      added,
+      appearance: this.data.appearance,
+    };
     if (Object.keys(aliases).length > 0) {
       payload.aliases = aliases;
     }
@@ -834,6 +984,15 @@ export class MarkerStore implements vscode.Disposable {
   }
 }
 
+async function fileExists(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalize(raw: unknown): MarkersFile {
   const result = emptyData();
   if (!raw || typeof raw !== 'object') {
@@ -847,7 +1006,9 @@ function normalize(raw: unknown): MarkersFile {
     classes?: unknown;
     classItems?: unknown;
     classAdded?: unknown;
+    appearance?: unknown;
   };
+  result.appearance = normalizeAppearance(source.appearance);
 
   if (source.markers && typeof source.markers === 'object') {
     let index = 0;

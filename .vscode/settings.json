@@ -12,6 +12,12 @@
                 "color": "#51FF00FF",
                 "singleInstance": true,
                 "command": "sh ./sh_maestro.sh"
+            },
+            {
+                "name": "📦 Vsix",
+                "color": "#6CB6FFFF",
+                "singleInstance": true,
+                "command": "sh ./sh_vsix.sh"
             }
         ],
         "defaultColor": "white",

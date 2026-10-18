@@ -91,6 +91,14 @@
       "1": 1791901517508
     }
   },
+  "appearance": {
+    "fontGroup": 1.4,
+    "fontSubgroup": 1.3,
+    "fontFolder": 0.9,
+    "fontFile": 0.9,
+    "fontScale": 1,
+    "labelSaturation": 0
+  },
   "aliases": {
     ".vscode": "Настройки vs code",
     "LICENSE": "Лицензия"

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { MarkerStore } from './markerStore';
-import { themeLabelColorId } from './palette';
+import { themeColorId, themeLabelColorId } from './palette';
 
 export class MarkerDecorationProvider implements vscode.FileDecorationProvider, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
@@ -42,7 +42,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
     return new vscode.FileDecoration(
       shortBadge(primary?.badge),
       `VGroup: ${labels}`,
-      primary?.color ? new vscode.ThemeColor(themeLabelColorId(primary.color)) : undefined,
+      labelColor(defs, this.store.appearance.labelSaturation),
     );
   }
 }
@@ -53,4 +53,25 @@ export function shortBadge(badge: string | undefined): string | undefined {
     return undefined;
   }
   return Array.from(badge).slice(0, 2).join('') || undefined;
+}
+
+function labelColor(
+  defs: Array<{ color?: string }>,
+  saturation: number,
+): vscode.ThemeColor | undefined {
+  // Several markers on one file → keep the theme foreground.
+  if (defs.length !== 1) {
+    return undefined;
+  }
+  const color = defs[0]?.color;
+  if (!color) {
+    return undefined;
+  }
+  if (saturation <= 0) {
+    return new vscode.ThemeColor('foreground');
+  }
+  if (saturation >= 100) {
+    return new vscode.ThemeColor(themeColorId(color));
+  }
+  return new vscode.ThemeColor(themeLabelColorId(color, saturation));
 }

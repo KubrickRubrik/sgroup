@@ -422,6 +422,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       groups,
       layout: this.layout,
       groupsLayout: this.groupsLayout,
+      appearance: this.store.appearance,
       active: this.activeRelPath(),
       error: this.store.lastError,
     });

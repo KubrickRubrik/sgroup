@@ -31,6 +31,7 @@
     if (message.type === 'state') {
       closeDirPopover();
       data = message;
+      applyAppearance(message.appearance);
       render();
     } else if (message.type === 'active' && data) {
       data.active = message.active;
@@ -39,6 +40,21 @@
       fillDirPopover(message);
     }
   });
+
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number } | undefined} appearance */
+  function applyAppearance(appearance) {
+    const a = appearance || {};
+    const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
+    const base = 'var(--vscode-font-size, 13px)';
+    const set = (name, factor, fallback) => {
+      const value = typeof factor === 'number' ? factor : fallback;
+      document.body.style.setProperty(name, 'calc(' + base + ' * ' + value * scale + ')');
+    };
+    set('--size-group', a.fontGroup, 1.15);
+    set('--size-subgroup', a.fontSubgroup, 1.05);
+    set('--size-folder', a.fontFolder, 0.95);
+    set('--size-file', a.fontFile, 0.9);
+  }
 
   document.addEventListener('pointerdown', (event) => {
     if (!dirPopoverState) {

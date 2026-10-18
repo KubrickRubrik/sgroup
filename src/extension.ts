@@ -4,6 +4,7 @@ import { MarkerDecorationProvider } from './decorations';
 import { MarkerStore } from './markerStore';
 import { MarkersMapProvider } from './markersMap';
 import { MarkersTreeProvider } from './markersTree';
+import { SettingsPanel } from './settingsPanel';
 
 const COMMAND_IDS = [
   'vgroup.assign',
@@ -23,6 +24,7 @@ const COMMAND_IDS = [
   'vgroup.moveMarkerUp',
   'vgroup.moveMarkerDown',
   'vgroup.openConfig',
+  'vgroup.openSettings',
   'vgroup.refresh',
   'vgroup.openMap',
   'vgroup.map.toggleLayout',
@@ -43,7 +45,10 @@ const COMMAND_IDS = [
   'vgroup.openClass',
   'vgroup.openItem',
   'vgroup.openFull',
+  'vgroup.vsix',
 ];
+
+const VSIX_RELOAD_MARKER = 'version/.reload-window';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -58,17 +63,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
-  const config = () => vscode.workspace.getConfiguration('vgroup');
-  const store = new MarkerStore(folder.uri, config().get<string>('configPath', '.vscode/vgroup.json'));
+  const store = new MarkerStore(folder.uri);
   const tree = new MarkersTreeProvider(store);
   const decorations = new MarkerDecorationProvider(store);
   const map = new MarkersMapProvider(store, context.extensionUri, context.globalState);
+  const settings = new SettingsPanel(store, context.extensionUri);
 
   context.subscriptions.push(
     store,
     tree,
     decorations,
     map,
+    settings,
+    vscode.commands.registerCommand('vgroup.openSettings', () => settings.open()),
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.viewId, map, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -128,14 +135,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await store.commit();
       }
     }),
-    vscode.workspace.onDidChangeConfiguration(async (e) => {
-      if (e.affectsConfiguration('vgroup.configPath')) {
-        await store.setConfigPath(config().get<string>('configPath', '.vscode/vgroup.json'));
-      }
-    }),
     watchMarkedItems(store, () => {
       tree.refresh();
       map.refresh();
+    }),
+    watchVsixReloadMarker(folder.uri),
+    vscode.commands.registerCommand('vgroup.vsix', () => {
+      const term = vscode.window.createTerminal({ name: '📦 Vsix', cwd: folder.uri.fsPath });
+      term.show();
+      term.sendText('sh ./sh_vsix.sh');
     }),
   );
 
@@ -144,6 +152,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {}
+
+/** sh_vsix.sh touches version/.reload-window → full window reload (CLI cannot do this). */
+function watchVsixReloadMarker(root: vscode.Uri): vscode.Disposable {
+  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, VSIX_RELOAD_MARKER));
+  let reloading = false;
+  const trigger = async (uri: vscode.Uri) => {
+    if (reloading) {
+      return;
+    }
+    reloading = true;
+    try {
+      await vscode.workspace.fs.delete(uri);
+    } catch {
+      // ignore missing file
+    }
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  };
+  return vscode.Disposable.from(watcher, watcher.onDidCreate(trigger), watcher.onDidChange(trigger));
+}
 
 /** Refreshes the map when marked files appear or disappear (git checkout, terminal, other tools). */
 function watchMarkedItems(store: MarkerStore, onMarkedItemsChanged: () => void): vscode.Disposable {

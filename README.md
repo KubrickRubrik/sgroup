@@ -31,7 +31,7 @@ Activity Bar не нужна. Если карты не видно: `Cmd+Shift+P`
 - Кнопка в заголовке переключает вид «чипсы / список».
 - Активный файл подсвечивается рамкой.
 
-Размер шрифта зависит от уровня: название группы крупнее, папки чуть мельче, файлы ещё мельче. Внутри группы сначала идут папки. Базовый размер берётся из настроек редактора.
+Размер шрифта зависит от уровня: группа, подгруппа, папка, файл. Внутри группы сначала идут папки. Базовый размер берётся из настроек редактора и масштабируется в **VGroup: Open Settings**.
 
 **Карта колонкой вплотную к Explorer.** Кнопка `Toggle Map Column Beside Explorer` в заголовке VGroup или VGroup Map (или `Cmd+Shift+P` → **VGroup: Toggle Map Column Beside Explorer**). Получится раскладка:
 
@@ -49,7 +49,7 @@ Activity Bar не нужна. Если карты не видно: `Cmd+Shift+P`
 
 ## Хранение и обмен с командой
 
-Маркеры лежат в `.vscode/vgroup.json` (путь задаётся настройкой `vgroup.configPath`). Закоммить файл — и у всей команды будут те же группы.
+Маркеры и внешний вид карты лежат в `.vgroup/vgroup.json`. Закоммить файл — и у всей команды будут те же группы и размеры шрифта. Старый `.vscode/vgroup.json` при первом запуске переносится автоматически.
 
 ```json
 {
@@ -60,20 +60,28 @@ Activity Bar не нужна. Если карты не видно: `Cmd+Shift+P`
   "items": {
     "lib/ui/widgets/book_info_ad_banner_section.dart": ["ads"],
     "lib/utils/ads_config_ids.dart": ["ads"]
+  },
+  "appearance": {
+    "fontGroup": 1.15,
+    "fontSubgroup": 1.05,
+    "fontFolder": 0.95,
+    "fontFile": 0.9,
+    "fontScale": 1,
+    "labelSaturation": 20
   }
 }
 ```
 
-Файл можно править руками, панель обновится автоматически. Цвет — любой id цвета темы, например `charts.red`, `charts.blue`, `terminal.ansiCyan`.
+Файл можно править руками, панель обновится автоматически. Цвет — любой id цвета темы, например `charts.red`, `charts.blue`, `terminal.ansiCyan`. Внешний вид также открывается командой **VGroup: Open Settings**.
 
 ## Настройки
 
 | Настройка | По умолчанию | Описание |
 |---|---|---|
-| `vgroup.configPath` | `.vscode/vgroup.json` | Путь к файлу маркеров относительно корня проекта |
-| `vgroup.revealActiveFile` | `true` | Подсвечивать активный файл в панели |
 | `vgroup.showDecorations` | `true` | Бейджи и цвета в стандартном Explorer |
 | `vgroup.map.columnWidth` | `260` | Ширина колонки карты рядом с Explorer, px |
+
+Размеры шрифта карты и насыщенность имён в Explorer задаются во вкладке **VGroup: Open Settings** и пишутся в `appearance` внутри `.vgroup/vgroup.json`.
 ## Ограничения
 
 - Используется только первая папка workspace (multi-root пока не поддерживается).

@@ -2,7 +2,7 @@
   "name": "vgroup",
   "displayName": "VGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "0.15.3",
+  "version": "2.0.5",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -165,6 +165,18 @@
         "icon": "$(json)"
       },
       {
+        "command": "vgroup.openSettings",
+        "title": "Open Settings",
+        "category": "VGroup",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "vgroup.vsix",
+        "title": "Package / Install VSIX…",
+        "category": "VGroup",
+        "icon": "$(package)"
+      },
+      {
         "command": "vgroup.refresh",
         "title": "Refresh",
         "category": "VGroup",
@@ -308,6 +320,11 @@
           "command": "vgroup.openConfig",
           "when": "view == vgroupMap || view == vgroupMapBottom",
           "group": "more@2"
+        },
+        {
+          "command": "vgroup.openSettings",
+          "when": "view == vgroupMap || view == vgroupMapBottom",
+          "group": "more@3"
         },
         {
           "command": "vgroup.map.toggleLayout",
@@ -635,11 +652,6 @@
     "configuration": {
       "title": "VGroup",
       "properties": {
-        "vgroup.configPath": {
-          "type": "string",
-          "default": ".vscode/vgroup.json",
-          "description": "Path to the markers file, relative to the workspace folder. Commit it to share markers with the team."
-        },
         "vgroup.map.columnWidth": {
           "type": "number",
           "default": 260,
@@ -665,13 +677,193 @@
         }
       },
       {
-        "id": "vgroup.red.label",
-        "description": "VGroup Explorer label tint: Red",
+        "id": "vgroup.red.label.5",
+        "description": "VGroup Explorer label tint 5%: Red",
         "defaults": {
-          "dark": "#e7c5c6",
-          "light": "#5e3234",
-          "highContrast": "#e7c5c6",
-          "highContrastLight": "#5e3234"
+          "dark": "#e8e0e0",
+          "light": "#332c2c",
+          "highContrast": "#e8e0e0",
+          "highContrastLight": "#332c2c"
+        }
+      },
+      {
+        "id": "vgroup.red.label.10",
+        "description": "VGroup Explorer label tint 10%: Red",
+        "defaults": {
+          "dark": "#e8d8d9",
+          "light": "#3d2d2e",
+          "highContrast": "#e8d8d9",
+          "highContrastLight": "#3d2d2e"
+        }
+      },
+      {
+        "id": "vgroup.red.label.15",
+        "description": "VGroup Explorer label tint 15%: Red",
+        "defaults": {
+          "dark": "#e8d0d1",
+          "light": "#462e2f",
+          "highContrast": "#e8d0d1",
+          "highContrastLight": "#462e2f"
+        }
+      },
+      {
+        "id": "vgroup.red.label.20",
+        "description": "VGroup Explorer label tint 20%: Red",
+        "defaults": {
+          "dark": "#e7c8c9",
+          "light": "#4f3031",
+          "highContrast": "#e7c8c9",
+          "highContrastLight": "#4f3031"
+        }
+      },
+      {
+        "id": "vgroup.red.label.25",
+        "description": "VGroup Explorer label tint 25%: Red",
+        "defaults": {
+          "dark": "#e7c0c1",
+          "light": "#593233",
+          "highContrast": "#e7c0c1",
+          "highContrastLight": "#593233"
+        }
+      },
+      {
+        "id": "vgroup.red.label.30",
+        "description": "VGroup Explorer label tint 30%: Red",
+        "defaults": {
+          "dark": "#e7b8b9",
+          "light": "#623335",
+          "highContrast": "#e7b8b9",
+          "highContrastLight": "#623335"
+        }
+      },
+      {
+        "id": "vgroup.red.label.35",
+        "description": "VGroup Explorer label tint 35%: Red",
+        "defaults": {
+          "dark": "#e7b0b2",
+          "light": "#6b3536",
+          "highContrast": "#e7b0b2",
+          "highContrastLight": "#6b3536"
+        }
+      },
+      {
+        "id": "vgroup.red.label.40",
+        "description": "VGroup Explorer label tint 40%: Red",
+        "defaults": {
+          "dark": "#e7a8aa",
+          "light": "#753638",
+          "highContrast": "#e7a8aa",
+          "highContrastLight": "#753638"
+        }
+      },
+      {
+        "id": "vgroup.red.label.45",
+        "description": "VGroup Explorer label tint 45%: Red",
+        "defaults": {
+          "dark": "#e7a0a2",
+          "light": "#7e383a",
+          "highContrast": "#e7a0a2",
+          "highContrastLight": "#7e383a"
+        }
+      },
+      {
+        "id": "vgroup.red.label.50",
+        "description": "VGroup Explorer label tint 50%: Red",
+        "defaults": {
+          "dark": "#e7989b",
+          "light": "#88393c",
+          "highContrast": "#e7989b",
+          "highContrastLight": "#88393c"
+        }
+      },
+      {
+        "id": "vgroup.red.label.55",
+        "description": "VGroup Explorer label tint 55%: Red",
+        "defaults": {
+          "dark": "#e69093",
+          "light": "#913b3d",
+          "highContrast": "#e69093",
+          "highContrastLight": "#913b3d"
+        }
+      },
+      {
+        "id": "vgroup.red.label.60",
+        "description": "VGroup Explorer label tint 60%: Red",
+        "defaults": {
+          "dark": "#e6888b",
+          "light": "#9a3c3f",
+          "highContrast": "#e6888b",
+          "highContrastLight": "#9a3c3f"
+        }
+      },
+      {
+        "id": "vgroup.red.label.65",
+        "description": "VGroup Explorer label tint 65%: Red",
+        "defaults": {
+          "dark": "#e68083",
+          "light": "#a43e41",
+          "highContrast": "#e68083",
+          "highContrastLight": "#a43e41"
+        }
+      },
+      {
+        "id": "vgroup.red.label.70",
+        "description": "VGroup Explorer label tint 70%: Red",
+        "defaults": {
+          "dark": "#e6787c",
+          "light": "#ad3f43",
+          "highContrast": "#e6787c",
+          "highContrastLight": "#ad3f43"
+        }
+      },
+      {
+        "id": "vgroup.red.label.75",
+        "description": "VGroup Explorer label tint 75%: Red",
+        "defaults": {
+          "dark": "#e67074",
+          "light": "#b64144",
+          "highContrast": "#e67074",
+          "highContrastLight": "#b64144"
+        }
+      },
+      {
+        "id": "vgroup.red.label.80",
+        "description": "VGroup Explorer label tint 80%: Red",
+        "defaults": {
+          "dark": "#e6686c",
+          "light": "#c04246",
+          "highContrast": "#e6686c",
+          "highContrastLight": "#c04246"
+        }
+      },
+      {
+        "id": "vgroup.red.label.85",
+        "description": "VGroup Explorer label tint 85%: Red",
+        "defaults": {
+          "dark": "#e56064",
+          "light": "#c94448",
+          "highContrast": "#e56064",
+          "highContrastLight": "#c94448"
+        }
+      },
+      {
+        "id": "vgroup.red.label.90",
+        "description": "VGroup Explorer label tint 90%: Red",
+        "defaults": {
+          "dark": "#e5585d",
+          "light": "#d2454a",
+          "highContrast": "#e5585d",
+          "highContrastLight": "#d2454a"
+        }
+      },
+      {
+        "id": "vgroup.red.label.95",
+        "description": "VGroup Explorer label tint 95%: Red",
+        "defaults": {
+          "dark": "#e55055",
+          "light": "#dc474b",
+          "highContrast": "#e55055",
+          "highContrastLight": "#dc474b"
         }
       },
       {
@@ -685,13 +877,193 @@
         }
       },
       {
-        "id": "vgroup.tomato.label",
-        "description": "VGroup Explorer label tint: Tomato",
+        "id": "vgroup.tomato.label.5",
+        "description": "VGroup Explorer label tint 5%: Tomato",
         "defaults": {
-          "dark": "#e7c6bf",
-          "light": "#5e342b",
-          "highContrast": "#e7c6bf",
-          "highContrastLight": "#5e342b"
+          "dark": "#e8e0df",
+          "light": "#332c2a",
+          "highContrast": "#e8e0df",
+          "highContrastLight": "#332c2a"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.10",
+        "description": "VGroup Explorer label tint 10%: Tomato",
+        "defaults": {
+          "dark": "#e8d9d5",
+          "light": "#3d2e2a",
+          "highContrast": "#e8d9d5",
+          "highContrastLight": "#3d2e2a"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.15",
+        "description": "VGroup Explorer label tint 15%: Tomato",
+        "defaults": {
+          "dark": "#e8d1cc",
+          "light": "#462f2b",
+          "highContrast": "#e8d1cc",
+          "highContrastLight": "#462f2b"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.20",
+        "description": "VGroup Explorer label tint 20%: Tomato",
+        "defaults": {
+          "dark": "#e7c9c3",
+          "light": "#4f312b",
+          "highContrast": "#e7c9c3",
+          "highContrastLight": "#4f312b"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.25",
+        "description": "VGroup Explorer label tint 25%: Tomato",
+        "defaults": {
+          "dark": "#e7c1ba",
+          "light": "#59332b",
+          "highContrast": "#e7c1ba",
+          "highContrastLight": "#59332b"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.30",
+        "description": "VGroup Explorer label tint 30%: Tomato",
+        "defaults": {
+          "dark": "#e7b9b0",
+          "light": "#62352b",
+          "highContrast": "#e7b9b0",
+          "highContrastLight": "#62352b"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.35",
+        "description": "VGroup Explorer label tint 35%: Tomato",
+        "defaults": {
+          "dark": "#e7b2a7",
+          "light": "#6b362b",
+          "highContrast": "#e7b2a7",
+          "highContrastLight": "#6b362b"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.40",
+        "description": "VGroup Explorer label tint 40%: Tomato",
+        "defaults": {
+          "dark": "#e7aa9e",
+          "light": "#75382c",
+          "highContrast": "#e7aa9e",
+          "highContrastLight": "#75382c"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.45",
+        "description": "VGroup Explorer label tint 45%: Tomato",
+        "defaults": {
+          "dark": "#e7a294",
+          "light": "#7e3a2c",
+          "highContrast": "#e7a294",
+          "highContrastLight": "#7e3a2c"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.50",
+        "description": "VGroup Explorer label tint 50%: Tomato",
+        "defaults": {
+          "dark": "#e79b8b",
+          "light": "#883c2c",
+          "highContrast": "#e79b8b",
+          "highContrastLight": "#883c2c"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.55",
+        "description": "VGroup Explorer label tint 55%: Tomato",
+        "defaults": {
+          "dark": "#e69382",
+          "light": "#913d2c",
+          "highContrast": "#e69382",
+          "highContrastLight": "#913d2c"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.60",
+        "description": "VGroup Explorer label tint 60%: Tomato",
+        "defaults": {
+          "dark": "#e68b78",
+          "light": "#9a3f2c",
+          "highContrast": "#e68b78",
+          "highContrastLight": "#9a3f2c"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.65",
+        "description": "VGroup Explorer label tint 65%: Tomato",
+        "defaults": {
+          "dark": "#e6836f",
+          "light": "#a4412d",
+          "highContrast": "#e6836f",
+          "highContrastLight": "#a4412d"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.70",
+        "description": "VGroup Explorer label tint 70%: Tomato",
+        "defaults": {
+          "dark": "#e67c66",
+          "light": "#ad432d",
+          "highContrast": "#e67c66",
+          "highContrastLight": "#ad432d"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.75",
+        "description": "VGroup Explorer label tint 75%: Tomato",
+        "defaults": {
+          "dark": "#e6745d",
+          "light": "#b6442d",
+          "highContrast": "#e6745d",
+          "highContrastLight": "#b6442d"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.80",
+        "description": "VGroup Explorer label tint 80%: Tomato",
+        "defaults": {
+          "dark": "#e66c53",
+          "light": "#c0462d",
+          "highContrast": "#e66c53",
+          "highContrastLight": "#c0462d"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.85",
+        "description": "VGroup Explorer label tint 85%: Tomato",
+        "defaults": {
+          "dark": "#e5644a",
+          "light": "#c9482d",
+          "highContrast": "#e5644a",
+          "highContrastLight": "#c9482d"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.90",
+        "description": "VGroup Explorer label tint 90%: Tomato",
+        "defaults": {
+          "dark": "#e55d41",
+          "light": "#d24a2e",
+          "highContrast": "#e55d41",
+          "highContrastLight": "#d24a2e"
+        }
+      },
+      {
+        "id": "vgroup.tomato.label.95",
+        "description": "VGroup Explorer label tint 95%: Tomato",
+        "defaults": {
+          "dark": "#e55537",
+          "light": "#dc4b2e",
+          "highContrast": "#e55537",
+          "highContrastLight": "#dc4b2e"
         }
       },
       {
@@ -705,13 +1077,193 @@
         }
       },
       {
-        "id": "vgroup.orange.label",
-        "description": "VGroup Explorer label tint: Orange",
+        "id": "vgroup.orange.label.5",
+        "description": "VGroup Explorer label tint 5%: Orange",
         "defaults": {
-          "dark": "#ebcdba",
-          "light": "#633c24",
-          "highContrast": "#ebcdba",
-          "highContrastLight": "#633c24"
+          "dark": "#e9e2dd",
+          "light": "#342d29",
+          "highContrast": "#e9e2dd",
+          "highContrastLight": "#342d29"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.10",
+        "description": "VGroup Explorer label tint 10%: Orange",
+        "defaults": {
+          "dark": "#eadcd3",
+          "light": "#3f3128",
+          "highContrast": "#eadcd3",
+          "highContrastLight": "#3f3128"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.15",
+        "description": "VGroup Explorer label tint 15%: Orange",
+        "defaults": {
+          "dark": "#ead5c8",
+          "light": "#493427",
+          "highContrast": "#ead5c8",
+          "highContrastLight": "#493427"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.20",
+        "description": "VGroup Explorer label tint 20%: Orange",
+        "defaults": {
+          "dark": "#ebcfbe",
+          "light": "#533726",
+          "highContrast": "#ebcfbe",
+          "highContrastLight": "#533726"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.25",
+        "description": "VGroup Explorer label tint 25%: Orange",
+        "defaults": {
+          "dark": "#ecc9b3",
+          "light": "#5d3a25",
+          "highContrast": "#ecc9b3",
+          "highContrastLight": "#5d3a25"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.30",
+        "description": "VGroup Explorer label tint 30%: Orange",
+        "defaults": {
+          "dark": "#ecc2a9",
+          "light": "#683e24",
+          "highContrast": "#ecc2a9",
+          "highContrastLight": "#683e24"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.35",
+        "description": "VGroup Explorer label tint 35%: Orange",
+        "defaults": {
+          "dark": "#edbc9e",
+          "light": "#724123",
+          "highContrast": "#edbc9e",
+          "highContrastLight": "#724123"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.40",
+        "description": "VGroup Explorer label tint 40%: Orange",
+        "defaults": {
+          "dark": "#eeb694",
+          "light": "#7c4422",
+          "highContrast": "#eeb694",
+          "highContrastLight": "#7c4422"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.45",
+        "description": "VGroup Explorer label tint 45%: Orange",
+        "defaults": {
+          "dark": "#efb089",
+          "light": "#864721",
+          "highContrast": "#efb089",
+          "highContrastLight": "#864721"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.50",
+        "description": "VGroup Explorer label tint 50%: Orange",
+        "defaults": {
+          "dark": "#f0aa7f",
+          "light": "#914b20",
+          "highContrast": "#f0aa7f",
+          "highContrastLight": "#914b20"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.55",
+        "description": "VGroup Explorer label tint 55%: Orange",
+        "defaults": {
+          "dark": "#f0a374",
+          "light": "#9b4e1e",
+          "highContrast": "#f0a374",
+          "highContrastLight": "#9b4e1e"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.60",
+        "description": "VGroup Explorer label tint 60%: Orange",
+        "defaults": {
+          "dark": "#f19d69",
+          "light": "#a5511d",
+          "highContrast": "#f19d69",
+          "highContrastLight": "#a5511d"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.65",
+        "description": "VGroup Explorer label tint 65%: Orange",
+        "defaults": {
+          "dark": "#f2975f",
+          "light": "#af541c",
+          "highContrast": "#f2975f",
+          "highContrastLight": "#af541c"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.70",
+        "description": "VGroup Explorer label tint 70%: Orange",
+        "defaults": {
+          "dark": "#f39154",
+          "light": "#b9581b",
+          "highContrast": "#f39154",
+          "highContrastLight": "#b9581b"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.75",
+        "description": "VGroup Explorer label tint 75%: Orange",
+        "defaults": {
+          "dark": "#f38a4a",
+          "light": "#c45b1a",
+          "highContrast": "#f38a4a",
+          "highContrastLight": "#c45b1a"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.80",
+        "description": "VGroup Explorer label tint 80%: Orange",
+        "defaults": {
+          "dark": "#f4843f",
+          "light": "#ce5e19",
+          "highContrast": "#f4843f",
+          "highContrastLight": "#ce5e19"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.85",
+        "description": "VGroup Explorer label tint 85%: Orange",
+        "defaults": {
+          "dark": "#f57e35",
+          "light": "#d86118",
+          "highContrast": "#f57e35",
+          "highContrastLight": "#d86118"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.90",
+        "description": "VGroup Explorer label tint 90%: Orange",
+        "defaults": {
+          "dark": "#f6782a",
+          "light": "#e36517",
+          "highContrast": "#f6782a",
+          "highContrastLight": "#e36517"
+        }
+      },
+      {
+        "id": "vgroup.orange.label.95",
+        "description": "VGroup Explorer label tint 95%: Orange",
+        "defaults": {
+          "dark": "#f67120",
+          "light": "#ed6816",
+          "highContrast": "#f67120",
+          "highContrastLight": "#ed6816"
         }
       },
       {
@@ -725,13 +1277,193 @@
         }
       },
       {
-        "id": "vgroup.amber.label",
-        "description": "VGroup Explorer label tint: Amber",
+        "id": "vgroup.amber.label.5",
+        "description": "VGroup Explorer label tint 5%: Amber",
         "defaults": {
-          "dark": "#eddcbd",
-          "light": "#665028",
-          "highContrast": "#eddcbd",
-          "highContrastLight": "#665028"
+          "dark": "#e9e5de",
+          "light": "#35312a",
+          "highContrast": "#e9e5de",
+          "highContrastLight": "#35312a"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.10",
+        "description": "VGroup Explorer label tint 10%: Amber",
+        "defaults": {
+          "dark": "#eae3d4",
+          "light": "#3f3829",
+          "highContrast": "#eae3d4",
+          "highContrastLight": "#3f3829"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.15",
+        "description": "VGroup Explorer label tint 15%: Amber",
+        "defaults": {
+          "dark": "#ebe0cb",
+          "light": "#4a3e29",
+          "highContrast": "#ebe0cb",
+          "highContrastLight": "#4a3e29"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.20",
+        "description": "VGroup Explorer label tint 20%: Amber",
+        "defaults": {
+          "dark": "#edddc1",
+          "light": "#554529",
+          "highContrast": "#edddc1",
+          "highContrastLight": "#554529"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.25",
+        "description": "VGroup Explorer label tint 25%: Amber",
+        "defaults": {
+          "dark": "#eedbb7",
+          "light": "#5f4c29",
+          "highContrast": "#eedbb7",
+          "highContrastLight": "#5f4c29"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.30",
+        "description": "VGroup Explorer label tint 30%: Amber",
+        "defaults": {
+          "dark": "#efd8ad",
+          "light": "#6a5328",
+          "highContrast": "#efd8ad",
+          "highContrastLight": "#6a5328"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.35",
+        "description": "VGroup Explorer label tint 35%: Amber",
+        "defaults": {
+          "dark": "#f0d5a3",
+          "light": "#755a28",
+          "highContrast": "#f0d5a3",
+          "highContrastLight": "#755a28"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.40",
+        "description": "VGroup Explorer label tint 40%: Amber",
+        "defaults": {
+          "dark": "#f1d29a",
+          "light": "#7f6028",
+          "highContrast": "#f1d29a",
+          "highContrastLight": "#7f6028"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.45",
+        "description": "VGroup Explorer label tint 45%: Amber",
+        "defaults": {
+          "dark": "#f2d090",
+          "light": "#8a6727",
+          "highContrast": "#f2d090",
+          "highContrastLight": "#8a6727"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.50",
+        "description": "VGroup Explorer label tint 50%: Amber",
+        "defaults": {
+          "dark": "#f4cd86",
+          "light": "#956e27",
+          "highContrast": "#f4cd86",
+          "highContrastLight": "#956e27"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.55",
+        "description": "VGroup Explorer label tint 55%: Amber",
+        "defaults": {
+          "dark": "#f5ca7c",
+          "light": "#9f7527",
+          "highContrast": "#f5ca7c",
+          "highContrastLight": "#9f7527"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.60",
+        "description": "VGroup Explorer label tint 60%: Amber",
+        "defaults": {
+          "dark": "#f6c872",
+          "light": "#aa7c26",
+          "highContrast": "#f6c872",
+          "highContrastLight": "#aa7c26"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.65",
+        "description": "VGroup Explorer label tint 65%: Amber",
+        "defaults": {
+          "dark": "#f7c569",
+          "light": "#b48226",
+          "highContrast": "#f7c569",
+          "highContrastLight": "#b48226"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.70",
+        "description": "VGroup Explorer label tint 70%: Amber",
+        "defaults": {
+          "dark": "#f8c25f",
+          "light": "#bf8926",
+          "highContrast": "#f8c25f",
+          "highContrastLight": "#bf8926"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.75",
+        "description": "VGroup Explorer label tint 75%: Amber",
+        "defaults": {
+          "dark": "#f9c055",
+          "light": "#ca9026",
+          "highContrast": "#f9c055",
+          "highContrastLight": "#ca9026"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.80",
+        "description": "VGroup Explorer label tint 80%: Amber",
+        "defaults": {
+          "dark": "#fabd4b",
+          "light": "#d49725",
+          "highContrast": "#fabd4b",
+          "highContrastLight": "#d49725"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.85",
+        "description": "VGroup Explorer label tint 85%: Amber",
+        "defaults": {
+          "dark": "#fcba41",
+          "light": "#df9e25",
+          "highContrast": "#fcba41",
+          "highContrastLight": "#df9e25"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.90",
+        "description": "VGroup Explorer label tint 90%: Amber",
+        "defaults": {
+          "dark": "#fdb738",
+          "light": "#eaa425",
+          "highContrast": "#fdb738",
+          "highContrastLight": "#eaa425"
+        }
+      },
+      {
+        "id": "vgroup.amber.label.95",
+        "description": "VGroup Explorer label tint 95%: Amber",
+        "defaults": {
+          "dark": "#feb52e",
+          "light": "#f4ab24",
+          "highContrast": "#feb52e",
+          "highContrastLight": "#f4ab24"
         }
       },
       {
@@ -745,13 +1477,193 @@
         }
       },
       {
-        "id": "vgroup.yellow.label",
-        "description": "VGroup Explorer label tint: Yellow",
+        "id": "vgroup.yellow.label.5",
+        "description": "VGroup Explorer label tint 5%: Yellow",
         "defaults": {
-          "dark": "#ebe5b7",
-          "light": "#635b21",
-          "highContrast": "#ebe5b7",
-          "highContrastLight": "#635b21"
+          "dark": "#e9e7dd",
+          "light": "#343328",
+          "highContrast": "#e9e7dd",
+          "highContrastLight": "#343328"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.10",
+        "description": "VGroup Explorer label tint 10%: Yellow",
+        "defaults": {
+          "dark": "#e9e7d2",
+          "light": "#3e3c27",
+          "highContrast": "#e9e7d2",
+          "highContrastLight": "#3e3c27"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.15",
+        "description": "VGroup Explorer label tint 15%: Yellow",
+        "defaults": {
+          "dark": "#eae6c7",
+          "light": "#484425",
+          "highContrast": "#eae6c7",
+          "highContrastLight": "#484425"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.20",
+        "description": "VGroup Explorer label tint 20%: Yellow",
+        "defaults": {
+          "dark": "#ebe5bc",
+          "light": "#534d24",
+          "highContrast": "#ebe5bc",
+          "highContrastLight": "#534d24"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.25",
+        "description": "VGroup Explorer label tint 25%: Yellow",
+        "defaults": {
+          "dark": "#ebe4b1",
+          "light": "#5d5622",
+          "highContrast": "#ebe4b1",
+          "highContrastLight": "#5d5622"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.30",
+        "description": "VGroup Explorer label tint 30%: Yellow",
+        "defaults": {
+          "dark": "#ece3a5",
+          "light": "#675f20",
+          "highContrast": "#ece3a5",
+          "highContrastLight": "#675f20"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.35",
+        "description": "VGroup Explorer label tint 35%: Yellow",
+        "defaults": {
+          "dark": "#ede39a",
+          "light": "#71671f",
+          "highContrast": "#ede39a",
+          "highContrastLight": "#71671f"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.40",
+        "description": "VGroup Explorer label tint 40%: Yellow",
+        "defaults": {
+          "dark": "#ede28f",
+          "light": "#7b701d",
+          "highContrast": "#ede28f",
+          "highContrastLight": "#7b701d"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.45",
+        "description": "VGroup Explorer label tint 45%: Yellow",
+        "defaults": {
+          "dark": "#eee184",
+          "light": "#85791c",
+          "highContrast": "#eee184",
+          "highContrastLight": "#85791c"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.50",
+        "description": "VGroup Explorer label tint 50%: Yellow",
+        "defaults": {
+          "dark": "#efe179",
+          "light": "#90821a",
+          "highContrast": "#efe179",
+          "highContrastLight": "#90821a"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.55",
+        "description": "VGroup Explorer label tint 55%: Yellow",
+        "defaults": {
+          "dark": "#efe06e",
+          "light": "#9a8a18",
+          "highContrast": "#efe06e",
+          "highContrastLight": "#9a8a18"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.60",
+        "description": "VGroup Explorer label tint 60%: Yellow",
+        "defaults": {
+          "dark": "#f0df63",
+          "light": "#a49317",
+          "highContrast": "#f0df63",
+          "highContrastLight": "#a49317"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.65",
+        "description": "VGroup Explorer label tint 65%: Yellow",
+        "defaults": {
+          "dark": "#f0de58",
+          "light": "#ae9c15",
+          "highContrast": "#f0de58",
+          "highContrastLight": "#ae9c15"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.70",
+        "description": "VGroup Explorer label tint 70%: Yellow",
+        "defaults": {
+          "dark": "#f1de4d",
+          "light": "#b8a414",
+          "highContrast": "#f1de4d",
+          "highContrastLight": "#b8a414"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.75",
+        "description": "VGroup Explorer label tint 75%: Yellow",
+        "defaults": {
+          "dark": "#f2dd42",
+          "light": "#c2ad12",
+          "highContrast": "#f2dd42",
+          "highContrastLight": "#c2ad12"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.80",
+        "description": "VGroup Explorer label tint 80%: Yellow",
+        "defaults": {
+          "dark": "#f2dc36",
+          "light": "#ccb610",
+          "highContrast": "#f2dc36",
+          "highContrastLight": "#ccb610"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.85",
+        "description": "VGroup Explorer label tint 85%: Yellow",
+        "defaults": {
+          "dark": "#f3db2b",
+          "light": "#d7bf0f",
+          "highContrast": "#f3db2b",
+          "highContrastLight": "#d7bf0f"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.90",
+        "description": "VGroup Explorer label tint 90%: Yellow",
+        "defaults": {
+          "dark": "#f4db20",
+          "light": "#e1c80d",
+          "highContrast": "#f4db20",
+          "highContrastLight": "#e1c80d"
+        }
+      },
+      {
+        "id": "vgroup.yellow.label.95",
+        "description": "VGroup Explorer label tint 95%: Yellow",
+        "defaults": {
+          "dark": "#f4da15",
+          "light": "#ebd00c",
+          "highContrast": "#f4da15",
+          "highContrastLight": "#ebd00c"
         }
       },
       {
@@ -765,13 +1677,193 @@
         }
       },
       {
-        "id": "vgroup.lime.label",
-        "description": "VGroup Explorer label tint: Lime",
+        "id": "vgroup.lime.label.5",
+        "description": "VGroup Explorer label tint 5%: Lime",
         "defaults": {
-          "dark": "#d7e4be",
-          "light": "#495a2a",
-          "highContrast": "#d7e4be",
-          "highContrastLight": "#495a2a"
+          "dark": "#e4e7de",
+          "light": "#30332a",
+          "highContrast": "#e4e7de",
+          "highContrastLight": "#30332a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.10",
+        "description": "VGroup Explorer label tint 10%: Lime",
+        "defaults": {
+          "dark": "#e0e6d5",
+          "light": "#353b2a",
+          "highContrast": "#e0e6d5",
+          "highContrastLight": "#353b2a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.15",
+        "description": "VGroup Explorer label tint 15%: Lime",
+        "defaults": {
+          "dark": "#dce5cc",
+          "light": "#3b442a",
+          "highContrast": "#dce5cc",
+          "highContrastLight": "#3b442a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.20",
+        "description": "VGroup Explorer label tint 20%: Lime",
+        "defaults": {
+          "dark": "#d8e4c2",
+          "light": "#404c2a",
+          "highContrast": "#d8e4c2",
+          "highContrastLight": "#404c2a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.25",
+        "description": "VGroup Explorer label tint 25%: Lime",
+        "defaults": {
+          "dark": "#d4e3b9",
+          "light": "#46552a",
+          "highContrast": "#d4e3b9",
+          "highContrastLight": "#46552a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.30",
+        "description": "VGroup Explorer label tint 30%: Lime",
+        "defaults": {
+          "dark": "#d0e2af",
+          "light": "#4b5d2a",
+          "highContrast": "#d0e2af",
+          "highContrastLight": "#4b5d2a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.35",
+        "description": "VGroup Explorer label tint 35%: Lime",
+        "defaults": {
+          "dark": "#cce1a6",
+          "light": "#51662a",
+          "highContrast": "#cce1a6",
+          "highContrastLight": "#51662a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.40",
+        "description": "VGroup Explorer label tint 40%: Lime",
+        "defaults": {
+          "dark": "#c8e09c",
+          "light": "#566e2a",
+          "highContrast": "#c8e09c",
+          "highContrastLight": "#566e2a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.45",
+        "description": "VGroup Explorer label tint 45%: Lime",
+        "defaults": {
+          "dark": "#c4df93",
+          "light": "#5c772a",
+          "highContrast": "#c4df93",
+          "highContrastLight": "#5c772a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.50",
+        "description": "VGroup Explorer label tint 50%: Lime",
+        "defaults": {
+          "dark": "#c1df89",
+          "light": "#62802a",
+          "highContrast": "#c1df89",
+          "highContrastLight": "#62802a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.55",
+        "description": "VGroup Explorer label tint 55%: Lime",
+        "defaults": {
+          "dark": "#bdde80",
+          "light": "#67882a",
+          "highContrast": "#bdde80",
+          "highContrastLight": "#67882a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.60",
+        "description": "VGroup Explorer label tint 60%: Lime",
+        "defaults": {
+          "dark": "#b9dd76",
+          "light": "#6d912a",
+          "highContrast": "#b9dd76",
+          "highContrastLight": "#6d912a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.65",
+        "description": "VGroup Explorer label tint 65%: Lime",
+        "defaults": {
+          "dark": "#b5dc6c",
+          "light": "#72992a",
+          "highContrast": "#b5dc6c",
+          "highContrastLight": "#72992a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.70",
+        "description": "VGroup Explorer label tint 70%: Lime",
+        "defaults": {
+          "dark": "#b1db63",
+          "light": "#78a22a",
+          "highContrast": "#b1db63",
+          "highContrastLight": "#78a22a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.75",
+        "description": "VGroup Explorer label tint 75%: Lime",
+        "defaults": {
+          "dark": "#adda5a",
+          "light": "#7daa2a",
+          "highContrast": "#adda5a",
+          "highContrastLight": "#7daa2a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.80",
+        "description": "VGroup Explorer label tint 80%: Lime",
+        "defaults": {
+          "dark": "#a9d950",
+          "light": "#83b32a",
+          "highContrast": "#a9d950",
+          "highContrastLight": "#83b32a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.85",
+        "description": "VGroup Explorer label tint 85%: Lime",
+        "defaults": {
+          "dark": "#a5d847",
+          "light": "#88bb2a",
+          "highContrast": "#a5d847",
+          "highContrastLight": "#88bb2a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.90",
+        "description": "VGroup Explorer label tint 90%: Lime",
+        "defaults": {
+          "dark": "#a1d73d",
+          "light": "#8ec42a",
+          "highContrast": "#a1d73d",
+          "highContrastLight": "#8ec42a"
+        }
+      },
+      {
+        "id": "vgroup.lime.label.95",
+        "description": "VGroup Explorer label tint 95%: Lime",
+        "defaults": {
+          "dark": "#9dd634",
+          "light": "#93cc2a",
+          "highContrast": "#9dd634",
+          "highContrastLight": "#93cc2a"
         }
       },
       {
@@ -785,13 +1877,193 @@
         }
       },
       {
-        "id": "vgroup.green.label",
-        "description": "VGroup Explorer label tint: Green",
+        "id": "vgroup.green.label.5",
+        "description": "VGroup Explorer label tint 5%: Green",
         "defaults": {
-          "dark": "#c0d9cd",
-          "light": "#2c4c3c",
-          "highContrast": "#c0d9cd",
-          "highContrastLight": "#2c4c3c"
+          "dark": "#dfe5e2",
+          "light": "#2a302d",
+          "highContrast": "#dfe5e2",
+          "highContrastLight": "#2a302d"
+        }
+      },
+      {
+        "id": "vgroup.green.label.10",
+        "description": "VGroup Explorer label tint 10%: Green",
+        "defaults": {
+          "dark": "#d6e1dc",
+          "light": "#2b3631",
+          "highContrast": "#d6e1dc",
+          "highContrastLight": "#2b3631"
+        }
+      },
+      {
+        "id": "vgroup.green.label.15",
+        "description": "VGroup Explorer label tint 15%: Green",
+        "defaults": {
+          "dark": "#ccded5",
+          "light": "#2b3c34",
+          "highContrast": "#ccded5",
+          "highContrastLight": "#2b3c34"
+        }
+      },
+      {
+        "id": "vgroup.green.label.20",
+        "description": "VGroup Explorer label tint 20%: Green",
+        "defaults": {
+          "dark": "#c3dacf",
+          "light": "#2b4237",
+          "highContrast": "#c3dacf",
+          "highContrastLight": "#2b4237"
+        }
+      },
+      {
+        "id": "vgroup.green.label.25",
+        "description": "VGroup Explorer label tint 25%: Green",
+        "defaults": {
+          "dark": "#bad7c9",
+          "light": "#2c493b",
+          "highContrast": "#bad7c9",
+          "highContrastLight": "#2c493b"
+        }
+      },
+      {
+        "id": "vgroup.green.label.30",
+        "description": "VGroup Explorer label tint 30%: Green",
+        "defaults": {
+          "dark": "#b1d4c3",
+          "light": "#2c4f3e",
+          "highContrast": "#b1d4c3",
+          "highContrastLight": "#2c4f3e"
+        }
+      },
+      {
+        "id": "vgroup.green.label.35",
+        "description": "VGroup Explorer label tint 35%: Green",
+        "defaults": {
+          "dark": "#a8d0bd",
+          "light": "#2c5541",
+          "highContrast": "#a8d0bd",
+          "highContrastLight": "#2c5541"
+        }
+      },
+      {
+        "id": "vgroup.green.label.40",
+        "description": "VGroup Explorer label tint 40%: Green",
+        "defaults": {
+          "dark": "#9ecdb6",
+          "light": "#2c5b44",
+          "highContrast": "#9ecdb6",
+          "highContrastLight": "#2c5b44"
+        }
+      },
+      {
+        "id": "vgroup.green.label.45",
+        "description": "VGroup Explorer label tint 45%: Green",
+        "defaults": {
+          "dark": "#95c9b0",
+          "light": "#2d6148",
+          "highContrast": "#95c9b0",
+          "highContrastLight": "#2d6148"
+        }
+      },
+      {
+        "id": "vgroup.green.label.50",
+        "description": "VGroup Explorer label tint 50%: Green",
+        "defaults": {
+          "dark": "#8cc6aa",
+          "light": "#2d674b",
+          "highContrast": "#8cc6aa",
+          "highContrastLight": "#2d674b"
+        }
+      },
+      {
+        "id": "vgroup.green.label.55",
+        "description": "VGroup Explorer label tint 55%: Green",
+        "defaults": {
+          "dark": "#83c3a4",
+          "light": "#2d6d4e",
+          "highContrast": "#83c3a4",
+          "highContrastLight": "#2d6d4e"
+        }
+      },
+      {
+        "id": "vgroup.green.label.60",
+        "description": "VGroup Explorer label tint 60%: Green",
+        "defaults": {
+          "dark": "#7abf9e",
+          "light": "#2e7352",
+          "highContrast": "#7abf9e",
+          "highContrastLight": "#2e7352"
+        }
+      },
+      {
+        "id": "vgroup.green.label.65",
+        "description": "VGroup Explorer label tint 65%: Green",
+        "defaults": {
+          "dark": "#70bc97",
+          "light": "#2e7955",
+          "highContrast": "#70bc97",
+          "highContrastLight": "#2e7955"
+        }
+      },
+      {
+        "id": "vgroup.green.label.70",
+        "description": "VGroup Explorer label tint 70%: Green",
+        "defaults": {
+          "dark": "#67b891",
+          "light": "#2e7f58",
+          "highContrast": "#67b891",
+          "highContrastLight": "#2e7f58"
+        }
+      },
+      {
+        "id": "vgroup.green.label.75",
+        "description": "VGroup Explorer label tint 75%: Green",
+        "defaults": {
+          "dark": "#5eb58b",
+          "light": "#2f865c",
+          "highContrast": "#5eb58b",
+          "highContrastLight": "#2f865c"
+        }
+      },
+      {
+        "id": "vgroup.green.label.80",
+        "description": "VGroup Explorer label tint 80%: Green",
+        "defaults": {
+          "dark": "#55b285",
+          "light": "#2f8c5f",
+          "highContrast": "#55b285",
+          "highContrastLight": "#2f8c5f"
+        }
+      },
+      {
+        "id": "vgroup.green.label.85",
+        "description": "VGroup Explorer label tint 85%: Green",
+        "defaults": {
+          "dark": "#4cae7f",
+          "light": "#2f9262",
+          "highContrast": "#4cae7f",
+          "highContrastLight": "#2f9262"
+        }
+      },
+      {
+        "id": "vgroup.green.label.90",
+        "description": "VGroup Explorer label tint 90%: Green",
+        "defaults": {
+          "dark": "#42ab78",
+          "light": "#2f9865",
+          "highContrast": "#42ab78",
+          "highContrastLight": "#2f9865"
+        }
+      },
+      {
+        "id": "vgroup.green.label.95",
+        "description": "VGroup Explorer label tint 95%: Green",
+        "defaults": {
+          "dark": "#39a772",
+          "light": "#309e69",
+          "highContrast": "#39a772",
+          "highContrastLight": "#309e69"
         }
       },
       {
@@ -805,13 +2077,193 @@
         }
       },
       {
-        "id": "vgroup.emerald.label",
-        "description": "VGroup Explorer label tint: Emerald",
+        "id": "vgroup.emerald.label.5",
+        "description": "VGroup Explorer label tint 5%: Emerald",
         "defaults": {
-          "dark": "#b8ded1",
-          "light": "#235242",
-          "highContrast": "#b8ded1",
-          "highContrastLight": "#235242"
+          "dark": "#dde6e3",
+          "light": "#29312e",
+          "highContrast": "#dde6e3",
+          "highContrastLight": "#29312e"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.10",
+        "description": "VGroup Explorer label tint 10%: Emerald",
+        "defaults": {
+          "dark": "#d2e3de",
+          "light": "#273833",
+          "highContrast": "#d2e3de",
+          "highContrastLight": "#273833"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.15",
+        "description": "VGroup Explorer label tint 15%: Emerald",
+        "defaults": {
+          "dark": "#c8e1d9",
+          "light": "#263f37",
+          "highContrast": "#c8e1d9",
+          "highContrastLight": "#263f37"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.20",
+        "description": "VGroup Explorer label tint 20%: Emerald",
+        "defaults": {
+          "dark": "#bddfd3",
+          "light": "#25473b",
+          "highContrast": "#bddfd3",
+          "highContrastLight": "#25473b"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.25",
+        "description": "VGroup Explorer label tint 25%: Emerald",
+        "defaults": {
+          "dark": "#b2dcce",
+          "light": "#244e40",
+          "highContrast": "#b2dcce",
+          "highContrastLight": "#244e40"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.30",
+        "description": "VGroup Explorer label tint 30%: Emerald",
+        "defaults": {
+          "dark": "#a7dac9",
+          "light": "#225544",
+          "highContrast": "#a7dac9",
+          "highContrastLight": "#225544"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.35",
+        "description": "VGroup Explorer label tint 35%: Emerald",
+        "defaults": {
+          "dark": "#9cd8c4",
+          "light": "#215c48",
+          "highContrast": "#9cd8c4",
+          "highContrastLight": "#215c48"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.40",
+        "description": "VGroup Explorer label tint 40%: Emerald",
+        "defaults": {
+          "dark": "#92d5bf",
+          "light": "#20634d",
+          "highContrast": "#92d5bf",
+          "highContrastLight": "#20634d"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.45",
+        "description": "VGroup Explorer label tint 45%: Emerald",
+        "defaults": {
+          "dark": "#87d3ba",
+          "light": "#1e6a51",
+          "highContrast": "#87d3ba",
+          "highContrastLight": "#1e6a51"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.50",
+        "description": "VGroup Explorer label tint 50%: Emerald",
+        "defaults": {
+          "dark": "#7cd1b5",
+          "light": "#1d7256",
+          "highContrast": "#7cd1b5",
+          "highContrastLight": "#1d7256"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.55",
+        "description": "VGroup Explorer label tint 55%: Emerald",
+        "defaults": {
+          "dark": "#71ceaf",
+          "light": "#1c795a",
+          "highContrast": "#71ceaf",
+          "highContrastLight": "#1c795a"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.60",
+        "description": "VGroup Explorer label tint 60%: Emerald",
+        "defaults": {
+          "dark": "#66ccaa",
+          "light": "#1a805e",
+          "highContrast": "#66ccaa",
+          "highContrastLight": "#1a805e"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.65",
+        "description": "VGroup Explorer label tint 65%: Emerald",
+        "defaults": {
+          "dark": "#5cc9a5",
+          "light": "#198763",
+          "highContrast": "#5cc9a5",
+          "highContrastLight": "#198763"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.70",
+        "description": "VGroup Explorer label tint 70%: Emerald",
+        "defaults": {
+          "dark": "#51c7a0",
+          "light": "#188e67",
+          "highContrast": "#51c7a0",
+          "highContrastLight": "#188e67"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.75",
+        "description": "VGroup Explorer label tint 75%: Emerald",
+        "defaults": {
+          "dark": "#46c59b",
+          "light": "#17956b",
+          "highContrast": "#46c59b",
+          "highContrastLight": "#17956b"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.80",
+        "description": "VGroup Explorer label tint 80%: Emerald",
+        "defaults": {
+          "dark": "#3bc296",
+          "light": "#159c70",
+          "highContrast": "#3bc296",
+          "highContrastLight": "#159c70"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.85",
+        "description": "VGroup Explorer label tint 85%: Emerald",
+        "defaults": {
+          "dark": "#30c090",
+          "light": "#14a474",
+          "highContrast": "#30c090",
+          "highContrastLight": "#14a474"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.90",
+        "description": "VGroup Explorer label tint 90%: Emerald",
+        "defaults": {
+          "dark": "#26be8b",
+          "light": "#13ab78",
+          "highContrast": "#26be8b",
+          "highContrastLight": "#13ab78"
+        }
+      },
+      {
+        "id": "vgroup.emerald.label.95",
+        "description": "VGroup Explorer label tint 95%: Emerald",
+        "defaults": {
+          "dark": "#1bbb86",
+          "light": "#11b27d",
+          "highContrast": "#1bbb86",
+          "highContrastLight": "#11b27d"
         }
       },
       {
@@ -825,13 +2277,193 @@
         }
       },
       {
-        "id": "vgroup.teal.label",
-        "description": "VGroup Explorer label tint: Teal",
+        "id": "vgroup.teal.label.5",
+        "description": "VGroup Explorer label tint 5%: Teal",
         "defaults": {
-          "dark": "#b9d9d6",
-          "light": "#234c48",
-          "highContrast": "#b9d9d6",
-          "highContrastLight": "#234c48"
+          "dark": "#dde5e4",
+          "light": "#29302f",
+          "highContrast": "#dde5e4",
+          "highContrastLight": "#29302f"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.10",
+        "description": "VGroup Explorer label tint 10%: Teal",
+        "defaults": {
+          "dark": "#d3e1e0",
+          "light": "#283635",
+          "highContrast": "#d3e1e0",
+          "highContrastLight": "#283635"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.15",
+        "description": "VGroup Explorer label tint 15%: Teal",
+        "defaults": {
+          "dark": "#c8dedb",
+          "light": "#263c3a",
+          "highContrast": "#c8dedb",
+          "highContrastLight": "#263c3a"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.20",
+        "description": "VGroup Explorer label tint 20%: Teal",
+        "defaults": {
+          "dark": "#bddbd7",
+          "light": "#25433f",
+          "highContrast": "#bddbd7",
+          "highContrastLight": "#25433f"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.25",
+        "description": "VGroup Explorer label tint 25%: Teal",
+        "defaults": {
+          "dark": "#b3d7d3",
+          "light": "#244945",
+          "highContrast": "#b3d7d3",
+          "highContrastLight": "#244945"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.30",
+        "description": "VGroup Explorer label tint 30%: Teal",
+        "defaults": {
+          "dark": "#a8d4cf",
+          "light": "#234f4a",
+          "highContrast": "#a8d4cf",
+          "highContrastLight": "#234f4a"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.35",
+        "description": "VGroup Explorer label tint 35%: Teal",
+        "defaults": {
+          "dark": "#9dd1cb",
+          "light": "#22554f",
+          "highContrast": "#9dd1cb",
+          "highContrastLight": "#22554f"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.40",
+        "description": "VGroup Explorer label tint 40%: Teal",
+        "defaults": {
+          "dark": "#92cdc6",
+          "light": "#205b54",
+          "highContrast": "#92cdc6",
+          "highContrastLight": "#205b54"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.45",
+        "description": "VGroup Explorer label tint 45%: Teal",
+        "defaults": {
+          "dark": "#88cac2",
+          "light": "#1f615a",
+          "highContrast": "#88cac2",
+          "highContrastLight": "#1f615a"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.50",
+        "description": "VGroup Explorer label tint 50%: Teal",
+        "defaults": {
+          "dark": "#7dc7be",
+          "light": "#1e685f",
+          "highContrast": "#7dc7be",
+          "highContrastLight": "#1e685f"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.55",
+        "description": "VGroup Explorer label tint 55%: Teal",
+        "defaults": {
+          "dark": "#72c3ba",
+          "light": "#1d6e64",
+          "highContrast": "#72c3ba",
+          "highContrastLight": "#1d6e64"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.60",
+        "description": "VGroup Explorer label tint 60%: Teal",
+        "defaults": {
+          "dark": "#68c0b6",
+          "light": "#1c746a",
+          "highContrast": "#68c0b6",
+          "highContrastLight": "#1c746a"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.65",
+        "description": "VGroup Explorer label tint 65%: Teal",
+        "defaults": {
+          "dark": "#5dbcb1",
+          "light": "#1a7a6f",
+          "highContrast": "#5dbcb1",
+          "highContrastLight": "#1a7a6f"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.70",
+        "description": "VGroup Explorer label tint 70%: Teal",
+        "defaults": {
+          "dark": "#52b9ad",
+          "light": "#198074",
+          "highContrast": "#52b9ad",
+          "highContrastLight": "#198074"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.75",
+        "description": "VGroup Explorer label tint 75%: Teal",
+        "defaults": {
+          "dark": "#48b6a9",
+          "light": "#18867a",
+          "highContrast": "#48b6a9",
+          "highContrastLight": "#18867a"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.80",
+        "description": "VGroup Explorer label tint 80%: Teal",
+        "defaults": {
+          "dark": "#3db2a5",
+          "light": "#178c7f",
+          "highContrast": "#3db2a5",
+          "highContrastLight": "#178c7f"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.85",
+        "description": "VGroup Explorer label tint 85%: Teal",
+        "defaults": {
+          "dark": "#32afa1",
+          "light": "#169384",
+          "highContrast": "#32afa1",
+          "highContrastLight": "#169384"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.90",
+        "description": "VGroup Explorer label tint 90%: Teal",
+        "defaults": {
+          "dark": "#27ac9c",
+          "light": "#149989",
+          "highContrast": "#27ac9c",
+          "highContrastLight": "#149989"
+        }
+      },
+      {
+        "id": "vgroup.teal.label.95",
+        "description": "VGroup Explorer label tint 95%: Teal",
+        "defaults": {
+          "dark": "#1da898",
+          "light": "#139f8f",
+          "highContrast": "#1da898",
+          "highContrastLight": "#139f8f"
         }
       },
       {
@@ -845,13 +2477,193 @@
         }
       },
       {
-        "id": "vgroup.cyan.label",
-        "description": "VGroup Explorer label tint: Cyan",
+        "id": "vgroup.cyan.label.5",
+        "description": "VGroup Explorer label tint 5%: Cyan",
         "defaults": {
-          "dark": "#b5d9e1",
-          "light": "#1e4c56",
-          "highContrast": "#b5d9e1",
-          "highContrastLight": "#1e4c56"
+          "dark": "#dce4e6",
+          "light": "#283032",
+          "highContrast": "#dce4e6",
+          "highContrastLight": "#283032"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.10",
+        "description": "VGroup Explorer label tint 10%: Cyan",
+        "defaults": {
+          "dark": "#d1e1e5",
+          "light": "#26363a",
+          "highContrast": "#d1e1e5",
+          "highContrastLight": "#26363a"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.15",
+        "description": "VGroup Explorer label tint 15%: Cyan",
+        "defaults": {
+          "dark": "#c5dee3",
+          "light": "#243c42",
+          "highContrast": "#c5dee3",
+          "highContrastLight": "#243c42"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.20",
+        "description": "VGroup Explorer label tint 20%: Cyan",
+        "defaults": {
+          "dark": "#badae1",
+          "light": "#224249",
+          "highContrast": "#badae1",
+          "highContrastLight": "#224249"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.25",
+        "description": "VGroup Explorer label tint 25%: Cyan",
+        "defaults": {
+          "dark": "#aed7e0",
+          "light": "#204851",
+          "highContrast": "#aed7e0",
+          "highContrastLight": "#204851"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.30",
+        "description": "VGroup Explorer label tint 30%: Cyan",
+        "defaults": {
+          "dark": "#a2d3de",
+          "light": "#1d4e59",
+          "highContrast": "#a2d3de",
+          "highContrastLight": "#1d4e59"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.35",
+        "description": "VGroup Explorer label tint 35%: Cyan",
+        "defaults": {
+          "dark": "#97d0dc",
+          "light": "#1b5461",
+          "highContrast": "#97d0dc",
+          "highContrastLight": "#1b5461"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.40",
+        "description": "VGroup Explorer label tint 40%: Cyan",
+        "defaults": {
+          "dark": "#8bccdb",
+          "light": "#195a69",
+          "highContrast": "#8bccdb",
+          "highContrastLight": "#195a69"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.45",
+        "description": "VGroup Explorer label tint 45%: Cyan",
+        "defaults": {
+          "dark": "#80c9d9",
+          "light": "#176071",
+          "highContrast": "#80c9d9",
+          "highContrastLight": "#176071"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.50",
+        "description": "VGroup Explorer label tint 50%: Cyan",
+        "defaults": {
+          "dark": "#74c5d8",
+          "light": "#156679",
+          "highContrast": "#74c5d8",
+          "highContrastLight": "#156679"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.55",
+        "description": "VGroup Explorer label tint 55%: Cyan",
+        "defaults": {
+          "dark": "#68c2d6",
+          "light": "#136c80",
+          "highContrast": "#68c2d6",
+          "highContrastLight": "#136c80"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.60",
+        "description": "VGroup Explorer label tint 60%: Cyan",
+        "defaults": {
+          "dark": "#5dbed4",
+          "light": "#117288",
+          "highContrast": "#5dbed4",
+          "highContrastLight": "#117288"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.65",
+        "description": "VGroup Explorer label tint 65%: Cyan",
+        "defaults": {
+          "dark": "#51bbd3",
+          "light": "#0f7890",
+          "highContrast": "#51bbd3",
+          "highContrastLight": "#0f7890"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.70",
+        "description": "VGroup Explorer label tint 70%: Cyan",
+        "defaults": {
+          "dark": "#46b7d1",
+          "light": "#0d7e98",
+          "highContrast": "#46b7d1",
+          "highContrastLight": "#0d7e98"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.75",
+        "description": "VGroup Explorer label tint 75%: Cyan",
+        "defaults": {
+          "dark": "#3ab4cf",
+          "light": "#0b84a0",
+          "highContrast": "#3ab4cf",
+          "highContrastLight": "#0b84a0"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.80",
+        "description": "VGroup Explorer label tint 80%: Cyan",
+        "defaults": {
+          "dark": "#2eb0ce",
+          "light": "#088aa8",
+          "highContrast": "#2eb0ce",
+          "highContrastLight": "#088aa8"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.85",
+        "description": "VGroup Explorer label tint 85%: Cyan",
+        "defaults": {
+          "dark": "#23adcc",
+          "light": "#0690af",
+          "highContrast": "#23adcc",
+          "highContrastLight": "#0690af"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.90",
+        "description": "VGroup Explorer label tint 90%: Cyan",
+        "defaults": {
+          "dark": "#17a9ca",
+          "light": "#0496b7",
+          "highContrast": "#17a9ca",
+          "highContrastLight": "#0496b7"
+        }
+      },
+      {
+        "id": "vgroup.cyan.label.95",
+        "description": "VGroup Explorer label tint 95%: Cyan",
+        "defaults": {
+          "dark": "#0ca6c9",
+          "light": "#029cbf",
+          "highContrast": "#0ca6c9",
+          "highContrastLight": "#029cbf"
         }
       },
       {
@@ -865,13 +2677,193 @@
         }
       },
       {
-        "id": "vgroup.sky.label",
-        "description": "VGroup Explorer label tint: Sky",
+        "id": "vgroup.sky.label.5",
+        "description": "VGroup Explorer label tint 5%: Sky",
         "defaults": {
-          "dark": "#c6e0ed",
-          "light": "#345566",
-          "highContrast": "#c6e0ed",
-          "highContrastLight": "#345566"
+          "dark": "#e0e6e9",
+          "light": "#2c3235",
+          "highContrast": "#e0e6e9",
+          "highContrastLight": "#2c3235"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.10",
+        "description": "VGroup Explorer label tint 10%: Sky",
+        "defaults": {
+          "dark": "#d8e4ea",
+          "light": "#2d393f",
+          "highContrast": "#d8e4ea",
+          "highContrastLight": "#2d393f"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.15",
+        "description": "VGroup Explorer label tint 15%: Sky",
+        "defaults": {
+          "dark": "#d1e2eb",
+          "light": "#2f414a",
+          "highContrast": "#d1e2eb",
+          "highContrastLight": "#2f414a"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.20",
+        "description": "VGroup Explorer label tint 20%: Sky",
+        "defaults": {
+          "dark": "#c9e1ed",
+          "light": "#314955",
+          "highContrast": "#c9e1ed",
+          "highContrastLight": "#314955"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.25",
+        "description": "VGroup Explorer label tint 25%: Sky",
+        "defaults": {
+          "dark": "#c1dfee",
+          "light": "#33505f",
+          "highContrast": "#c1dfee",
+          "highContrastLight": "#33505f"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.30",
+        "description": "VGroup Explorer label tint 30%: Sky",
+        "defaults": {
+          "dark": "#b9ddef",
+          "light": "#34586a",
+          "highContrast": "#b9ddef",
+          "highContrastLight": "#34586a"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.35",
+        "description": "VGroup Explorer label tint 35%: Sky",
+        "defaults": {
+          "dark": "#b1dbf0",
+          "light": "#366075",
+          "highContrast": "#b1dbf0",
+          "highContrastLight": "#366075"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.40",
+        "description": "VGroup Explorer label tint 40%: Sky",
+        "defaults": {
+          "dark": "#aad9f1",
+          "light": "#38677f",
+          "highContrast": "#aad9f1",
+          "highContrastLight": "#38677f"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.45",
+        "description": "VGroup Explorer label tint 45%: Sky",
+        "defaults": {
+          "dark": "#a2d7f2",
+          "light": "#396f8a",
+          "highContrast": "#a2d7f2",
+          "highContrastLight": "#396f8a"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.50",
+        "description": "VGroup Explorer label tint 50%: Sky",
+        "defaults": {
+          "dark": "#9ad6f4",
+          "light": "#3b7795",
+          "highContrast": "#9ad6f4",
+          "highContrastLight": "#3b7795"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.55",
+        "description": "VGroup Explorer label tint 55%: Sky",
+        "defaults": {
+          "dark": "#92d4f5",
+          "light": "#3d7e9f",
+          "highContrast": "#92d4f5",
+          "highContrastLight": "#3d7e9f"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.60",
+        "description": "VGroup Explorer label tint 60%: Sky",
+        "defaults": {
+          "dark": "#8ad2f6",
+          "light": "#3e86aa",
+          "highContrast": "#8ad2f6",
+          "highContrastLight": "#3e86aa"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.65",
+        "description": "VGroup Explorer label tint 65%: Sky",
+        "defaults": {
+          "dark": "#83d0f7",
+          "light": "#408db4",
+          "highContrast": "#83d0f7",
+          "highContrastLight": "#408db4"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.70",
+        "description": "VGroup Explorer label tint 70%: Sky",
+        "defaults": {
+          "dark": "#7bcef8",
+          "light": "#4295bf",
+          "highContrast": "#7bcef8",
+          "highContrastLight": "#4295bf"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.75",
+        "description": "VGroup Explorer label tint 75%: Sky",
+        "defaults": {
+          "dark": "#73ccf9",
+          "light": "#449dca",
+          "highContrast": "#73ccf9",
+          "highContrastLight": "#449dca"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.80",
+        "description": "VGroup Explorer label tint 80%: Sky",
+        "defaults": {
+          "dark": "#6bcafa",
+          "light": "#45a4d4",
+          "highContrast": "#6bcafa",
+          "highContrastLight": "#45a4d4"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.85",
+        "description": "VGroup Explorer label tint 85%: Sky",
+        "defaults": {
+          "dark": "#63c9fc",
+          "light": "#47acdf",
+          "highContrast": "#63c9fc",
+          "highContrastLight": "#47acdf"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.90",
+        "description": "VGroup Explorer label tint 90%: Sky",
+        "defaults": {
+          "dark": "#5cc7fd",
+          "light": "#49b4ea",
+          "highContrast": "#5cc7fd",
+          "highContrastLight": "#49b4ea"
+        }
+      },
+      {
+        "id": "vgroup.sky.label.95",
+        "description": "VGroup Explorer label tint 95%: Sky",
+        "defaults": {
+          "dark": "#54c5fe",
+          "light": "#4abbf4",
+          "highContrast": "#54c5fe",
+          "highContrastLight": "#4abbf4"
         }
       },
       {
@@ -885,13 +2877,193 @@
         }
       },
       {
-        "id": "vgroup.blue.label",
-        "description": "VGroup Explorer label tint: Blue",
+        "id": "vgroup.blue.label.5",
+        "description": "VGroup Explorer label tint 5%: Blue",
         "defaults": {
-          "dark": "#c3cbe6",
-          "light": "#303a5c",
-          "highContrast": "#c3cbe6",
-          "highContrastLight": "#303a5c"
+          "dark": "#dfe1e7",
+          "light": "#2b2d33",
+          "highContrast": "#dfe1e7",
+          "highContrastLight": "#2b2d33"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.10",
+        "description": "VGroup Explorer label tint 10%: Blue",
+        "defaults": {
+          "dark": "#d7dbe7",
+          "light": "#2c303c",
+          "highContrast": "#d7dbe7",
+          "highContrastLight": "#2c303c"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.15",
+        "description": "VGroup Explorer label tint 15%: Blue",
+        "defaults": {
+          "dark": "#cfd4e6",
+          "light": "#2d3345",
+          "highContrast": "#cfd4e6",
+          "highContrastLight": "#2d3345"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.20",
+        "description": "VGroup Explorer label tint 20%: Blue",
+        "defaults": {
+          "dark": "#c6cde6",
+          "light": "#2e354e",
+          "highContrast": "#c6cde6",
+          "highContrastLight": "#2e354e"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.25",
+        "description": "VGroup Explorer label tint 25%: Blue",
+        "defaults": {
+          "dark": "#bec7e5",
+          "light": "#2f3857",
+          "highContrast": "#bec7e5",
+          "highContrastLight": "#2f3857"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.30",
+        "description": "VGroup Explorer label tint 30%: Blue",
+        "defaults": {
+          "dark": "#b5c0e5",
+          "light": "#303b60",
+          "highContrast": "#b5c0e5",
+          "highContrastLight": "#303b60"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.35",
+        "description": "VGroup Explorer label tint 35%: Blue",
+        "defaults": {
+          "dark": "#adb9e4",
+          "light": "#313e69",
+          "highContrast": "#adb9e4",
+          "highContrastLight": "#313e69"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.40",
+        "description": "VGroup Explorer label tint 40%: Blue",
+        "defaults": {
+          "dark": "#a4b3e4",
+          "light": "#324172",
+          "highContrast": "#a4b3e4",
+          "highContrastLight": "#324172"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.45",
+        "description": "VGroup Explorer label tint 45%: Blue",
+        "defaults": {
+          "dark": "#9cace3",
+          "light": "#33447b",
+          "highContrast": "#9cace3",
+          "highContrastLight": "#33447b"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.50",
+        "description": "VGroup Explorer label tint 50%: Blue",
+        "defaults": {
+          "dark": "#93a6e3",
+          "light": "#344784",
+          "highContrast": "#93a6e3",
+          "highContrastLight": "#344784"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.55",
+        "description": "VGroup Explorer label tint 55%: Blue",
+        "defaults": {
+          "dark": "#8b9fe2",
+          "light": "#35498c",
+          "highContrast": "#8b9fe2",
+          "highContrastLight": "#35498c"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.60",
+        "description": "VGroup Explorer label tint 60%: Blue",
+        "defaults": {
+          "dark": "#8298e1",
+          "light": "#364c95",
+          "highContrast": "#8298e1",
+          "highContrastLight": "#364c95"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.65",
+        "description": "VGroup Explorer label tint 65%: Blue",
+        "defaults": {
+          "dark": "#7a92e1",
+          "light": "#374f9e",
+          "highContrast": "#7a92e1",
+          "highContrastLight": "#374f9e"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.70",
+        "description": "VGroup Explorer label tint 70%: Blue",
+        "defaults": {
+          "dark": "#718be0",
+          "light": "#3852a7",
+          "highContrast": "#718be0",
+          "highContrastLight": "#3852a7"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.75",
+        "description": "VGroup Explorer label tint 75%: Blue",
+        "defaults": {
+          "dark": "#6984e0",
+          "light": "#3955b0",
+          "highContrast": "#6984e0",
+          "highContrastLight": "#3955b0"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.80",
+        "description": "VGroup Explorer label tint 80%: Blue",
+        "defaults": {
+          "dark": "#607edf",
+          "light": "#3a58b9",
+          "highContrast": "#607edf",
+          "highContrastLight": "#3a58b9"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.85",
+        "description": "VGroup Explorer label tint 85%: Blue",
+        "defaults": {
+          "dark": "#5877df",
+          "light": "#3b5ac2",
+          "highContrast": "#5877df",
+          "highContrastLight": "#3b5ac2"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.90",
+        "description": "VGroup Explorer label tint 90%: Blue",
+        "defaults": {
+          "dark": "#4f70de",
+          "light": "#3c5dcb",
+          "highContrast": "#4f70de",
+          "highContrastLight": "#3c5dcb"
+        }
+      },
+      {
+        "id": "vgroup.blue.label.95",
+        "description": "VGroup Explorer label tint 95%: Blue",
+        "defaults": {
+          "dark": "#476ade",
+          "light": "#3d60d4",
+          "highContrast": "#476ade",
+          "highContrastLight": "#3d60d4"
         }
       },
       {
@@ -905,13 +3077,193 @@
         }
       },
       {
-        "id": "vgroup.indigo.label",
-        "description": "VGroup Explorer label tint: Indigo",
+        "id": "vgroup.indigo.label.5",
+        "description": "VGroup Explorer label tint 5%: Indigo",
         "defaults": {
-          "dark": "#c9c9e4",
-          "light": "#38385a",
-          "highContrast": "#c9c9e4",
-          "highContrastLight": "#38385a"
+          "dark": "#e1e1e7",
+          "light": "#2c2c33",
+          "highContrast": "#e1e1e7",
+          "highContrastLight": "#2c2c33"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.10",
+        "description": "VGroup Explorer label tint 10%: Indigo",
+        "defaults": {
+          "dark": "#dadae6",
+          "light": "#2f2f3b",
+          "highContrast": "#dadae6",
+          "highContrastLight": "#2f2f3b"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.15",
+        "description": "VGroup Explorer label tint 15%: Indigo",
+        "defaults": {
+          "dark": "#d3d3e5",
+          "light": "#313144",
+          "highContrast": "#d3d3e5",
+          "highContrastLight": "#313144"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.20",
+        "description": "VGroup Explorer label tint 20%: Indigo",
+        "defaults": {
+          "dark": "#cccce4",
+          "light": "#34344c",
+          "highContrast": "#cccce4",
+          "highContrastLight": "#34344c"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.25",
+        "description": "VGroup Explorer label tint 25%: Indigo",
+        "defaults": {
+          "dark": "#c5c5e4",
+          "light": "#363655",
+          "highContrast": "#c5c5e4",
+          "highContrastLight": "#363655"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.30",
+        "description": "VGroup Explorer label tint 30%: Indigo",
+        "defaults": {
+          "dark": "#bebee3",
+          "light": "#39395e",
+          "highContrast": "#bebee3",
+          "highContrastLight": "#39395e"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.35",
+        "description": "VGroup Explorer label tint 35%: Indigo",
+        "defaults": {
+          "dark": "#b7b7e2",
+          "light": "#3b3b66",
+          "highContrast": "#b7b7e2",
+          "highContrastLight": "#3b3b66"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.40",
+        "description": "VGroup Explorer label tint 40%: Indigo",
+        "defaults": {
+          "dark": "#b0b0e1",
+          "light": "#3e3e6f",
+          "highContrast": "#b0b0e1",
+          "highContrastLight": "#3e3e6f"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.45",
+        "description": "VGroup Explorer label tint 45%: Indigo",
+        "defaults": {
+          "dark": "#a9a9e0",
+          "light": "#404077",
+          "highContrast": "#a9a9e0",
+          "highContrastLight": "#404077"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.50",
+        "description": "VGroup Explorer label tint 50%: Indigo",
+        "defaults": {
+          "dark": "#a2a2df",
+          "light": "#434380",
+          "highContrast": "#a2a2df",
+          "highContrastLight": "#434380"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.55",
+        "description": "VGroup Explorer label tint 55%: Indigo",
+        "defaults": {
+          "dark": "#9a9ade",
+          "light": "#454589",
+          "highContrast": "#9a9ade",
+          "highContrastLight": "#454589"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.60",
+        "description": "VGroup Explorer label tint 60%: Indigo",
+        "defaults": {
+          "dark": "#9393dd",
+          "light": "#474791",
+          "highContrast": "#9393dd",
+          "highContrastLight": "#474791"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.65",
+        "description": "VGroup Explorer label tint 65%: Indigo",
+        "defaults": {
+          "dark": "#8c8cdc",
+          "light": "#4a4a9a",
+          "highContrast": "#8c8cdc",
+          "highContrastLight": "#4a4a9a"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.70",
+        "description": "VGroup Explorer label tint 70%: Indigo",
+        "defaults": {
+          "dark": "#8585db",
+          "light": "#4c4ca2",
+          "highContrast": "#8585db",
+          "highContrastLight": "#4c4ca2"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.75",
+        "description": "VGroup Explorer label tint 75%: Indigo",
+        "defaults": {
+          "dark": "#7e7edb",
+          "light": "#4f4fab",
+          "highContrast": "#7e7edb",
+          "highContrastLight": "#4f4fab"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.80",
+        "description": "VGroup Explorer label tint 80%: Indigo",
+        "defaults": {
+          "dark": "#7777da",
+          "light": "#5151b4",
+          "highContrast": "#7777da",
+          "highContrastLight": "#5151b4"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.85",
+        "description": "VGroup Explorer label tint 85%: Indigo",
+        "defaults": {
+          "dark": "#7070d9",
+          "light": "#5454bc",
+          "highContrast": "#7070d9",
+          "highContrastLight": "#5454bc"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.90",
+        "description": "VGroup Explorer label tint 90%: Indigo",
+        "defaults": {
+          "dark": "#6969d8",
+          "light": "#5656c5",
+          "highContrast": "#6969d8",
+          "highContrastLight": "#5656c5"
+        }
+      },
+      {
+        "id": "vgroup.indigo.label.95",
+        "description": "VGroup Explorer label tint 95%: Indigo",
+        "defaults": {
+          "dark": "#6262d7",
+          "light": "#5959cd",
+          "highContrast": "#6262d7",
+          "highContrastLight": "#5959cd"
         }
       },
       {
@@ -925,13 +3277,193 @@
         }
       },
       {
-        "id": "vgroup.violet.label",
-        "description": "VGroup Explorer label tint: Violet",
+        "id": "vgroup.violet.label.5",
+        "description": "VGroup Explorer label tint 5%: Violet",
         "defaults": {
-          "dark": "#d4c6e1",
-          "light": "#463456",
-          "highContrast": "#d4c6e1",
-          "highContrastLight": "#463456"
+          "dark": "#e3e0e6",
+          "light": "#2f2c32",
+          "highContrast": "#e3e0e6",
+          "highContrastLight": "#2f2c32"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.10",
+        "description": "VGroup Explorer label tint 10%: Violet",
+        "defaults": {
+          "dark": "#dfd9e5",
+          "light": "#342e3a",
+          "highContrast": "#dfd9e5",
+          "highContrastLight": "#342e3a"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.15",
+        "description": "VGroup Explorer label tint 15%: Violet",
+        "defaults": {
+          "dark": "#dbd1e3",
+          "light": "#392f41",
+          "highContrast": "#dbd1e3",
+          "highContrastLight": "#392f41"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.20",
+        "description": "VGroup Explorer label tint 20%: Violet",
+        "defaults": {
+          "dark": "#d6c9e1",
+          "light": "#3e3149",
+          "highContrast": "#d6c9e1",
+          "highContrastLight": "#3e3149"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.25",
+        "description": "VGroup Explorer label tint 25%: Violet",
+        "defaults": {
+          "dark": "#d2c2e0",
+          "light": "#433351",
+          "highContrast": "#d2c2e0",
+          "highContrastLight": "#433351"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.30",
+        "description": "VGroup Explorer label tint 30%: Violet",
+        "defaults": {
+          "dark": "#cdbade",
+          "light": "#483559",
+          "highContrast": "#cdbade",
+          "highContrastLight": "#483559"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.35",
+        "description": "VGroup Explorer label tint 35%: Violet",
+        "defaults": {
+          "dark": "#c9b2dc",
+          "light": "#4d3761",
+          "highContrast": "#c9b2dc",
+          "highContrastLight": "#4d3761"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.40",
+        "description": "VGroup Explorer label tint 40%: Violet",
+        "defaults": {
+          "dark": "#c4aada",
+          "light": "#523868",
+          "highContrast": "#c4aada",
+          "highContrastLight": "#523868"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.45",
+        "description": "VGroup Explorer label tint 45%: Violet",
+        "defaults": {
+          "dark": "#c0a3d9",
+          "light": "#573a70",
+          "highContrast": "#c0a3d9",
+          "highContrastLight": "#573a70"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.50",
+        "description": "VGroup Explorer label tint 50%: Violet",
+        "defaults": {
+          "dark": "#bb9bd7",
+          "light": "#5c3c78",
+          "highContrast": "#bb9bd7",
+          "highContrastLight": "#5c3c78"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.55",
+        "description": "VGroup Explorer label tint 55%: Violet",
+        "defaults": {
+          "dark": "#b793d5",
+          "light": "#613e80",
+          "highContrast": "#b793d5",
+          "highContrastLight": "#613e80"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.60",
+        "description": "VGroup Explorer label tint 60%: Violet",
+        "defaults": {
+          "dark": "#b28cd4",
+          "light": "#664088",
+          "highContrast": "#b28cd4",
+          "highContrastLight": "#664088"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.65",
+        "description": "VGroup Explorer label tint 65%: Violet",
+        "defaults": {
+          "dark": "#ae84d2",
+          "light": "#6b418f",
+          "highContrast": "#ae84d2",
+          "highContrastLight": "#6b418f"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.70",
+        "description": "VGroup Explorer label tint 70%: Violet",
+        "defaults": {
+          "dark": "#a97cd0",
+          "light": "#704397",
+          "highContrast": "#a97cd0",
+          "highContrastLight": "#704397"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.75",
+        "description": "VGroup Explorer label tint 75%: Violet",
+        "defaults": {
+          "dark": "#a575cf",
+          "light": "#75459f",
+          "highContrast": "#a575cf",
+          "highContrastLight": "#75459f"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.80",
+        "description": "VGroup Explorer label tint 80%: Violet",
+        "defaults": {
+          "dark": "#a06dcd",
+          "light": "#7a47a7",
+          "highContrast": "#a06dcd",
+          "highContrastLight": "#7a47a7"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.85",
+        "description": "VGroup Explorer label tint 85%: Violet",
+        "defaults": {
+          "dark": "#9c65cb",
+          "light": "#7f49af",
+          "highContrast": "#9c65cb",
+          "highContrastLight": "#7f49af"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.90",
+        "description": "VGroup Explorer label tint 90%: Violet",
+        "defaults": {
+          "dark": "#975dc9",
+          "light": "#844ab6",
+          "highContrast": "#975dc9",
+          "highContrastLight": "#844ab6"
+        }
+      },
+      {
+        "id": "vgroup.violet.label.95",
+        "description": "VGroup Explorer label tint 95%: Violet",
+        "defaults": {
+          "dark": "#9356c8",
+          "light": "#894cbe",
+          "highContrast": "#9356c8",
+          "highContrastLight": "#894cbe"
         }
       },
       {
@@ -945,13 +3477,193 @@
         }
       },
       {
-        "id": "vgroup.purple.label",
-        "description": "VGroup Explorer label tint: Purple",
+        "id": "vgroup.purple.label.5",
+        "description": "VGroup Explorer label tint 5%: Purple",
         "defaults": {
-          "dark": "#dbc5de",
-          "light": "#4e3352",
-          "highContrast": "#dbc5de",
-          "highContrastLight": "#4e3352"
+          "dark": "#e5e0e6",
+          "light": "#302c31",
+          "highContrast": "#e5e0e6",
+          "highContrastLight": "#302c31"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.10",
+        "description": "VGroup Explorer label tint 10%: Purple",
+        "defaults": {
+          "dark": "#e2d8e3",
+          "light": "#372d38",
+          "highContrast": "#e2d8e3",
+          "highContrastLight": "#372d38"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.15",
+        "description": "VGroup Explorer label tint 15%: Purple",
+        "defaults": {
+          "dark": "#dfd0e1",
+          "light": "#3d2f40",
+          "highContrast": "#dfd0e1",
+          "highContrastLight": "#3d2f40"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.20",
+        "description": "VGroup Explorer label tint 20%: Purple",
+        "defaults": {
+          "dark": "#dcc8df",
+          "light": "#443047",
+          "highContrast": "#dcc8df",
+          "highContrastLight": "#443047"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.25",
+        "description": "VGroup Explorer label tint 25%: Purple",
+        "defaults": {
+          "dark": "#d9c1dd",
+          "light": "#4a324e",
+          "highContrast": "#d9c1dd",
+          "highContrastLight": "#4a324e"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.30",
+        "description": "VGroup Explorer label tint 30%: Purple",
+        "defaults": {
+          "dark": "#d6b9da",
+          "light": "#513455",
+          "highContrast": "#d6b9da",
+          "highContrastLight": "#513455"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.35",
+        "description": "VGroup Explorer label tint 35%: Purple",
+        "defaults": {
+          "dark": "#d3b1d8",
+          "light": "#57355c",
+          "highContrast": "#d3b1d8",
+          "highContrastLight": "#57355c"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.40",
+        "description": "VGroup Explorer label tint 40%: Purple",
+        "defaults": {
+          "dark": "#d0a9d6",
+          "light": "#5e3764",
+          "highContrast": "#d0a9d6",
+          "highContrastLight": "#5e3764"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.45",
+        "description": "VGroup Explorer label tint 45%: Purple",
+        "defaults": {
+          "dark": "#cda1d3",
+          "light": "#64386b",
+          "highContrast": "#cda1d3",
+          "highContrastLight": "#64386b"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.50",
+        "description": "VGroup Explorer label tint 50%: Purple",
+        "defaults": {
+          "dark": "#ca99d1",
+          "light": "#6b3a72",
+          "highContrast": "#ca99d1",
+          "highContrastLight": "#6b3a72"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.55",
+        "description": "VGroup Explorer label tint 55%: Purple",
+        "defaults": {
+          "dark": "#c691cf",
+          "light": "#713c79",
+          "highContrast": "#c691cf",
+          "highContrastLight": "#713c79"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.60",
+        "description": "VGroup Explorer label tint 60%: Purple",
+        "defaults": {
+          "dark": "#c389cc",
+          "light": "#773d80",
+          "highContrast": "#c389cc",
+          "highContrastLight": "#773d80"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.65",
+        "description": "VGroup Explorer label tint 65%: Purple",
+        "defaults": {
+          "dark": "#c081ca",
+          "light": "#7e3f88",
+          "highContrast": "#c081ca",
+          "highContrastLight": "#7e3f88"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.70",
+        "description": "VGroup Explorer label tint 70%: Purple",
+        "defaults": {
+          "dark": "#bd79c8",
+          "light": "#84408f",
+          "highContrast": "#bd79c8",
+          "highContrastLight": "#84408f"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.75",
+        "description": "VGroup Explorer label tint 75%: Purple",
+        "defaults": {
+          "dark": "#ba72c6",
+          "light": "#8b4296",
+          "highContrast": "#ba72c6",
+          "highContrastLight": "#8b4296"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.80",
+        "description": "VGroup Explorer label tint 80%: Purple",
+        "defaults": {
+          "dark": "#b76ac3",
+          "light": "#91449d",
+          "highContrast": "#b76ac3",
+          "highContrastLight": "#91449d"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.85",
+        "description": "VGroup Explorer label tint 85%: Purple",
+        "defaults": {
+          "dark": "#b462c1",
+          "light": "#9845a4",
+          "highContrast": "#b462c1",
+          "highContrastLight": "#9845a4"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.90",
+        "description": "VGroup Explorer label tint 90%: Purple",
+        "defaults": {
+          "dark": "#b15abf",
+          "light": "#9e47ac",
+          "highContrast": "#b15abf",
+          "highContrastLight": "#9e47ac"
+        }
+      },
+      {
+        "id": "vgroup.purple.label.95",
+        "description": "VGroup Explorer label tint 95%: Purple",
+        "defaults": {
+          "dark": "#ae52bc",
+          "light": "#a548b3",
+          "highContrast": "#ae52bc",
+          "highContrastLight": "#a548b3"
         }
       },
       {
@@ -965,13 +3677,193 @@
         }
       },
       {
-        "id": "vgroup.plum.label",
-        "description": "VGroup Explorer label tint: Plum",
+        "id": "vgroup.plum.label.5",
+        "description": "VGroup Explorer label tint 5%: Plum",
         "defaults": {
-          "dark": "#ddc8e0",
-          "light": "#513755",
-          "highContrast": "#ddc8e0",
-          "highContrastLight": "#513755"
+          "dark": "#e5e1e6",
+          "light": "#312c32",
+          "highContrast": "#e5e1e6",
+          "highContrastLight": "#312c32"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.10",
+        "description": "VGroup Explorer label tint 10%: Plum",
+        "defaults": {
+          "dark": "#e3dae4",
+          "light": "#382f39",
+          "highContrast": "#e3dae4",
+          "highContrastLight": "#382f39"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.15",
+        "description": "VGroup Explorer label tint 15%: Plum",
+        "defaults": {
+          "dark": "#e1d2e3",
+          "light": "#3f3141",
+          "highContrast": "#e1d2e3",
+          "highContrastLight": "#3f3141"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.20",
+        "description": "VGroup Explorer label tint 20%: Plum",
+        "defaults": {
+          "dark": "#decbe1",
+          "light": "#463349",
+          "highContrast": "#decbe1",
+          "highContrastLight": "#463349"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.25",
+        "description": "VGroup Explorer label tint 25%: Plum",
+        "defaults": {
+          "dark": "#dcc4df",
+          "light": "#4d3651",
+          "highContrast": "#dcc4df",
+          "highContrastLight": "#4d3651"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.30",
+        "description": "VGroup Explorer label tint 30%: Plum",
+        "defaults": {
+          "dark": "#d9bddd",
+          "light": "#543858",
+          "highContrast": "#d9bddd",
+          "highContrastLight": "#543858"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.35",
+        "description": "VGroup Explorer label tint 35%: Plum",
+        "defaults": {
+          "dark": "#d7b6db",
+          "light": "#5b3a60",
+          "highContrast": "#d7b6db",
+          "highContrastLight": "#5b3a60"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.40",
+        "description": "VGroup Explorer label tint 40%: Plum",
+        "defaults": {
+          "dark": "#d4aeda",
+          "light": "#623c68",
+          "highContrast": "#d4aeda",
+          "highContrastLight": "#623c68"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.45",
+        "description": "VGroup Explorer label tint 45%: Plum",
+        "defaults": {
+          "dark": "#d2a7d8",
+          "light": "#693f6f",
+          "highContrast": "#d2a7d8",
+          "highContrastLight": "#693f6f"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.50",
+        "description": "VGroup Explorer label tint 50%: Plum",
+        "defaults": {
+          "dark": "#cfa0d6",
+          "light": "#704177",
+          "highContrast": "#cfa0d6",
+          "highContrastLight": "#704177"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.55",
+        "description": "VGroup Explorer label tint 55%: Plum",
+        "defaults": {
+          "dark": "#cd99d4",
+          "light": "#77437f",
+          "highContrast": "#cd99d4",
+          "highContrastLight": "#77437f"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.60",
+        "description": "VGroup Explorer label tint 60%: Plum",
+        "defaults": {
+          "dark": "#ca92d2",
+          "light": "#7e4686",
+          "highContrast": "#ca92d2",
+          "highContrastLight": "#7e4686"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.65",
+        "description": "VGroup Explorer label tint 65%: Plum",
+        "defaults": {
+          "dark": "#c88ad1",
+          "light": "#85488e",
+          "highContrast": "#c88ad1",
+          "highContrastLight": "#85488e"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.70",
+        "description": "VGroup Explorer label tint 70%: Plum",
+        "defaults": {
+          "dark": "#c583cf",
+          "light": "#8c4a96",
+          "highContrast": "#c583cf",
+          "highContrastLight": "#8c4a96"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.75",
+        "description": "VGroup Explorer label tint 75%: Plum",
+        "defaults": {
+          "dark": "#c37ccd",
+          "light": "#934d9e",
+          "highContrast": "#c37ccd",
+          "highContrastLight": "#934d9e"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.80",
+        "description": "VGroup Explorer label tint 80%: Plum",
+        "defaults": {
+          "dark": "#c075cb",
+          "light": "#9a4fa5",
+          "highContrast": "#c075cb",
+          "highContrastLight": "#9a4fa5"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.85",
+        "description": "VGroup Explorer label tint 85%: Plum",
+        "defaults": {
+          "dark": "#be6ec9",
+          "light": "#a151ad",
+          "highContrast": "#be6ec9",
+          "highContrastLight": "#a151ad"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.90",
+        "description": "VGroup Explorer label tint 90%: Plum",
+        "defaults": {
+          "dark": "#bb66c8",
+          "light": "#a853b5",
+          "highContrast": "#bb66c8",
+          "highContrastLight": "#a853b5"
+        }
+      },
+      {
+        "id": "vgroup.plum.label.95",
+        "description": "VGroup Explorer label tint 95%: Plum",
+        "defaults": {
+          "dark": "#b95fc6",
+          "light": "#af56bc",
+          "highContrast": "#b95fc6",
+          "highContrastLight": "#af56bc"
         }
       },
       {
@@ -985,13 +3877,193 @@
         }
       },
       {
-        "id": "vgroup.pink.label",
-        "description": "VGroup Explorer label tint: Pink",
+        "id": "vgroup.pink.label.5",
+        "description": "VGroup Explorer label tint 5%: Pink",
         "defaults": {
-          "dark": "#e4c3d8",
-          "light": "#5a304b",
-          "highContrast": "#e4c3d8",
-          "highContrastLight": "#5a304b"
+          "dark": "#e7e0e4",
+          "light": "#332b30",
+          "highContrast": "#e7e0e4",
+          "highContrastLight": "#332b30"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.10",
+        "description": "VGroup Explorer label tint 10%: Pink",
+        "defaults": {
+          "dark": "#e6d7e1",
+          "light": "#3b2c36",
+          "highContrast": "#e6d7e1",
+          "highContrastLight": "#3b2c36"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.15",
+        "description": "VGroup Explorer label tint 15%: Pink",
+        "defaults": {
+          "dark": "#e5cfdd",
+          "light": "#442d3c",
+          "highContrast": "#e5cfdd",
+          "highContrastLight": "#442d3c"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.20",
+        "description": "VGroup Explorer label tint 20%: Pink",
+        "defaults": {
+          "dark": "#e4c6d9",
+          "light": "#4c2e41",
+          "highContrast": "#e4c6d9",
+          "highContrastLight": "#4c2e41"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.25",
+        "description": "VGroup Explorer label tint 25%: Pink",
+        "defaults": {
+          "dark": "#e4bed6",
+          "light": "#553047",
+          "highContrast": "#e4bed6",
+          "highContrastLight": "#553047"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.30",
+        "description": "VGroup Explorer label tint 30%: Pink",
+        "defaults": {
+          "dark": "#e3b6d2",
+          "light": "#5e314d",
+          "highContrast": "#e3b6d2",
+          "highContrastLight": "#5e314d"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.35",
+        "description": "VGroup Explorer label tint 35%: Pink",
+        "defaults": {
+          "dark": "#e2adce",
+          "light": "#663253",
+          "highContrast": "#e2adce",
+          "highContrastLight": "#663253"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.40",
+        "description": "VGroup Explorer label tint 40%: Pink",
+        "defaults": {
+          "dark": "#e1a5cb",
+          "light": "#6f3359",
+          "highContrast": "#e1a5cb",
+          "highContrastLight": "#6f3359"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.45",
+        "description": "VGroup Explorer label tint 45%: Pink",
+        "defaults": {
+          "dark": "#e09cc7",
+          "light": "#77345f",
+          "highContrast": "#e09cc7",
+          "highContrastLight": "#77345f"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.50",
+        "description": "VGroup Explorer label tint 50%: Pink",
+        "defaults": {
+          "dark": "#df94c4",
+          "light": "#803565",
+          "highContrast": "#df94c4",
+          "highContrastLight": "#803565"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.55",
+        "description": "VGroup Explorer label tint 55%: Pink",
+        "defaults": {
+          "dark": "#de8cc0",
+          "light": "#89366a",
+          "highContrast": "#de8cc0",
+          "highContrastLight": "#89366a"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.60",
+        "description": "VGroup Explorer label tint 60%: Pink",
+        "defaults": {
+          "dark": "#dd83bc",
+          "light": "#913770",
+          "highContrast": "#dd83bc",
+          "highContrastLight": "#913770"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.65",
+        "description": "VGroup Explorer label tint 65%: Pink",
+        "defaults": {
+          "dark": "#dc7bb9",
+          "light": "#9a3876",
+          "highContrast": "#dc7bb9",
+          "highContrastLight": "#9a3876"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.70",
+        "description": "VGroup Explorer label tint 70%: Pink",
+        "defaults": {
+          "dark": "#db72b5",
+          "light": "#a2397c",
+          "highContrast": "#db72b5",
+          "highContrastLight": "#a2397c"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.75",
+        "description": "VGroup Explorer label tint 75%: Pink",
+        "defaults": {
+          "dark": "#db6ab1",
+          "light": "#ab3b82",
+          "highContrast": "#db6ab1",
+          "highContrastLight": "#ab3b82"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.80",
+        "description": "VGroup Explorer label tint 80%: Pink",
+        "defaults": {
+          "dark": "#da62ae",
+          "light": "#b43c88",
+          "highContrast": "#da62ae",
+          "highContrastLight": "#b43c88"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.85",
+        "description": "VGroup Explorer label tint 85%: Pink",
+        "defaults": {
+          "dark": "#d959aa",
+          "light": "#bc3d8d",
+          "highContrast": "#d959aa",
+          "highContrastLight": "#bc3d8d"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.90",
+        "description": "VGroup Explorer label tint 90%: Pink",
+        "defaults": {
+          "dark": "#d851a6",
+          "light": "#c53e93",
+          "highContrast": "#d851a6",
+          "highContrastLight": "#c53e93"
+        }
+      },
+      {
+        "id": "vgroup.pink.label.95",
+        "description": "VGroup Explorer label tint 95%: Pink",
+        "defaults": {
+          "dark": "#d748a3",
+          "light": "#cd3f99",
+          "highContrast": "#d748a3",
+          "highContrastLight": "#cd3f99"
         }
       },
       {
@@ -1005,13 +4077,193 @@
         }
       },
       {
-        "id": "vgroup.rose.label",
-        "description": "VGroup Explorer label tint: Rose",
+        "id": "vgroup.rose.label.5",
+        "description": "VGroup Explorer label tint 5%: Rose",
         "defaults": {
-          "dark": "#ebc3ca",
-          "light": "#633039",
-          "highContrast": "#ebc3ca",
-          "highContrastLight": "#633039"
+          "dark": "#e9e0e1",
+          "light": "#342b2d",
+          "highContrast": "#e9e0e1",
+          "highContrastLight": "#342b2d"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.10",
+        "description": "VGroup Explorer label tint 10%: Rose",
+        "defaults": {
+          "dark": "#e9d7da",
+          "light": "#3e2c2f",
+          "highContrast": "#e9d7da",
+          "highContrastLight": "#3e2c2f"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.15",
+        "description": "VGroup Explorer label tint 15%: Rose",
+        "defaults": {
+          "dark": "#eacfd3",
+          "light": "#482d32",
+          "highContrast": "#eacfd3",
+          "highContrastLight": "#482d32"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.20",
+        "description": "VGroup Explorer label tint 20%: Rose",
+        "defaults": {
+          "dark": "#eac6cc",
+          "light": "#522e34",
+          "highContrast": "#eac6cc",
+          "highContrastLight": "#522e34"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.25",
+        "description": "VGroup Explorer label tint 25%: Rose",
+        "defaults": {
+          "dark": "#ebbec6",
+          "light": "#5d2f37",
+          "highContrast": "#ebbec6",
+          "highContrastLight": "#5d2f37"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.30",
+        "description": "VGroup Explorer label tint 30%: Rose",
+        "defaults": {
+          "dark": "#ecb5bf",
+          "light": "#67303a",
+          "highContrast": "#ecb5bf",
+          "highContrastLight": "#67303a"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.35",
+        "description": "VGroup Explorer label tint 35%: Rose",
+        "defaults": {
+          "dark": "#ecadb8",
+          "light": "#71313c",
+          "highContrast": "#ecadb8",
+          "highContrastLight": "#71313c"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.40",
+        "description": "VGroup Explorer label tint 40%: Rose",
+        "defaults": {
+          "dark": "#eda4b1",
+          "light": "#7b323f",
+          "highContrast": "#eda4b1",
+          "highContrastLight": "#7b323f"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.45",
+        "description": "VGroup Explorer label tint 45%: Rose",
+        "defaults": {
+          "dark": "#ed9caa",
+          "light": "#853341",
+          "highContrast": "#ed9caa",
+          "highContrastLight": "#853341"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.50",
+        "description": "VGroup Explorer label tint 50%: Rose",
+        "defaults": {
+          "dark": "#ee94a3",
+          "light": "#8f3544",
+          "highContrast": "#ee94a3",
+          "highContrastLight": "#8f3544"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.55",
+        "description": "VGroup Explorer label tint 55%: Rose",
+        "defaults": {
+          "dark": "#ef8b9c",
+          "light": "#993647",
+          "highContrast": "#ef8b9c",
+          "highContrastLight": "#993647"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.60",
+        "description": "VGroup Explorer label tint 60%: Rose",
+        "defaults": {
+          "dark": "#ef8395",
+          "light": "#a33749",
+          "highContrast": "#ef8395",
+          "highContrastLight": "#a33749"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.65",
+        "description": "VGroup Explorer label tint 65%: Rose",
+        "defaults": {
+          "dark": "#f07a8e",
+          "light": "#ad384c",
+          "highContrast": "#f07a8e",
+          "highContrastLight": "#ad384c"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.70",
+        "description": "VGroup Explorer label tint 70%: Rose",
+        "defaults": {
+          "dark": "#f07287",
+          "light": "#b7394e",
+          "highContrast": "#f07287",
+          "highContrastLight": "#b7394e"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.75",
+        "description": "VGroup Explorer label tint 75%: Rose",
+        "defaults": {
+          "dark": "#f16981",
+          "light": "#c23a51",
+          "highContrast": "#f16981",
+          "highContrastLight": "#c23a51"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.80",
+        "description": "VGroup Explorer label tint 80%: Rose",
+        "defaults": {
+          "dark": "#f2617a",
+          "light": "#cc3b54",
+          "highContrast": "#f2617a",
+          "highContrastLight": "#cc3b54"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.85",
+        "description": "VGroup Explorer label tint 85%: Rose",
+        "defaults": {
+          "dark": "#f25873",
+          "light": "#d63c56",
+          "highContrast": "#f25873",
+          "highContrastLight": "#d63c56"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.90",
+        "description": "VGroup Explorer label tint 90%: Rose",
+        "defaults": {
+          "dark": "#f3506c",
+          "light": "#e03d59",
+          "highContrast": "#f3506c",
+          "highContrastLight": "#e03d59"
+        }
+      },
+      {
+        "id": "vgroup.rose.label.95",
+        "description": "VGroup Explorer label tint 95%: Rose",
+        "defaults": {
+          "dark": "#f34765",
+          "light": "#ea3e5b",
+          "highContrast": "#f34765",
+          "highContrastLight": "#ea3e5b"
         }
       },
       {
@@ -1025,13 +4277,193 @@
         }
       },
       {
-        "id": "vgroup.brown.label",
-        "description": "VGroup Explorer label tint: Brown",
+        "id": "vgroup.brown.label.5",
+        "description": "VGroup Explorer label tint 5%: Brown",
         "defaults": {
-          "dark": "#dbd1c8",
-          "light": "#4f4237",
-          "highContrast": "#dbd1c8",
-          "highContrastLight": "#4f4237"
+          "dark": "#e5e3e1",
+          "light": "#312e2c",
+          "highContrast": "#e5e3e1",
+          "highContrastLight": "#312e2c"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.10",
+        "description": "VGroup Explorer label tint 10%: Brown",
+        "defaults": {
+          "dark": "#e2deda",
+          "light": "#37332f",
+          "highContrast": "#e2deda",
+          "highContrastLight": "#37332f"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.15",
+        "description": "VGroup Explorer label tint 15%: Brown",
+        "defaults": {
+          "dark": "#dfd8d2",
+          "light": "#3e3731",
+          "highContrast": "#dfd8d2",
+          "highContrastLight": "#3e3731"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.20",
+        "description": "VGroup Explorer label tint 20%: Brown",
+        "defaults": {
+          "dark": "#dcd3cb",
+          "light": "#443b33",
+          "highContrast": "#dcd3cb",
+          "highContrastLight": "#443b33"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.25",
+        "description": "VGroup Explorer label tint 25%: Brown",
+        "defaults": {
+          "dark": "#d9cec4",
+          "light": "#4b3f36",
+          "highContrast": "#d9cec4",
+          "highContrastLight": "#4b3f36"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.30",
+        "description": "VGroup Explorer label tint 30%: Brown",
+        "defaults": {
+          "dark": "#d6c8bd",
+          "light": "#514438",
+          "highContrast": "#d6c8bd",
+          "highContrastLight": "#514438"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.35",
+        "description": "VGroup Explorer label tint 35%: Brown",
+        "defaults": {
+          "dark": "#d3c3b6",
+          "light": "#58483a",
+          "highContrast": "#d3c3b6",
+          "highContrastLight": "#58483a"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.40",
+        "description": "VGroup Explorer label tint 40%: Brown",
+        "defaults": {
+          "dark": "#d0beae",
+          "light": "#5e4c3c",
+          "highContrast": "#d0beae",
+          "highContrastLight": "#5e4c3c"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.45",
+        "description": "VGroup Explorer label tint 45%: Brown",
+        "defaults": {
+          "dark": "#cdb9a7",
+          "light": "#65503f",
+          "highContrast": "#cdb9a7",
+          "highContrastLight": "#65503f"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.50",
+        "description": "VGroup Explorer label tint 50%: Brown",
+        "defaults": {
+          "dark": "#cbb4a0",
+          "light": "#6c5541",
+          "highContrast": "#cbb4a0",
+          "highContrastLight": "#6c5541"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.55",
+        "description": "VGroup Explorer label tint 55%: Brown",
+        "defaults": {
+          "dark": "#c8ae99",
+          "light": "#725943",
+          "highContrast": "#c8ae99",
+          "highContrastLight": "#725943"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.60",
+        "description": "VGroup Explorer label tint 60%: Brown",
+        "defaults": {
+          "dark": "#c5a992",
+          "light": "#795d46",
+          "highContrast": "#c5a992",
+          "highContrastLight": "#795d46"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.65",
+        "description": "VGroup Explorer label tint 65%: Brown",
+        "defaults": {
+          "dark": "#c2a48a",
+          "light": "#7f6148",
+          "highContrast": "#c2a48a",
+          "highContrastLight": "#7f6148"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.70",
+        "description": "VGroup Explorer label tint 70%: Brown",
+        "defaults": {
+          "dark": "#bf9f83",
+          "light": "#86664a",
+          "highContrast": "#bf9f83",
+          "highContrastLight": "#86664a"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.75",
+        "description": "VGroup Explorer label tint 75%: Brown",
+        "defaults": {
+          "dark": "#bc997c",
+          "light": "#8c6a4d",
+          "highContrast": "#bc997c",
+          "highContrastLight": "#8c6a4d"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.80",
+        "description": "VGroup Explorer label tint 80%: Brown",
+        "defaults": {
+          "dark": "#b99475",
+          "light": "#936e4f",
+          "highContrast": "#b99475",
+          "highContrastLight": "#936e4f"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.85",
+        "description": "VGroup Explorer label tint 85%: Brown",
+        "defaults": {
+          "dark": "#b68f6e",
+          "light": "#997251",
+          "highContrast": "#b68f6e",
+          "highContrastLight": "#997251"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.90",
+        "description": "VGroup Explorer label tint 90%: Brown",
+        "defaults": {
+          "dark": "#b38a66",
+          "light": "#a07753",
+          "highContrast": "#b38a66",
+          "highContrastLight": "#a07753"
+        }
+      },
+      {
+        "id": "vgroup.brown.label.95",
+        "description": "VGroup Explorer label tint 95%: Brown",
+        "defaults": {
+          "dark": "#b0845f",
+          "light": "#a67b56",
+          "highContrast": "#b0845f",
+          "highContrastLight": "#a67b56"
         }
       },
       {
@@ -1045,13 +4477,193 @@
         }
       },
       {
-        "id": "vgroup.bronze.label",
-        "description": "VGroup Explorer label tint: Bronze",
+        "id": "vgroup.bronze.label.5",
+        "description": "VGroup Explorer label tint 5%: Bronze",
         "defaults": {
-          "dark": "#d8d1ce",
-          "light": "#4b423e",
-          "highContrast": "#d8d1ce",
-          "highContrastLight": "#4b423e"
+          "dark": "#e4e3e2",
+          "light": "#302e2e",
+          "highContrast": "#e4e3e2",
+          "highContrastLight": "#302e2e"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.10",
+        "description": "VGroup Explorer label tint 10%: Bronze",
+        "defaults": {
+          "dark": "#e1dedc",
+          "light": "#363331",
+          "highContrast": "#e1dedc",
+          "highContrastLight": "#363331"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.15",
+        "description": "VGroup Explorer label tint 15%: Bronze",
+        "defaults": {
+          "dark": "#ddd8d6",
+          "light": "#3c3735",
+          "highContrast": "#ddd8d6",
+          "highContrastLight": "#3c3735"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.20",
+        "description": "VGroup Explorer label tint 20%: Bronze",
+        "defaults": {
+          "dark": "#dad3d0",
+          "light": "#423b38",
+          "highContrast": "#dad3d0",
+          "highContrastLight": "#423b38"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.25",
+        "description": "VGroup Explorer label tint 25%: Bronze",
+        "defaults": {
+          "dark": "#d6cecb",
+          "light": "#48403c",
+          "highContrast": "#d6cecb",
+          "highContrastLight": "#48403c"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.30",
+        "description": "VGroup Explorer label tint 30%: Bronze",
+        "defaults": {
+          "dark": "#d3c9c5",
+          "light": "#4e4440",
+          "highContrast": "#d3c9c5",
+          "highContrastLight": "#4e4440"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.35",
+        "description": "VGroup Explorer label tint 35%: Bronze",
+        "defaults": {
+          "dark": "#cfc4bf",
+          "light": "#544843",
+          "highContrast": "#cfc4bf",
+          "highContrastLight": "#544843"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.40",
+        "description": "VGroup Explorer label tint 40%: Bronze",
+        "defaults": {
+          "dark": "#ccbeb9",
+          "light": "#5a4c47",
+          "highContrast": "#ccbeb9",
+          "highContrastLight": "#5a4c47"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.45",
+        "description": "VGroup Explorer label tint 45%: Bronze",
+        "defaults": {
+          "dark": "#c8b9b3",
+          "light": "#60514a",
+          "highContrast": "#c8b9b3",
+          "highContrastLight": "#60514a"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.50",
+        "description": "VGroup Explorer label tint 50%: Bronze",
+        "defaults": {
+          "dark": "#c5b4ad",
+          "light": "#66554e",
+          "highContrast": "#c5b4ad",
+          "highContrastLight": "#66554e"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.55",
+        "description": "VGroup Explorer label tint 55%: Bronze",
+        "defaults": {
+          "dark": "#c1afa7",
+          "light": "#6b5952",
+          "highContrast": "#c1afa7",
+          "highContrastLight": "#6b5952"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.60",
+        "description": "VGroup Explorer label tint 60%: Bronze",
+        "defaults": {
+          "dark": "#bdaaa1",
+          "light": "#715e55",
+          "highContrast": "#bdaaa1",
+          "highContrastLight": "#715e55"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.65",
+        "description": "VGroup Explorer label tint 65%: Bronze",
+        "defaults": {
+          "dark": "#baa49b",
+          "light": "#776259",
+          "highContrast": "#baa49b",
+          "highContrastLight": "#776259"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.70",
+        "description": "VGroup Explorer label tint 70%: Bronze",
+        "defaults": {
+          "dark": "#b69f95",
+          "light": "#7d665c",
+          "highContrast": "#b69f95",
+          "highContrastLight": "#7d665c"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.75",
+        "description": "VGroup Explorer label tint 75%: Bronze",
+        "defaults": {
+          "dark": "#b39a90",
+          "light": "#836b60",
+          "highContrast": "#b39a90",
+          "highContrastLight": "#836b60"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.80",
+        "description": "VGroup Explorer label tint 80%: Bronze",
+        "defaults": {
+          "dark": "#af958a",
+          "light": "#896f64",
+          "highContrast": "#af958a",
+          "highContrastLight": "#896f64"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.85",
+        "description": "VGroup Explorer label tint 85%: Bronze",
+        "defaults": {
+          "dark": "#ac9084",
+          "light": "#8f7367",
+          "highContrast": "#ac9084",
+          "highContrastLight": "#8f7367"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.90",
+        "description": "VGroup Explorer label tint 90%: Bronze",
+        "defaults": {
+          "dark": "#a88a7e",
+          "light": "#95776b",
+          "highContrast": "#a88a7e",
+          "highContrastLight": "#95776b"
+        }
+      },
+      {
+        "id": "vgroup.bronze.label.95",
+        "description": "VGroup Explorer label tint 95%: Bronze",
+        "defaults": {
+          "dark": "#a58578",
+          "light": "#9b7c6e",
+          "highContrast": "#a58578",
+          "highContrastLight": "#9b7c6e"
         }
       },
       {
@@ -1065,13 +4677,193 @@
         }
       },
       {
-        "id": "vgroup.gold.label",
-        "description": "VGroup Explorer label tint: Gold",
+        "id": "vgroup.gold.label.5",
+        "description": "VGroup Explorer label tint 5%: Gold",
         "defaults": {
-          "dark": "#d6d2cb",
-          "light": "#49433b",
-          "highContrast": "#d6d2cb",
-          "highContrastLight": "#49433b"
+          "dark": "#e4e3e1",
+          "light": "#2f2e2d",
+          "highContrast": "#e4e3e1",
+          "highContrastLight": "#2f2e2d"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.10",
+        "description": "VGroup Explorer label tint 10%: Gold",
+        "defaults": {
+          "dark": "#e0dedb",
+          "light": "#353330",
+          "highContrast": "#e0dedb",
+          "highContrastLight": "#353330"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.15",
+        "description": "VGroup Explorer label tint 15%: Gold",
+        "defaults": {
+          "dark": "#dcd9d4",
+          "light": "#3a3733",
+          "highContrast": "#dcd9d4",
+          "highContrastLight": "#3a3733"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.20",
+        "description": "VGroup Explorer label tint 20%: Gold",
+        "defaults": {
+          "dark": "#d8d4ce",
+          "light": "#403c36",
+          "highContrast": "#d8d4ce",
+          "highContrastLight": "#403c36"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.25",
+        "description": "VGroup Explorer label tint 25%: Gold",
+        "defaults": {
+          "dark": "#d4cfc7",
+          "light": "#454039",
+          "highContrast": "#d4cfc7",
+          "highContrastLight": "#454039"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.30",
+        "description": "VGroup Explorer label tint 30%: Gold",
+        "defaults": {
+          "dark": "#d0cac1",
+          "light": "#4b453c",
+          "highContrast": "#d0cac1",
+          "highContrastLight": "#4b453c"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.35",
+        "description": "VGroup Explorer label tint 35%: Gold",
+        "defaults": {
+          "dark": "#ccc5ba",
+          "light": "#50493f",
+          "highContrast": "#ccc5ba",
+          "highContrastLight": "#50493f"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.40",
+        "description": "VGroup Explorer label tint 40%: Gold",
+        "defaults": {
+          "dark": "#c8c0b4",
+          "light": "#564e42",
+          "highContrast": "#c8c0b4",
+          "highContrastLight": "#564e42"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.45",
+        "description": "VGroup Explorer label tint 45%: Gold",
+        "defaults": {
+          "dark": "#c4bbad",
+          "light": "#5b5245",
+          "highContrast": "#c4bbad",
+          "highContrastLight": "#5b5245"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.50",
+        "description": "VGroup Explorer label tint 50%: Gold",
+        "defaults": {
+          "dark": "#c0b6a7",
+          "light": "#615748",
+          "highContrast": "#c0b6a7",
+          "highContrastLight": "#615748"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.55",
+        "description": "VGroup Explorer label tint 55%: Gold",
+        "defaults": {
+          "dark": "#bbb0a0",
+          "light": "#665b4a",
+          "highContrast": "#bbb0a0",
+          "highContrastLight": "#665b4a"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.60",
+        "description": "VGroup Explorer label tint 60%: Gold",
+        "defaults": {
+          "dark": "#b7ab99",
+          "light": "#6b5f4d",
+          "highContrast": "#b7ab99",
+          "highContrastLight": "#6b5f4d"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.65",
+        "description": "VGroup Explorer label tint 65%: Gold",
+        "defaults": {
+          "dark": "#b3a693",
+          "light": "#716450",
+          "highContrast": "#b3a693",
+          "highContrastLight": "#716450"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.70",
+        "description": "VGroup Explorer label tint 70%: Gold",
+        "defaults": {
+          "dark": "#afa18c",
+          "light": "#766853",
+          "highContrast": "#afa18c",
+          "highContrastLight": "#766853"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.75",
+        "description": "VGroup Explorer label tint 75%: Gold",
+        "defaults": {
+          "dark": "#ab9c86",
+          "light": "#7c6d56",
+          "highContrast": "#ab9c86",
+          "highContrastLight": "#7c6d56"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.80",
+        "description": "VGroup Explorer label tint 80%: Gold",
+        "defaults": {
+          "dark": "#a7977f",
+          "light": "#817159",
+          "highContrast": "#a7977f",
+          "highContrastLight": "#817159"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.85",
+        "description": "VGroup Explorer label tint 85%: Gold",
+        "defaults": {
+          "dark": "#a39279",
+          "light": "#87765c",
+          "highContrast": "#a39279",
+          "highContrastLight": "#87765c"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.90",
+        "description": "VGroup Explorer label tint 90%: Gold",
+        "defaults": {
+          "dark": "#9f8d72",
+          "light": "#8c7a5f",
+          "highContrast": "#9f8d72",
+          "highContrastLight": "#8c7a5f"
+        }
+      },
+      {
+        "id": "vgroup.gold.label.95",
+        "description": "VGroup Explorer label tint 95%: Gold",
+        "defaults": {
+          "dark": "#9b886c",
+          "light": "#927f62",
+          "highContrast": "#9b886c",
+          "highContrastLight": "#927f62"
         }
       },
       {
@@ -1085,13 +4877,193 @@
         }
       },
       {
-        "id": "vgroup.gray.label",
-        "description": "VGroup Explorer label tint: Gray",
+        "id": "vgroup.gray.label.5",
+        "description": "VGroup Explorer label tint 5%: Gray",
         "defaults": {
-          "dark": "#d4d4d6",
-          "light": "#454649",
-          "highContrast": "#d4d4d6",
-          "highContrastLight": "#454649"
+          "dark": "#e3e3e4",
+          "light": "#2f2f30",
+          "highContrast": "#e3e3e4",
+          "highContrastLight": "#2f2f30"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.10",
+        "description": "VGroup Explorer label tint 10%: Gray",
+        "defaults": {
+          "dark": "#dfdfe0",
+          "light": "#343435",
+          "highContrast": "#dfdfe0",
+          "highContrastLight": "#343435"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.15",
+        "description": "VGroup Explorer label tint 15%: Gray",
+        "defaults": {
+          "dark": "#dadadc",
+          "light": "#39393b",
+          "highContrast": "#dadadc",
+          "highContrastLight": "#39393b"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.20",
+        "description": "VGroup Explorer label tint 20%: Gray",
+        "defaults": {
+          "dark": "#d5d6d8",
+          "light": "#3d3e40",
+          "highContrast": "#d5d6d8",
+          "highContrastLight": "#3d3e40"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.25",
+        "description": "VGroup Explorer label tint 25%: Gray",
+        "defaults": {
+          "dark": "#d1d1d4",
+          "light": "#424346",
+          "highContrast": "#d1d1d4",
+          "highContrastLight": "#424346"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.30",
+        "description": "VGroup Explorer label tint 30%: Gray",
+        "defaults": {
+          "dark": "#cccdd0",
+          "light": "#47484b",
+          "highContrast": "#cccdd0",
+          "highContrastLight": "#47484b"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.35",
+        "description": "VGroup Explorer label tint 35%: Gray",
+        "defaults": {
+          "dark": "#c7c8cc",
+          "light": "#4c4d51",
+          "highContrast": "#c7c8cc",
+          "highContrastLight": "#4c4d51"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.40",
+        "description": "VGroup Explorer label tint 40%: Gray",
+        "defaults": {
+          "dark": "#c3c4c8",
+          "light": "#515256",
+          "highContrast": "#c3c4c8",
+          "highContrastLight": "#515256"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.45",
+        "description": "VGroup Explorer label tint 45%: Gray",
+        "defaults": {
+          "dark": "#bebfc4",
+          "light": "#56575c",
+          "highContrast": "#bebfc4",
+          "highContrastLight": "#56575c"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.50",
+        "description": "VGroup Explorer label tint 50%: Gray",
+        "defaults": {
+          "dark": "#babbc0",
+          "light": "#5b5c61",
+          "highContrast": "#babbc0",
+          "highContrastLight": "#5b5c61"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.55",
+        "description": "VGroup Explorer label tint 55%: Gray",
+        "defaults": {
+          "dark": "#b5b6bc",
+          "light": "#5f6067",
+          "highContrast": "#b5b6bc",
+          "highContrastLight": "#5f6067"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.60",
+        "description": "VGroup Explorer label tint 60%: Gray",
+        "defaults": {
+          "dark": "#b0b1b8",
+          "light": "#64656c",
+          "highContrast": "#b0b1b8",
+          "highContrastLight": "#64656c"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.65",
+        "description": "VGroup Explorer label tint 65%: Gray",
+        "defaults": {
+          "dark": "#acadb4",
+          "light": "#696a72",
+          "highContrast": "#acadb4",
+          "highContrastLight": "#696a72"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.70",
+        "description": "VGroup Explorer label tint 70%: Gray",
+        "defaults": {
+          "dark": "#a7a8b0",
+          "light": "#6e6f77",
+          "highContrast": "#a7a8b0",
+          "highContrastLight": "#6e6f77"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.75",
+        "description": "VGroup Explorer label tint 75%: Gray",
+        "defaults": {
+          "dark": "#a2a4ac",
+          "light": "#73747d",
+          "highContrast": "#a2a4ac",
+          "highContrastLight": "#73747d"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.80",
+        "description": "VGroup Explorer label tint 80%: Gray",
+        "defaults": {
+          "dark": "#9e9fa8",
+          "light": "#787982",
+          "highContrast": "#9e9fa8",
+          "highContrastLight": "#787982"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.85",
+        "description": "VGroup Explorer label tint 85%: Gray",
+        "defaults": {
+          "dark": "#999ba4",
+          "light": "#7c7e88",
+          "highContrast": "#999ba4",
+          "highContrastLight": "#7c7e88"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.90",
+        "description": "VGroup Explorer label tint 90%: Gray",
+        "defaults": {
+          "dark": "#9496a0",
+          "light": "#81838d",
+          "highContrast": "#9496a0",
+          "highContrastLight": "#81838d"
+        }
+      },
+      {
+        "id": "vgroup.gray.label.95",
+        "description": "VGroup Explorer label tint 95%: Gray",
+        "defaults": {
+          "dark": "#90929c",
+          "light": "#868893",
+          "highContrast": "#90929c",
+          "highContrastLight": "#868893"
         }
       },
       {
@@ -1105,13 +5077,193 @@
         }
       },
       {
-        "id": "vgroup.slate.label",
-        "description": "VGroup Explorer label tint: Slate",
+        "id": "vgroup.slate.label.5",
+        "description": "VGroup Explorer label tint 5%: Slate",
         "defaults": {
-          "dark": "#cbced4",
-          "light": "#3a3f45",
-          "highContrast": "#cbced4",
-          "highContrastLight": "#3a3f45"
+          "dark": "#e1e2e3",
+          "light": "#2d2e2f",
+          "highContrast": "#e1e2e3",
+          "highContrastLight": "#2d2e2f"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.10",
+        "description": "VGroup Explorer label tint 10%: Slate",
+        "defaults": {
+          "dark": "#dbdcdf",
+          "light": "#303134",
+          "highContrast": "#dbdcdf",
+          "highContrastLight": "#303134"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.15",
+        "description": "VGroup Explorer label tint 15%: Slate",
+        "defaults": {
+          "dark": "#d4d7da",
+          "light": "#333539",
+          "highContrast": "#d4d7da",
+          "highContrastLight": "#333539"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.20",
+        "description": "VGroup Explorer label tint 20%: Slate",
+        "defaults": {
+          "dark": "#ced1d5",
+          "light": "#36393d",
+          "highContrast": "#ced1d5",
+          "highContrastLight": "#36393d"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.25",
+        "description": "VGroup Explorer label tint 25%: Slate",
+        "defaults": {
+          "dark": "#c7cbd1",
+          "light": "#393d42",
+          "highContrast": "#c7cbd1",
+          "highContrastLight": "#393d42"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.30",
+        "description": "VGroup Explorer label tint 30%: Slate",
+        "defaults": {
+          "dark": "#c0c5cc",
+          "light": "#3b4047",
+          "highContrast": "#c0c5cc",
+          "highContrastLight": "#3b4047"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.35",
+        "description": "VGroup Explorer label tint 35%: Slate",
+        "defaults": {
+          "dark": "#babfc7",
+          "light": "#3e444c",
+          "highContrast": "#babfc7",
+          "highContrastLight": "#3e444c"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.40",
+        "description": "VGroup Explorer label tint 40%: Slate",
+        "defaults": {
+          "dark": "#b3bac3",
+          "light": "#414851",
+          "highContrast": "#b3bac3",
+          "highContrastLight": "#414851"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.45",
+        "description": "VGroup Explorer label tint 45%: Slate",
+        "defaults": {
+          "dark": "#adb4be",
+          "light": "#444b56",
+          "highContrast": "#adb4be",
+          "highContrastLight": "#444b56"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.50",
+        "description": "VGroup Explorer label tint 50%: Slate",
+        "defaults": {
+          "dark": "#a6aeba",
+          "light": "#474f5b",
+          "highContrast": "#a6aeba",
+          "highContrastLight": "#474f5b"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.55",
+        "description": "VGroup Explorer label tint 55%: Slate",
+        "defaults": {
+          "dark": "#9fa8b5",
+          "light": "#4a535f",
+          "highContrast": "#9fa8b5",
+          "highContrastLight": "#4a535f"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.60",
+        "description": "VGroup Explorer label tint 60%: Slate",
+        "defaults": {
+          "dark": "#99a2b0",
+          "light": "#4d5664",
+          "highContrast": "#99a2b0",
+          "highContrastLight": "#4d5664"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.65",
+        "description": "VGroup Explorer label tint 65%: Slate",
+        "defaults": {
+          "dark": "#929dac",
+          "light": "#505a69",
+          "highContrast": "#929dac",
+          "highContrastLight": "#505a69"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.70",
+        "description": "VGroup Explorer label tint 70%: Slate",
+        "defaults": {
+          "dark": "#8c97a7",
+          "light": "#535e6e",
+          "highContrast": "#8c97a7",
+          "highContrastLight": "#535e6e"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.75",
+        "description": "VGroup Explorer label tint 75%: Slate",
+        "defaults": {
+          "dark": "#8591a2",
+          "light": "#566273",
+          "highContrast": "#8591a2",
+          "highContrastLight": "#566273"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.80",
+        "description": "VGroup Explorer label tint 80%: Slate",
+        "defaults": {
+          "dark": "#7e8b9e",
+          "light": "#586578",
+          "highContrast": "#7e8b9e",
+          "highContrastLight": "#586578"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.85",
+        "description": "VGroup Explorer label tint 85%: Slate",
+        "defaults": {
+          "dark": "#788599",
+          "light": "#5b697c",
+          "highContrast": "#788599",
+          "highContrastLight": "#5b697c"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.90",
+        "description": "VGroup Explorer label tint 90%: Slate",
+        "defaults": {
+          "dark": "#718094",
+          "light": "#5e6d81",
+          "highContrast": "#718094",
+          "highContrastLight": "#5e6d81"
+        }
+      },
+      {
+        "id": "vgroup.slate.label.95",
+        "description": "VGroup Explorer label tint 95%: Slate",
+        "defaults": {
+          "dark": "#6b7a90",
+          "light": "#617086",
+          "highContrast": "#6b7a90",
+          "highContrastLight": "#617086"
         }
       }
     ]
@@ -1120,7 +5272,8 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
-    "package": "npm run typecheck && node esbuild.js --production && mkdir -p version && vsce package --no-dependencies --allow-missing-repository --out version/"
+    "generate:colors": "node scripts/generate-colors.mjs",
+    "package": "npm run generate:colors && npm run typecheck && node esbuild.js --production && mkdir -p version && vsce package --no-dependencies --allow-missing-repository --out version/"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -12,10 +12,11 @@ body {
 }
 
 body {
-  /* Levels: group title > folder > file. */
+  /* Levels: group > subgroup > folder > file. Overridden from appearance via map.js. */
   --size-group: calc(var(--vscode-font-size, 13px) * 1.15);
-  --size-folder: calc(var(--vscode-font-size, 13px) * 1.02);
-  --size-file: calc(var(--vscode-font-size, 13px) * 0.94);
+  --size-subgroup: calc(var(--vscode-font-size, 13px) * 1.05);
+  --size-folder: calc(var(--vscode-font-size, 13px) * 0.95);
+  --size-file: calc(var(--vscode-font-size, 13px) * 0.9);
   --size-meta: calc(var(--vscode-font-size, 13px) * 0.8);
   /* chevron(10) + gap(6) + bar(5) */
   --tree-gutter: 21px;
@@ -107,7 +108,7 @@ body {
 }
 
 .children > .node.group::before {
-  top: calc(var(--size-group) * 0.775);
+  top: calc(var(--size-subgroup) * 0.775);
 }
 
 /* Vertical segment: full height for middle nodes. */
@@ -133,7 +134,7 @@ body {
 }
 
 .children > .node.group:last-child::after {
-  height: calc(var(--size-group) * 0.775);
+  height: calc(var(--size-subgroup) * 0.775);
 }
 
 /* List mode without columns: stub per file/folder row; block-level connectors off. */
@@ -353,6 +354,11 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.group.nested .label,
+.group.nested .group-icon {
+  font-size: var(--size-subgroup);
 }
 
 .badge {
