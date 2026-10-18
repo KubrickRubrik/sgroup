@@ -12,7 +12,10 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
     this.subscriptions = [
       store.onDidChange(() => this.emitter.fire(undefined)),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('vgroup.showDecorations')) {
+        if (
+          e.affectsConfiguration('vgroup.showDecorations') ||
+          e.affectsConfiguration('workbench.colorCustomizations')
+        ) {
           this.emitter.fire(undefined);
         }
       }),
@@ -73,5 +76,5 @@ function labelColor(
   if (saturation >= 100) {
     return new vscode.ThemeColor(themeColorId(color));
   }
-  return new vscode.ThemeColor(themeLabelColorId(color, saturation));
+  return new vscode.ThemeColor(themeLabelColorId(color));
 }

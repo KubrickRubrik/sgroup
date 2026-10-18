@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { registerCommands } from './commands';
 import { MarkerDecorationProvider } from './decorations';
+import { clearExplorerLabelColors, syncExplorerLabelColors } from './labelColors';
 import { MarkerStore } from './markerStore';
 import { MarkersMapProvider } from './markersMap';
 import { MarkersTreeProvider } from './markersTree';
@@ -145,13 +146,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       term.show();
       term.sendText('sh ./sh_vsix.sh');
     }),
+    store.onDidChange(() => {
+      void syncExplorerLabelColors(store.appearance.labelSaturation);
+    }),
+    vscode.window.onDidChangeActiveColorTheme(() => {
+      void syncExplorerLabelColors(store.appearance.labelSaturation);
+    }),
   );
 
   await map.syncGroupsLayoutContext();
   await store.init();
+  await syncExplorerLabelColors(store.appearance.labelSaturation);
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  void clearExplorerLabelColors();
+}
 
 /** sh_vsix.sh touches version/.reload-window → full window reload (CLI cannot do this). */
 function watchVsixReloadMarker(root: vscode.Uri): vscode.Disposable {

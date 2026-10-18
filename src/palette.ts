@@ -2,7 +2,8 @@
  * Marker colors contributed as theme colors (`contributes.colors`), so they work in Explorer decorations,
  * which only accept theme color ids. Keep in sync with package.json via `npm run generate:colors`.
  *
- * Label tints are stepped 5…95% group hue mixed into near-foreground bases (dark/light).
+ * Soft Explorer labels use `vgroup.*.label`. Mid saturation is applied at runtime by writing the mixed
+ * hex into `workbench.colorCustomizations` (FileDecoration cannot take a raw hex).
  */
 export const PALETTE: ReadonlyArray<{
   id: string;
@@ -34,10 +35,8 @@ export const PALETTE: ReadonlyArray<{
   { id: 'vgroup.slate', label: 'Slate', hex: '#64748b' },
 ];
 
-/** Explorer label saturation steps contributed as `vgroup.*.label.N` theme colors. */
-export const LABEL_SATURATION_STEPS: readonly number[] = [
-  5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95,
-];
+/** Default soft-label mix written into package.json (matches appearance.labelSaturation default). */
+export const DEFAULT_LABEL_SATURATION = 20;
 
 const NEAR_WHITE = '#e8e8e8';
 const NEAR_BLACK = '#2a2a2a';
@@ -95,25 +94,15 @@ export function themeColorId(color: string): string {
 }
 
 /**
- * Soft label color for Explorer decorations at a saturation step (5…95).
- * Uses `vgroup.*.label.N` theme colors. Callers handle 0 (foreground) and 100 (stripe).
+ * Soft label color for Explorer decorations.
+ * Uses `vgroup.*.label`; mid saturations are pushed into workbench.colorCustomizations at runtime.
  */
-export function themeLabelColorId(color: string, saturation: number): string {
-  const step = nearestSaturationStep(saturation);
-  return resolvePaletteEntry(color).id + '.label.' + step;
+export function themeLabelColorId(color: string): string {
+  return resolvePaletteEntry(color).id + '.label';
 }
 
-export function nearestSaturationStep(saturation: number): number {
-  let best = LABEL_SATURATION_STEPS[0];
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const step of LABEL_SATURATION_STEPS) {
-    const distance = Math.abs(step - saturation);
-    if (distance < bestDistance) {
-      best = step;
-      bestDistance = distance;
-    }
-  }
-  return best;
+export function isVgroupLabelColorKey(key: string): boolean {
+  return PALETTE.some((entry) => key === entry.id + '.label');
 }
 
 function resolvePaletteEntry(color: string): (typeof PALETTE)[number] {

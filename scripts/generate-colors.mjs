@@ -1,6 +1,9 @@
 /**
  * Regenerates contributes.colors in package.json from the palette hex values.
  * Run: node scripts/generate-colors.mjs
+ *
+ * Each palette color gets a vivid id and a soft `.label` id (default 20% mix).
+ * Other saturations are applied at runtime via workbench.colorCustomizations.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -35,7 +38,7 @@ const PALETTE = [
   { id: 'vgroup.slate', label: 'Slate', hex: '#64748b' },
 ];
 
-const STEPS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
+const DEFAULT_SATURATION = 20;
 const NEAR_WHITE = '#e8e8e8';
 const NEAR_BLACK = '#2a2a2a';
 
@@ -69,20 +72,18 @@ function colorEntry(id, description, dark, light) {
   };
 }
 
+const amount = DEFAULT_SATURATION / 100;
 const colors = [];
 for (const item of PALETTE) {
   colors.push(colorEntry(item.id, `VGroup marker color: ${item.label}`, item.hex, item.hex));
-  for (const step of STEPS) {
-    const amount = step / 100;
-    colors.push(
-      colorEntry(
-        `${item.id}.label.${step}`,
-        `VGroup Explorer label tint ${step}%: ${item.label}`,
-        mixHex(item.hex, NEAR_WHITE, amount),
-        mixHex(item.hex, NEAR_BLACK, amount),
-      ),
-    );
-  }
+  colors.push(
+    colorEntry(
+      `${item.id}.label`,
+      `VGroup Explorer label tint: ${item.label}`,
+      mixHex(item.hex, NEAR_WHITE, amount),
+      mixHex(item.hex, NEAR_BLACK, amount),
+    ),
+  );
 }
 
 const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));

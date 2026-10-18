@@ -97,7 +97,7 @@
     "fontFolder": 0.9,
     "fontFile": 0.9,
     "fontScale": 1,
-    "labelSaturation": 0
+    "labelSaturation": 70
   },
   "aliases": {
     ".vscode": "Настройки vs code",
