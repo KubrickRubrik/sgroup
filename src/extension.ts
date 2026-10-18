@@ -33,6 +33,7 @@ const COMMAND_IDS = [
   'sgroup.map.toggleLayout',
   'sgroup.map.move',
   'sgroup.map.toggleColumn',
+  'sgroup.map.toggleRight',
   'sgroup.map.openBottom',
   'sgroup.map.groups.flow',
   'sgroup.map.groups.1',
@@ -103,6 +104,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.window.registerWebviewPanelSerializer(MarkersMapProvider.panelType, map),
     vscode.commands.registerCommand('sgroup.map.toggleColumn', () => map.toggleColumn()),
+    vscode.commands.registerCommand('sgroup.map.toggleRight', () => map.toggleRight()),
     ...registerCommands(store, tree),
     vscode.commands.registerCommand('sgroup.openMap', async () => {
       await vscode.commands.executeCommand('workbench.view.explorer');
@@ -165,21 +167,29 @@ export function deactivate(): void {
 
 /** sh_vsix.sh touches version/.reload-window → full window reload (CLI cannot do this). */
 function watchVsixReloadMarker(root: vscode.Uri): vscode.Disposable {
+  const marker = vscode.Uri.joinPath(root, VSIX_RELOAD_MARKER);
   const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, VSIX_RELOAD_MARKER));
   let reloading = false;
-  const trigger = async (uri: vscode.Uri) => {
+  const trigger = async () => {
     if (reloading) {
+      return;
+    }
+    try {
+      await vscode.workspace.fs.stat(marker);
+    } catch {
       return;
     }
     reloading = true;
     try {
-      await vscode.workspace.fs.delete(uri);
+      await vscode.workspace.fs.delete(marker);
     } catch {
       // ignore missing file
     }
     await vscode.commands.executeCommand('workbench.action.reloadWindow');
   };
-  return vscode.Disposable.from(watcher, watcher.onDidCreate(trigger), watcher.onDidChange(trigger));
+  // Host restart does not apply a new VSIX. If the marker is already there, reload the window.
+  void trigger();
+  return vscode.Disposable.from(watcher, watcher.onDidCreate(() => void trigger()), watcher.onDidChange(() => void trigger()));
 }
 
 /** Refreshes the map when marked files appear or disappear (git checkout, terminal, other tools). */

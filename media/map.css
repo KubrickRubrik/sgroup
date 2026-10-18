@@ -24,6 +24,53 @@ body {
   z-index: 30;
 }
 
+.toolbar-extra {
+  display: none;
+  gap: 2px;
+}
+
+.chrome-panel .toolbar-extra {
+  display: flex;
+}
+
+.toolbar-more {
+  position: relative;
+}
+
+.toolbar-menu {
+  background: var(--vscode-menu-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  left: auto;
+  min-width: 180px;
+  right: 0;
+  padding: 4px 0;
+  position: absolute;
+  top: calc(100% + 2px);
+  z-index: 40;
+}
+
+.toolbar-menu button {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 13px;
+  gap: 8px;
+  padding: 4px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.toolbar-menu button:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+}
+
 .history-btn {
   align-items: center;
   background: transparent;
@@ -47,8 +94,37 @@ body {
   opacity: 0.35;
 }
 
-.history-btn svg {
+.tool-icon {
   display: block;
+  height: 16px;
+  pointer-events: none;
+  width: 16px;
+}
+
+.tone-dark {
+  display: none;
+}
+
+body.vscode-dark .tone-light,
+body.vscode-high-contrast .tone-light {
+  display: none;
+}
+
+body.vscode-dark .tone-dark,
+body.vscode-high-contrast .tone-dark {
+  display: block;
+}
+
+body.vscode-high-contrast-light .tone-light {
+  display: block;
+}
+
+body.vscode-high-contrast-light .tone-dark {
+  display: none;
+}
+
+.tool-icon[hidden] {
+  display: none !important;
 }
 
 body {

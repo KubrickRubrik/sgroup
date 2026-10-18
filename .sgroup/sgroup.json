@@ -3,12 +3,12 @@
   "markers": {
     "1": {
       "label": "Тест 1",
-      "color": "#ff1900",
+      "color": "#0084ff",
       "badge": "Силикон",
       "icon": "🍀",
       "alias": "тестовая группа 1",
       "columns": "2",
-      "order": 1
+      "order": 2
     },
     "2": {
       "label": "Тест 2",
@@ -22,19 +22,26 @@
       "color": "sgroup.sky",
       "badge": "Тест 3",
       "icon": "🔥",
-      "order": 2
+      "order": 3
     },
     "4": {
       "label": "Тест 4",
       "badge": "тест 4",
-      "order": 3
+      "order": 4
     },
     "5": {
       "label": "Тест 5",
       "color": "sgroup.blue",
       "badge": "тест 5",
       "icon": "📌",
-      "order": 4
+      "order": 5
+    },
+    "version": {
+      "label": "Version",
+      "color": "sgroup.tomato",
+      "badge": "VE",
+      "icon": "🔥",
+      "order": 1
     },
     "2-2": {
       "label": "Тест 2",
@@ -48,7 +55,7 @@
       "label": "Ttest 6",
       "badge": "TT",
       "icon": "⭐",
-      "order": 5
+      "order": 6
     }
   },
   "items": {
@@ -81,6 +88,9 @@
     ],
     "src": [
       "1"
+    ],
+    "version": [
+      "version"
     ]
   },
   "added": {
@@ -95,6 +105,9 @@
     },
     "src": {
       "1": 1791901517508
+    },
+    "version": {
+      "version": 1792353063481
     }
   },
   "appearance": {

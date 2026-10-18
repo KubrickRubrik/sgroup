@@ -207,8 +207,68 @@ latest_vsix_file() {
     vsix_path "$ver"
 }
 
+# Окно может быть на именованном профиле (не Default). CLI без --profile
+# пишет в ~/.cursor/extensions, а окно продолжает грузить предыдущую версию.
+workspace_profile_name() {
+    node - "$ROOT" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const root = process.argv[2];
+const storage = path.join(process.env.HOME, 'Library/Application Support/Cursor/User/globalStorage/storage.json');
+if (!fs.existsSync(storage)) process.exit(0);
+const data = JSON.parse(fs.readFileSync(storage, 'utf8'));
+const uri = pathToFileURL(root).href;
+const workspaces = (data.profileAssociations && data.profileAssociations.workspaces) || {};
+const id = workspaces[uri] || workspaces[decodeURI(uri)];
+if (!id || id === '__default__profile__') process.exit(0);
+const prof = (data.userDataProfiles || []).find((p) => p.location === id);
+if (prof && prof.name) process.stdout.write(prof.name);
+NODE
+}
+
+# Ждёт, пока профиль ЭТОГО окна реально указывает на новую распаковку.
+# started_ms — Date.now() до вызова CLI: старая папка с тем же номером версии не считается.
+wait_profile_install() {
+    local ver="$1" started_ms="$2"
+    node - "$ROOT" "$ver" "$started_ms" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const root = process.argv[2];
+const ver = process.argv[3];
+const started = Number(process.argv[4]);
+const home = process.env.HOME;
+const storage = path.join(home, 'Library/Application Support/Cursor/User/globalStorage/storage.json');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const extId = `${pkg.publisher}.${pkg.name}`;
+let file = path.join(home, '.cursor/extensions/extensions.json');
+if (fs.existsSync(storage)) {
+    const data = JSON.parse(fs.readFileSync(storage, 'utf8'));
+    const uri = pathToFileURL(root).href;
+    const workspaces = (data.profileAssociations && data.profileAssociations.workspaces) || {};
+    const id = workspaces[uri] || workspaces[decodeURI(uri)];
+    if (id && id !== '__default__profile__') {
+        file = path.join(home, 'Library/Application Support/Cursor/User/profiles', id, 'extensions.json');
+    }
+}
+if (!fs.existsSync(file)) process.exit(1);
+const list = JSON.parse(fs.readFileSync(file, 'utf8'));
+const hit = list.find((e) => e.identifier && e.identifier.id === extId && e.version === ver);
+if (!hit) process.exit(1);
+const loc = hit.location || {};
+const dir = loc.fsPath || loc.path;
+if (!dir) process.exit(1);
+const installedPkg = path.join(dir, 'package.json');
+const st = fs.statSync(installedPkg);
+if (st.mtimeMs + 1500 < started) process.exit(1);
+const inner = JSON.parse(fs.readFileSync(installedPkg, 'utf8'));
+process.exit(inner.version === ver ? 0 : 1);
+NODE
+}
+
 install_vsix() {
-    local file cli
+    local file cli profile started i
     file="${1:-}"
     if [[ -z "$file" ]]; then
         file="$(latest_vsix_file)" || {
@@ -225,10 +285,34 @@ install_vsix() {
         echo "Установи вручную: $ROOT/$file" >&2
         return 1
     }
+    profile="$(workspace_profile_name || true)"
     echo "→ install vsix: $file"
     echo "→ CLI: $cli"
-    "$cli" --install-extension "$ROOT/$file" --force
-    echo "Установлено: $file"
+    if [[ -n "$profile" ]]; then
+        echo "→ profile: $profile"
+    fi
+    started="$(node -p 'Date.now()')"
+    if [[ -n "$profile" ]]; then
+        "$cli" --profile "$profile" --install-extension "$ROOT/$file" --force
+    else
+        "$cli" --install-extension "$ROOT/$file" --force
+    fi
+    local ver
+    ver="$(basename "$file" .vsix)"
+    ver="${ver#syngroup-}"
+    if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        ver="$(pkg_version)"
+    fi
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        if wait_profile_install "$ver" "$started"; then
+            echo "Установлено в профиль окна: v${ver}"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "CLI ответил успехом, но профиль окна всё ещё не на v${ver}." >&2
+    echo "Расширение продолжит видеть предыдущую версию, пока профиль не обновится." >&2
+    return 1
 }
 
 # CLI/AppleScript не умеют надёжно reload. Расширение SGroup смотрит этот файл
@@ -248,9 +332,10 @@ after_build_flow() {
     local file
     file="$(latest_vsix_file)" || return 0
     echo
-    install_vsix "$file" || true
-    echo
-    if ask_yes "Reload Window Now?" "Y"; then
+    # Без полной перезагрузки окна хост держит предыдущую версию,
+    # даже если CLI уже написал «successfully installed».
+    if install_vsix "$file"; then
+        echo
         reload_window || true
     fi
 }
@@ -302,7 +387,7 @@ usage() {
   ./sh_vsix.sh --force package перезаписать существующий .vsix
   ./sh_vsix.sh -h|--help
 
-После сборки: всегда install vsix, затем вопрос Reload Window Now?
+После сборки: install в профиль этого окна, затем Reload Window.
 Версии: baseline = max(package.json, max version/*.vsix); bump пропускает занятые.
 EOF
 }
@@ -343,9 +428,8 @@ main_menu() {
             after_build_flow
             ;;
         5|install)
-            install_vsix
-            echo
-            if ask_yes "Reload Window Now?" "Y"; then
+            if install_vsix; then
+                echo
                 reload_window || true
             fi
             ;;
@@ -378,9 +462,8 @@ case "${1:-}" in
         after_build_flow
         ;;
     install|i)
-        install_vsix "${2:-}"
-        echo
-        if ask_yes "Reload Window Now?" "Y"; then
+        if install_vsix "${2:-}"; then
+            echo
             reload_window || true
         fi
         ;;

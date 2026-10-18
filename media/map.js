@@ -12,6 +12,41 @@
   historyForward?.addEventListener('click', () => {
     vscode.postMessage({ type: 'history', direction: 'forward' });
   });
+
+  const toolbarGroups = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-groups'));
+  const toolbarLayout = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-layout'));
+  const toolbarCreate = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-create'));
+  const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
+  const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
+
+  toolbarLayout?.addEventListener('click', () => {
+    closeToolbarMenu();
+    vscode.postMessage({ type: 'toolbar', action: 'toggleLayout' });
+  });
+  toolbarGroups?.addEventListener('click', () => {
+    closeToolbarMenu();
+    vscode.postMessage({ type: 'toolbar', action: 'cycleGroups' });
+  });
+  toolbarCreate?.addEventListener('click', () => {
+    closeToolbarMenu();
+    vscode.postMessage({ type: 'toolbar', action: 'createMarker' });
+  });
+  toolbarMore?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!toolbarMenu) {
+      return;
+    }
+    toolbarMenu.hidden = !toolbarMenu.hidden;
+  });
+  toolbarMenu?.addEventListener('click', (event) => {
+    const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
+    const action = target?.closest('button')?.dataset.action;
+    if (!action) {
+      return;
+    }
+    closeToolbarMenu();
+    vscode.postMessage({ type: 'toolbar', action });
+  });
   const MIME = 'application/vnd.sgroup';
   const MAX_DEPTH = 2;
 
@@ -41,6 +76,7 @@
       closeDirPopover();
       data = message;
       setHistoryButtons(message.history);
+      setToolbar(message);
       applyAppearance(message.appearance);
       render();
     } else if (message.type === 'active' && data) {
@@ -65,6 +101,35 @@
     }
   }
 
+  function closeToolbarMenu() {
+    if (toolbarMenu) {
+      toolbarMenu.hidden = true;
+    }
+  }
+
+  /** @param {{ layout?: string, groupsLayout?: string }} message */
+  function setToolbar(message) {
+    const mode = message.groupsLayout === '1' || message.groupsLayout === '2' || message.groupsLayout === '3'
+      ? message.groupsLayout
+      : 'flow';
+    const groupTitles = {
+      flow: 'Groups: Flow — click for 1 column',
+      1: 'Groups: 1 column — click for 2 columns',
+      2: 'Groups: 2 columns — click for 3 columns',
+      3: 'Groups: 3 columns — click for flow',
+    };
+    if (toolbarGroups) {
+      toolbarGroups.title = groupTitles[mode];
+      toolbarGroups.querySelectorAll('.tool-icon').forEach((img) => {
+        img.hidden = img.getAttribute('data-mode') !== mode;
+      });
+    }
+    if (toolbarLayout) {
+      toolbarLayout.title =
+        message.layout === 'list' ? 'Toggle Map Layout (List / Chips)' : 'Toggle Map Layout (Chips / List)';
+    }
+  }
+
   /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
@@ -81,10 +146,13 @@
   }
 
   document.addEventListener('pointerdown', (event) => {
+    const target = /** @type {Node | null} */ (event.target);
+    if (toolbarMenu && !toolbarMenu.hidden && target && !toolbarMenu.parentElement?.contains(target)) {
+      closeToolbarMenu();
+    }
     if (!dirPopoverState) {
       return;
     }
-    const target = /** @type {Node | null} */ (event.target);
     if (
       target &&
       (dirPopover.contains(target) || dirPopoverState.anchor.contains(target))
@@ -95,7 +163,11 @@
   });
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && dirPopoverState) {
+    if (event.key !== 'Escape') {
+      return;
+    }
+    closeToolbarMenu();
+    if (dirPopoverState) {
       closeDirPopover();
     }
   });

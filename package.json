@@ -2,7 +2,7 @@
   "name": "syngroup",
   "displayName": "SynGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "2.1.0",
+  "version": "3.1.0",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -134,7 +134,10 @@
         "command": "sgroup.createMarker",
         "title": "Create Marker",
         "category": "SGroup",
-        "icon": "$(add)"
+        "icon": {
+          "light": "media/icons/add-light.svg",
+          "dark": "media/icons/add-dark.svg"
+        }
       },
       {
         "command": "sgroup.editMarker",
@@ -164,13 +167,19 @@
         "command": "sgroup.openConfig",
         "title": "Open Markers File",
         "category": "SGroup",
-        "icon": "$(json)"
+        "icon": {
+          "light": "media/icons/json-light.svg",
+          "dark": "media/icons/json-dark.svg"
+        }
       },
       {
         "command": "sgroup.openSettings",
         "title": "Open Settings",
         "category": "SGroup",
-        "icon": "$(gear)"
+        "icon": {
+          "light": "media/icons/gear-light.svg",
+          "dark": "media/icons/gear-dark.svg"
+        }
       },
       {
         "command": "sgroup.vsix",
@@ -182,20 +191,29 @@
         "command": "sgroup.refresh",
         "title": "Refresh",
         "category": "SGroup",
-        "icon": "$(refresh)"
+        "icon": {
+          "light": "media/icons/refresh-light.svg",
+          "dark": "media/icons/refresh-dark.svg"
+        }
       },
       {
         "command": "sgroup.historyBack",
         "title": "Назад",
         "category": "SGroup",
-        "icon": "$(arrow-left)",
+        "icon": {
+          "light": "media/icons/arrow-left-light.svg",
+          "dark": "media/icons/arrow-left-dark.svg"
+        },
         "enablement": "sgroup.canUndo"
       },
       {
         "command": "sgroup.historyForward",
         "title": "Вперёд",
         "category": "SGroup",
-        "icon": "$(arrow-right)",
+        "icon": {
+          "light": "media/icons/arrow-right-light.svg",
+          "dark": "media/icons/arrow-right-dark.svg"
+        },
         "enablement": "sgroup.canRedo"
       },
       {
@@ -208,7 +226,10 @@
         "command": "sgroup.map.toggleLayout",
         "title": "Toggle Map Layout (Chips / List)",
         "category": "SGroup",
-        "icon": "$(list-flat)"
+        "icon": {
+          "light": "media/icons/list-flat-light.svg",
+          "dark": "media/icons/list-flat-dark.svg"
+        }
       },
       {
         "command": "sgroup.map.move",
@@ -220,13 +241,28 @@
         "command": "sgroup.map.toggleColumn",
         "title": "Toggle Map Column Beside Explorer",
         "category": "SGroup",
-        "icon": "$(layout-sidebar-left)"
+        "icon": {
+          "light": "media/icons/layout-sidebar-left-light.svg",
+          "dark": "media/icons/layout-sidebar-left-dark.svg"
+        }
+      },
+      {
+        "command": "sgroup.map.toggleRight",
+        "title": "Toggle Map Column on the Right",
+        "category": "SGroup",
+        "icon": {
+          "light": "media/icons/sidebar-right-light.svg",
+          "dark": "media/icons/sidebar-right-dark.svg"
+        }
       },
       {
         "command": "sgroup.map.openBottom",
         "title": "Toggle Map in Bottom Panel",
         "category": "SGroup",
-        "icon": "$(layout-panel)"
+        "icon": {
+          "light": "media/icons/layout-panel-light.svg",
+          "dark": "media/icons/layout-panel-dark.svg"
+        }
       },
       {
         "command": "sgroup.changeColor",
@@ -250,25 +286,37 @@
         "command": "sgroup.map.groups.flow",
         "title": "Groups: Flow — click for 1 column",
         "category": "SGroup",
-        "icon": "$(word-wrap)"
+        "icon": {
+          "light": "media/icons/word-wrap-light.svg",
+          "dark": "media/icons/word-wrap-dark.svg"
+        }
       },
       {
         "command": "sgroup.map.groups.1",
         "title": "Groups: 1 column — click for 2 columns",
         "category": "SGroup",
-        "icon": "$(list-flat)"
+        "icon": {
+          "light": "media/icons/list-flat-light.svg",
+          "dark": "media/icons/list-flat-dark.svg"
+        }
       },
       {
         "command": "sgroup.map.groups.2",
         "title": "Groups: 2 columns — click for 3 columns",
         "category": "SGroup",
-        "icon": "$(split-horizontal)"
+        "icon": {
+          "light": "media/icons/split-horizontal-light.svg",
+          "dark": "media/icons/split-horizontal-dark.svg"
+        }
       },
       {
         "command": "sgroup.map.groups.3",
         "title": "Groups: 3 columns — click for flow",
         "category": "SGroup",
-        "icon": "$(table)"
+        "icon": {
+          "light": "media/icons/table-light.svg",
+          "dark": "media/icons/table-dark.svg"
+        }
       },
       {
         "command": "sgroup.setColumns.flow",
@@ -371,6 +419,11 @@
           "command": "sgroup.map.toggleColumn",
           "when": "view == sgroupMap",
           "group": "navigation@9"
+        },
+        {
+          "command": "sgroup.map.toggleRight",
+          "when": "view == sgroupMap",
+          "group": "navigation@10"
         },
         {
           "command": "sgroup.map.groups.flow",
@@ -654,6 +707,21 @@
           "group": "navigation@-1"
         },
         {
+          "command": "sgroup.refresh",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "group": "more@1"
+        },
+        {
+          "command": "sgroup.openConfig",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "group": "more@2"
+        },
+        {
+          "command": "sgroup.openSettings",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "group": "more@3"
+        },
+        {
           "command": "sgroup.map.toggleLayout",
           "when": "activeWebviewPanelId == 'sgroupMapPanel'",
           "group": "navigation@0"
@@ -704,7 +772,7 @@
           "type": "number",
           "default": 260,
           "minimum": 120,
-          "description": "Width in pixels of the map column opened beside the Explorer (SGroup: Toggle Map Column Beside Explorer)."
+          "description": "Width in pixels of the map column opened beside the Explorer or on the right of the editor."
         },
         "sgroup.showDecorations": {
           "type": "boolean",
