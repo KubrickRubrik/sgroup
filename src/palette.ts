@@ -2,7 +2,7 @@
  * Marker colors contributed as theme colors (`contributes.colors`), so they work in Explorer decorations,
  * which only accept theme color ids. Keep in sync with package.json via `npm run generate:colors`.
  *
- * Soft Explorer labels use `vgroup.*.label`. Mid saturation is applied at runtime by writing the mixed
+ * Soft Explorer labels use `sgroup.*.label`. Mid saturation is applied at runtime by writing the mixed
  * hex into `workbench.colorCustomizations` (FileDecoration cannot take a raw hex).
  */
 export const PALETTE: ReadonlyArray<{
@@ -10,29 +10,29 @@ export const PALETTE: ReadonlyArray<{
   label: string;
   hex: string;
 }> = [
-  { id: 'vgroup.red', label: 'Red', hex: '#e5484d' },
-  { id: 'vgroup.tomato', label: 'Tomato', hex: '#e54d2e' },
-  { id: 'vgroup.orange', label: 'Orange', hex: '#f76b15' },
-  { id: 'vgroup.amber', label: 'Amber', hex: '#ffb224' },
-  { id: 'vgroup.yellow', label: 'Yellow', hex: '#f5d90a' },
-  { id: 'vgroup.lime', label: 'Lime', hex: '#99d52a' },
-  { id: 'vgroup.green', label: 'Green', hex: '#30a46c' },
-  { id: 'vgroup.emerald', label: 'Emerald', hex: '#10b981' },
-  { id: 'vgroup.teal', label: 'Teal', hex: '#12a594' },
-  { id: 'vgroup.cyan', label: 'Cyan', hex: '#00a2c7' },
-  { id: 'vgroup.sky', label: 'Sky', hex: '#4cc3ff' },
-  { id: 'vgroup.blue', label: 'Blue', hex: '#3e63dd' },
-  { id: 'vgroup.indigo', label: 'Indigo', hex: '#5b5bd6' },
-  { id: 'vgroup.violet', label: 'Violet', hex: '#8e4ec6' },
-  { id: 'vgroup.purple', label: 'Purple', hex: '#ab4aba' },
-  { id: 'vgroup.plum', label: 'Plum', hex: '#b658c4' },
-  { id: 'vgroup.pink', label: 'Pink', hex: '#d6409f' },
-  { id: 'vgroup.rose', label: 'Rose', hex: '#f43f5e' },
-  { id: 'vgroup.brown', label: 'Brown', hex: '#ad7f58' },
-  { id: 'vgroup.bronze', label: 'Bronze', hex: '#a18072' },
-  { id: 'vgroup.gold', label: 'Gold', hex: '#978365' },
-  { id: 'vgroup.gray', label: 'Gray', hex: '#8b8d98' },
-  { id: 'vgroup.slate', label: 'Slate', hex: '#64748b' },
+  { id: 'sgroup.red', label: 'Red', hex: '#e5484d' },
+  { id: 'sgroup.tomato', label: 'Tomato', hex: '#e54d2e' },
+  { id: 'sgroup.orange', label: 'Orange', hex: '#f76b15' },
+  { id: 'sgroup.amber', label: 'Amber', hex: '#ffb224' },
+  { id: 'sgroup.yellow', label: 'Yellow', hex: '#f5d90a' },
+  { id: 'sgroup.lime', label: 'Lime', hex: '#99d52a' },
+  { id: 'sgroup.green', label: 'Green', hex: '#30a46c' },
+  { id: 'sgroup.emerald', label: 'Emerald', hex: '#10b981' },
+  { id: 'sgroup.teal', label: 'Teal', hex: '#12a594' },
+  { id: 'sgroup.cyan', label: 'Cyan', hex: '#00a2c7' },
+  { id: 'sgroup.sky', label: 'Sky', hex: '#4cc3ff' },
+  { id: 'sgroup.blue', label: 'Blue', hex: '#3e63dd' },
+  { id: 'sgroup.indigo', label: 'Indigo', hex: '#5b5bd6' },
+  { id: 'sgroup.violet', label: 'Violet', hex: '#8e4ec6' },
+  { id: 'sgroup.purple', label: 'Purple', hex: '#ab4aba' },
+  { id: 'sgroup.plum', label: 'Plum', hex: '#b658c4' },
+  { id: 'sgroup.pink', label: 'Pink', hex: '#d6409f' },
+  { id: 'sgroup.rose', label: 'Rose', hex: '#f43f5e' },
+  { id: 'sgroup.brown', label: 'Brown', hex: '#ad7f58' },
+  { id: 'sgroup.bronze', label: 'Bronze', hex: '#a18072' },
+  { id: 'sgroup.gold', label: 'Gold', hex: '#978365' },
+  { id: 'sgroup.gray', label: 'Gray', hex: '#8b8d98' },
+  { id: 'sgroup.slate', label: 'Slate', hex: '#64748b' },
 ];
 
 /** Default soft-label mix written into package.json (matches appearance.labelSaturation default). */
@@ -95,13 +95,13 @@ export function themeColorId(color: string): string {
 
 /**
  * Soft label color for Explorer decorations.
- * Uses `vgroup.*.label`; mid saturations are pushed into workbench.colorCustomizations at runtime.
+ * Uses `sgroup.*.label`; mid saturations are pushed into workbench.colorCustomizations at runtime.
  */
 export function themeLabelColorId(color: string): string {
   return resolvePaletteEntry(color).id + '.label';
 }
 
-export function isVgroupLabelColorKey(key: string): boolean {
+export function isSgroupLabelColorKey(key: string): boolean {
   return PALETTE.some((entry) => key === entry.id + '.label');
 }
 
@@ -117,7 +117,7 @@ function resolvePaletteEntry(color: string): (typeof PALETTE)[number] {
   const token = color.toLowerCase().split('.').pop() ?? '';
   return (
     PALETTE.find((entry) => entry.id.endsWith('.' + token) || entry.label.toLowerCase() === token) ??
-    PALETTE.find((entry) => entry.id === 'vgroup.gray')!
+    PALETTE.find((entry) => entry.id === 'sgroup.gray')!
   );
 }
 

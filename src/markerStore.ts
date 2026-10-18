@@ -6,8 +6,9 @@ import { normalizeHex } from './palette';
 export const MAX_MARKER_DEPTH = 2;
 
 /** Fixed markers file relative to the workspace folder. */
-export const CONFIG_PATH = '.vgroup/vgroup.json';
-const LEGACY_CONFIG_PATH = '.vscode/vgroup.json';
+export const CONFIG_PATH = '.sgroup/sgroup.json';
+/** Older locations, newest first. */
+const LEGACY_CONFIG_PATHS = ['.sgroup/vgroup.json', '.vgroup/vgroup.json', '.vscode/vgroup.json'];
 
 /** Chip/list columns inside a single group. */
 export type ColumnsMode = 'flow' | '2' | '3';
@@ -86,7 +87,7 @@ function numOr(value: unknown, fallback: number): number {
 
 export interface MarkerDef {
   label: string;
-  /** Theme color id (`vgroup.red`, `charts.red`) or `#rrggbb`. */
+  /** Theme color id (`sgroup.red`, `charts.red`) or `#rrggbb`. */
   color?: string;
   badge?: string;
   /** Emoji shown before the group name. */
@@ -757,22 +758,31 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Move `.vscode/vgroup.json` (or a previously configured path) into `.vgroup/vgroup.json`.
+   * Move an older markers file into `.sgroup/sgroup.json`.
    * On write failure keeps reading the legacy file for this session.
    */
   private async migrateLegacyConfig(): Promise<void> {
     const newUri = vscode.Uri.joinPath(this.root, CONFIG_PATH);
     const configured = vscode.workspace.getConfiguration('vgroup').get<string>('configPath');
-    const legacyRel =
-      configured && configured !== CONFIG_PATH && configured !== LEGACY_CONFIG_PATH
-        ? configured
-        : LEGACY_CONFIG_PATH;
-    const legacyUri = vscode.Uri.joinPath(this.root, legacyRel);
+    const candidates = [
+      ...(configured && !LEGACY_CONFIG_PATHS.includes(configured) && configured !== CONFIG_PATH ? [configured] : []),
+      ...LEGACY_CONFIG_PATHS,
+    ];
+    let legacyRel: string | undefined;
+    let legacyUri: vscode.Uri | undefined;
+    for (const rel of candidates) {
+      const uri = vscode.Uri.joinPath(this.root, rel);
+      if (await fileExists(uri)) {
+        legacyRel = rel;
+        legacyUri = uri;
+        break;
+      }
+    }
 
     const newExists = await fileExists(newUri);
-    const legacyExists = await fileExists(legacyUri);
+    const legacyExists = legacyUri !== undefined;
 
-    if (!legacyExists) {
+    if (!legacyExists || !legacyUri || !legacyRel) {
       this.sessionConfigPath = CONFIG_PATH;
       return;
     }
@@ -787,7 +797,7 @@ export class MarkerStore implements vscode.Disposable {
       } catch (error) {
         this.sessionConfigPath = legacyRel;
         void vscode.window.showWarningMessage(
-          `VGroup: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
+          `SGROUP: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -798,7 +808,7 @@ export class MarkerStore implements vscode.Disposable {
     const overwrite = 'Перезаписать';
     const keep = 'Оставить';
     const choice = await vscode.window.showWarningMessage(
-      `VGroup: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
+      `SGROUP: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
       overwrite,
       keep,
     );
@@ -809,7 +819,7 @@ export class MarkerStore implements vscode.Disposable {
         await vscode.workspace.fs.delete(legacyUri);
       } catch (error) {
         void vscode.window.showWarningMessage(
-          `VGroup: не удалось перезаписать ${CONFIG_PATH}. ${
+          `SGROUP: не удалось перезаписать ${CONFIG_PATH}. ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -993,6 +1003,11 @@ async function fileExists(uri: vscode.Uri): Promise<boolean> {
   }
 }
 
+/** `vgroup.red` from older files → `sgroup.red`. */
+function migrateColorId(color: string): string {
+  return color.startsWith('vgroup.') ? `sgroup.${color.slice('vgroup.'.length)}` : color;
+}
+
 function normalize(raw: unknown): MarkersFile {
   const result = emptyData();
   if (!raw || typeof raw !== 'object') {
@@ -1021,7 +1036,7 @@ function normalize(raw: unknown): MarkersFile {
       const parent = typeof def.parent === 'string' && def.parent ? def.parent : undefined;
       result.markers[id] = {
         label: capitalize(typeof def.label === 'string' && def.label.trim() ? def.label : id),
-        color: typeof def.color === 'string' && def.color ? (normalizeHex(def.color) ?? def.color) : undefined,
+        color: typeof def.color === 'string' && def.color ? migrateColorId(normalizeHex(def.color) ?? def.color) : undefined,
         badge: typeof def.badge === 'string' && def.badge.trim() ? def.badge.trim() : undefined,
         icon: typeof def.icon === 'string' && def.icon.trim() ? def.icon.trim() : undefined,
         alias: typeof def.alias === 'string' && def.alias.trim() ? def.alias.trim() : undefined,

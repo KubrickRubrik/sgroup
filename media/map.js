@@ -3,7 +3,7 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
   const root = /** @type {HTMLElement} */ (document.getElementById('root'));
-  const MIME = 'application/vnd.vgroup';
+  const MIME = 'application/vnd.sgroup';
   const MAX_DEPTH = 2;
 
   /** @type {{ collapsed: Record<string, boolean> }} */

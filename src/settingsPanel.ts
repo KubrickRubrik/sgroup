@@ -5,7 +5,7 @@ import { Appearance, DEFAULT_APPEARANCE, MarkerStore } from './markerStore';
 type IncomingMessage = { type: 'ready' } | { type: 'setAppearance'; appearance: Partial<Appearance> };
 
 export class SettingsPanel implements vscode.Disposable {
-  static readonly viewType = 'vgroupSettings';
+  static readonly viewType = 'sgroupSettings';
 
   private panel?: vscode.WebviewPanel;
   private readonly subscriptions: vscode.Disposable[];
@@ -37,7 +37,7 @@ export class SettingsPanel implements vscode.Disposable {
 
     const panel = vscode.window.createWebviewPanel(
       SettingsPanel.viewType,
-      'VGroup Settings',
+      'SGROUP Settings',
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
@@ -149,8 +149,8 @@ export class SettingsPanel implements vscode.Disposable {
 </head>
 <body>
   <main>
-    <h1>VGroup Settings</h1>
-    <p class="hint">Сохраняются в <code>.vgroup/vgroup.json</code> этого проекта.</p>
+    <h1>SGROUP Settings</h1>
+    <p class="hint">Сохраняются в <code>.sgroup/sgroup.json</code> этого проекта.</p>
 
     <section>
       <h2>Шрифт карты</h2>

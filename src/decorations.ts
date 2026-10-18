@@ -13,7 +13,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
       store.onDidChange(() => this.emitter.fire(undefined)),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (
-          e.affectsConfiguration('vgroup.showDecorations') ||
+          e.affectsConfiguration('sgroup.showDecorations') ||
           e.affectsConfiguration('workbench.colorCustomizations')
         ) {
           this.emitter.fire(undefined);
@@ -28,7 +28,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
   }
 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
-    if (!vscode.workspace.getConfiguration('vgroup').get<boolean>('showDecorations', true)) {
+    if (!vscode.workspace.getConfiguration('sgroup').get<boolean>('showDecorations', true)) {
       return undefined;
     }
     const relPath = this.store.toRelative(uri);
@@ -44,7 +44,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
     const labels = defs.map((def) => (def.icon ? `${def.icon} ${def.label}` : def.label)).join(', ');
     return new vscode.FileDecoration(
       shortBadge(primary?.badge),
-      `VGroup: ${labels}`,
+      `SGROUP: ${labels}`,
       labelColor(defs, this.store.appearance.labelSaturation),
     );
   }

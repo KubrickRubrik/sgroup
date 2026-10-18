@@ -19,7 +19,7 @@
     },
     "3": {
       "label": "Тест 3",
-      "color": "vgroup.sky",
+      "color": "sgroup.sky",
       "badge": "Тест 3",
       "icon": "🔥",
       "order": 2
@@ -31,7 +31,7 @@
     },
     "5": {
       "label": "Тест 5",
-      "color": "vgroup.blue",
+      "color": "sgroup.blue",
       "badge": "тест 5",
       "icon": "📌",
       "order": 4

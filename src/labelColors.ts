@@ -2,13 +2,13 @@ import * as vscode from 'vscode';
 import {
   DEFAULT_LABEL_SATURATION,
   PALETTE,
-  isVgroupLabelColorKey,
+  isSgroupLabelColorKey,
   labelDarkAt,
   labelLightAt,
 } from './palette';
 
 /**
- * FileDecoration only accepts ThemeColor ids. Soft labels are contributed as `vgroup.*.label`
+ * FileDecoration only accepts ThemeColor ids. Soft labels are contributed as `sgroup.*.label`
  * with fixed light/dark defaults (20%). For other mid saturations we override those ids in
  * the user's global `workbench.colorCustomizations` for the active theme kind.
  */
@@ -18,7 +18,7 @@ export async function syncExplorerLabelColors(saturation: number): Promise<void>
   const globalValue = { ...(inspected?.globalValue ?? {}) };
 
   for (const key of Object.keys(globalValue)) {
-    if (isVgroupLabelColorKey(key)) {
+    if (isSgroupLabelColorKey(key) || isLegacyVgroupLabelKey(key)) {
       delete globalValue[key];
     }
   }
@@ -46,7 +46,7 @@ export async function clearExplorerLabelColors(): Promise<void> {
   const globalValue = { ...(inspected?.globalValue ?? {}) };
   let changed = false;
   for (const key of Object.keys(globalValue)) {
-    if (isVgroupLabelColorKey(key)) {
+    if (isSgroupLabelColorKey(key) || isLegacyVgroupLabelKey(key)) {
       delete globalValue[key];
       changed = true;
     }
@@ -56,4 +56,8 @@ export async function clearExplorerLabelColors(): Promise<void> {
   }
   const next = Object.keys(globalValue).length > 0 ? globalValue : undefined;
   await config.update('colorCustomizations', next, vscode.ConfigurationTarget.Global);
+}
+
+function isLegacyVgroupLabelKey(key: string): boolean {
+  return /^vgroup\.[a-z]+\.label$/.test(key);
 }

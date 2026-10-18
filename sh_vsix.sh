@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Сборка / установка .vsix для VGroup. Запуск: ./sh_vsix.sh
-# Учитывает уже собранные артефакты в version/vgroup-*.vsix
+# Сборка / установка .vsix для SGROUP. Запуск: ./sh_vsix.sh
+# Учитывает уже собранные артефакты в version/syngroup-*.vsix
 if [ -z "${BASH_VERSION:-}" ]; then
     exec /usr/bin/env bash "$0" "$@"
 fi
@@ -74,9 +74,9 @@ pkg_version() {
 list_vsix_versions() {
     local f base
     shopt -s nullglob
-    for f in "$VERSION_DIR"/vgroup-*.vsix; do
+    for f in "$VERSION_DIR"/syngroup-*.vsix; do
         base="$(basename "$f" .vsix)"
-        base="${base#vgroup-}"
+        base="${base#syngroup-}"
         if [[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             printf '%s\n' "$base"
         fi
@@ -97,7 +97,7 @@ version_eq() {
 }
 
 vsix_path() {
-    echo "${VERSION_DIR}/vgroup-$1.vsix"
+    echo "${VERSION_DIR}/syngroup-$1.vsix"
 }
 
 vsix_exists() {
@@ -231,8 +231,8 @@ install_vsix() {
     echo "Установлено: $file"
 }
 
-# CLI/AppleScript не умеют надёжно reload. Расширение VGroup смотрит этот файл
-# и вызывает workbench.action.reloadWindow (кнопка 📦 Vsix → command vgroup.vsix).
+# CLI/AppleScript не умеют надёжно reload. Расширение SGROUP смотрит этот файл
+# и вызывает workbench.action.reloadWindow (кнопка 📦 Vsix → command sgroup.vsix).
 RELOAD_MARKER="${VERSION_DIR}/.reload-window"
 
 reload_window() {
@@ -241,7 +241,7 @@ reload_window() {
     rm -f "$RELOAD_MARKER"
     printf '%s\n' "$(date +%s)" > "$RELOAD_MARKER"
     echo "Маркер: $ROOT/$RELOAD_MARKER"
-    echo "VGroup должен перезагрузить окно сам. Если нет — один раз Cmd+R (после этого заработает)."
+    echo "SGROUP должен перезагрузить окно сам. Если нет — один раз Cmd+R (после этого заработает)."
 }
 
 after_build_flow() {
@@ -313,7 +313,7 @@ main_menu() {
     next_p="$(peek_next patch)"
     next_n="$(peek_next minor)"
     next_m="$(peek_next major)"
-    echo "VGroup vsix"
+    echo "SGROUP vsix"
     if vsix_exists "$pkg"; then
         echo "  1) package — v${pkg} (уже есть в version/)"
     else

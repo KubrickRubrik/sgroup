@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.6
+
+- Проект переименован в **SynGroup**. Лейбл в интерфейсе — **SGROUP**. Маркеры лежат в `.sgroup/sgroup.json`.
+
 ## 0.7.0
 
 - Карта узкой закреплённой колонкой редактора у левого края, вплотную к Explorer: **Toggle Map Column Beside Explorer**. Ширина — `vgroup.map.columnWidth`.

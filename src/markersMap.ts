@@ -8,11 +8,11 @@ import { cssColor, normalizeHex } from './palette';
 type Layout = 'chips' | 'list';
 type GroupsLayout = 'flow' | '1' | '2' | '3';
 
-const LAYOUT_KEY = 'vgroup.map.layout';
-const GROUPS_LAYOUT_KEY = 'vgroup.map.groupsLayout';
+const LAYOUT_KEY = 'sgroup.map.layout';
+const GROUPS_LAYOUT_KEY = 'sgroup.map.groupsLayout';
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
-const GROUPS_LAYOUT_CONTEXT = 'vgroup.map.groupsLayout';
+const GROUPS_LAYOUT_CONTEXT = 'sgroup.map.groupsLayout';
 
 interface MapItem {
   relPath: string;
@@ -80,9 +80,9 @@ interface DirListingEntry {
 }
 
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
-  static readonly viewId = 'vgroupMap';
-  static readonly bottomViewId = 'vgroupMapBottom';
-  static readonly panelType = 'vgroupMapPanel';
+  static readonly viewId = 'sgroupMap';
+  static readonly bottomViewId = 'sgroupMapBottom';
+  static readonly panelType = 'sgroupMapPanel';
 
   private readonly webviews = new Set<vscode.Webview>();
   private readonly subscriptions: vscode.Disposable[];
@@ -146,7 +146,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await vscode.commands.executeCommand('workbench.action.newGroupLeft');
     const panel = vscode.window.createWebviewPanel(
       MarkersMapProvider.panelType,
-      'VGroup',
+      'SGROUP',
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       { enableScripts: true, localResourceRoots: [this.media], retainContextWhenHidden: true },
     );
@@ -228,9 +228,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.webviews.add(webview);
   }
 
-  /** Shrinks the leftmost top-level editor column to `vgroup.map.columnWidth` pixels. */
+  /** Shrinks the leftmost top-level editor column to `sgroup.map.columnWidth` pixels. */
   private async narrowFirstColumn(): Promise<void> {
-    const width = vscode.workspace.getConfiguration('vgroup').get<number>('map.columnWidth', 260);
+    const width = vscode.workspace.getConfiguration('sgroup').get<number>('map.columnWidth', 260);
     try {
       const layout = await vscode.commands.executeCommand<EditorLayout>('vscode.getEditorLayout');
       if (!layout || layout.orientation !== 0 || layout.groups.length < 2 || layout.groups[0].groups?.length) {
@@ -298,20 +298,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
       } catch (error) {
-        void vscode.window.showWarningMessage(`VGroup: ${error instanceof Error ? error.message : String(error)}`);
+        void vscode.window.showWarningMessage(`SGROUP: ${error instanceof Error ? error.message : String(error)}`);
       }
       return;
     }
     if (message.type === 'nestMarker') {
       const check = this.store.canNest(message.id, message.parent);
       if (!check.ok) {
-        void vscode.window.showWarningMessage(`VGroup: ${check.reason}`);
+        void vscode.window.showWarningMessage(`SGROUP: ${check.reason}`);
         return;
       }
       try {
         await this.store.nestMarker(message.id, message.parent);
       } catch (error) {
-        void vscode.window.showWarningMessage(`VGroup: ${error instanceof Error ? error.message : String(error)}`);
+        void vscode.window.showWarningMessage(`SGROUP: ${error instanceof Error ? error.message : String(error)}`);
       }
       return;
     }
@@ -330,7 +330,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         .filter((p): p is string => p !== undefined);
       if (relPaths.length === 0) {
         void vscode.window.showWarningMessage(
-          'VGroup: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
+          'SGROUP: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
         );
         return;
       }
@@ -379,7 +379,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
       await webview.postMessage({ type: 'dirListing', relPath, entries });
     } catch {
-      void vscode.window.showWarningMessage(`VGroup: cannot read folder ${relPath}`);
+      void vscode.window.showWarningMessage(`SGROUP: cannot read folder ${relPath}`);
       await webview.postMessage({ type: 'dirListing', relPath, entries: [], error: true });
     }
   }

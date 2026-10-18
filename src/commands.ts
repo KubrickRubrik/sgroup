@@ -137,7 +137,7 @@ export function registerCommands(
     if (parentId) {
       const parentDepth = store.depthOf(parentId);
       if (parentDepth >= MAX_MARKER_DEPTH) {
-        void vscode.window.showWarningMessage(`VGroup: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+        void vscode.window.showWarningMessage(`SGROUP: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
         return undefined;
       }
     }
@@ -191,7 +191,7 @@ export function registerCommands(
     const targets = uris && uris.length > 0 ? uris : uri ? [uri] : activeUri();
     const relPaths = targets.map((u) => store.toRelative(u)).filter((p): p is string => p !== undefined);
     if (relPaths.length === 0) {
-      void vscode.window.showWarningMessage('VGroup: select files or folders inside the first workspace folder.');
+      void vscode.window.showWarningMessage('SGROUP: select files or folders inside the first workspace folder.');
       return;
     }
     const title = relPaths.length === 1 ? `Mark ${path.posix.basename(relPaths[0])}` : `Mark ${relPaths.length} items`;
@@ -220,17 +220,17 @@ export function registerCommands(
   async function markClass(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-      void vscode.window.showWarningMessage('VGroup: open a file and place the cursor on a class.');
+      void vscode.window.showWarningMessage('SGROUP: open a file and place the cursor on a class.');
       return;
     }
     const relPath = store.toRelative(editor.document.uri);
     if (!relPath) {
-      void vscode.window.showWarningMessage('VGroup: file must be inside the workspace folder.');
+      void vscode.window.showWarningMessage('SGROUP: file must be inside the workspace folder.');
       return;
     }
     const symbol = await symbolAtCursor(editor);
     if (!symbol?.name) {
-      void vscode.window.showWarningMessage('VGroup: no symbol under the cursor.');
+      void vscode.window.showWarningMessage('SGROUP: no symbol under the cursor.');
       return;
     }
     const markerId = await pickMarker(`Mark class ${symbol.name}`);
@@ -257,7 +257,7 @@ export function registerCommands(
     }
     const relPath = store.toRelative(fileUri);
     if (!relPath) {
-      void vscode.window.showWarningMessage('VGroup: file must be inside the workspace folder.');
+      void vscode.window.showWarningMessage('SGROUP: file must be inside the workspace folder.');
       return;
     }
     const name = await vscode.window.showInputBox({
@@ -409,7 +409,7 @@ export function registerCommands(
     edit.renameFile(oldUri, vscode.Uri.joinPath(parentUri, newName.trim()));
     const ok = await vscode.workspace.applyEdit(edit);
     if (!ok) {
-      void vscode.window.showErrorMessage(`VGroup: could not rename ${oldName}.`);
+      void vscode.window.showErrorMessage(`SGROUP: could not rename ${oldName}.`);
     }
   }
 
@@ -591,12 +591,12 @@ export function registerCommands(
   }
 
   return [
-    vscode.commands.registerCommand('vgroup.assign', assign),
-    vscode.commands.registerCommand('vgroup.unassign', withNode(unassign)),
-    vscode.commands.registerCommand('vgroup.unassignFromExplorer', unassignFromExplorer),
-    vscode.commands.registerCommand('vgroup.rename', withNode(rename)),
+    vscode.commands.registerCommand('sgroup.assign', assign),
+    vscode.commands.registerCommand('sgroup.unassign', withNode(unassign)),
+    vscode.commands.registerCommand('sgroup.unassignFromExplorer', unassignFromExplorer),
+    vscode.commands.registerCommand('sgroup.rename', withNode(rename)),
     vscode.commands.registerCommand(
-      'vgroup.reveal',
+      'sgroup.reveal',
       withNode(async (node) => {
         const target = node;
         const uri = target ? tree.uriOf(target) : undefined;
@@ -605,21 +605,21 @@ export function registerCommands(
         }
       }),
     ),
-    vscode.commands.registerCommand('vgroup.relink', withNode(relink)),
-    vscode.commands.registerCommand('vgroup.createMarker', () => createMarkerFlow()),
-    vscode.commands.registerCommand('vgroup.createSubgroup', withNode(createSubgroup)),
-    vscode.commands.registerCommand('vgroup.unnestMarker', withNode(unnestMarker)),
-    vscode.commands.registerCommand('vgroup.editMarker', withNode(editMarker)),
-    vscode.commands.registerCommand('vgroup.deleteMarker', withNode(deleteMarker)),
-    vscode.commands.registerCommand('vgroup.changeColor', withNode(editMarkerField('color', pickColor))),
-    vscode.commands.registerCommand('vgroup.changeIcon', withNode(editMarkerField('icon', pickIcon))),
+    vscode.commands.registerCommand('sgroup.relink', withNode(relink)),
+    vscode.commands.registerCommand('sgroup.createMarker', () => createMarkerFlow()),
+    vscode.commands.registerCommand('sgroup.createSubgroup', withNode(createSubgroup)),
+    vscode.commands.registerCommand('sgroup.unnestMarker', withNode(unnestMarker)),
+    vscode.commands.registerCommand('sgroup.editMarker', withNode(editMarker)),
+    vscode.commands.registerCommand('sgroup.deleteMarker', withNode(deleteMarker)),
+    vscode.commands.registerCommand('sgroup.changeColor', withNode(editMarkerField('color', pickColor))),
+    vscode.commands.registerCommand('sgroup.changeIcon', withNode(editMarkerField('icon', pickIcon))),
     vscode.commands.registerCommand(
-      'vgroup.changeBadge',
+      'sgroup.changeBadge',
       withNode(editMarkerField('badge', (current) => askBadge(current ?? ''))),
     ),
     ...(['flow', '2', '3'] as const).map((columns) =>
       vscode.commands.registerCommand(
-        `vgroup.setColumns.${columns}`,
+        `sgroup.setColumns.${columns}`,
         withNode(async (node) => {
           if (node?.kind === 'marker') {
             await store.setColumns(node.markerId, columns);
@@ -627,17 +627,17 @@ export function registerCommands(
         }),
       ),
     ),
-    vscode.commands.registerCommand('vgroup.markClass', () => markClass()),
-    vscode.commands.registerCommand('vgroup.markClassManual', (uri?: vscode.Uri) => markClassManual(uri)),
-    vscode.commands.registerCommand('vgroup.setAlias', withNode(setAlias)),
-    vscode.commands.registerCommand('vgroup.clearAlias', withNode(clearAlias)),
-    vscode.commands.registerCommand('vgroup.openClass', withNode(openClassCommand)),
-    vscode.commands.registerCommand('vgroup.openItem', withNode((node) => openItemOrFull(node, false))),
-    vscode.commands.registerCommand('vgroup.openFull', withNode((node) => openItemOrFull(node, true))),
-    vscode.commands.registerCommand('vgroup.moveMarkerUp', withNode((node) => moveMarker(node, -1))),
-    vscode.commands.registerCommand('vgroup.moveMarkerDown', withNode((node) => moveMarker(node, 1))),
-    vscode.commands.registerCommand('vgroup.openConfig', openConfig),
-    vscode.commands.registerCommand('vgroup.refresh', () => store.load()),
+    vscode.commands.registerCommand('sgroup.markClass', () => markClass()),
+    vscode.commands.registerCommand('sgroup.markClassManual', (uri?: vscode.Uri) => markClassManual(uri)),
+    vscode.commands.registerCommand('sgroup.setAlias', withNode(setAlias)),
+    vscode.commands.registerCommand('sgroup.clearAlias', withNode(clearAlias)),
+    vscode.commands.registerCommand('sgroup.openClass', withNode(openClassCommand)),
+    vscode.commands.registerCommand('sgroup.openItem', withNode((node) => openItemOrFull(node, false))),
+    vscode.commands.registerCommand('sgroup.openFull', withNode((node) => openItemOrFull(node, true))),
+    vscode.commands.registerCommand('sgroup.moveMarkerUp', withNode((node) => moveMarker(node, -1))),
+    vscode.commands.registerCommand('sgroup.moveMarkerDown', withNode((node) => moveMarker(node, 1))),
+    vscode.commands.registerCommand('sgroup.openConfig', openConfig),
+    vscode.commands.registerCommand('sgroup.refresh', () => store.load()),
   ];
 }
 

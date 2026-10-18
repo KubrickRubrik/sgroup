@@ -8,45 +8,45 @@ import { MarkersTreeProvider } from './markersTree';
 import { SettingsPanel } from './settingsPanel';
 
 const COMMAND_IDS = [
-  'vgroup.assign',
-  'vgroup.unassign',
-  'vgroup.unassignFromExplorer',
-  'vgroup.rename',
-  'vgroup.reveal',
-  'vgroup.relink',
-  'vgroup.createMarker',
-  'vgroup.createSubgroup',
-  'vgroup.unnestMarker',
-  'vgroup.editMarker',
-  'vgroup.deleteMarker',
-  'vgroup.changeColor',
-  'vgroup.changeIcon',
-  'vgroup.changeBadge',
-  'vgroup.moveMarkerUp',
-  'vgroup.moveMarkerDown',
-  'vgroup.openConfig',
-  'vgroup.openSettings',
-  'vgroup.refresh',
-  'vgroup.openMap',
-  'vgroup.map.toggleLayout',
-  'vgroup.map.move',
-  'vgroup.map.toggleColumn',
-  'vgroup.map.openBottom',
-  'vgroup.map.groups.flow',
-  'vgroup.map.groups.1',
-  'vgroup.map.groups.2',
-  'vgroup.map.groups.3',
-  'vgroup.setColumns.flow',
-  'vgroup.setColumns.2',
-  'vgroup.setColumns.3',
-  'vgroup.markClass',
-  'vgroup.markClassManual',
-  'vgroup.setAlias',
-  'vgroup.clearAlias',
-  'vgroup.openClass',
-  'vgroup.openItem',
-  'vgroup.openFull',
-  'vgroup.vsix',
+  'sgroup.assign',
+  'sgroup.unassign',
+  'sgroup.unassignFromExplorer',
+  'sgroup.rename',
+  'sgroup.reveal',
+  'sgroup.relink',
+  'sgroup.createMarker',
+  'sgroup.createSubgroup',
+  'sgroup.unnestMarker',
+  'sgroup.editMarker',
+  'sgroup.deleteMarker',
+  'sgroup.changeColor',
+  'sgroup.changeIcon',
+  'sgroup.changeBadge',
+  'sgroup.moveMarkerUp',
+  'sgroup.moveMarkerDown',
+  'sgroup.openConfig',
+  'sgroup.openSettings',
+  'sgroup.refresh',
+  'sgroup.openMap',
+  'sgroup.map.toggleLayout',
+  'sgroup.map.move',
+  'sgroup.map.toggleColumn',
+  'sgroup.map.openBottom',
+  'sgroup.map.groups.flow',
+  'sgroup.map.groups.1',
+  'sgroup.map.groups.2',
+  'sgroup.map.groups.3',
+  'sgroup.setColumns.flow',
+  'sgroup.setColumns.2',
+  'sgroup.setColumns.3',
+  'sgroup.markClass',
+  'sgroup.markClassManual',
+  'sgroup.setAlias',
+  'sgroup.clearAlias',
+  'sgroup.openClass',
+  'sgroup.openItem',
+  'sgroup.openFull',
+  'sgroup.vsix',
 ];
 
 const VSIX_RELOAD_MARKER = 'version/.reload-window';
@@ -57,7 +57,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     for (const id of COMMAND_IDS) {
       context.subscriptions.push(
         vscode.commands.registerCommand(id, () => {
-          void vscode.window.showInformationMessage('VGroup: open a folder first.');
+          void vscode.window.showInformationMessage('SGROUP: open a folder first.');
         }),
       );
     }
@@ -76,7 +76,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     decorations,
     map,
     settings,
-    vscode.commands.registerCommand('vgroup.openSettings', () => settings.open()),
+    vscode.commands.registerCommand('sgroup.openSettings', () => settings.open()),
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.viewId, map, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -84,9 +84,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.bottomViewId, map, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand('vgroup.map.openBottom', async () => {
+    vscode.commands.registerCommand('sgroup.map.openBottom', async () => {
       const available = await vscode.commands.getCommands(true);
-      const candidates = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.vgroupPanel'];
+      const candidates = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.sgroupPanel'];
       const command = candidates.find((id) => available.includes(id));
       if (command) {
         await vscode.commands.executeCommand(command);
@@ -94,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const reload = 'Reload Window';
       const choice = await vscode.window.showWarningMessage(
-        'VGroup: вкладка в нижней панели ещё не зарегистрирована — нужна полная перезагрузка окна.',
+        'SGROUP: вкладка в нижней панели ещё не зарегистрирована — нужна полная перезагрузка окна.',
         reload,
       );
       if (choice === reload) {
@@ -102,24 +102,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.window.registerWebviewPanelSerializer(MarkersMapProvider.panelType, map),
-    vscode.commands.registerCommand('vgroup.map.toggleColumn', () => map.toggleColumn()),
+    vscode.commands.registerCommand('sgroup.map.toggleColumn', () => map.toggleColumn()),
     ...registerCommands(store, tree),
-    vscode.commands.registerCommand('vgroup.openMap', async () => {
+    vscode.commands.registerCommand('sgroup.openMap', async () => {
       await vscode.commands.executeCommand('workbench.view.explorer');
       try {
         await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       } catch (error) {
         void vscode.window.showWarningMessage(
-          'VGroup: панель VGroup Map не найдена. Сделай Reload Window. ' +
+          'SGROUP: панель SGROUP Map не найдена. Сделай Reload Window. ' +
             (error instanceof Error ? error.message : String(error)),
         );
       }
     }),
-    vscode.commands.registerCommand('vgroup.map.toggleLayout', () => map.toggleLayout()),
+    vscode.commands.registerCommand('sgroup.map.toggleLayout', () => map.toggleLayout()),
     ...['flow', '1', '2', '3'].map((state) => {
-      return vscode.commands.registerCommand(`vgroup.map.groups.${state}`, () => map.cycleGroupsLayout());
+      return vscode.commands.registerCommand(`sgroup.map.groups.${state}`, () => map.cycleGroupsLayout());
     }),
-    vscode.commands.registerCommand('vgroup.map.move', async () => {
+    vscode.commands.registerCommand('sgroup.map.move', async () => {
       await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       await vscode.commands.executeCommand('workbench.action.moveFocusedView');
     }),
@@ -141,7 +141,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       map.refresh();
     }),
     watchVsixReloadMarker(folder.uri),
-    vscode.commands.registerCommand('vgroup.vsix', () => {
+    vscode.commands.registerCommand('sgroup.vsix', () => {
       const term = vscode.window.createTerminal({ name: '📦 Vsix', cwd: folder.uri.fsPath });
       term.show();
       term.sendText('sh ./sh_vsix.sh');
