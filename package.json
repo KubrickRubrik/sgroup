@@ -210,7 +210,7 @@
       },
       {
         "command": "sgroup.map.openBottom",
-        "title": "Open Map in Bottom Panel",
+        "title": "Toggle Map in Bottom Panel",
         "category": "SGroup",
         "icon": "$(layout-panel)"
       },

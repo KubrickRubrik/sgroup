@@ -88,6 +88,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly subscriptions: vscode.Disposable[];
   private readonly media: vscode.Uri;
   private panel?: vscode.WebviewPanel;
+  private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
 
   constructor(
@@ -115,6 +116,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   // ---- section inside Explorer ----
 
   resolveWebviewView(view: vscode.WebviewView): void {
+    if (view.viewType === MarkersMapProvider.bottomViewId) {
+      this.bottomView = view;
+    }
     const webview = view.webview;
     this.attach(webview);
     view.onDidChangeVisibility(() => {
@@ -122,17 +126,56 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         void this.postState(webview);
       }
     });
-    view.onDidDispose(() => this.webviews.delete(webview));
+    view.onDidDispose(() => {
+      this.webviews.delete(webview);
+      if (this.bottomView === view) {
+        this.bottomView = undefined;
+      }
+    });
+  }
+
+  /** Show the bottom-panel map, or hide the panel when that map is already open. */
+  async toggleBottom(): Promise<boolean> {
+    if (this.bottomView?.visible) {
+      await vscode.commands.executeCommand('workbench.action.closePanel');
+      return true;
+    }
+    const available = await vscode.commands.getCommands(true);
+    const command = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.sgroupPanel'].find((id) =>
+      available.includes(id),
+    );
+    if (!command) {
+      return false;
+    }
+    await vscode.commands.executeCommand(command);
+    return true;
   }
 
   // ---- narrow editor column next to Explorer ----
 
   async toggleColumn(): Promise<void> {
     if (this.panel) {
-      this.panel.dispose();
+      await this.closeColumn();
       return;
     }
     await this.openColumn();
+  }
+
+  /** Closes the map webview and the editor group that held it. */
+  private async closeColumn(): Promise<void> {
+    const panel = this.panel;
+    if (!panel) {
+      return;
+    }
+    const column = panel.viewColumn;
+    panel.reveal(column, false);
+    await vscode.commands.executeCommand('workbench.action.unlockEditorGroup');
+    const group = vscode.window.tabGroups.all.find((item) => item.viewColumn === column);
+    if (group) {
+      await vscode.window.tabGroups.close(group, true);
+      return;
+    }
+    panel.dispose();
   }
 
   async openColumn(): Promise<void> {

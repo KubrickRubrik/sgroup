@@ -85,11 +85,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.commands.registerCommand('sgroup.map.openBottom', async () => {
-      const available = await vscode.commands.getCommands(true);
-      const candidates = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.sgroupPanel'];
-      const command = candidates.find((id) => available.includes(id));
-      if (command) {
-        await vscode.commands.executeCommand(command);
+      if (await map.toggleBottom()) {
         return;
       }
       const reload = 'Reload Window';
