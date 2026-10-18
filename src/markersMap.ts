@@ -14,6 +14,8 @@ const COLUMN_SIDE_KEY = 'sgroup.map.columnSide';
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
 const GROUPS_LAYOUT_CONTEXT = 'sgroup.map.groupsLayout';
+/** True when every top-level group on the map is collapsed. */
+const TOP_COLLAPSED_CONTEXT = 'sgroup.map.topCollapsed';
 
 interface MapItem {
   relPath: string;
@@ -37,7 +39,6 @@ interface MapClass {
 interface MapGroup {
   id: string;
   label: string;
-  badge?: string;
   icon?: string;
   color?: string;
   alias?: string;
@@ -61,7 +62,15 @@ interface EditorLayout {
   groups: EditorGroupLayout[];
 }
 
-type IncomingToolbarAction = 'toggleLayout' | 'cycleGroups' | 'createMarker' | 'refresh' | 'openConfig' | 'openSettings';
+type IncomingToolbarAction =
+  | 'toggleLayout'
+  | 'cycleGroups'
+  | 'createMarker'
+  | 'collapseGroups'
+  | 'expandGroups'
+  | 'refresh'
+  | 'openConfig'
+  | 'openSettings';
 
 type IncomingMessage =
   | { type: 'ready' }
@@ -70,6 +79,7 @@ type IncomingMessage =
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
   | { type: 'history'; direction: 'back' | 'forward' }
+  | { type: 'topGroupsCollapsed'; collapsed: boolean }
   | {
       type: 'toolbar';
       action: IncomingToolbarAction;
@@ -325,6 +335,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return vscode.commands.executeCommand('setContext', GROUPS_LAYOUT_CONTEXT, this.groupsLayout);
   }
 
+  /** Collapse or expand every top-level group. Nested groups keep their own state. */
+  async setTopGroups(collapsed: boolean): Promise<void> {
+    for (const webview of this.webviews) {
+      void webview.postMessage({ type: 'setTopGroups', collapsed });
+    }
+  }
+
+  syncTopCollapsedContext(collapsed: boolean): Thenable<unknown> {
+    return vscode.commands.executeCommand('setContext', TOP_COLLAPSED_CONTEXT, collapsed);
+  }
+
   async toggleLayout(): Promise<void> {
     await this.memento.update(LAYOUT_KEY, this.layout === 'chips' ? 'list' : 'chips');
     this.refresh();
@@ -486,6 +507,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.onToolbar(message.action);
       return;
     }
+    if (message.type === 'topGroupsCollapsed') {
+      await this.syncTopCollapsedContext(message.collapsed);
+      return;
+    }
     if (message.type === 'setColor') {
       const color = normalizeHex(message.color);
       if (color && this.store.marker(message.markerId)) {
@@ -633,7 +658,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       this.store.markers().map(async ([id, def]) => ({
         id,
         label: def.label,
-        badge: def.badge,
         icon: def.icon,
         color: def.color ? cssColor(def.color) : undefined,
         alias: def.alias,
@@ -722,6 +746,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.cycleGroupsLayout();
       return;
     }
+    if (action === 'collapseGroups' || action === 'expandGroups') {
+      await this.setTopGroups(action === 'collapseGroups');
+      return;
+    }
     await vscode.commands.executeCommand(
       action === 'createMarker'
         ? 'sgroup.createMarker'
@@ -774,6 +802,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </button>
       <button id="toolbar-create" class="history-btn" type="button" title="Create Marker" aria-label="Create Marker">
         ${icon('add')}
+      </button>
+      <button id="toolbar-collapse" class="history-btn" type="button" title="Свернуть все группы" aria-label="Свернуть все группы">
+        ${icon('collapse-all', 'collapse')}
+        ${icon('expand-all', 'expand', true)}
       </button>
       <div class="toolbar-more">
         <button id="toolbar-more" class="history-btn" type="button" title="Дополнительные действия" aria-label="Дополнительные действия" aria-haspopup="menu">

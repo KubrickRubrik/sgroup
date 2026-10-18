@@ -159,7 +159,7 @@ export class MarkersTreeProvider implements vscode.TreeDataProvider<Node>, vscod
     const item = new vscode.TreeItem(def?.label ?? node.markerId, vscode.TreeItemCollapsibleState.Expanded);
     item.id = node.id;
     item.contextValue = 'marker';
-    item.description = def?.badge ? `${def.badge} · ${count}` : String(count);
+    item.description = String(count);
     item.tooltip = `${def?.label ?? node.markerId} — ${count} item(s)`;
     item.iconPath = new vscode.ThemeIcon('tag', def?.color ? new vscode.ThemeColor(themeColorId(def.color)) : undefined);
     return item;

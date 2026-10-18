@@ -22,11 +22,11 @@ export const CONFIG_PATH = '.sgroup/sgroup.json';
 const LEGACY_CONFIG_PATHS = ['.sgroup/vgroup.json', '.vgroup/vgroup.json', '.vscode/vgroup.json'];
 
 /** Chip/list columns inside a single group. */
-export type ColumnsMode = 'flow' | '2' | '3';
-export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '2', '3'];
+export type ColumnsMode = 'flow' | '1' | '2' | '3';
+export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '1', '2', '3'];
 
 export function normalizeColumns(value: unknown): ColumnsMode | undefined {
-  return value === 'flow' || value === '2' || value === '3' ? value : undefined;
+  return value === 'flow' || value === '1' || value === '2' || value === '3' ? value : undefined;
 }
 
 /** Map font scales and Explorer label saturation, stored in the markers file. */
@@ -41,6 +41,8 @@ export interface Appearance {
   fontFile: number;
   /** Multiplier applied to all four font scales. */
   fontScale: number;
+  /** Group-card gradient turn: 0 = default 135°, 100 = +360° (same look). */
+  gradientDirection: number;
   /** Explorer file-name tint: 0 = theme foreground, 100 = group stripe color. */
   labelSaturation: number;
 }
@@ -51,6 +53,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   fontFolder: 0.95,
   fontFile: 0.9,
   fontScale: 1,
+  gradientDirection: 0,
   labelSaturation: 20,
 };
 
@@ -61,6 +64,7 @@ const MULTIPLIER_MIN = 1;
 const MULTIPLIER_MAX = 5;
 const MULTIPLIER_STEP = 0.1;
 const SATURATION_STEP = 5;
+const GRADIENT_STEP = 1;
 
 export function snapFontScale(value: number): number {
   return snap(value, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP);
@@ -72,6 +76,10 @@ export function snapMultiplier(value: number): number {
 
 export function snapSaturation(value: number): number {
   return snap(value, 0, 100, SATURATION_STEP);
+}
+
+export function snapGradientDirection(value: number): number {
+  return snap(value, 0, 100, GRADIENT_STEP);
 }
 
 function snap(value: number, min: number, max: number, step: number): number {
@@ -88,6 +96,9 @@ export function normalizeAppearance(raw: unknown): Appearance {
     fontFolder: snapFontScale(numOr(source.fontFolder, DEFAULT_APPEARANCE.fontFolder)),
     fontFile: snapFontScale(numOr(source.fontFile, DEFAULT_APPEARANCE.fontFile)),
     fontScale: snapMultiplier(numOr(source.fontScale, DEFAULT_APPEARANCE.fontScale)),
+    gradientDirection: snapGradientDirection(
+      numOr(source.gradientDirection, DEFAULT_APPEARANCE.gradientDirection),
+    ),
     labelSaturation: snapSaturation(numOr(source.labelSaturation, DEFAULT_APPEARANCE.labelSaturation)),
   };
 }
@@ -100,7 +111,6 @@ export interface MarkerDef {
   label: string;
   /** Theme color id (`sgroup.red`, `charts.red`) or `#rrggbb`. */
   color?: string;
-  badge?: string;
   /** Emoji shown before the group name. */
   icon?: string;
   /** Display alias shown above the group label. */
@@ -1023,9 +1033,6 @@ export class MarkerStore implements vscode.Disposable {
       if (def.color) {
         entry.color = def.color;
       }
-      if (def.badge) {
-        entry.badge = def.badge;
-      }
       if (def.icon) {
         entry.icon = def.icon;
       }
@@ -1244,7 +1251,6 @@ function normalize(raw: unknown): MarkersFile {
       result.markers[id] = {
         label: capitalize(typeof def.label === 'string' && def.label.trim() ? def.label : id),
         color: typeof def.color === 'string' && def.color ? migrateColorId(normalizeHex(def.color) ?? def.color) : undefined,
-        badge: typeof def.badge === 'string' && def.badge.trim() ? def.badge.trim() : undefined,
         icon: typeof def.icon === 'string' && def.icon.trim() ? def.icon.trim() : undefined,
         alias: typeof def.alias === 'string' && def.alias.trim() ? def.alias.trim() : undefined,
         parent,

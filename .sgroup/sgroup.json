@@ -4,58 +4,54 @@
     "1": {
       "label": "Тест 1",
       "color": "#0084ff",
-      "badge": "Силикон",
       "icon": "🍀",
       "alias": "тестовая группа 1",
-      "columns": "2",
+      "columns": "1",
       "order": 2
     },
     "2": {
       "label": "Тест 2",
       "color": "charts.purple",
-      "badge": "Т2",
       "order": 2,
       "parent": "3"
     },
     "3": {
       "label": "Тест 3",
       "color": "sgroup.sky",
-      "badge": "Тест 3",
       "icon": "🔥",
       "order": 3
     },
     "4": {
       "label": "Тест 4",
-      "badge": "тест 4",
       "order": 4
     },
     "5": {
       "label": "Тест 5",
       "color": "sgroup.blue",
-      "badge": "тест 5",
       "icon": "📌",
       "order": 5
     },
     "version": {
       "label": "Version",
       "color": "sgroup.tomato",
-      "badge": "VE",
       "icon": "🔥",
       "order": 1
     },
     "2-2": {
       "label": "Тест 2",
       "color": "#e5ea99",
-      "badge": "вложенность 2",
       "icon": "🔥",
       "order": 1,
       "parent": "3"
     },
     "ttest-6": {
       "label": "Ttest 6",
-      "badge": "TT",
       "icon": "⭐",
       "order": 6
+    },
+    "test-dir": {
+      "label": "Test_dir",
+      "order": 7
     }
   },
   "items": {
@@ -91,6 +87,9 @@
     ],
     "version": [
       "version"
+    ],
+    "version/syngroup-2.1.0.vsix": [
+      "version"
     ]
   },
   "added": {
@@ -108,14 +107,18 @@
     },
     "version": {
       "version": 1792353063481
+    },
+    "version/syngroup-2.1.0.vsix": {
+      "version": 1792355966551
     }
   },
   "appearance": {
-    "fontGroup": 1.4,
-    "fontSubgroup": 1.35,
+    "fontGroup": 1.1,
+    "fontSubgroup": 1.1,
     "fontFolder": 0.9,
     "fontFile": 0.9,
     "fontScale": 1,
+    "gradientDirection": 48,
     "labelSaturation": 70
   },
   "aliases": {

@@ -40,22 +40,13 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
       return undefined;
     }
     const defs = markerIds.map((id) => this.store.marker(id)).filter((def) => def !== undefined);
-    const primary = defs[0];
     const labels = defs.map((def) => (def.icon ? `${def.icon} ${def.label}` : def.label)).join(', ');
     return new vscode.FileDecoration(
-      shortBadge(primary?.badge),
+      undefined,
       `SGroup: ${labels}`,
       labelColor(defs, this.store.appearance.labelSaturation),
     );
   }
-}
-
-/** File decoration badges are limited to two characters. */
-export function shortBadge(badge: string | undefined): string | undefined {
-  if (!badge) {
-    return undefined;
-  }
-  return Array.from(badge).slice(0, 2).join('') || undefined;
 }
 
 function labelColor(

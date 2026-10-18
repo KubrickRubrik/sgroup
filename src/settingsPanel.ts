@@ -183,6 +183,16 @@ export class SettingsPanel implements vscode.Disposable {
     </section>
 
     <section>
+      <h2>Группа</h2>
+      <div class="row">
+        <label for="gradientDirection">Направление градиента</label>
+        <input id="gradientDirection" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="gradientDirection"></span>
+      </div>
+      <p class="note">0 — направление по умолчанию, 100% — полный оборот и снова то же направление.</p>
+    </section>
+
+    <section>
       <h2>Explorer</h2>
       <div class="row">
         <label for="labelSaturation">Насыщенность имени</label>
@@ -194,11 +204,11 @@ export class SettingsPanel implements vscode.Disposable {
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const keys = ['fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale', 'labelSaturation'];
+    const keys = ['fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale', 'gradientDirection', 'labelSaturation'];
     let suppress = false;
 
     function format(key, value) {
-      if (key === 'labelSaturation') return Math.round(value) + '%';
+      if (key === 'labelSaturation' || key === 'gradientDirection') return Math.round(value) + '%';
       if (key === 'fontScale') return Number(value).toFixed(1) + '×';
       return Number(value).toFixed(2);
     }
@@ -217,7 +227,7 @@ export class SettingsPanel implements vscode.Disposable {
 
     function emit(key, raw) {
       const value =
-        key === 'labelSaturation' ? Number(raw) :
+        key === 'labelSaturation' || key === 'gradientDirection' ? Number(raw) :
         key === 'fontScale' ? Number(raw) :
         Number(raw);
       vscode.postMessage({ type: 'setAppearance', appearance: { [key]: value } });

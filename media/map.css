@@ -138,6 +138,8 @@ body {
   --tree-gutter: 21px;
   --branch-gap: 10px;
   --drop-color: var(--vscode-list-focusOutline, var(--vscode-focusBorder, #4daafc));
+  /* 0 = default 135°, 100 = +360° (same direction). Set from appearance via map.js. */
+  --gradient-turn: 0;
 
   color: var(--vscode-foreground);
   font-family: var(--vscode-font-family);
@@ -156,7 +158,7 @@ body {
 
 .group:not(.nested) {
   background: linear-gradient(
-    135deg,
+    calc(135deg + var(--gradient-turn) * 3.6deg),
     color-mix(in srgb, var(--group-color) 9%, transparent) 0%,
     color-mix(in srgb, var(--group-color) 2%, transparent) 55%,
     transparent 100%
@@ -168,7 +170,7 @@ body {
 
 .group:not(.nested)::before {
   background: linear-gradient(
-    135deg,
+    calc(135deg + var(--gradient-turn) * 3.6deg),
     color-mix(in srgb, var(--group-color) 55%, transparent) 0%,
     color-mix(in srgb, var(--group-color) 18%, transparent) 50%,
     color-mix(in srgb, var(--group-color) 6%, transparent) 100%
@@ -477,19 +479,6 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   font-size: var(--size-subgroup);
 }
 
-.badge {
-  background: color-mix(in srgb, var(--group-color) 22%, transparent);
-  border-radius: 7px;
-  color: var(--group-color);
-  font-size: var(--size-meta);
-  font-weight: 600;
-  max-width: 40%;
-  overflow: hidden;
-  padding: 0 5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .count {
   color: var(--vscode-descriptionForeground);
   font-size: var(--size-meta);
@@ -627,6 +616,7 @@ body.is-dragging * {
   gap: 4px;
 }
 
+.group.columns-1 > .children > .block,
 .group.columns-2 > .children > .block,
 .group.columns-3 > .children > .block {
   display: grid;
@@ -634,16 +624,22 @@ body.is-dragging * {
   justify-items: start;
 }
 
+.group.columns-1 > .children > .block > .item,
 .group.columns-2 > .children > .block > .item,
 .group.columns-3 > .children > .block > .item {
   min-width: 0;
 }
 
+.layout-list .group.columns-1 > .children > .block,
 .layout-list .group.columns-2 > .children > .block,
 .layout-list .group.columns-3 > .children > .block {
   column-gap: 12px;
   justify-items: stretch;
   row-gap: 0;
+}
+
+.group.columns-1 > .children > .block {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .group.columns-2 > .children > .block {

@@ -2,7 +2,7 @@
   "name": "syngroup",
   "displayName": "SynGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "3.1.0",
+  "version": "3.1.3",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -137,6 +137,24 @@
         "icon": {
           "light": "media/icons/add-light.svg",
           "dark": "media/icons/add-dark.svg"
+        }
+      },
+      {
+        "command": "sgroup.map.collapseGroups",
+        "title": "Свернуть все группы",
+        "category": "SGroup",
+        "icon": {
+          "light": "media/icons/collapse-all-light.svg",
+          "dark": "media/icons/collapse-all-dark.svg"
+        }
+      },
+      {
+        "command": "sgroup.map.expandGroups",
+        "title": "Развернуть все группы",
+        "category": "SGroup",
+        "icon": {
+          "light": "media/icons/expand-all-light.svg",
+          "dark": "media/icons/expand-all-dark.svg"
         }
       },
       {
@@ -277,12 +295,6 @@
         "icon": "$(smiley)"
       },
       {
-        "command": "sgroup.changeBadge",
-        "title": "Change Badge…",
-        "category": "SGroup",
-        "icon": "$(tag)"
-      },
-      {
         "command": "sgroup.map.groups.flow",
         "title": "Groups: Flow — click for 1 column",
         "category": "SGroup",
@@ -321,6 +333,11 @@
       {
         "command": "sgroup.setColumns.flow",
         "title": "Flow",
+        "category": "SGroup"
+      },
+      {
+        "command": "sgroup.setColumns.1",
+        "title": "1 Column",
         "category": "SGroup"
       },
       {
@@ -409,6 +426,16 @@
           "command": "sgroup.createMarker",
           "when": "view == sgroupMap || view == sgroupMapBottom",
           "group": "navigation@2"
+        },
+        {
+          "command": "sgroup.map.collapseGroups",
+          "when": "(view == sgroupMap || view == sgroupMapBottom) && !sgroup.map.topCollapsed",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sgroup.map.expandGroups",
+          "when": "(view == sgroupMap || view == sgroupMapBottom) && sgroup.map.topCollapsed",
+          "group": "navigation@3"
         },
         {
           "command": "sgroup.map.openBottom",
@@ -548,11 +575,6 @@
           "group": "1_marker@4"
         },
         {
-          "command": "sgroup.changeBadge",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
-          "group": "1_marker@5"
-        },
-        {
           "submenu": "sgroup.columns",
           "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@5.5"
@@ -575,13 +597,18 @@
           "toggled": "columns == 'flow'"
         },
         {
-          "command": "sgroup.setColumns.2",
+          "command": "sgroup.setColumns.1",
           "group": "1_columns@2",
+          "toggled": "columns == '1'"
+        },
+        {
+          "command": "sgroup.setColumns.2",
+          "group": "1_columns@3",
           "toggled": "columns == '2'"
         },
         {
           "command": "sgroup.setColumns.3",
-          "group": "1_columns@3",
+          "group": "1_columns@4",
           "toggled": "columns == '3'"
         }
       ],
@@ -631,10 +658,6 @@
           "when": "false"
         },
         {
-          "command": "sgroup.changeBadge",
-          "when": "false"
-        },
-        {
           "command": "sgroup.map.groups.flow",
           "when": "false"
         },
@@ -651,7 +674,19 @@
           "when": "false"
         },
         {
+          "command": "sgroup.map.collapseGroups",
+          "when": "false"
+        },
+        {
+          "command": "sgroup.map.expandGroups",
+          "when": "false"
+        },
+        {
           "command": "sgroup.setColumns.flow",
+          "when": "false"
+        },
+        {
+          "command": "sgroup.setColumns.1",
           "when": "false"
         },
         {
@@ -732,6 +767,16 @@
           "group": "navigation@2"
         },
         {
+          "command": "sgroup.map.collapseGroups",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel' && !sgroup.map.topCollapsed",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sgroup.map.expandGroups",
+          "when": "activeWebviewPanelId == 'sgroupMapPanel' && sgroup.map.topCollapsed",
+          "group": "navigation@3"
+        },
+        {
           "command": "sgroup.map.groups.flow",
           "when": "activeWebviewPanelId == 'sgroupMapPanel' && (sgroup.map.groupsLayout == flow || !sgroup.map.groupsLayout)",
           "group": "navigation@1"
@@ -777,7 +822,7 @@
         "sgroup.showDecorations": {
           "type": "boolean",
           "default": true,
-          "description": "Show marker badges and colors in the standard Explorer."
+          "description": "Show marker colors in the standard Explorer."
         }
       }
     },

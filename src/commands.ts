@@ -1,14 +1,11 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { EMOJI } from './emoji';
-import { MAX_MARKER_DEPTH, MarkerDef, MarkerStore } from './markerStore';
+import { COLUMNS_MODES, MAX_MARKER_DEPTH, MarkerDef, MarkerStore } from './markerStore';
 import { openTargets, targetsForDirectory, targetsForMarker } from './openBatch';
 import { openClassAt, symbolAtCursor } from './openClass';
 import { PALETTE, normalizeHex, themeColorId } from './palette';
 import { ClassNode, ItemNode, MarkersTreeProvider, Node } from './markersTree';
-
-const BADGE_MIN = 2;
-const BADGE_MAX = 40;
 
 export function registerCommands(
   store: MarkerStore,
@@ -67,26 +64,6 @@ export function registerCommands(
     return hex === undefined ? null : normalizeHex(hex);
   }
 
-  /** Returns the badge, `undefined` for "no badge", or `null` if cancelled. */
-  async function askBadge(value: string): Promise<string | undefined | null> {
-    const badge = await vscode.window.showInputBox({
-      title: 'Marker badge',
-      prompt: `${BADGE_MIN}–${BADGE_MAX} characters, shown in the map. The Explorer shows only the first 2. Leave empty for no badge.`,
-      value,
-      validateInput: (v) => {
-        const length = Array.from(v.trim()).length;
-        if (length === 0 || (length >= BADGE_MIN && length <= BADGE_MAX)) {
-          return undefined;
-        }
-        return `From ${BADGE_MIN} to ${BADGE_MAX} characters`;
-      },
-    });
-    if (badge === undefined) {
-      return null;
-    }
-    return badge.trim() || undefined;
-  }
-
   /** Returns the emoji, `undefined` for "no icon", or `null` if cancelled. */
   async function pickIcon(current?: string): Promise<string | undefined | null> {
     const NONE = '__none__';
@@ -129,10 +106,6 @@ export function registerCommands(
     return custom.trim() || undefined;
   }
 
-  function defaultBadge(label: string): string {
-    return Array.from(label.trim().replace(/\s+/g, '')).slice(0, BADGE_MIN).join('').toLocaleUpperCase();
-  }
-
   async function createMarkerFlow(parentId?: string): Promise<string | undefined> {
     if (parentId) {
       const parentDepth = store.depthOf(parentId);
@@ -158,11 +131,7 @@ export function registerCommands(
     if (icon === null) {
       return undefined;
     }
-    const badge = await askBadge(defaultBadge(label));
-    if (badge === null) {
-      return undefined;
-    }
-    return store.createMarker({ label: label.trim(), color, icon, badge, parent: parentId });
+    return store.createMarker({ label: label.trim(), color, icon, parent: parentId });
   }
 
   async function pickMarker(title: string): Promise<string | undefined> {
@@ -173,12 +142,11 @@ export function registerCommands(
         const indent = depth > 0 ? `${'··'.repeat(depth)} ` : '';
         return {
           label: `${indent}${def.icon ? `${def.icon} ` : ''}${def.label}`,
-          description: def.badge,
           id,
           iconPath: new vscode.ThemeIcon('tag', def.color ? new vscode.ThemeColor(themeColorId(def.color)) : undefined),
         };
       }),
-      { label: 'New marker…', description: undefined, id: NEW, iconPath: new vscode.ThemeIcon('add') },
+      { label: 'New marker…', id: NEW, iconPath: new vscode.ThemeIcon('add') },
     ];
     const picked = await vscode.window.showQuickPick(items, { title, placeHolder: 'Choose a marker' });
     if (!picked) {
@@ -481,15 +449,11 @@ export function registerCommands(
     if (icon === null) {
       return;
     }
-    const badge = await askBadge(def.badge ?? '');
-    if (badge === null) {
-      return;
-    }
-    const patch: Partial<Omit<MarkerDef, 'order'>> = { label: label.trim(), color, icon, badge };
+    const patch: Partial<Omit<MarkerDef, 'order'>> = { label: label.trim(), color, icon };
     await store.updateMarker(target.markerId, patch);
   }
 
-  function editMarkerField<K extends 'color' | 'icon' | 'badge'>(
+  function editMarkerField<K extends 'color' | 'icon'>(
     field: K,
     ask: (current: string | undefined) => Promise<string | undefined | null>,
   ) {
@@ -613,11 +577,7 @@ export function registerCommands(
     vscode.commands.registerCommand('sgroup.deleteMarker', withNode(deleteMarker)),
     vscode.commands.registerCommand('sgroup.changeColor', withNode(editMarkerField('color', pickColor))),
     vscode.commands.registerCommand('sgroup.changeIcon', withNode(editMarkerField('icon', pickIcon))),
-    vscode.commands.registerCommand(
-      'sgroup.changeBadge',
-      withNode(editMarkerField('badge', (current) => askBadge(current ?? ''))),
-    ),
-    ...(['flow', '2', '3'] as const).map((columns) =>
+    ...COLUMNS_MODES.map((columns) =>
       vscode.commands.registerCommand(
         `sgroup.setColumns.${columns}`,
         withNode(async (node) => {

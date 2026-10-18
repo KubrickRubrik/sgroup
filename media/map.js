@@ -16,6 +16,7 @@
   const toolbarGroups = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-groups'));
   const toolbarLayout = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-layout'));
   const toolbarCreate = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-create'));
+  const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
 
@@ -30,6 +31,13 @@
   toolbarCreate?.addEventListener('click', () => {
     closeToolbarMenu();
     vscode.postMessage({ type: 'toolbar', action: 'createMarker' });
+  });
+  toolbarCollapse?.addEventListener('click', () => {
+    closeToolbarMenu();
+    vscode.postMessage({
+      type: 'toolbar',
+      action: allTopCollapsed() ? 'expandGroups' : 'collapseGroups',
+    });
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -52,6 +60,9 @@
 
   /** @type {{ collapsed: Record<string, boolean> }} */
   const uiState = vscode.getState() || { collapsed: {} };
+  if (!uiState.collapsed) {
+    uiState.collapsed = {};
+  }
   let data = null;
   /** @type {any} */
   let dragPayload = null;
@@ -70,6 +81,9 @@
   /** @type {{ relPath: string, anchor: HTMLElement } | null} */
   let dirPopoverState = null;
 
+  /** @type {boolean | null} */
+  let pendingTopGroups = null;
+
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'state') {
@@ -78,7 +92,19 @@
       setHistoryButtons(message.history);
       setToolbar(message);
       applyAppearance(message.appearance);
-      render();
+      const pending = pendingTopGroups;
+      pendingTopGroups = null;
+      if (pending === null) {
+        render();
+      } else {
+        applyTopGroups(pending);
+      }
+    } else if (message.type === 'setTopGroups') {
+      if (!data) {
+        pendingTopGroups = !!message.collapsed;
+        return;
+      }
+      applyTopGroups(!!message.collapsed);
     } else if (message.type === 'active' && data) {
       data.active = message.active;
       updateActive(true);
@@ -130,7 +156,70 @@
     }
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number } | undefined} appearance */
+  /** @type {boolean | null} */
+  let reportedTopCollapsed = null;
+
+  function isEmptyGroup(group) {
+    return (
+      group.items.length === 0 && (group.children || []).length === 0 && (group.classes || []).length === 0
+    );
+  }
+
+  /** Top-level groups that can actually fold. */
+  function collapsibleTopGroups() {
+    if (!data || !data.groups) {
+      return [];
+    }
+    return data.groups.filter((group) => !group.parent && !isEmptyGroup(group));
+  }
+
+  function allTopCollapsed() {
+    const groups = collapsibleTopGroups();
+    return groups.length > 0 && groups.every((group) => uiState.collapsed[group.id]);
+  }
+
+  function setCollapseButton() {
+    const groups = collapsibleTopGroups();
+    const collapsed = groups.length > 0 && groups.every((group) => uiState.collapsed[group.id]);
+    const mode = collapsed ? 'expand' : 'collapse';
+    if (toolbarCollapse) {
+      toolbarCollapse.disabled = groups.length === 0;
+      toolbarCollapse.title = collapsed ? 'Развернуть все группы' : 'Свернуть все группы';
+      toolbarCollapse.setAttribute('aria-label', toolbarCollapse.title);
+      toolbarCollapse.querySelectorAll('.tool-icon').forEach((img) => {
+        img.hidden = img.getAttribute('data-mode') !== mode;
+      });
+    }
+    if (groups.length === 0) {
+      if (reportedTopCollapsed !== false) {
+        reportedTopCollapsed = false;
+        vscode.postMessage({ type: 'topGroupsCollapsed', collapsed: false });
+      }
+      return;
+    }
+    if (reportedTopCollapsed === collapsed) {
+      return;
+    }
+    reportedTopCollapsed = collapsed;
+    vscode.postMessage({ type: 'topGroupsCollapsed', collapsed });
+  }
+
+  function applyTopGroups(collapsed) {
+    if (!data) {
+      return;
+    }
+    for (const group of collapsibleTopGroups()) {
+      if (collapsed) {
+        uiState.collapsed[group.id] = true;
+      } else {
+        delete uiState.collapsed[group.id];
+      }
+    }
+    vscode.setState(uiState);
+    render();
+  }
+
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
@@ -143,6 +232,8 @@
     set('--size-subgroup', a.fontSubgroup, 1.05);
     set('--size-folder', a.fontFolder, 0.95);
     set('--size-file', a.fontFile, 0.9);
+    const turn = typeof a.gradientDirection === 'number' ? a.gradientDirection : 0;
+    document.body.style.setProperty('--gradient-turn', String(turn));
   }
 
   document.addEventListener('pointerdown', (event) => {
@@ -200,6 +291,7 @@
   });
 
   function render() {
+    setCollapseButton();
     root.textContent = '';
     root.className = 'layout-' + data.layout + ' groups-' + (data.groupsLayout || 'flow');
     clearDropHighlights();
@@ -273,9 +365,6 @@
     }
     labelWrap.append(el('span', 'label', group.label));
     header.append(labelWrap);
-    if (group.badge) {
-      header.append(el('span', 'badge', group.badge));
-    }
     header.append(el('span', 'count', String(group.items.length + classList.length + childIds.length)));
     header.title =
       (group.alias ? group.alias + '\n' : '') + group.label + '\nDrag to reorder or nest';

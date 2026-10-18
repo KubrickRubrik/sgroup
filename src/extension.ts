@@ -21,7 +21,6 @@ const COMMAND_IDS = [
   'sgroup.deleteMarker',
   'sgroup.changeColor',
   'sgroup.changeIcon',
-  'sgroup.changeBadge',
   'sgroup.moveMarkerUp',
   'sgroup.moveMarkerDown',
   'sgroup.openConfig',
@@ -39,7 +38,10 @@ const COMMAND_IDS = [
   'sgroup.map.groups.1',
   'sgroup.map.groups.2',
   'sgroup.map.groups.3',
+  'sgroup.map.collapseGroups',
+  'sgroup.map.expandGroups',
   'sgroup.setColumns.flow',
+  'sgroup.setColumns.1',
   'sgroup.setColumns.2',
   'sgroup.setColumns.3',
   'sgroup.markClass',
@@ -121,6 +123,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ...['flow', '1', '2', '3'].map((state) => {
       return vscode.commands.registerCommand(`sgroup.map.groups.${state}`, () => map.cycleGroupsLayout());
     }),
+    vscode.commands.registerCommand('sgroup.map.collapseGroups', () => map.setTopGroups(true)),
+    vscode.commands.registerCommand('sgroup.map.expandGroups', () => map.setTopGroups(false)),
     vscode.commands.registerCommand('sgroup.map.move', async () => {
       await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       await vscode.commands.executeCommand('workbench.action.moveFocusedView');
@@ -157,6 +161,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   await map.syncGroupsLayoutContext();
+  await map.syncTopCollapsedContext(false);
   await store.init();
   await syncExplorerLabelColors(store.appearance.labelSaturation);
 }
