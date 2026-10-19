@@ -17,9 +17,15 @@ import { normalizeHex } from './palette';
 export const MAX_MARKER_DEPTH = 2;
 
 /** Fixed markers file relative to the workspace folder. */
-export const CONFIG_PATH = '.sgroup/sgroup.json';
+export const CONFIG_PATH = '.syn3/syn3.json';
 /** Older locations, newest first. */
-const LEGACY_CONFIG_PATHS = ['.sgroup/vgroup.json', '.vgroup/vgroup.json', '.vscode/vgroup.json'];
+const LEGACY_CONFIG_PATHS = [
+  '.sgroup/sgroup.json',
+  '.sgroup/vgroup.json',
+  '.vgroup/vgroup.json',
+  '.vscode/vgroup.json',
+];
+const LEGACY_HISTORY_PATH = '.sgroup/history.json';
 
 /** Chip/list columns inside a single group. */
 export type ColumnsMode = 'flow' | '1' | '2' | '3';
@@ -130,7 +136,7 @@ function numOr(value: unknown, fallback: number): number {
 
 export interface MarkerDef {
   label: string;
-  /** Theme color id (`sgroup.red`, `charts.red`) or `#rrggbb`. */
+  /** Theme color id (`syn3.red`, `charts.red`) or `#rrggbb`. */
   color?: string;
   /** Emoji shown before the group name. */
   icon?: string;
@@ -279,6 +285,7 @@ export class MarkerStore implements vscode.Disposable {
 
   async init(): Promise<void> {
     await this.migrateLegacyConfig();
+    await this.migrateHistory();
     await this.load();
     await this.loadHistory();
     this.historyReady = true;
@@ -1102,7 +1109,7 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Move an older markers file into `.sgroup/sgroup.json`.
+   * Move an older markers file into `.syn3/syn3.json`.
    * On write failure keeps reading the legacy file for this session.
    */
   private async migrateLegacyConfig(): Promise<void> {
@@ -1177,6 +1184,25 @@ export class MarkerStore implements vscode.Disposable {
       }
     }
     this.sessionConfigPath = CONFIG_PATH;
+  }
+
+  /** Undo stack used to live beside the old markers file. */
+  private async migrateHistory(): Promise<void> {
+    const next = vscode.Uri.joinPath(this.root, HISTORY_PATH);
+    if (await fileExists(next)) {
+      return;
+    }
+    const legacy = vscode.Uri.joinPath(this.root, LEGACY_HISTORY_PATH);
+    if (!(await fileExists(legacy))) {
+      return;
+    }
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(next, '..'));
+      await vscode.workspace.fs.writeFile(next, await vscode.workspace.fs.readFile(legacy));
+      await vscode.workspace.fs.delete(legacy);
+    } catch {
+      // The undo stack is local. Leaving the old file is enough.
+    }
   }
 
   private enqueue(task: () => Promise<void>): Promise<void> {
@@ -1306,8 +1332,8 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async publishHistoryContext(): Promise<void> {
-    await vscode.commands.executeCommand('setContext', 'sgroup.canUndo', this.canUndo);
-    await vscode.commands.executeCommand('setContext', 'sgroup.canRedo', this.canRedo);
+    await vscode.commands.executeCommand('setContext', 'syn3.canUndo', this.canUndo);
+    await vscode.commands.executeCommand('setContext', 'syn3.canRedo', this.canRedo);
   }
 
   private captureFrom(data: MarkersFile): string {
@@ -1611,9 +1637,10 @@ async function fileExists(uri: vscode.Uri): Promise<boolean> {
   }
 }
 
-/** `vgroup.red` from older files → `sgroup.red`. */
+/** `sgroup.red` and `vgroup.red` from older files → `syn3.red`. */
 function migrateColorId(color: string): string {
-  return color.startsWith('vgroup.') ? `sgroup.${color.slice('vgroup.'.length)}` : color;
+  const prefix = ['sgroup.', 'vgroup.'].find((item) => color.startsWith(item));
+  return prefix ? `syn3.${color.slice(prefix.length)}` : color;
 }
 
 function normalize(raw: unknown): MarkersFile {

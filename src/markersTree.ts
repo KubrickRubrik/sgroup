@@ -95,7 +95,7 @@ export class MarkersTreeProvider implements vscode.TreeDataProvider<Node>, vscod
       item.contextValue = 'class';
       item.description = def?.relPath;
       item.iconPath = new vscode.ThemeIcon('symbol-class');
-      item.command = { command: 'sgroup.openClass', title: 'Open Class', arguments: [node] };
+      item.command = { command: 'syn3.openClass', title: 'Open Class', arguments: [node] };
       return item;
     }
     const item = new vscode.TreeItem(

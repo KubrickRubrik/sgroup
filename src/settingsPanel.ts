@@ -5,7 +5,7 @@ import { Appearance, DEFAULT_APPEARANCE, MarkerStore } from './markerStore';
 type IncomingMessage = { type: 'ready' } | { type: 'setAppearance'; appearance: Partial<Appearance> };
 
 export class SettingsPanel implements vscode.Disposable {
-  static readonly viewType = 'sgroupSettings';
+  static readonly viewType = 'syn3Settings';
 
   private panel?: vscode.WebviewPanel;
   private readonly subscriptions: vscode.Disposable[];
@@ -150,7 +150,7 @@ export class SettingsPanel implements vscode.Disposable {
 <body>
   <main>
     <h1>SGroup Settings</h1>
-    <p class="hint">Сохраняются в <code>.sgroup/sgroup.json</code> этого проекта.</p>
+    <p class="hint">Сохраняются в <code>.syn3/syn3.json</code> этого проекта.</p>
 
     <section>
       <h2>Шрифт карты</h2>

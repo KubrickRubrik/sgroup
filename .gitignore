@@ -2,5 +2,5 @@ node_modules/
 dist/
 out/
 version/.reload-window
-.sgroup/history.json
+.syn3/history.json
 # *.vsix

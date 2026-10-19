@@ -2,7 +2,7 @@
   "name": "syngroup",
   "displayName": "SynGroup",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "4.0.0",
+  "version": "4.1.2",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -21,24 +21,24 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "onWebviewPanel:sgroupMapPanel"
+    "onWebviewPanel:syn3MapPanel"
   ],
   "contributes": {
     "viewsContainers": {
       "panel": [
         {
-          "id": "sgroupPanel",
-          "title": "SGroup",
+          "id": "syn3Panel",
+          "title": "SYN3",
           "icon": "media/map-icon.svg"
         }
       ]
     },
     "views": {
-      "sgroupPanel": [
+      "syn3Panel": [
         {
           "type": "webview",
-          "id": "sgroupMapBottom",
-          "name": "SGroup",
+          "id": "syn3MapBottom",
+          "name": "SYN3",
           "contextualTitle": "Explorer",
           "icon": "media/map-icon.svg"
         }
@@ -46,8 +46,8 @@
       "explorer": [
         {
           "type": "webview",
-          "id": "sgroupMap",
-          "name": "SGroup",
+          "id": "syn3Map",
+          "name": "SYN3",
           "contextualTitle": "Explorer",
           "visibility": "visible",
           "icon": "media/map-icon.svg"
@@ -56,82 +56,82 @@
     },
     "commands": [
       {
-        "command": "sgroup.assign",
+        "command": "syn3.assign",
         "title": "Mark…",
         "category": "SGroup",
         "icon": "$(tag)"
       },
       {
-        "command": "sgroup.markClass",
+        "command": "syn3.markClass",
         "title": "Mark Class…",
         "category": "SGroup",
         "icon": "$(symbol-class)"
       },
       {
-        "command": "sgroup.markClassManual",
+        "command": "syn3.markClassManual",
         "title": "Mark Class Manually…",
         "category": "SGroup",
         "icon": "$(symbol-class)"
       },
       {
-        "command": "sgroup.setAlias",
+        "command": "syn3.setAlias",
         "title": "Set Alias…",
         "category": "SGroup",
         "icon": "$(whole-word)"
       },
       {
-        "command": "sgroup.clearAlias",
+        "command": "syn3.clearAlias",
         "title": "Clear Alias",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.openClass",
+        "command": "syn3.openClass",
         "title": "Open Class",
         "category": "SGroup",
         "icon": "$(go-to-file)"
       },
       {
-        "command": "sgroup.openItem",
+        "command": "syn3.openItem",
         "title": "Open Item",
         "category": "SGroup",
         "icon": "$(files)"
       },
       {
-        "command": "sgroup.openFull",
+        "command": "syn3.openFull",
         "title": "Open Full",
         "category": "SGroup",
         "icon": "$(folder-opened)"
       },
       {
-        "command": "sgroup.unassign",
+        "command": "syn3.unassign",
         "title": "Remove Marker",
         "category": "SGroup",
         "icon": "$(close)"
       },
       {
-        "command": "sgroup.unassignFromExplorer",
+        "command": "syn3.unassignFromExplorer",
         "title": "Remove Markers",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.rename",
+        "command": "syn3.rename",
         "title": "Rename…",
         "category": "SGroup",
         "icon": "$(edit)"
       },
       {
-        "command": "sgroup.reveal",
+        "command": "syn3.reveal",
         "title": "Reveal in Explorer View",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.relink",
+        "command": "syn3.relink",
         "title": "Relink to File…",
         "category": "SGroup",
         "icon": "$(link)"
       },
       {
-        "command": "sgroup.createMarker",
+        "command": "syn3.createMarker",
         "title": "Create Marker",
         "category": "SGroup",
         "icon": {
@@ -140,7 +140,7 @@
         }
       },
       {
-        "command": "sgroup.map.collapseGroups",
+        "command": "syn3.map.collapseGroups",
         "title": "Свернуть все группы",
         "category": "SGroup",
         "icon": {
@@ -149,7 +149,7 @@
         }
       },
       {
-        "command": "sgroup.map.expandGroups",
+        "command": "syn3.map.expandGroups",
         "title": "Развернуть все группы",
         "category": "SGroup",
         "icon": {
@@ -158,31 +158,31 @@
         }
       },
       {
-        "command": "sgroup.editMarker",
+        "command": "syn3.editMarker",
         "title": "Edit Marker…",
         "category": "SGroup",
         "icon": "$(edit)"
       },
       {
-        "command": "sgroup.deleteMarker",
+        "command": "syn3.deleteMarker",
         "title": "Delete Marker",
         "category": "SGroup",
         "icon": "$(trash)"
       },
       {
-        "command": "sgroup.moveMarkerUp",
+        "command": "syn3.moveMarkerUp",
         "title": "Move Up",
         "category": "SGroup",
         "icon": "$(arrow-up)"
       },
       {
-        "command": "sgroup.moveMarkerDown",
+        "command": "syn3.moveMarkerDown",
         "title": "Move Down",
         "category": "SGroup",
         "icon": "$(arrow-down)"
       },
       {
-        "command": "sgroup.openConfig",
+        "command": "syn3.openConfig",
         "title": "Open Markers File",
         "category": "SGroup",
         "icon": {
@@ -191,7 +191,7 @@
         }
       },
       {
-        "command": "sgroup.openSettings",
+        "command": "syn3.openSettings",
         "title": "Open Settings",
         "category": "SGroup",
         "icon": {
@@ -200,13 +200,13 @@
         }
       },
       {
-        "command": "sgroup.vsix",
+        "command": "syn3.vsix",
         "title": "Package / Install VSIX…",
         "category": "SGroup",
         "icon": "$(package)"
       },
       {
-        "command": "sgroup.refresh",
+        "command": "syn3.refresh",
         "title": "Refresh",
         "category": "SGroup",
         "icon": {
@@ -215,33 +215,33 @@
         }
       },
       {
-        "command": "sgroup.historyBack",
+        "command": "syn3.historyBack",
         "title": "Назад",
         "category": "SGroup",
         "icon": {
           "light": "media/icons/arrow-left-light.svg",
           "dark": "media/icons/arrow-left-dark.svg"
         },
-        "enablement": "sgroup.canUndo"
+        "enablement": "syn3.canUndo"
       },
       {
-        "command": "sgroup.historyForward",
+        "command": "syn3.historyForward",
         "title": "Вперёд",
         "category": "SGroup",
         "icon": {
           "light": "media/icons/arrow-right-light.svg",
           "dark": "media/icons/arrow-right-dark.svg"
         },
-        "enablement": "sgroup.canRedo"
+        "enablement": "syn3.canRedo"
       },
       {
-        "command": "sgroup.openMap",
+        "command": "syn3.openMap",
         "title": "Open Map",
         "category": "SGroup",
         "icon": "$(map)"
       },
       {
-        "command": "sgroup.map.toggleLayout",
+        "command": "syn3.map.toggleLayout",
         "title": "Toggle Map Layout (Chips / List)",
         "category": "SGroup",
         "icon": {
@@ -250,13 +250,13 @@
         }
       },
       {
-        "command": "sgroup.map.move",
+        "command": "syn3.map.move",
         "title": "Move Map…",
         "category": "SGroup",
         "icon": "$(layout-sidebar-right)"
       },
       {
-        "command": "sgroup.map.toggleColumn",
+        "command": "syn3.map.toggleColumn",
         "title": "Toggle Map Column Beside Explorer",
         "category": "SGroup",
         "icon": {
@@ -265,7 +265,7 @@
         }
       },
       {
-        "command": "sgroup.map.toggleRight",
+        "command": "syn3.map.toggleRight",
         "title": "Toggle Map Column on the Right",
         "category": "SGroup",
         "icon": {
@@ -274,7 +274,7 @@
         }
       },
       {
-        "command": "sgroup.map.openBottom",
+        "command": "syn3.map.openBottom",
         "title": "Toggle Map in Bottom Panel",
         "category": "SGroup",
         "icon": {
@@ -283,19 +283,19 @@
         }
       },
       {
-        "command": "sgroup.changeColor",
+        "command": "syn3.changeColor",
         "title": "Change Color…",
         "category": "SGroup",
         "icon": "$(symbol-color)"
       },
       {
-        "command": "sgroup.changeIcon",
+        "command": "syn3.changeIcon",
         "title": "Change Icon…",
         "category": "SGroup",
         "icon": "$(smiley)"
       },
       {
-        "command": "sgroup.map.groups.flow",
+        "command": "syn3.map.groups.flow",
         "title": "Groups: Flow — click for 1 column",
         "category": "SGroup",
         "icon": {
@@ -304,7 +304,7 @@
         }
       },
       {
-        "command": "sgroup.map.groups.1",
+        "command": "syn3.map.groups.1",
         "title": "Groups: 1 column — click for 2 columns",
         "category": "SGroup",
         "icon": {
@@ -313,7 +313,7 @@
         }
       },
       {
-        "command": "sgroup.map.groups.2",
+        "command": "syn3.map.groups.2",
         "title": "Groups: 2 columns — click for 3 columns",
         "category": "SGroup",
         "icon": {
@@ -322,7 +322,7 @@
         }
       },
       {
-        "command": "sgroup.map.groups.3",
+        "command": "syn3.map.groups.3",
         "title": "Groups: 3 columns — click for flow",
         "category": "SGroup",
         "icon": {
@@ -331,33 +331,33 @@
         }
       },
       {
-        "command": "sgroup.setColumns.flow",
+        "command": "syn3.setColumns.flow",
         "title": "Flow",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.setColumns.1",
+        "command": "syn3.setColumns.1",
         "title": "1 Column",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.setColumns.2",
+        "command": "syn3.setColumns.2",
         "title": "2 Columns",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.setColumns.3",
+        "command": "syn3.setColumns.3",
         "title": "3 Columns",
         "category": "SGroup"
       },
       {
-        "command": "sgroup.createSubgroup",
+        "command": "syn3.createSubgroup",
         "title": "New Subgroup…",
         "category": "SGroup",
         "icon": "$(new-folder)"
       },
       {
-        "command": "sgroup.unnestMarker",
+        "command": "syn3.unnestMarker",
         "title": "Move Up a Level",
         "category": "SGroup",
         "icon": "$(arrow-up)"
@@ -365,461 +365,461 @@
     ],
     "submenus": [
       {
-        "id": "sgroup.columns",
+        "id": "syn3.columns",
         "label": "Columns"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "command": "sgroup.assign",
+          "command": "syn3.assign",
           "group": "7_modification@90"
         },
         {
-          "command": "sgroup.markClassManual",
+          "command": "syn3.markClassManual",
           "when": "!explorerResourceIsFolder",
           "group": "7_modification@90.5"
         },
         {
-          "command": "sgroup.unassignFromExplorer",
+          "command": "syn3.unassignFromExplorer",
           "group": "7_modification@91"
         }
       ],
       "editor/context": [
         {
-          "command": "sgroup.markClass",
+          "command": "syn3.markClass",
           "group": "7_modification@90"
         }
       ],
       "view/title": [
         {
-          "command": "sgroup.historyBack",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.historyBack",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "navigation@-2"
         },
         {
-          "command": "sgroup.historyForward",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.historyForward",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "navigation@-1"
         },
         {
-          "command": "sgroup.refresh",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.refresh",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "more@1"
         },
         {
-          "command": "sgroup.openConfig",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.openConfig",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "more@2"
         },
         {
-          "command": "sgroup.openSettings",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.openSettings",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "more@3"
         },
         {
-          "command": "sgroup.map.toggleLayout",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.map.toggleLayout",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "navigation@0"
         },
         {
-          "command": "sgroup.createMarker",
-          "when": "view == sgroupMap || view == sgroupMapBottom",
+          "command": "syn3.createMarker",
+          "when": "view == syn3Map || view == syn3MapBottom",
           "group": "navigation@2"
         },
         {
-          "command": "sgroup.map.collapseGroups",
-          "when": "(view == sgroupMap || view == sgroupMapBottom) && !sgroup.map.topCollapsed",
+          "command": "syn3.map.collapseGroups",
+          "when": "(view == syn3Map || view == syn3MapBottom) && !syn3.map.topCollapsed",
           "group": "navigation@3"
         },
         {
-          "command": "sgroup.map.expandGroups",
-          "when": "(view == sgroupMap || view == sgroupMapBottom) && sgroup.map.topCollapsed",
+          "command": "syn3.map.expandGroups",
+          "when": "(view == syn3Map || view == syn3MapBottom) && syn3.map.topCollapsed",
           "group": "navigation@3"
         },
         {
-          "command": "sgroup.map.openBottom",
-          "when": "view == sgroupMap",
+          "command": "syn3.map.openBottom",
+          "when": "view == syn3Map",
           "group": "navigation@8"
         },
         {
-          "command": "sgroup.map.toggleColumn",
-          "when": "view == sgroupMap",
+          "command": "syn3.map.toggleColumn",
+          "when": "view == syn3Map",
           "group": "navigation@9"
         },
         {
-          "command": "sgroup.map.toggleRight",
-          "when": "view == sgroupMap",
+          "command": "syn3.map.toggleRight",
+          "when": "view == syn3Map",
           "group": "navigation@10"
         },
         {
-          "command": "sgroup.map.groups.flow",
-          "when": "(view == sgroupMap || view == sgroupMapBottom) && (sgroup.map.groupsLayout == flow || !sgroup.map.groupsLayout)",
+          "command": "syn3.map.groups.flow",
+          "when": "(view == syn3Map || view == syn3MapBottom) && (syn3.map.groupsLayout == flow || !syn3.map.groupsLayout)",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.map.groups.1",
-          "when": "(view == sgroupMap || view == sgroupMapBottom) && sgroup.map.groupsLayout == 1",
+          "command": "syn3.map.groups.1",
+          "when": "(view == syn3Map || view == syn3MapBottom) && syn3.map.groupsLayout == 1",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.map.groups.2",
-          "when": "(view == sgroupMap || view == sgroupMapBottom) && sgroup.map.groupsLayout == 2",
+          "command": "syn3.map.groups.2",
+          "when": "(view == syn3Map || view == syn3MapBottom) && syn3.map.groupsLayout == 2",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.map.groups.3",
-          "when": "(view == sgroupMap || view == sgroupMapBottom) && sgroup.map.groupsLayout == 3",
+          "command": "syn3.map.groups.3",
+          "when": "(view == syn3Map || view == syn3MapBottom) && syn3.map.groupsLayout == 3",
           "group": "navigation@1"
         }
       ],
       "webview/context": [
         {
-          "command": "sgroup.reveal",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'item'",
+          "command": "syn3.reveal",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'item'",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.openClass",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'class'",
+          "command": "syn3.openClass",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'class'",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.reveal",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'class'",
+          "command": "syn3.reveal",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'class'",
           "group": "navigation@2"
         },
         {
-          "command": "sgroup.openItem",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.openItem",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.openFull",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.openFull",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "navigation@2"
         },
         {
-          "command": "sgroup.openItem",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'item' && isDir",
+          "command": "syn3.openItem",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'item' && isDir",
           "group": "navigation@2"
         },
         {
-          "command": "sgroup.openFull",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'item' && isDir",
+          "command": "syn3.openFull",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'item' && isDir",
           "group": "navigation@3"
         },
         {
-          "command": "sgroup.rename",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'item'",
+          "command": "syn3.rename",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'item'",
           "group": "7_modification@1"
         },
         {
-          "command": "sgroup.setAlias",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/",
+          "command": "syn3.setAlias",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/",
           "group": "7_modification@1.5"
         },
         {
-          "command": "sgroup.clearAlias",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/ && hasAlias",
+          "command": "syn3.clearAlias",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/ && hasAlias",
           "group": "7_modification@1.6"
         },
         {
-          "command": "sgroup.relink",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'missing'",
+          "command": "syn3.relink",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'missing'",
           "group": "7_modification@2"
         },
         {
-          "command": "sgroup.unassign",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing|class|missingClass)$/",
+          "command": "syn3.unassign",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing|class|missingClass)$/",
           "group": "7_modification@3"
         },
         {
-          "command": "sgroup.editMarker",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.editMarker",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@1"
         },
         {
-          "command": "sgroup.setAlias",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.setAlias",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@1.5"
         },
         {
-          "command": "sgroup.clearAlias",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && hasAlias",
+          "command": "syn3.clearAlias",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && hasAlias",
           "group": "1_marker@1.6"
         },
         {
-          "command": "sgroup.moveMarkerUp",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.moveMarkerUp",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@6"
         },
         {
-          "command": "sgroup.moveMarkerDown",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.moveMarkerDown",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@7"
         },
         {
-          "command": "sgroup.deleteMarker",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.deleteMarker",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "2_danger@1"
         },
         {
-          "command": "sgroup.changeColor",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.changeColor",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@3"
         },
         {
-          "command": "sgroup.changeIcon",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "command": "syn3.changeIcon",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@4"
         },
         {
-          "submenu": "sgroup.columns",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "submenu": "syn3.columns",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
           "group": "1_marker@5.5"
         },
         {
-          "command": "sgroup.createSubgroup",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2",
+          "command": "syn3.createSubgroup",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2",
           "group": "1_marker@2"
         },
         {
-          "command": "sgroup.unnestMarker",
-          "when": "webviewId =~ /^sgroupMap(Panel|Bottom)?$/ && webviewSection == 'marker' && depth > 0",
+          "command": "syn3.unnestMarker",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth > 0",
           "group": "1_marker@8"
         }
       ],
-      "sgroup.columns": [
+      "syn3.columns": [
         {
-          "command": "sgroup.setColumns.flow",
+          "command": "syn3.setColumns.flow",
           "group": "1_columns@1",
           "toggled": "columns == 'flow'"
         },
         {
-          "command": "sgroup.setColumns.1",
+          "command": "syn3.setColumns.1",
           "group": "1_columns@2",
           "toggled": "columns == '1'"
         },
         {
-          "command": "sgroup.setColumns.2",
+          "command": "syn3.setColumns.2",
           "group": "1_columns@3",
           "toggled": "columns == '2'"
         },
         {
-          "command": "sgroup.setColumns.3",
+          "command": "syn3.setColumns.3",
           "group": "1_columns@4",
           "toggled": "columns == '3'"
         }
       ],
       "commandPalette": [
         {
-          "command": "sgroup.unassign",
+          "command": "syn3.unassign",
           "when": "false"
         },
         {
-          "command": "sgroup.unassignFromExplorer",
+          "command": "syn3.unassignFromExplorer",
           "when": "false"
         },
         {
-          "command": "sgroup.rename",
+          "command": "syn3.rename",
           "when": "false"
         },
         {
-          "command": "sgroup.reveal",
+          "command": "syn3.reveal",
           "when": "false"
         },
         {
-          "command": "sgroup.relink",
+          "command": "syn3.relink",
           "when": "false"
         },
         {
-          "command": "sgroup.editMarker",
+          "command": "syn3.editMarker",
           "when": "false"
         },
         {
-          "command": "sgroup.deleteMarker",
+          "command": "syn3.deleteMarker",
           "when": "false"
         },
         {
-          "command": "sgroup.moveMarkerUp",
+          "command": "syn3.moveMarkerUp",
           "when": "false"
         },
         {
-          "command": "sgroup.moveMarkerDown",
+          "command": "syn3.moveMarkerDown",
           "when": "false"
         },
         {
-          "command": "sgroup.changeColor",
+          "command": "syn3.changeColor",
           "when": "false"
         },
         {
-          "command": "sgroup.changeIcon",
+          "command": "syn3.changeIcon",
           "when": "false"
         },
         {
-          "command": "sgroup.map.groups.flow",
+          "command": "syn3.map.groups.flow",
           "when": "false"
         },
         {
-          "command": "sgroup.map.groups.1",
+          "command": "syn3.map.groups.1",
           "when": "false"
         },
         {
-          "command": "sgroup.map.groups.2",
+          "command": "syn3.map.groups.2",
           "when": "false"
         },
         {
-          "command": "sgroup.map.groups.3",
+          "command": "syn3.map.groups.3",
           "when": "false"
         },
         {
-          "command": "sgroup.map.collapseGroups",
+          "command": "syn3.map.collapseGroups",
           "when": "false"
         },
         {
-          "command": "sgroup.map.expandGroups",
+          "command": "syn3.map.expandGroups",
           "when": "false"
         },
         {
-          "command": "sgroup.setColumns.flow",
+          "command": "syn3.setColumns.flow",
           "when": "false"
         },
         {
-          "command": "sgroup.setColumns.1",
+          "command": "syn3.setColumns.1",
           "when": "false"
         },
         {
-          "command": "sgroup.setColumns.2",
+          "command": "syn3.setColumns.2",
           "when": "false"
         },
         {
-          "command": "sgroup.setColumns.3",
+          "command": "syn3.setColumns.3",
           "when": "false"
         },
         {
-          "command": "sgroup.createSubgroup",
+          "command": "syn3.createSubgroup",
           "when": "false"
         },
         {
-          "command": "sgroup.unnestMarker",
+          "command": "syn3.unnestMarker",
           "when": "false"
         },
         {
-          "command": "sgroup.setAlias",
+          "command": "syn3.setAlias",
           "when": "false"
         },
         {
-          "command": "sgroup.clearAlias",
+          "command": "syn3.clearAlias",
           "when": "false"
         },
         {
-          "command": "sgroup.openClass",
+          "command": "syn3.openClass",
           "when": "false"
         },
         {
-          "command": "sgroup.openItem",
+          "command": "syn3.openItem",
           "when": "false"
         },
         {
-          "command": "sgroup.openFull",
+          "command": "syn3.openFull",
           "when": "false"
         },
         {
-          "command": "sgroup.markClassManual",
+          "command": "syn3.markClassManual",
           "when": "false"
         }
       ],
       "editor/title": [
         {
-          "command": "sgroup.historyBack",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.historyBack",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "navigation@-2"
         },
         {
-          "command": "sgroup.historyForward",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.historyForward",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "navigation@-1"
         },
         {
-          "command": "sgroup.refresh",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.refresh",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "more@1"
         },
         {
-          "command": "sgroup.openConfig",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.openConfig",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "more@2"
         },
         {
-          "command": "sgroup.openSettings",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.openSettings",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "more@3"
         },
         {
-          "command": "sgroup.map.toggleLayout",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.map.toggleLayout",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "navigation@0"
         },
         {
-          "command": "sgroup.createMarker",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel'",
+          "command": "syn3.createMarker",
+          "when": "activeWebviewPanelId == 'syn3MapPanel'",
           "group": "navigation@2"
         },
         {
-          "command": "sgroup.map.collapseGroups",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel' && !sgroup.map.topCollapsed",
+          "command": "syn3.map.collapseGroups",
+          "when": "activeWebviewPanelId == 'syn3MapPanel' && !syn3.map.topCollapsed",
           "group": "navigation@3"
         },
         {
-          "command": "sgroup.map.expandGroups",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel' && sgroup.map.topCollapsed",
+          "command": "syn3.map.expandGroups",
+          "when": "activeWebviewPanelId == 'syn3MapPanel' && syn3.map.topCollapsed",
           "group": "navigation@3"
         },
         {
-          "command": "sgroup.map.groups.flow",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel' && (sgroup.map.groupsLayout == flow || !sgroup.map.groupsLayout)",
+          "command": "syn3.map.groups.flow",
+          "when": "activeWebviewPanelId == 'syn3MapPanel' && (syn3.map.groupsLayout == flow || !syn3.map.groupsLayout)",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.map.groups.1",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel' && sgroup.map.groupsLayout == 1",
+          "command": "syn3.map.groups.1",
+          "when": "activeWebviewPanelId == 'syn3MapPanel' && syn3.map.groupsLayout == 1",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.map.groups.2",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel' && sgroup.map.groupsLayout == 2",
+          "command": "syn3.map.groups.2",
+          "when": "activeWebviewPanelId == 'syn3MapPanel' && syn3.map.groupsLayout == 2",
           "group": "navigation@1"
         },
         {
-          "command": "sgroup.map.groups.3",
-          "when": "activeWebviewPanelId == 'sgroupMapPanel' && sgroup.map.groupsLayout == 3",
+          "command": "syn3.map.groups.3",
+          "when": "activeWebviewPanelId == 'syn3MapPanel' && syn3.map.groupsLayout == 3",
           "group": "navigation@1"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "sgroup.historyBack",
+        "command": "syn3.historyBack",
         "key": "alt+left",
-        "when": "focusedView == sgroupMap || focusedView == sgroupMapBottom || activeWebviewPanelId == sgroupMapPanel"
+        "when": "focusedView == syn3Map || focusedView == syn3MapBottom || activeWebviewPanelId == syn3MapPanel"
       },
       {
-        "command": "sgroup.historyForward",
+        "command": "syn3.historyForward",
         "key": "alt+right",
-        "when": "focusedView == sgroupMap || focusedView == sgroupMapBottom || activeWebviewPanelId == sgroupMapPanel"
+        "when": "focusedView == syn3Map || focusedView == syn3MapBottom || activeWebviewPanelId == syn3MapPanel"
       }
     ],
     "configuration": {
       "title": "SGroup",
       "properties": {
-        "sgroup.map.columnWidth": {
+        "syn3.map.columnWidth": {
           "type": "number",
           "default": 260,
           "minimum": 120,
           "description": "Width in pixels of the map column opened beside the Explorer or on the right of the editor."
         },
-        "sgroup.showDecorations": {
+        "syn3.showDecorations": {
           "type": "boolean",
           "default": true,
           "description": "Show marker colors in the standard Explorer."
@@ -828,7 +828,7 @@
     },
     "colors": [
       {
-        "id": "sgroup.red",
+        "id": "syn3.red",
         "description": "SGroup marker color: Red",
         "defaults": {
           "dark": "#e5484d",
@@ -838,7 +838,7 @@
         }
       },
       {
-        "id": "sgroup.red.label",
+        "id": "syn3.red.label",
         "description": "SGroup Explorer label tint: Red",
         "defaults": {
           "dark": "#e7c8c9",
@@ -848,7 +848,7 @@
         }
       },
       {
-        "id": "sgroup.tomato",
+        "id": "syn3.tomato",
         "description": "SGroup marker color: Tomato",
         "defaults": {
           "dark": "#e54d2e",
@@ -858,7 +858,7 @@
         }
       },
       {
-        "id": "sgroup.tomato.label",
+        "id": "syn3.tomato.label",
         "description": "SGroup Explorer label tint: Tomato",
         "defaults": {
           "dark": "#e7c9c3",
@@ -868,7 +868,7 @@
         }
       },
       {
-        "id": "sgroup.orange",
+        "id": "syn3.orange",
         "description": "SGroup marker color: Orange",
         "defaults": {
           "dark": "#f76b15",
@@ -878,7 +878,7 @@
         }
       },
       {
-        "id": "sgroup.orange.label",
+        "id": "syn3.orange.label",
         "description": "SGroup Explorer label tint: Orange",
         "defaults": {
           "dark": "#ebcfbe",
@@ -888,7 +888,7 @@
         }
       },
       {
-        "id": "sgroup.amber",
+        "id": "syn3.amber",
         "description": "SGroup marker color: Amber",
         "defaults": {
           "dark": "#ffb224",
@@ -898,7 +898,7 @@
         }
       },
       {
-        "id": "sgroup.amber.label",
+        "id": "syn3.amber.label",
         "description": "SGroup Explorer label tint: Amber",
         "defaults": {
           "dark": "#edddc1",
@@ -908,7 +908,7 @@
         }
       },
       {
-        "id": "sgroup.yellow",
+        "id": "syn3.yellow",
         "description": "SGroup marker color: Yellow",
         "defaults": {
           "dark": "#f5d90a",
@@ -918,7 +918,7 @@
         }
       },
       {
-        "id": "sgroup.yellow.label",
+        "id": "syn3.yellow.label",
         "description": "SGroup Explorer label tint: Yellow",
         "defaults": {
           "dark": "#ebe5bc",
@@ -928,7 +928,7 @@
         }
       },
       {
-        "id": "sgroup.lime",
+        "id": "syn3.lime",
         "description": "SGroup marker color: Lime",
         "defaults": {
           "dark": "#99d52a",
@@ -938,7 +938,7 @@
         }
       },
       {
-        "id": "sgroup.lime.label",
+        "id": "syn3.lime.label",
         "description": "SGroup Explorer label tint: Lime",
         "defaults": {
           "dark": "#d8e4c2",
@@ -948,7 +948,7 @@
         }
       },
       {
-        "id": "sgroup.green",
+        "id": "syn3.green",
         "description": "SGroup marker color: Green",
         "defaults": {
           "dark": "#30a46c",
@@ -958,7 +958,7 @@
         }
       },
       {
-        "id": "sgroup.green.label",
+        "id": "syn3.green.label",
         "description": "SGroup Explorer label tint: Green",
         "defaults": {
           "dark": "#c3dacf",
@@ -968,7 +968,7 @@
         }
       },
       {
-        "id": "sgroup.emerald",
+        "id": "syn3.emerald",
         "description": "SGroup marker color: Emerald",
         "defaults": {
           "dark": "#10b981",
@@ -978,7 +978,7 @@
         }
       },
       {
-        "id": "sgroup.emerald.label",
+        "id": "syn3.emerald.label",
         "description": "SGroup Explorer label tint: Emerald",
         "defaults": {
           "dark": "#bddfd3",
@@ -988,7 +988,7 @@
         }
       },
       {
-        "id": "sgroup.teal",
+        "id": "syn3.teal",
         "description": "SGroup marker color: Teal",
         "defaults": {
           "dark": "#12a594",
@@ -998,7 +998,7 @@
         }
       },
       {
-        "id": "sgroup.teal.label",
+        "id": "syn3.teal.label",
         "description": "SGroup Explorer label tint: Teal",
         "defaults": {
           "dark": "#bddbd7",
@@ -1008,7 +1008,7 @@
         }
       },
       {
-        "id": "sgroup.cyan",
+        "id": "syn3.cyan",
         "description": "SGroup marker color: Cyan",
         "defaults": {
           "dark": "#00a2c7",
@@ -1018,7 +1018,7 @@
         }
       },
       {
-        "id": "sgroup.cyan.label",
+        "id": "syn3.cyan.label",
         "description": "SGroup Explorer label tint: Cyan",
         "defaults": {
           "dark": "#badae1",
@@ -1028,7 +1028,7 @@
         }
       },
       {
-        "id": "sgroup.sky",
+        "id": "syn3.sky",
         "description": "SGroup marker color: Sky",
         "defaults": {
           "dark": "#4cc3ff",
@@ -1038,7 +1038,7 @@
         }
       },
       {
-        "id": "sgroup.sky.label",
+        "id": "syn3.sky.label",
         "description": "SGroup Explorer label tint: Sky",
         "defaults": {
           "dark": "#c9e1ed",
@@ -1048,7 +1048,7 @@
         }
       },
       {
-        "id": "sgroup.blue",
+        "id": "syn3.blue",
         "description": "SGroup marker color: Blue",
         "defaults": {
           "dark": "#3e63dd",
@@ -1058,7 +1058,7 @@
         }
       },
       {
-        "id": "sgroup.blue.label",
+        "id": "syn3.blue.label",
         "description": "SGroup Explorer label tint: Blue",
         "defaults": {
           "dark": "#c6cde6",
@@ -1068,7 +1068,7 @@
         }
       },
       {
-        "id": "sgroup.indigo",
+        "id": "syn3.indigo",
         "description": "SGroup marker color: Indigo",
         "defaults": {
           "dark": "#5b5bd6",
@@ -1078,7 +1078,7 @@
         }
       },
       {
-        "id": "sgroup.indigo.label",
+        "id": "syn3.indigo.label",
         "description": "SGroup Explorer label tint: Indigo",
         "defaults": {
           "dark": "#cccce4",
@@ -1088,7 +1088,7 @@
         }
       },
       {
-        "id": "sgroup.violet",
+        "id": "syn3.violet",
         "description": "SGroup marker color: Violet",
         "defaults": {
           "dark": "#8e4ec6",
@@ -1098,7 +1098,7 @@
         }
       },
       {
-        "id": "sgroup.violet.label",
+        "id": "syn3.violet.label",
         "description": "SGroup Explorer label tint: Violet",
         "defaults": {
           "dark": "#d6c9e1",
@@ -1108,7 +1108,7 @@
         }
       },
       {
-        "id": "sgroup.purple",
+        "id": "syn3.purple",
         "description": "SGroup marker color: Purple",
         "defaults": {
           "dark": "#ab4aba",
@@ -1118,7 +1118,7 @@
         }
       },
       {
-        "id": "sgroup.purple.label",
+        "id": "syn3.purple.label",
         "description": "SGroup Explorer label tint: Purple",
         "defaults": {
           "dark": "#dcc8df",
@@ -1128,7 +1128,7 @@
         }
       },
       {
-        "id": "sgroup.plum",
+        "id": "syn3.plum",
         "description": "SGroup marker color: Plum",
         "defaults": {
           "dark": "#b658c4",
@@ -1138,7 +1138,7 @@
         }
       },
       {
-        "id": "sgroup.plum.label",
+        "id": "syn3.plum.label",
         "description": "SGroup Explorer label tint: Plum",
         "defaults": {
           "dark": "#decbe1",
@@ -1148,7 +1148,7 @@
         }
       },
       {
-        "id": "sgroup.pink",
+        "id": "syn3.pink",
         "description": "SGroup marker color: Pink",
         "defaults": {
           "dark": "#d6409f",
@@ -1158,7 +1158,7 @@
         }
       },
       {
-        "id": "sgroup.pink.label",
+        "id": "syn3.pink.label",
         "description": "SGroup Explorer label tint: Pink",
         "defaults": {
           "dark": "#e4c6d9",
@@ -1168,7 +1168,7 @@
         }
       },
       {
-        "id": "sgroup.rose",
+        "id": "syn3.rose",
         "description": "SGroup marker color: Rose",
         "defaults": {
           "dark": "#f43f5e",
@@ -1178,7 +1178,7 @@
         }
       },
       {
-        "id": "sgroup.rose.label",
+        "id": "syn3.rose.label",
         "description": "SGroup Explorer label tint: Rose",
         "defaults": {
           "dark": "#eac6cc",
@@ -1188,7 +1188,7 @@
         }
       },
       {
-        "id": "sgroup.brown",
+        "id": "syn3.brown",
         "description": "SGroup marker color: Brown",
         "defaults": {
           "dark": "#ad7f58",
@@ -1198,7 +1198,7 @@
         }
       },
       {
-        "id": "sgroup.brown.label",
+        "id": "syn3.brown.label",
         "description": "SGroup Explorer label tint: Brown",
         "defaults": {
           "dark": "#dcd3cb",
@@ -1208,7 +1208,7 @@
         }
       },
       {
-        "id": "sgroup.bronze",
+        "id": "syn3.bronze",
         "description": "SGroup marker color: Bronze",
         "defaults": {
           "dark": "#a18072",
@@ -1218,7 +1218,7 @@
         }
       },
       {
-        "id": "sgroup.bronze.label",
+        "id": "syn3.bronze.label",
         "description": "SGroup Explorer label tint: Bronze",
         "defaults": {
           "dark": "#dad3d0",
@@ -1228,7 +1228,7 @@
         }
       },
       {
-        "id": "sgroup.gold",
+        "id": "syn3.gold",
         "description": "SGroup marker color: Gold",
         "defaults": {
           "dark": "#978365",
@@ -1238,7 +1238,7 @@
         }
       },
       {
-        "id": "sgroup.gold.label",
+        "id": "syn3.gold.label",
         "description": "SGroup Explorer label tint: Gold",
         "defaults": {
           "dark": "#d8d4ce",
@@ -1248,7 +1248,7 @@
         }
       },
       {
-        "id": "sgroup.gray",
+        "id": "syn3.gray",
         "description": "SGroup marker color: Gray",
         "defaults": {
           "dark": "#8b8d98",
@@ -1258,7 +1258,7 @@
         }
       },
       {
-        "id": "sgroup.gray.label",
+        "id": "syn3.gray.label",
         "description": "SGroup Explorer label tint: Gray",
         "defaults": {
           "dark": "#d5d6d8",
@@ -1268,7 +1268,7 @@
         }
       },
       {
-        "id": "sgroup.slate",
+        "id": "syn3.slate",
         "description": "SGroup marker color: Slate",
         "defaults": {
           "dark": "#64748b",
@@ -1278,7 +1278,7 @@
         }
       },
       {
-        "id": "sgroup.slate.label",
+        "id": "syn3.slate.label",
         "description": "SGroup Explorer label tint: Slate",
         "defaults": {
           "dark": "#ced1d5",

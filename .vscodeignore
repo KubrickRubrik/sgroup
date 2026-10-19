@@ -9,4 +9,4 @@ esbuild.js
 *.vsix
 .gitignore
 version/**
-.sgroup/**
+.syn3/**

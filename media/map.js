@@ -53,9 +53,9 @@
     closeToolbarMenu();
     postToolbar(action);
   });
-  const MIME = 'application/vnd.sgroup';
+  const MIME = 'application/vnd.syn3';
   const MAX_DEPTH = 2;
-  const PAGE_MIME = 'application/vnd.sgroup.page';
+  const PAGE_MIME = 'application/vnd.syn3.page';
 
   /** @type {{ activePageId?: string }} */
   const uiState = vscode.getState() || {};

@@ -316,7 +316,7 @@ install_vsix() {
 }
 
 # CLI/AppleScript не умеют надёжно reload. Расширение SGroup смотрит этот файл
-# и вызывает workbench.action.reloadWindow (кнопка 📦 Vsix → command sgroup.vsix).
+# и вызывает workbench.action.reloadWindow (кнопка 📦 Vsix → command syn3.vsix).
 RELOAD_MARKER="${VERSION_DIR}/.reload-window"
 
 reload_window() {

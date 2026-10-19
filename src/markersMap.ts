@@ -15,12 +15,12 @@ import {
 import { openClassAt } from './openClass';
 import { cssColor, normalizeHex } from './palette';
 
-const COLUMN_SIDE_KEY = 'sgroup.map.columnSide';
+const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
-const GROUPS_LAYOUT_CONTEXT = 'sgroup.map.groupsLayout';
+const GROUPS_LAYOUT_CONTEXT = 'syn3.map.groupsLayout';
 /** True when every top-level group on the map is collapsed. */
-const TOP_COLLAPSED_CONTEXT = 'sgroup.map.topCollapsed';
+const TOP_COLLAPSED_CONTEXT = 'syn3.map.topCollapsed';
 
 interface MapItem {
   relPath: string;
@@ -141,9 +141,10 @@ function tabUri(tab: vscode.Tab): vscode.Uri | undefined {
 }
 
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
-  static readonly viewId = 'sgroupMap';
-  static readonly bottomViewId = 'sgroupMapBottom';
-  static readonly panelType = 'sgroupMapPanel';
+  static readonly viewId = 'syn3Map';
+  static readonly bottomViewId = 'syn3MapBottom';
+  static readonly panelType = 'syn3MapPanel';
+  static readonly panelTitle = 'SYN3';
 
   private readonly webviews = new Set<vscode.Webview>();
   private readonly activePageByWebview = new WeakMap<vscode.Webview, string>();
@@ -207,7 +208,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return true;
     }
     const available = await vscode.commands.getCommands(true);
-    const command = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.sgroupPanel'].find((id) =>
+    const command = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.syn3Panel'].find((id) =>
       available.includes(id),
     );
     if (!command) {
@@ -294,7 +295,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await vscode.commands.executeCommand('workbench.action.newGroupLeft');
     const panel = vscode.window.createWebviewPanel(
       MarkersMapProvider.panelType,
-      'SGroup',
+      MarkersMapProvider.panelTitle,
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       { enableScripts: true, localResourceRoots: [this.media], retainContextWhenHidden: true },
     );
@@ -330,7 +331,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const panel = vscode.window.createWebviewPanel(
       MarkersMapProvider.panelType,
-      'SGroup',
+      MarkersMapProvider.panelTitle,
       { viewColumn: column, preserveFocus: false },
       { enableScripts: true, localResourceRoots: [this.media], retainContextWhenHidden: true },
     );
@@ -350,7 +351,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (this.panel && this.panel !== panel) {
       this.panel.dispose();
     }
-    const stored = this.memento.get<string>(COLUMN_SIDE_KEY);
+    const stored =
+      this.memento.get<string>(COLUMN_SIDE_KEY) ?? this.memento.get<string>('sgroup.map.columnSide');
     this.columnSide = stored === 'left' || stored === 'right' ? stored : undefined;
     this.adoptPanel(panel);
   }
@@ -442,6 +444,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private adoptPanel(panel: vscode.WebviewPanel): void {
     this.panel = panel;
+    panel.title = MarkersMapProvider.panelTitle;
     panel.iconPath = vscode.Uri.joinPath(this.media, 'map-icon.svg');
     this.attach(panel.webview, 'panel');
     panel.onDidChangeViewState(() => {
@@ -465,7 +468,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.webviews.add(webview);
   }
 
-  /** Shrinks the leftmost top-level editor column to `sgroup.map.columnWidth` pixels. */
+  /** Shrinks the leftmost top-level editor column to `syn3.map.columnWidth` pixels. */
   private async narrowEdgeColumn(edge: 'start' | 'end'): Promise<void> {
     const layout = await vscode.commands.executeCommand<EditorLayout>('vscode.getEditorLayout');
     if (!layout || layout.orientation !== 0 || layout.groups.length < 2) {
@@ -501,7 +504,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (layout.groups[index]?.groups?.length) {
       return;
     }
-    const width = vscode.workspace.getConfiguration('sgroup').get<number>('map.columnWidth', 260);
+    const width = vscode.workspace.getConfiguration('syn3').get<number>('map.columnWidth', 260);
     try {
       const sizes = layout.groups.map((group) => group.size ?? 1);
       const total = sizes.reduce((sum, size) => sum + size, 0);
@@ -952,7 +955,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'createMarker') {
-      await vscode.commands.executeCommand('sgroup.createMarker', activePage);
+      await vscode.commands.executeCommand('syn3.createMarker', activePage);
       return;
     }
     if (action === 'createPage') {
@@ -969,10 +972,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     await vscode.commands.executeCommand(
       action === 'refresh'
-        ? 'sgroup.refresh'
+        ? 'syn3.refresh'
         : action === 'openConfig'
-          ? 'sgroup.openConfig'
-          : 'sgroup.openSettings',
+          ? 'syn3.openConfig'
+          : 'syn3.openSettings',
     );
   }
 

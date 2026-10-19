@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
 /** Undo/redo snapshots, beside the shared markers file. */
-export const HISTORY_PATH = '.sgroup/history.json';
+export const HISTORY_PATH = '.syn3/history.json';
 
 /** How many steps Back can restore. */
 export const HISTORY_LIMIT = 50;

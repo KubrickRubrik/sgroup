@@ -36,7 +36,7 @@
     },
     "3": {
       "label": "Тест 3",
-      "color": "sgroup.sky",
+      "color": "syn3.sky",
       "icon": "🔥",
       "order": 3,
       "page": "map"
@@ -48,14 +48,14 @@
     },
     "5": {
       "label": "Тест 5",
-      "color": "sgroup.blue",
+      "color": "syn3.blue",
       "icon": "📌",
       "order": 5,
       "page": "map"
     },
     "version": {
       "label": "Version",
-      "color": "sgroup.tomato",
+      "color": "syn3.tomato",
       "icon": "🔥",
       "order": 1,
       "page": "map"
@@ -80,7 +80,7 @@
     },
     "1-2": {
       "label": "Группа т 1",
-      "color": "sgroup.red",
+      "color": "syn3.red",
       "icon": "⭐",
       "columns": "flow",
       "order": 1,

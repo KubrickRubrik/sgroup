@@ -8,50 +8,50 @@ import { MarkersTreeProvider } from './markersTree';
 import { SettingsPanel } from './settingsPanel';
 
 const COMMAND_IDS = [
-  'sgroup.assign',
-  'sgroup.unassign',
-  'sgroup.unassignFromExplorer',
-  'sgroup.rename',
-  'sgroup.reveal',
-  'sgroup.relink',
-  'sgroup.createMarker',
-  'sgroup.createSubgroup',
-  'sgroup.unnestMarker',
-  'sgroup.editMarker',
-  'sgroup.deleteMarker',
-  'sgroup.changeColor',
-  'sgroup.changeIcon',
-  'sgroup.moveMarkerUp',
-  'sgroup.moveMarkerDown',
-  'sgroup.openConfig',
-  'sgroup.openSettings',
-  'sgroup.refresh',
-  'sgroup.historyBack',
-  'sgroup.historyForward',
-  'sgroup.openMap',
-  'sgroup.map.toggleLayout',
-  'sgroup.map.move',
-  'sgroup.map.toggleColumn',
-  'sgroup.map.toggleRight',
-  'sgroup.map.openBottom',
-  'sgroup.map.groups.flow',
-  'sgroup.map.groups.1',
-  'sgroup.map.groups.2',
-  'sgroup.map.groups.3',
-  'sgroup.map.collapseGroups',
-  'sgroup.map.expandGroups',
-  'sgroup.setColumns.flow',
-  'sgroup.setColumns.1',
-  'sgroup.setColumns.2',
-  'sgroup.setColumns.3',
-  'sgroup.markClass',
-  'sgroup.markClassManual',
-  'sgroup.setAlias',
-  'sgroup.clearAlias',
-  'sgroup.openClass',
-  'sgroup.openItem',
-  'sgroup.openFull',
-  'sgroup.vsix',
+  'syn3.assign',
+  'syn3.unassign',
+  'syn3.unassignFromExplorer',
+  'syn3.rename',
+  'syn3.reveal',
+  'syn3.relink',
+  'syn3.createMarker',
+  'syn3.createSubgroup',
+  'syn3.unnestMarker',
+  'syn3.editMarker',
+  'syn3.deleteMarker',
+  'syn3.changeColor',
+  'syn3.changeIcon',
+  'syn3.moveMarkerUp',
+  'syn3.moveMarkerDown',
+  'syn3.openConfig',
+  'syn3.openSettings',
+  'syn3.refresh',
+  'syn3.historyBack',
+  'syn3.historyForward',
+  'syn3.openMap',
+  'syn3.map.toggleLayout',
+  'syn3.map.move',
+  'syn3.map.toggleColumn',
+  'syn3.map.toggleRight',
+  'syn3.map.openBottom',
+  'syn3.map.groups.flow',
+  'syn3.map.groups.1',
+  'syn3.map.groups.2',
+  'syn3.map.groups.3',
+  'syn3.map.collapseGroups',
+  'syn3.map.expandGroups',
+  'syn3.setColumns.flow',
+  'syn3.setColumns.1',
+  'syn3.setColumns.2',
+  'syn3.setColumns.3',
+  'syn3.markClass',
+  'syn3.markClassManual',
+  'syn3.setAlias',
+  'syn3.clearAlias',
+  'syn3.openClass',
+  'syn3.openItem',
+  'syn3.openFull',
+  'syn3.vsix',
 ];
 
 const VSIX_RELOAD_MARKER = 'version/.reload-window';
@@ -81,9 +81,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     decorations,
     map,
     settings,
-    vscode.commands.registerCommand('sgroup.openSettings', () => settings.open()),
-    vscode.commands.registerCommand('sgroup.historyBack', () => store.undo()),
-    vscode.commands.registerCommand('sgroup.historyForward', () => store.redo()),
+    vscode.commands.registerCommand('syn3.openSettings', () => settings.open()),
+    vscode.commands.registerCommand('syn3.historyBack', () => store.undo()),
+    vscode.commands.registerCommand('syn3.historyForward', () => store.redo()),
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.viewId, map, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -91,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.bottomViewId, map, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand('sgroup.map.openBottom', async () => {
+    vscode.commands.registerCommand('syn3.map.openBottom', async () => {
       if (await map.toggleBottom()) {
         return;
       }
@@ -105,10 +105,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.window.registerWebviewPanelSerializer(MarkersMapProvider.panelType, map),
-    vscode.commands.registerCommand('sgroup.map.toggleColumn', () => map.toggleColumn()),
-    vscode.commands.registerCommand('sgroup.map.toggleRight', () => map.toggleRight()),
+    vscode.commands.registerCommand('syn3.map.toggleColumn', () => map.toggleColumn()),
+    vscode.commands.registerCommand('syn3.map.toggleRight', () => map.toggleRight()),
     ...registerCommands(store, tree),
-    vscode.commands.registerCommand('sgroup.openMap', async () => {
+    vscode.commands.registerCommand('syn3.openMap', async () => {
       await vscode.commands.executeCommand('workbench.view.explorer');
       try {
         await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
@@ -119,13 +119,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
       }
     }),
-    vscode.commands.registerCommand('sgroup.map.toggleLayout', () => map.toggleLayout()),
+    vscode.commands.registerCommand('syn3.map.toggleLayout', () => map.toggleLayout()),
     ...['flow', '1', '2', '3'].map((state) => {
-      return vscode.commands.registerCommand(`sgroup.map.groups.${state}`, () => map.cycleGroupsLayout());
+      return vscode.commands.registerCommand(`syn3.map.groups.${state}`, () => map.cycleGroupsLayout());
     }),
-    vscode.commands.registerCommand('sgroup.map.collapseGroups', () => map.setTopGroups(true)),
-    vscode.commands.registerCommand('sgroup.map.expandGroups', () => map.setTopGroups(false)),
-    vscode.commands.registerCommand('sgroup.map.move', async () => {
+    vscode.commands.registerCommand('syn3.map.collapseGroups', () => map.setTopGroups(true)),
+    vscode.commands.registerCommand('syn3.map.expandGroups', () => map.setTopGroups(false)),
+    vscode.commands.registerCommand('syn3.map.move', async () => {
       await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       await vscode.commands.executeCommand('workbench.action.moveFocusedView');
     }),
@@ -147,7 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       map.refresh();
     }),
     watchVsixReloadMarker(folder.uri),
-    vscode.commands.registerCommand('sgroup.vsix', () => {
+    vscode.commands.registerCommand('syn3.vsix', () => {
       const term = vscode.window.createTerminal({ name: '📦 Vsix', cwd: folder.uri.fsPath });
       term.show();
       term.sendText('sh ./sh_vsix.sh');

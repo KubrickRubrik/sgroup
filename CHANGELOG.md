@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.0.0
+
+- Команды `syn3.*`, настройки `syn3.*`, панели `syn3Map`, `syn3MapBottom`, `syn3Panel`. Маркеры лежат в `.syn3/syn3.json`.
+- При первом запуске `.sgroup/sgroup.json` переносится в `.syn3/syn3.json`. Цвета `sgroup.*` и `vgroup.*` становятся `syn3.*`.
+
 ## 2.0.6
 
 - Проект переименован в **SynGroup**. Лейбл в интерфейсе — **SGroup**. Маркеры лежат в `.sgroup/sgroup.json`.
