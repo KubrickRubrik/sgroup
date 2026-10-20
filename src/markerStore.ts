@@ -59,7 +59,7 @@ export function normalizeGroupsLayout(value: unknown): GroupsLayout {
   return value === '1' || value === '2' || value === '3' ? value : 'flow';
 }
 
-/** Map font scales and Explorer label saturation, stored in the markers file. */
+/** Map font scales, card paint, and Explorer label saturation, stored in the markers file. */
 export interface Appearance {
   /** Top-level group title scale vs editor font size. */
   fontGroup: number;
@@ -73,6 +73,27 @@ export interface Appearance {
   fontScale: number;
   /** Group-card gradient turn: 0 = default 135°, 100 = +360° (same look). */
   gradientDirection: number;
+  /** Parent-card fill and border gradient. Off removes both paints; sliders stay stored. */
+  cardGradient: boolean;
+  /** Brightest stop of the parent-card fill gradient, 0–100. Other stops scale with it. */
+  cardFill: number;
+  /** Brightest stop of the parent-card border gradient, 0–100. */
+  cardBorder: number;
+  /** Folder chip/row fill, percent of the group color. */
+  bgFolder: number;
+  /** File chip/row fill, percent of the group color. */
+  bgFile: number;
+  /** Subgroup header fill, percent of the group color. */
+  bgSubgroup: number;
+  /** Class chip/row fill, percent of the group color. */
+  bgClass: number;
+  /** Note body fill, percent of the group color. */
+  bgNote: number;
+  /**
+   * Shared hover wash of white over the resting fill.
+   * 0 keeps the resting fill, 100 covers it with solid white.
+   */
+  bgHover: number;
   /** Explorer file-name tint: 0 = theme foreground, 100 = group stripe color. */
   labelSaturation: number;
 }
@@ -84,6 +105,15 @@ export const DEFAULT_APPEARANCE: Appearance = {
   fontFile: 0.9,
   fontScale: 1,
   gradientDirection: 0,
+  cardGradient: true,
+  cardFill: 9,
+  cardBorder: 55,
+  bgFolder: 4,
+  bgFile: 5,
+  bgSubgroup: 0,
+  bgClass: 8,
+  bgNote: 0,
+  bgHover: 10,
   labelSaturation: 20,
 };
 
@@ -109,6 +139,11 @@ export function snapSaturation(value: number): number {
 }
 
 export function snapGradientDirection(value: number): number {
+  return snapPercent(value);
+}
+
+/** 0–100 color amount, step 1. 0 is fully transparent, 100 is solid group color. */
+export function snapPercent(value: number): number {
   return snap(value, 0, 100, GRADIENT_STEP);
 }
 
@@ -129,12 +164,25 @@ export function normalizeAppearance(raw: unknown): Appearance {
     gradientDirection: snapGradientDirection(
       numOr(source.gradientDirection, DEFAULT_APPEARANCE.gradientDirection),
     ),
+    cardGradient: boolOr(source.cardGradient, DEFAULT_APPEARANCE.cardGradient),
+    cardFill: snapPercent(numOr(source.cardFill, DEFAULT_APPEARANCE.cardFill)),
+    cardBorder: snapPercent(numOr(source.cardBorder, DEFAULT_APPEARANCE.cardBorder)),
+    bgFolder: snapPercent(numOr(source.bgFolder, DEFAULT_APPEARANCE.bgFolder)),
+    bgFile: snapPercent(numOr(source.bgFile, DEFAULT_APPEARANCE.bgFile)),
+    bgSubgroup: snapPercent(numOr(source.bgSubgroup, DEFAULT_APPEARANCE.bgSubgroup)),
+    bgClass: snapPercent(numOr(source.bgClass, DEFAULT_APPEARANCE.bgClass)),
+    bgNote: snapPercent(numOr(source.bgNote, DEFAULT_APPEARANCE.bgNote)),
+    bgHover: snapPercent(numOr(source.bgHover, DEFAULT_APPEARANCE.bgHover)),
     labelSaturation: snapSaturation(numOr(source.labelSaturation, DEFAULT_APPEARANCE.labelSaturation)),
   };
 }
 
 function numOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function boolOr(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 export interface MarkerDef {

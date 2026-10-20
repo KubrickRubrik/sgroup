@@ -135,6 +135,12 @@ export class SettingsPanel implements vscode.Disposable {
       width: 100%;
       accent-color: var(--vscode-focusBorder, #4daafc);
     }
+    input[type="checkbox"] {
+      accent-color: var(--vscode-focusBorder, #4daafc);
+      height: 16px;
+      justify-self: start;
+      width: 16px;
+    }
     .value {
       color: var(--vscode-descriptionForeground);
       font-variant-numeric: tabular-nums;
@@ -185,11 +191,61 @@ export class SettingsPanel implements vscode.Disposable {
     <section>
       <h2>Группа</h2>
       <div class="row">
+        <label for="cardGradient">Градиент</label>
+        <input id="cardGradient" type="checkbox">
+        <span class="value" data-for="cardGradient"></span>
+      </div>
+      <div class="row">
+        <label for="cardFill">Фон карточки</label>
+        <input id="cardFill" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="cardFill"></span>
+      </div>
+      <div class="row">
+        <label for="cardBorder">Бордер карточки</label>
+        <input id="cardBorder" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="cardBorder"></span>
+      </div>
+      <div class="row">
         <label for="gradientDirection">Направление градиента</label>
         <input id="gradientDirection" type="range" min="0" max="100" step="1">
         <span class="value" data-for="gradientDirection"></span>
       </div>
-      <p class="note">0 — направление по умолчанию, 100% — полный оборот и снова то же направление.</p>
+      <p class="note">Градиент красит фон и бордер вместе. Выключенный убирает оба цвета, ползунки при этом сохраняются. 0 у силы — прозрачно, 100 — сплошной яркий край. Направление: 0 — угол по умолчанию, 100% — полный оборот.</p>
+    </section>
+
+    <section>
+      <h2>Фон содержимого</h2>
+      <div class="row">
+        <label for="bgFolder">Папка</label>
+        <input id="bgFolder" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="bgFolder"></span>
+      </div>
+      <div class="row">
+        <label for="bgFile">Файл</label>
+        <input id="bgFile" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="bgFile"></span>
+      </div>
+      <div class="row">
+        <label for="bgSubgroup">Подгруппа</label>
+        <input id="bgSubgroup" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="bgSubgroup"></span>
+      </div>
+      <div class="row">
+        <label for="bgClass">Класс</label>
+        <input id="bgClass" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="bgClass"></span>
+      </div>
+      <div class="row">
+        <label for="bgNote">Заметка</label>
+        <input id="bgNote" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="bgNote"></span>
+      </div>
+      <div class="row">
+        <label for="bgHover">Наведение</label>
+        <input id="bgHover" type="range" min="0" max="100" step="1">
+        <span class="value" data-for="bgHover"></span>
+      </div>
+      <p class="note">Одна доля и у чипа, и у полосы списка. 0 — прозрачно, 100 — сплошной цвет группы. Наведение кладёт белый поверх фона: 0 ничего не добавляет, 100 — сплошной белый. Заголовок родителя в покое прозрачный и берёт то же наведение.</p>
     </section>
 
     <section>
@@ -204,11 +260,28 @@ export class SettingsPanel implements vscode.Disposable {
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const keys = ['fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale', 'gradientDirection', 'labelSaturation'];
+    const keys = [
+      'fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale',
+      'gradientDirection', 'cardFill', 'cardBorder',
+      'bgFolder', 'bgFile', 'bgSubgroup', 'bgClass', 'bgNote', 'bgHover',
+      'labelSaturation',
+    ];
+    const percentKeys = {
+      labelSaturation: true,
+      gradientDirection: true,
+      cardFill: true,
+      cardBorder: true,
+      bgFolder: true,
+      bgFile: true,
+      bgSubgroup: true,
+      bgClass: true,
+      bgNote: true,
+      bgHover: true,
+    };
     let suppress = false;
 
     function format(key, value) {
-      if (key === 'labelSaturation' || key === 'gradientDirection') return Math.round(value) + '%';
+      if (percentKeys[key]) return Math.round(value) + '%';
       if (key === 'fontScale') return Number(value).toFixed(1) + '×';
       return Number(value).toFixed(2);
     }
@@ -222,15 +295,17 @@ export class SettingsPanel implements vscode.Disposable {
         input.value = String(appearance[key]);
         label.textContent = format(key, appearance[key]);
       }
+      const toggle = document.getElementById('cardGradient');
+      const toggleLabel = document.querySelector('[data-for="cardGradient"]');
+      if (toggle && toggleLabel) {
+        toggle.checked = !!appearance.cardGradient;
+        toggleLabel.textContent = appearance.cardGradient ? 'вкл' : 'выкл';
+      }
       suppress = false;
     }
 
     function emit(key, raw) {
-      const value =
-        key === 'labelSaturation' || key === 'gradientDirection' ? Number(raw) :
-        key === 'fontScale' ? Number(raw) :
-        Number(raw);
-      vscode.postMessage({ type: 'setAppearance', appearance: { [key]: value } });
+      vscode.postMessage({ type: 'setAppearance', appearance: { [key]: Number(raw) } });
     }
 
     for (const key of keys) {
@@ -242,6 +317,14 @@ export class SettingsPanel implements vscode.Disposable {
         emit(key, input.value);
       });
     }
+
+    const gradientToggle = document.getElementById('cardGradient');
+    const gradientLabel = document.querySelector('[data-for="cardGradient"]');
+    gradientToggle.addEventListener('change', () => {
+      if (suppress) return;
+      gradientLabel.textContent = gradientToggle.checked ? 'вкл' : 'выкл';
+      vscode.postMessage({ type: 'setAppearance', appearance: { cardGradient: gradientToggle.checked } });
+    });
 
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'state') {

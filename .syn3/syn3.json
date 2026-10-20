@@ -17,12 +17,9 @@
           "ttest-6": true,
           "version": true
         },
-        "bottom": {
-          "1": true
-        },
+        "bottom": {},
         "sidebar": {
           "1": true,
-          "3": true,
           "4": true,
           "5": true,
           "test-dir": true,
@@ -32,7 +29,7 @@
       }
     },
     "page-page": {
-      "name": "Доки",
+      "name": "Заметки",
       "kind": "notes",
       "order": 2,
       "layout": "chips",
@@ -168,10 +165,19 @@
   "appearance": {
     "fontGroup": 1.1,
     "fontSubgroup": 1.1,
-    "fontFolder": 0.9,
-    "fontFile": 0.9,
+    "fontFolder": 0.95,
+    "fontFile": 0.95,
     "fontScale": 1,
     "gradientDirection": 48,
+    "cardGradient": false,
+    "cardFill": 9,
+    "cardBorder": 55,
+    "bgFolder": 4,
+    "bgFile": 5,
+    "bgSubgroup": 0,
+    "bgClass": 8,
+    "bgNote": 0,
+    "bgHover": 5,
     "labelSaturation": 70
   },
   "aliases": {

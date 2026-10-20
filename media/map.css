@@ -5,10 +5,48 @@ body {
   padding: 0;
 }
 
+html {
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+.syn3-scrollbar {
+  bottom: 0;
+  pointer-events: none;
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 4px;
+  z-index: 40;
+}
+
+.syn3-scrollbar[hidden] {
+  display: none;
+}
+
+.syn3-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.55));
+  border-radius: 2px;
+  position: absolute;
+  right: 0;
+  width: 4px;
+}
+
 *,
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+@property --hover-wash {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
 }
 
 .history-bar {
@@ -156,15 +194,20 @@ body {
 }
 
 .note-body {
+  --hover-wash: 0%;
+  background:
+    linear-gradient(color-mix(in srgb, white var(--hover-wash), transparent), color-mix(in srgb, white var(--hover-wash), transparent)),
+    color-mix(in srgb, var(--group-color) var(--bg-note), transparent);
   border-radius: 4px;
   cursor: text;
   padding: 4px 6px;
+  transition: --hover-wash 120ms ease;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .note-body:hover {
-  background: var(--vscode-list-hoverBackground);
+  --hover-wash: var(--bg-hover);
 }
 
 .note-link {
@@ -271,6 +314,20 @@ body {
   --drop-color: var(--vscode-list-focusOutline, var(--vscode-focusBorder, #4daafc));
   /* 0 = default 135°, 100 = +360° (same direction). Set from appearance via map.js. */
   --gradient-turn: 0;
+  /* Parent card gradient stops. Overridden from appearance; 0% when the gradient is off. */
+  --card-fill-0: 9%;
+  --card-fill-1: 2%;
+  --card-fill-2: 0%;
+  --card-border-0: 55%;
+  --card-border-1: 18%;
+  --card-border-2: 6%;
+  /* Content fills. Hover lays white over the resting fill. */
+  --bg-folder: 4%;
+  --bg-file: 5%;
+  --bg-subgroup: 0%;
+  --bg-class: 8%;
+  --bg-note: 0%;
+  --bg-hover: 10%;
 
   color: var(--vscode-foreground);
   font-family: var(--vscode-font-family);
@@ -290,9 +347,9 @@ body {
 .group:not(.nested) {
   background: linear-gradient(
     calc(135deg + var(--gradient-turn) * 3.6deg),
-    color-mix(in srgb, var(--group-color) 9%, transparent) 0%,
-    color-mix(in srgb, var(--group-color) 2%, transparent) 55%,
-    transparent 100%
+    color-mix(in srgb, var(--group-color) var(--card-fill-0), transparent) 0%,
+    color-mix(in srgb, var(--group-color) var(--card-fill-1), transparent) 55%,
+    color-mix(in srgb, var(--group-color) var(--card-fill-2), transparent) 100%
   );
   border: 1px solid transparent;
   border-radius: 8px;
@@ -302,9 +359,9 @@ body {
 .group:not(.nested)::before {
   background: linear-gradient(
     calc(135deg + var(--gradient-turn) * 3.6deg),
-    color-mix(in srgb, var(--group-color) 55%, transparent) 0%,
-    color-mix(in srgb, var(--group-color) 18%, transparent) 50%,
-    color-mix(in srgb, var(--group-color) 6%, transparent) 100%
+    color-mix(in srgb, var(--group-color) var(--card-border-0), transparent) 0%,
+    color-mix(in srgb, var(--group-color) var(--card-border-1), transparent) 50%,
+    color-mix(in srgb, var(--group-color) var(--card-border-2), transparent) 100%
   );
   border-radius: inherit;
   content: '';
@@ -444,6 +501,7 @@ body {
 }
 
 .group-header {
+  --hover-wash: 0%;
   align-items: center;
   border-radius: 4px;
   cursor: default;
@@ -451,11 +509,23 @@ body {
   gap: 6px;
   padding: 2px 3px;
   position: relative;
+  transition: --hover-wash 120ms ease;
   user-select: none;
 }
 
-.group-header:hover {
-  background: var(--vscode-list-hoverBackground);
+.group:not(.nested) > .group-header:not(.drop-into) {
+  background: color-mix(in srgb, white var(--hover-wash), transparent);
+}
+
+.group.nested > .group-header:not(.drop-into) {
+  background:
+    linear-gradient(color-mix(in srgb, white var(--hover-wash), transparent), color-mix(in srgb, white var(--hover-wash), transparent)),
+    color-mix(in srgb, var(--group-color) var(--bg-subgroup), transparent);
+}
+
+.group:not(.nested) > .group-header:hover:not(.drop-into),
+.group.nested > .group-header:hover:not(.drop-into) {
+  --hover-wash: var(--bg-hover);
 }
 
 .group.dragging,
@@ -693,8 +763,11 @@ body.is-dragging * {
   font-weight: 500;
 }
 
-.layout-chips .item.class-item {
-  background: color-mix(in srgb, var(--group-color) 8%, transparent);
+.layout-chips .item.class-item,
+.layout-list .item.class-item {
+  background:
+    linear-gradient(color-mix(in srgb, white var(--hover-wash), transparent), color-mix(in srgb, white var(--hover-wash), transparent)),
+    color-mix(in srgb, var(--group-color) var(--bg-class), transparent);
 }
 
 .icon {
@@ -815,19 +888,31 @@ body.is-dragging * {
 
 /* chips */
 
+.layout-chips .item,
+.layout-list .item {
+  --hover-wash: 0%;
+  background:
+    linear-gradient(color-mix(in srgb, white var(--hover-wash), transparent), color-mix(in srgb, white var(--hover-wash), transparent)),
+    color-mix(in srgb, var(--group-color) var(--bg-file), transparent);
+  transition: --hover-wash 120ms ease;
+}
+
 .layout-chips .item {
-  background: color-mix(in srgb, var(--group-color) 5%, transparent);
   border-radius: 10px;
   max-width: 100%;
   padding: 1px 8px;
 }
 
-.layout-chips .item.dir {
-  background: color-mix(in srgb, var(--group-color) 4%, transparent);
+.layout-chips .item.dir,
+.layout-list .item.dir {
+  background:
+    linear-gradient(color-mix(in srgb, white var(--hover-wash), transparent), color-mix(in srgb, white var(--hover-wash), transparent)),
+    color-mix(in srgb, var(--group-color) var(--bg-folder), transparent);
 }
 
-.layout-chips .item:hover {
-  background: color-mix(in srgb, var(--group-color) 14%, transparent);
+.layout-chips .item:hover,
+.layout-list .item:hover {
+  --hover-wash: var(--bg-hover);
 }
 
 /* list */
@@ -944,4 +1029,13 @@ body.is-dragging * {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-body,
+  .group-header,
+  .layout-chips .item,
+  .layout-list .item {
+    transition: none;
+  }
 }

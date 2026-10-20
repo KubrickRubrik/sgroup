@@ -380,21 +380,67 @@
     renderFromToggle = false;
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number } | undefined} appearance */
+  /**
+   * Parent-card gradient shapes. The slider sets the brightest stop; the rest keep this ratio.
+   * Fill peak 9 → 9 / 2 / 0. Border peak 55 → 55 / 18 / 6.
+   */
+  const CARD_FILL_SHAPE = [9, 2, 0];
+  const CARD_BORDER_SHAPE = [55, 18, 6];
+
+  /**
+   * @param {number[]} shape
+   * @param {number} slider
+   * @param {boolean} enabled
+   */
+  function scaleStops(shape, slider, enabled) {
+    const peak = shape[0] || 1;
+    const factor = enabled ? slider / peak : 0;
+    return shape.map((stop) => Math.round(stop * factor * 10) / 10);
+  }
+
+  /** @param {number} value */
+  function pct(value) {
+    return String(Math.round(value * 10) / 10) + '%';
+  }
+
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
     const base = 'var(--vscode-font-size, 13px)';
-    const set = (name, factor, fallback) => {
+    const setSize = (name, factor, fallback) => {
       const value = typeof factor === 'number' ? factor : fallback;
       document.body.style.setProperty(name, 'calc(' + base + ' * ' + value * scale + ')');
     };
-    set('--size-group', a.fontGroup, 1.15);
-    set('--size-subgroup', a.fontSubgroup, 1.05);
-    set('--size-folder', a.fontFolder, 0.95);
-    set('--size-file', a.fontFile, 0.9);
+    setSize('--size-group', a.fontGroup, 1.15);
+    setSize('--size-subgroup', a.fontSubgroup, 1.05);
+    setSize('--size-folder', a.fontFolder, 0.95);
+    setSize('--size-file', a.fontFile, 0.9);
     const turn = typeof a.gradientDirection === 'number' ? a.gradientDirection : 0;
     document.body.style.setProperty('--gradient-turn', String(turn));
+
+    const num = (value, fallback) => (typeof value === 'number' ? value : fallback);
+    const gradientOn = a.cardGradient !== false;
+    const fill = scaleStops(CARD_FILL_SHAPE, num(a.cardFill, 9), gradientOn);
+    const border = scaleStops(CARD_BORDER_SHAPE, num(a.cardBorder, 55), gradientOn);
+    document.body.style.setProperty('--card-fill-0', pct(fill[0]));
+    document.body.style.setProperty('--card-fill-1', pct(fill[1]));
+    document.body.style.setProperty('--card-fill-2', pct(fill[2]));
+    document.body.style.setProperty('--card-border-0', pct(border[0]));
+    document.body.style.setProperty('--card-border-1', pct(border[1]));
+    document.body.style.setProperty('--card-border-2', pct(border[2]));
+
+    const paints = [
+      ['folder', num(a.bgFolder, 4)],
+      ['file', num(a.bgFile, 5)],
+      ['subgroup', num(a.bgSubgroup, 0)],
+      ['class', num(a.bgClass, 8)],
+      ['note', num(a.bgNote, 0)],
+    ];
+    for (const [name, amount] of paints) {
+      document.body.style.setProperty('--bg-' + name, pct(amount));
+    }
+    document.body.style.setProperty('--bg-hover', pct(num(a.bgHover, 10)));
   }
 
   document.addEventListener('pointerdown', (event) => {
@@ -1949,6 +1995,33 @@
     }
     return node;
   }
+
+  const scrollbar = el('div', 'syn3-scrollbar');
+  const scrollbarThumb = el('div', 'syn3-scrollbar-thumb');
+  scrollbar.hidden = true;
+  scrollbar.append(scrollbarThumb);
+  document.body.append(scrollbar);
+
+  function updateScrollbar() {
+    const doc = document.documentElement;
+    const scrollHeight = doc.scrollHeight;
+    const clientHeight = doc.clientHeight;
+    const max = scrollHeight - clientHeight;
+    if (max <= 1) {
+      scrollbar.hidden = true;
+      return;
+    }
+    scrollbar.hidden = false;
+    const thumbHeight = Math.max(24, (clientHeight / scrollHeight) * clientHeight);
+    const top = (doc.scrollTop / max) * (clientHeight - thumbHeight);
+    scrollbarThumb.style.height = thumbHeight + 'px';
+    scrollbarThumb.style.transform = 'translateY(' + top + 'px)';
+  }
+
+  window.addEventListener('scroll', updateScrollbar, { passive: true });
+  window.addEventListener('resize', updateScrollbar);
+  new ResizeObserver(updateScrollbar).observe(document.body);
+  updateScrollbar();
 
   document.addEventListener(
     'wheel',
