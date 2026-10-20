@@ -2,14 +2,17 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   decodeHistory,
+  dropPageHistory,
   emptyHistory,
+  emptyStacks,
   encodeHistory,
   fingerprint,
   HISTORY_PATH,
+  pageStacks,
   peek,
   remember,
   take,
-  type HistoryStacks,
+  type PageHistoryBook,
 } from './history';
 import { normalizeHex } from './palette';
 
@@ -148,6 +151,8 @@ export interface MarkerDef {
   page?: string;
   /** Item columns inside this group. Absent means flow. */
   columns?: ColumnsMode;
+  /** When true, map edits to this group are blocked. Absent means open. */
+  locked?: true;
   /** Order among siblings that share the same parent. */
   order: number;
 }
@@ -210,6 +215,26 @@ interface MarkersFile {
   appearance: Appearance;
 }
 
+/** Page-local undo snapshot: groups, items, notes and view — not page order or appearance. */
+interface PageSnapshot {
+  version: 1;
+  page: {
+    name: string;
+    kind: PageKind;
+    layout: MapLayout;
+    groupsLayout: GroupsLayout;
+    collapsed: Record<string, boolean>;
+  };
+  markers: Record<string, MarkerDef>;
+  items: Record<string, string[]>;
+  added: Record<string, Record<string, number>>;
+  aliases: Record<string, string>;
+  classes: Record<string, ClassDef>;
+  classItems: Record<string, string[]>;
+  classAdded: Record<string, Record<string, number>>;
+  notes: Record<string, NoteDef>;
+}
+
 function emptyData(): MarkersFile {
   return {
     version: 1,
@@ -246,10 +271,12 @@ export class MarkerStore implements vscode.Disposable {
   private present = '';
   /**
    * On-disk text when it differs from `present` but describes the same map
-   * (older key order). The first undo restores these exact bytes.
+   * (older key order). Cleared on the next write.
    */
   private baseline?: string;
-  private history: HistoryStacks = emptyHistory();
+  /** Canonical page snapshots at the history cursor. */
+  private pagePresent: Record<string, string> = {};
+  private history: PageHistoryBook = emptyHistory();
   /** False until the history file has been read, so startup cannot record a step. */
   private historyReady = false;
   private queue: Promise<void> = Promise.resolve();
@@ -271,16 +298,27 @@ export class MarkerStore implements vscode.Disposable {
     return this.data.appearance;
   }
 
-  get canUndo(): boolean {
-    return this.history.past.length > 0;
+  canUndo(pageId: string): boolean {
+    return (this.history.pages[pageId]?.past.length ?? 0) > 0;
   }
 
-  get canRedo(): boolean {
-    return this.history.future.length > 0;
+  canRedo(pageId: string): boolean {
+    return (this.history.pages[pageId]?.future.length ?? 0) > 0;
   }
 
-  historySteps(): { back: number; forward: number } {
-    return { back: this.history.past.length, forward: this.history.future.length };
+  canAccept(pageId: string): boolean {
+    const stacks = this.history.pages[pageId];
+    return !!stacks && stacks.past.length + stacks.future.length > 0;
+  }
+
+  /** Undo/redo counts keyed by page id. */
+  historySteps(): Record<string, { back: number; forward: number }> {
+    const result: Record<string, { back: number; forward: number }> = {};
+    for (const [pageId] of this.pages()) {
+      const stacks = this.history.pages[pageId] ?? emptyStacks();
+      result[pageId] = { back: stacks.past.length, forward: stacks.future.length };
+    }
+    return result;
   }
 
   async init(): Promise<void> {
@@ -289,7 +327,6 @@ export class MarkerStore implements vscode.Disposable {
     await this.load();
     await this.loadHistory();
     this.historyReady = true;
-    await this.publishHistoryContext();
     this.watch();
     this.changeEmitter.fire();
   }
@@ -303,14 +340,26 @@ export class MarkerStore implements vscode.Disposable {
     await this.enqueue(() => this.reloadFromDisk(true));
   }
 
-  /** Restore the markers file to the previous step. */
-  async undo(): Promise<void> {
-    await this.travel(-1);
+  /** Restore one page to its previous step. */
+  async undo(pageId: string): Promise<void> {
+    await this.travel(pageId, -1);
   }
 
-  /** Reapply a step that was undone. */
-  async redo(): Promise<void> {
-    await this.travel(1);
+  /** Reapply one page step that was undone. */
+  async redo(pageId: string): Promise<void> {
+    await this.travel(pageId, 1);
+  }
+
+  /** Clear undo/redo for one page; markers stay as they are. */
+  async accept(pageId: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.data.pages[pageId]) {
+        return;
+      }
+      dropPageHistory(this.history, pageId);
+      await this.persistHistory();
+      this.changeEmitter.fire();
+    });
   }
 
   async setAppearance(partial: Partial<Appearance>): Promise<void> {
@@ -535,6 +584,11 @@ export class MarkerStore implements vscode.Disposable {
     return alias || undefined;
   }
 
+  /** True when the group itself is locked on the map. */
+  isLocked(markerId: string): boolean {
+    return this.data.markers[markerId]?.locked === true;
+  }
+
   classDef(id: string): ClassDef | undefined {
     return this.data.classes[id];
   }
@@ -621,6 +675,35 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     await this.updateMarker(id, { columns });
+  }
+
+  /**
+   * Toggle lock on `id` and cascade to children whose lock matched the parent
+   * before this click. Mismatched children (and their subtrees) stay as-is.
+   */
+  async toggleLock(id: string): Promise<void> {
+    if (!this.data.markers[id]) {
+      return;
+    }
+    const apply = (markerId: string) => {
+      const def = this.data.markers[markerId];
+      if (!def) {
+        return;
+      }
+      const wasLocked = def.locked === true;
+      if (wasLocked) {
+        delete def.locked;
+      } else {
+        def.locked = true;
+      }
+      for (const [childId, child] of this.children(markerId)) {
+        if ((child.locked === true) === wasLocked) {
+          apply(childId);
+        }
+      }
+    };
+    apply(id);
+    await this.commit();
   }
 
   async deleteMarker(id: string): Promise<void> {
@@ -808,21 +891,29 @@ export class MarkerStore implements vscode.Disposable {
    * Returns the neighbor page id to open next, or undefined if nothing was deleted.
    */
   async deletePage(id: string): Promise<string | undefined> {
-    const ordered = this.pages();
-    if (ordered.length <= 1 || !this.data.pages[id]) {
-      return undefined;
-    }
-    const index = ordered.findIndex(([pageId]) => pageId === id);
-    const neighbor = ordered[index + 1]?.[0] ?? ordered[index - 1]?.[0];
-    const toRemove = this.children(undefined, id).flatMap(([rootId]) =>
-      this.descendantMarkers(rootId, true),
-    );
-    for (const markerId of toRemove) {
-      this.purgeMarker(markerId);
-    }
-    delete this.data.pages[id];
-    this.applyPageOrder(this.pages().map(([pageId]) => pageId));
-    await this.commit();
+    let neighbor: string | undefined;
+    await this.enqueue(async () => {
+      const ordered = this.pages();
+      if (ordered.length <= 1 || !this.data.pages[id]) {
+        return;
+      }
+      const index = ordered.findIndex(([pageId]) => pageId === id);
+      neighbor = ordered[index + 1]?.[0] ?? ordered[index - 1]?.[0];
+      const toRemove = this.children(undefined, id).flatMap(([rootId]) =>
+        this.descendantMarkers(rootId, true),
+      );
+      for (const markerId of toRemove) {
+        this.purgeMarker(markerId);
+      }
+      delete this.data.pages[id];
+      this.applyPageOrder(this.pages().map(([pageId]) => pageId));
+      await this.commitNow();
+      dropPageHistory(this.history, id);
+      delete this.pagePresent[id];
+      if (this.historyReady) {
+        await this.persistHistory();
+      }
+    });
     return neighbor;
   }
 
@@ -1237,6 +1328,7 @@ export class MarkerStore implements vscode.Disposable {
       this.data = next;
       this.present = canonical;
       this.baseline = baseline;
+      this.pagePresent = this.captureAllPageSnapshots();
       this.changeEmitter.fire();
       return;
     }
@@ -1249,16 +1341,18 @@ export class MarkerStore implements vscode.Disposable {
     this.data = next;
     this.present = canonical;
     this.baseline = baseline;
+    this.pagePresent = this.captureAllPageSnapshots();
     this.history = emptyHistory();
     await this.persistHistory();
     this.changeEmitter.fire();
-    await this.publishHistoryContext();
   }
 
   private async loadHistory(): Promise<void> {
+    this.pagePresent = this.captureAllPageSnapshots();
+    const cursors = this.pageCursors();
     try {
       const raw = await vscode.workspace.fs.readFile(this.historyUri);
-      this.history = decodeHistory(Buffer.from(raw).toString('utf8'), fingerprint(this.present));
+      this.history = decodeHistory(Buffer.from(raw).toString('utf8'), cursors);
     } catch (error) {
       if (!isFileNotFound(error)) {
         console.error('Syn3 history:', error);
@@ -1273,49 +1367,57 @@ export class MarkerStore implements vscode.Disposable {
       this.changeEmitter.fire();
       return;
     }
-    const previous = this.baseline ?? this.present;
+    const previousPages = { ...this.pagePresent };
     await this.writeConfig(next);
     this.baseline = undefined;
-    if (this.historyReady) {
-      remember(this.history, previous);
-    }
     this.present = next;
+    const nextPages = this.captureAllPageSnapshots();
     if (this.historyReady) {
+      for (const [pageId, curr] of Object.entries(nextPages)) {
+        const prev = previousPages[pageId];
+        if (prev !== undefined && prev !== curr) {
+          remember(pageStacks(this.history, pageId), prev);
+        }
+      }
+      this.pagePresent = nextPages;
       await this.persistHistory();
-      await this.publishHistoryContext();
+    } else {
+      this.pagePresent = nextPages;
     }
     this.changeEmitter.fire();
   }
 
-  private async travel(direction: -1 | 1): Promise<void> {
+  private async travel(pageId: string, direction: -1 | 1): Promise<void> {
     await this.enqueue(async () => {
-      const snapshot = peek(this.history, direction);
+      if (!this.data.pages[pageId]) {
+        return;
+      }
+      const stacks = this.history.pages[pageId];
+      if (!stacks) {
+        return;
+      }
+      const snapshot = peek(stacks, direction);
       if (snapshot === undefined) {
         return;
       }
-      let parsed: MarkersFile;
+      const backup = JSON.parse(JSON.stringify(this.data)) as MarkersFile;
+      const backupPresent = this.present;
+      const backupPages = { ...this.pagePresent };
+      const leaving = this.pagePresent[pageId] ?? this.capturePageSnapshot(pageId);
       try {
-        parsed = normalize(JSON.parse(snapshot));
-      } catch (error) {
-        console.error('Syn3 history:', error);
-        return;
-      }
-      const backup = this.data;
-      const backupBaseline = this.baseline;
-      const leaving = this.baseline ?? this.present;
-      this.data = parsed;
-      try {
-        await this.writeConfig(snapshot);
-        const restored = this.capture();
-        take(this.history, direction, leaving);
-        this.present = restored;
-        this.baseline = restored === snapshot ? undefined : snapshot;
+        this.applyPageSnapshot(pageId, snapshot);
+        const next = this.capture();
+        await this.writeConfig(next);
+        take(stacks, direction, leaving);
+        this.present = next;
+        this.baseline = undefined;
+        this.pagePresent = this.captureAllPageSnapshots();
         await this.persistHistory();
         this.changeEmitter.fire();
-        await this.publishHistoryContext();
       } catch (error) {
         this.data = backup;
-        this.baseline = backupBaseline;
+        this.present = backupPresent;
+        this.pagePresent = backupPages;
         throw error;
       }
     });
@@ -1323,7 +1425,7 @@ export class MarkerStore implements vscode.Disposable {
 
   private async persistHistory(): Promise<void> {
     try {
-      const json = encodeHistory(this.history, fingerprint(this.present));
+      const json = encodeHistory(this.history, this.pageCursors());
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.historyUri, '..'));
       await vscode.workspace.fs.writeFile(this.historyUri, Buffer.from(json, 'utf8'));
     } catch (error) {
@@ -1331,9 +1433,12 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private async publishHistoryContext(): Promise<void> {
-    await vscode.commands.executeCommand('setContext', 'syn3.canUndo', this.canUndo);
-    await vscode.commands.executeCommand('setContext', 'syn3.canRedo', this.canRedo);
+  private pageCursors(): Record<string, string> {
+    const cursors: Record<string, string> = {};
+    for (const [pageId, snapshot] of Object.entries(this.pagePresent)) {
+      cursors[pageId] = fingerprint(snapshot);
+    }
+    return cursors;
   }
 
   private captureFrom(data: MarkersFile): string {
@@ -1344,6 +1449,369 @@ export class MarkerStore implements vscode.Disposable {
     } finally {
       this.data = previous;
     }
+  }
+
+  private captureAllPageSnapshots(): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [pageId] of this.pages()) {
+      result[pageId] = this.capturePageSnapshot(pageId);
+    }
+    return result;
+  }
+
+  /** Stable JSON of one page's groups, items, notes and view. */
+  private capturePageSnapshot(pageId: string): string {
+    const def = this.data.pages[pageId];
+    if (!def) {
+      return '';
+    }
+    const markerIds = this.markerIdsOnPage(pageId);
+    const markerSet = new Set(markerIds);
+    const collapsed: Record<string, boolean> = {};
+    for (const markerId of Object.keys(def.collapsed).sort()) {
+      if (def.collapsed[markerId] && markerSet.has(markerId)) {
+        collapsed[markerId] = true;
+      }
+    }
+    const markers: Record<string, MarkerDef> = {};
+    for (const id of markerIds) {
+      const src = this.data.markers[id];
+      if (!src) {
+        continue;
+      }
+      const entry = { label: src.label } as MarkerDef;
+      if (src.color) {
+        entry.color = src.color;
+      }
+      if (src.icon) {
+        entry.icon = src.icon;
+      }
+      if (src.alias) {
+        entry.alias = src.alias;
+      }
+      if (src.columns) {
+        entry.columns = src.columns;
+      }
+      if (src.locked) {
+        entry.locked = true;
+      }
+      entry.order = src.order;
+      if (src.parent && markerSet.has(src.parent)) {
+        entry.parent = src.parent;
+      } else {
+        entry.page = pageId;
+      }
+      markers[id] = entry;
+    }
+    const items: Record<string, string[]> = {};
+    const added: Record<string, Record<string, number>> = {};
+    for (const relPath of Object.keys(this.data.items).sort()) {
+      const ids = (this.data.items[relPath] ?? []).filter((id) => markerSet.has(id));
+      if (ids.length === 0) {
+        continue;
+      }
+      items[relPath] = ids;
+      const dates: Record<string, number> = {};
+      for (const id of ids) {
+        const at = this.data.added[relPath]?.[id];
+        if (at !== undefined) {
+          dates[id] = at;
+        }
+      }
+      if (Object.keys(dates).length > 0) {
+        added[relPath] = dates;
+      }
+    }
+    const aliases: Record<string, string> = {};
+    for (const relPath of Object.keys(items)) {
+      const value = this.data.aliases[relPath]?.trim();
+      if (value) {
+        aliases[relPath] = value;
+      }
+    }
+    const classes: Record<string, ClassDef> = {};
+    const classItems: Record<string, string[]> = {};
+    const classAdded: Record<string, Record<string, number>> = {};
+    for (const classId of Object.keys(this.data.classes).sort()) {
+      const classDef = this.data.classes[classId];
+      const ids = (this.data.classItems[classId] ?? []).filter((id) => markerSet.has(id));
+      if (!classDef || ids.length === 0) {
+        continue;
+      }
+      classes[classId] = {
+        relPath: classDef.relPath,
+        name: classDef.name,
+        ...(classDef.line !== undefined ? { line: classDef.line } : {}),
+        ...(classDef.alias ? { alias: classDef.alias } : {}),
+      };
+      classItems[classId] = ids;
+      const dates: Record<string, number> = {};
+      for (const markerId of ids) {
+        const at = this.data.classAdded[classId]?.[markerId];
+        if (at !== undefined) {
+          dates[markerId] = at;
+        }
+      }
+      if (Object.keys(dates).length > 0) {
+        classAdded[classId] = dates;
+      }
+      const alias = this.data.aliases[classDef.relPath]?.trim();
+      if (alias) {
+        aliases[classDef.relPath] = alias;
+      }
+    }
+    const notes: Record<string, NoteDef> = {};
+    for (const [noteId, note] of Object.entries(this.data.notes)) {
+      if (!markerSet.has(note.markerId) || !note.text.trim()) {
+        continue;
+      }
+      notes[noteId] = { markerId: note.markerId, text: note.text, order: note.order };
+    }
+    const payload: PageSnapshot = {
+      version: 1,
+      page: {
+        name: def.name,
+        kind: def.kind,
+        layout: def.layout,
+        groupsLayout: def.groupsLayout,
+        collapsed,
+      },
+      markers,
+      items,
+      added,
+      aliases,
+      classes,
+      classItems,
+      classAdded,
+      notes,
+    };
+    return JSON.stringify(payload) + '\n';
+  }
+
+  private markerIdsOnPage(pageId: string): string[] {
+    const result: string[] = [];
+    const visit = (parentId: string | undefined) => {
+      for (const [id] of this.children(parentId, parentId === undefined ? pageId : undefined)) {
+        result.push(id);
+        visit(id);
+      }
+    };
+    visit(undefined);
+    return result;
+  }
+
+  /** Replace one page's entities from a snapshot. Copies when a marker id lives on another page. */
+  private applyPageSnapshot(pageId: string, raw: string): void {
+    let snap: PageSnapshot;
+    try {
+      snap = JSON.parse(raw) as PageSnapshot;
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+    if (snap.version !== 1 || !snap.page || !snap.markers || typeof snap.markers !== 'object') {
+      throw new Error('Invalid page history snapshot.');
+    }
+    const page = this.data.pages[pageId];
+    if (!page) {
+      throw new Error(`Page not found: ${pageId}`);
+    }
+
+    const currentIds = this.markerIdsOnPage(pageId);
+    const currentSet = new Set(currentIds);
+    const idMap = new Map<string, string>();
+    const reserved = new Set<string>();
+    for (const [snapId, def] of Object.entries(snap.markers)) {
+      const existing = this.data.markers[snapId];
+      if (!existing && !reserved.has(snapId)) {
+        idMap.set(snapId, snapId);
+        reserved.add(snapId);
+      } else if (existing && this.pageOf(snapId) === pageId) {
+        idMap.set(snapId, snapId);
+        reserved.add(snapId);
+      } else {
+        idMap.set(snapId, this.uniqueMarkerId(def.label, reserved));
+      }
+    }
+
+    const keepIds = new Set(idMap.values());
+    for (const id of currentIds) {
+      if (!keepIds.has(id)) {
+        this.purgeMarker(id);
+      } else {
+        this.removeNotesOfMarker(id);
+      }
+    }
+
+    for (const [relPath, ids] of Object.entries(this.data.items)) {
+      this.setItem(
+        relPath,
+        ids.filter((id) => !currentSet.has(id)),
+      );
+    }
+    for (const [classId, ids] of Object.entries(this.data.classItems)) {
+      this.setClassItem(
+        classId,
+        ids.filter((id) => !currentSet.has(id)),
+      );
+    }
+
+    for (const snapId of this.orderSnapshotMarkers(snap.markers)) {
+      const src = snap.markers[snapId];
+      if (!src) {
+        continue;
+      }
+      const actualId = idMap.get(snapId);
+      if (!actualId) {
+        continue;
+      }
+      const parentSnap = src.parent && snap.markers[src.parent] ? src.parent : undefined;
+      const parent = parentSnap ? idMap.get(parentSnap) : undefined;
+      const entry: MarkerDef = {
+        label: src.label,
+        order: src.order,
+      };
+      if (src.color) {
+        entry.color = src.color;
+      }
+      if (src.icon) {
+        entry.icon = src.icon;
+      }
+      if (src.alias) {
+        entry.alias = src.alias;
+      }
+      if (src.columns) {
+        entry.columns = src.columns;
+      }
+      if (src.locked) {
+        entry.locked = true;
+      }
+      if (parent) {
+        entry.parent = parent;
+      } else {
+        entry.page = pageId;
+      }
+      this.data.markers[actualId] = entry;
+    }
+
+    page.name = snap.page.name;
+    page.kind = normalizePageKind(snap.page.kind) ?? page.kind;
+    page.layout = normalizeMapLayout(snap.page.layout);
+    page.groupsLayout = normalizeGroupsLayout(snap.page.groupsLayout);
+    const collapsed: Record<string, boolean> = {};
+    for (const [snapId, value] of Object.entries(snap.page.collapsed ?? {})) {
+      if (!value) {
+        continue;
+      }
+      const actualId = idMap.get(snapId);
+      if (actualId) {
+        collapsed[actualId] = true;
+      }
+    }
+    page.collapsed = collapsed;
+
+    for (const [relPath, ids] of Object.entries(snap.items ?? {})) {
+      const mapped = ids
+        .map((id) => idMap.get(id))
+        .filter((id): id is string => !!id && !!this.data.markers[id]);
+      if (mapped.length === 0) {
+        continue;
+      }
+      const existing = this.data.items[relPath] ?? [];
+      const merged = [...existing];
+      for (const id of mapped) {
+        if (!merged.includes(id)) {
+          merged.push(id);
+        }
+      }
+      this.setItem(relPath, merged);
+      for (const snapId of ids) {
+        const actualId = idMap.get(snapId);
+        const at = snap.added?.[relPath]?.[snapId];
+        if (actualId && at !== undefined) {
+          this.setAdded(relPath, actualId, at);
+        }
+      }
+    }
+
+    for (const [classId, classDef] of Object.entries(snap.classes ?? {})) {
+      const snapIds = snap.classItems?.[classId] ?? [];
+      const mapped = snapIds
+        .map((id) => idMap.get(id))
+        .filter((id): id is string => !!id && !!this.data.markers[id]);
+      if (mapped.length === 0) {
+        continue;
+      }
+      this.data.classes[classId] = {
+        relPath: classDef.relPath,
+        name: classDef.name,
+        ...(classDef.line !== undefined ? { line: classDef.line } : {}),
+        ...(classDef.alias ? { alias: classDef.alias } : {}),
+      };
+      const existing = this.data.classItems[classId] ?? [];
+      const merged = [...existing];
+      for (const id of mapped) {
+        if (!merged.includes(id)) {
+          merged.push(id);
+        }
+      }
+      this.setClassItem(classId, merged);
+      for (const snapId of snapIds) {
+        const actualId = idMap.get(snapId);
+        const at = snap.classAdded?.[classId]?.[snapId];
+        if (actualId && at !== undefined) {
+          this.setClassAdded(classId, actualId, at);
+        }
+      }
+    }
+
+    for (const [relPath, alias] of Object.entries(snap.aliases ?? {})) {
+      const trimmed = alias.trim();
+      if (trimmed) {
+        this.data.aliases[relPath] = trimmed;
+      }
+    }
+
+    for (const [snapNoteId, note] of Object.entries(snap.notes ?? {})) {
+      const markerId = idMap.get(note.markerId);
+      if (!markerId || !this.data.markers[markerId]) {
+        continue;
+      }
+      let actualNoteId = snapNoteId;
+      const existing = this.data.notes[actualNoteId];
+      if (existing && existing.markerId !== markerId) {
+        actualNoteId = this.uniqueNoteId();
+      }
+      this.data.notes[actualNoteId] = {
+        markerId,
+        text: note.text,
+        order: note.order,
+      };
+    }
+  }
+
+  /** Parent markers before children. */
+  private orderSnapshotMarkers(markers: Record<string, MarkerDef>): string[] {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const visit = (id: string) => {
+      if (seen.has(id) || !markers[id]) {
+        return;
+      }
+      const parent = markers[id].parent;
+      if (parent && markers[parent]) {
+        visit(parent);
+      }
+      if (!seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    };
+    for (const id of Object.keys(markers).sort(
+      (a, b) => markers[a].order - markers[b].order || a.localeCompare(b),
+    )) {
+      visit(id);
+    }
+    return result;
   }
 
   /** Stable JSON of the markers file. Same text after a reload means the same map. */
@@ -1379,6 +1847,9 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (def.columns) {
         entry.columns = def.columns;
+      }
+      if (def.locked) {
+        entry.locked = true;
       }
       entry.order = def.order;
       if (def.parent) {
@@ -1575,6 +2046,10 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private uniqueId(label: string): string {
+    return this.uniqueMarkerId(label, new Set());
+  }
+
+  private uniqueMarkerId(label: string, reserved: Set<string>): string {
     const base =
       label
         .toLowerCase()
@@ -1582,9 +2057,10 @@ export class MarkerStore implements vscode.Disposable {
         .replace(/^-+|-+$/g, '') || 'marker';
     let id = base;
     let counter = 2;
-    while (this.data.markers[id]) {
+    while (this.data.markers[id] || reserved.has(id)) {
       id = `${base}-${counter++}`;
     }
+    reserved.add(id);
     return id;
   }
 
@@ -1721,6 +2197,7 @@ function normalize(raw: unknown): MarkersFile {
         parent,
         page,
         columns: normalizeColumns(def.columns),
+        locked: def.locked === true ? true : undefined,
         order: typeof def.order === 'number' ? def.order : index,
       };
     }

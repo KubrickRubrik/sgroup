@@ -4,13 +4,17 @@
   const vscode = acquireVsCodeApi();
   const root = /** @type {HTMLElement} */ (document.getElementById('root'));
   const historyBack = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-back'));
+  const historyAccept = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-accept'));
   const historyForward = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-forward'));
 
   historyBack?.addEventListener('click', () => {
-    vscode.postMessage({ type: 'history', direction: 'back' });
+    vscode.postMessage({ type: 'history', direction: 'back', pageId: uiState.activePageId });
+  });
+  historyAccept?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'history', direction: 'accept', pageId: uiState.activePageId });
   });
   historyForward?.addEventListener('click', () => {
-    vscode.postMessage({ type: 'history', direction: 'forward' });
+    vscode.postMessage({ type: 'history', direction: 'forward', pageId: uiState.activePageId });
   });
 
   const toolbarGroups = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-groups'));
@@ -99,6 +103,7 @@
         uiState.activePageId = message.pageId;
         vscode.setState(uiState);
         if (data && pages().some((page) => page.id === message.pageId)) {
+          setHistoryButtons(data.history);
           setToolbar(activePage() || data);
           updatePageMenu();
           renderPager();
@@ -144,6 +149,7 @@
     }
     uiState.activePageId = pageId;
     vscode.setState(uiState);
+    setHistoryButtons(data && data.history);
     setToolbar(activePage() || data);
     updatePageMenu();
     renderPager();
@@ -172,10 +178,12 @@
     }
   }
 
-  /** @param {{ back?: number, forward?: number } | undefined} history */
+  /** @param {Record<string, { back?: number, forward?: number }> | undefined} history */
   function setHistoryButtons(history) {
-    const back = history && history.back ? history.back : 0;
-    const forward = history && history.forward ? history.forward : 0;
+    const pageId = uiState.activePageId;
+    const pageHistory = history && pageId ? history[pageId] : undefined;
+    const back = pageHistory && pageHistory.back ? pageHistory.back : 0;
+    const forward = pageHistory && pageHistory.forward ? pageHistory.forward : 0;
     if (historyBack) {
       historyBack.disabled = back === 0;
       historyBack.title = back ? 'Назад (' + back + ')' : 'Назад';
@@ -183,6 +191,10 @@
     if (historyForward) {
       historyForward.disabled = forward === 0;
       historyForward.title = forward ? 'Вперёд (' + forward + ')' : 'Вперёд';
+    }
+    if (historyAccept) {
+      historyAccept.hidden = back + forward === 0;
+      historyAccept.title = 'Готово';
     }
   }
 
@@ -233,9 +245,19 @@
     return !!pageCollapsed()[groupId];
   }
 
+  function isLocked(groupOrId) {
+    if (typeof groupOrId === 'string') {
+      const group = data?.groups?.find((item) => item.id === groupOrId);
+      return !!group?.locked;
+    }
+    return !!groupOrId?.locked;
+  }
+
   /** Top-level groups that can actually fold on the active page. */
   function collapsibleTopGroups() {
-    return pageGroups().filter((group) => !group.parent && !isEmptyGroup(group));
+    return pageGroups().filter(
+      (group) => !group.parent && !isEmptyGroup(group) && !isLocked(group),
+    );
   }
 
   function allTopCollapsed() {
@@ -272,6 +294,9 @@
   }
 
   function toggleCollapsed(groupId) {
+    if (isLocked(groupId)) {
+      return;
+    }
     const next = { ...pageCollapsed() };
     if (next[groupId]) {
       delete next[groupId];
@@ -466,12 +491,14 @@
     const isNotesPage = page?.kind === 'notes';
     const isEmpty = isEmptyGroup(group);
     const collapsed = !isEmpty && isCollapsed(group.id);
+    const locked = isLocked(group);
     const columns = group.columns || 'flow';
     const section = el(
       'section',
       'group columns-' +
         columns +
         (collapsed ? ' collapsed' : '') +
+        (locked ? ' locked' : '') +
         (group.depth ? ' nested node' : '') +
         (isEmpty ? ' empty-group' : '') +
         (isNotesPage ? ' notes-page' : ''),
@@ -484,7 +511,7 @@
     }
 
     const header = el('div', 'group-header');
-    header.draggable = true;
+    header.draggable = !locked;
     setContext(header, {
       webviewSection: 'marker',
       markerId: group.id,
@@ -492,11 +519,15 @@
       canNest: (group.depth || 0) < MAX_DEPTH,
       columns,
       hasAlias: !!group.alias,
+      locked,
     });
     const bar = el('span', 'bar');
-    bar.title = 'Change color';
+    bar.title = locked ? 'Group is locked' : 'Change color';
     bar.addEventListener('click', (event) => {
       event.stopPropagation();
+      if (locked) {
+        return;
+      }
       openColorPicker(group.id, bar, section);
     });
     header.append(el('span', 'chevron', isEmpty ? '' : '▾'), bar);
@@ -509,13 +540,16 @@
     }
     labelWrap.append(el('span', 'label', group.label));
     header.append(labelWrap);
+    header.append(lockButton(group));
     header.append(
       el('span', 'count', String(group.items.length + classList.length + noteList.length + childIds.length)),
     );
     header.title =
-      (group.alias ? group.alias + '\n' : '') + group.label + '\nDrag to reorder or nest';
+      (group.alias ? group.alias + '\n' : '') +
+      group.label +
+      (locked ? '\nLocked' : '\nDrag to reorder or nest');
     header.addEventListener('click', () => {
-      if (isEmpty) {
+      if (isEmpty || locked) {
         return;
       }
       toggleCollapsed(group.id);
@@ -524,7 +558,7 @@
     bindGroupSection(section, header, group);
 
     if (isEmpty) {
-      if (isNotesPage && !collapsed) {
+      if (isNotesPage && !collapsed && !locked) {
         section.append(renderNoteComposer(group.id));
       }
       return section;
@@ -593,7 +627,7 @@
         children.append(renderGroup(child, byId));
       }
     }
-    if (isNotesPage) {
+    if (isNotesPage && !locked) {
       children.append(renderNoteComposer(group.id));
     }
     if (children.childElementCount > 0) {
@@ -601,6 +635,25 @@
     }
 
     return section;
+  }
+
+  function lockButton(group) {
+    const locked = isLocked(group);
+    const button = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    button.type = 'button';
+    button.title = locked ? 'Unlock group' : 'Lock group';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', locked ? 'true' : 'false');
+    button.append(locked ? lockClosedIcon() : lockOpenIcon());
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({ type: 'toggleLock', markerId: group.id });
+    });
+    button.addEventListener('dragstart', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    return button;
   }
 
   function linkify(text) {
@@ -630,17 +683,32 @@
   }
 
   function renderNote(note, groupId) {
+    const locked = isLocked(groupId);
     const node = el('div', 'note');
     node.dataset.noteId = note.id;
+    setContext(node, {
+      webviewSection: 'note',
+      markerId: groupId,
+      noteId: note.id,
+      locked,
+    });
     const body = el('div', 'note-body');
     body.append(linkify(note.text));
-    body.title = 'Click to edit';
-    body.addEventListener('click', () => beginEditNote(node, note, groupId));
+    body.title = locked ? 'Group is locked' : 'Click to edit';
+    body.addEventListener('click', () => {
+      if (locked) {
+        return;
+      }
+      beginEditNote(node, note, groupId);
+    });
     node.append(body);
     return node;
   }
 
   function beginEditNote(node, note, groupId) {
+    if (isLocked(groupId)) {
+      return;
+    }
     node.textContent = '';
     const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
     input.value = note.text;
@@ -680,6 +748,9 @@
     input.rows = 2;
     input.placeholder = 'Новая запись… Enter — сохранить';
     const submit = () => {
+      if (isLocked(groupId)) {
+        return;
+      }
       const text = input.value.trim();
       if (!text) {
         return;
@@ -708,8 +779,9 @@
     if (item.alias) {
       classes.push('has-alias');
     }
+    const locked = isLocked(groupId);
     const node = el('div', classes.join(' '));
-    node.draggable = true;
+    node.draggable = !locked;
     const layout = activePage()?.layout || data.layout || 'chips';
     const name = layout === 'chips' && !item.isDir ? stripExtension(item.name) : item.name;
     const textWrap = el('span', 'item-text');
@@ -733,8 +805,9 @@
     if (cls.alias) {
       classes.push('has-alias');
     }
+    const locked = isLocked(groupId);
     const node = el('div', classes.join(' '));
-    node.draggable = true;
+    node.draggable = !locked;
     const textWrap = el('span', 'item-text');
     if (cls.alias) {
       textWrap.append(el('span', 'alias', cls.alias));
@@ -746,6 +819,7 @@
   }
 
   function bindItem(node, item, groupId) {
+    const locked = isLocked(groupId);
     node.dataset.rel = item.relPath;
     const aliasLine = item.alias ? item.alias + '\n' : '';
     const clickHint = item.isDir
@@ -754,13 +828,14 @@
     node.title =
       aliasLine +
       (item.exists ? item.relPath + '\n' + clickHint : item.relPath + '\nMissing') +
-      '\nDrag to another group · Alt+Drag to copy';
+      (locked ? '\nLocked' : '\nDrag to another group · Alt+Drag to copy');
     setContext(node, {
       webviewSection: item.exists ? 'item' : 'missing',
       markerId: groupId,
       relPath: item.relPath,
       isDir: !!item.isDir,
       hasAlias: !!item.alias,
+      locked,
     });
     node.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -780,6 +855,10 @@
     });
     node.addEventListener('dragstart', (event) => {
       event.stopPropagation();
+      if (isLocked(groupId)) {
+        event.preventDefault();
+        return;
+      }
       beginDrag(
         event,
         { kind: 'item', relPath: item.relPath, from: groupId },
@@ -873,6 +952,7 @@
   }
 
   function bindClass(node, cls, groupId) {
+    const locked = isLocked(groupId);
     node.dataset.classId = cls.id;
     const aliasLine = cls.alias ? cls.alias + '\n' : '';
     node.title =
@@ -882,13 +962,14 @@
       cls.relPath +
       (cls.line ? ':' + cls.line : '') +
       (cls.exists ? '\nClick: open at class' : '\nMissing file') +
-      '\nDrag to another group · Alt+Drag to copy';
+      (locked ? '\nLocked' : '\nDrag to another group · Alt+Drag to copy');
     setContext(node, {
       webviewSection: cls.exists ? 'class' : 'missingClass',
       markerId: groupId,
       classId: cls.id,
       relPath: cls.relPath,
       hasAlias: !!cls.alias,
+      locked,
     });
     node.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -899,6 +980,10 @@
     });
     node.addEventListener('dragstart', (event) => {
       event.stopPropagation();
+      if (isLocked(groupId)) {
+        event.preventDefault();
+        return;
+      }
       beginDrag(
         event,
         { kind: 'class', classId: cls.id, from: groupId },
@@ -917,6 +1002,10 @@
   function bindGroupSection(section, header, group) {
     header.addEventListener('dragstart', (event) => {
       event.stopPropagation();
+      if (isLocked(group)) {
+        event.preventDefault();
+        return;
+      }
       beginDrag(
         event,
         {
@@ -984,6 +1073,15 @@
       if (payload.id === group.id) {
         return null;
       }
+      if (isLocked(payload.id)) {
+        return {
+          action: 'place',
+          mode: 'blocked',
+          hint: 'Group is locked',
+          blocked: true,
+          id: payload.id,
+        };
+      }
       const overHeader = header.contains(/** @type {Node} */ (event.target)) || event.target === header;
       if (overHeader) {
         const rect = header.getBoundingClientRect();
@@ -1006,6 +1104,15 @@
             position: 'after',
           };
         }
+      }
+      if (isLocked(group)) {
+        return {
+          action: 'nest',
+          mode: 'blocked',
+          hint: 'Group is locked',
+          blocked: true,
+          id: payload.id,
+        };
       }
       const nest = nestDecision(payload, group);
       if (nest.ok) {
@@ -1031,6 +1138,22 @@
           action: 'item',
           mode: 'blocked',
           hint: 'Эта страница только для записей',
+          blocked: true,
+        };
+      }
+      if (isLocked(group)) {
+        return {
+          action: 'item',
+          mode: 'blocked',
+          hint: 'Group is locked',
+          blocked: true,
+        };
+      }
+      if (payload && (payload.kind === 'item' || payload.kind === 'class') && isLocked(payload.from)) {
+        return {
+          action: 'item',
+          mode: 'blocked',
+          hint: 'Group is locked',
           blocked: true,
         };
       }
@@ -1352,6 +1475,30 @@
     arb: '#40C4FF',
     lock: DEFAULT_FILE_COLOR,
   };
+
+  function lockClosedIcon() {
+    return svgIcon('icon lock-icon', [
+      [
+        'path',
+        {
+          d: 'M13 7h.5c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5h-8c-.83 0-1.5-.67-1.5-1.5v-5C3.5 7.67 4.17 7 5 7H5.5V5.5C5.5 3.57 7.07 2 9 2s3.5 1.57 3.5 3.5V7zm-5.5 0h4V5.5c0-1.1-.9-2-2-2s-2 .9-2 2V7zM5 8.5v5h8v-5H5z',
+          fill: 'currentColor',
+        },
+      ],
+    ]);
+  }
+
+  function lockOpenIcon() {
+    return svgIcon('icon lock-icon', [
+      [
+        'path',
+        {
+          d: 'M5 7h8.5c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5h-8C4.17 15 3.5 14.33 3.5 13.5v-5C3.5 7.67 4.17 7 5 7zm6.5-1.5V7H10V5.5c0-1.1.9-2 2-2s2 .9 2 2V6h1.5V5.5C15.5 3.57 13.93 2 12 2s-3.5 1.57-3.5 3.5zM5 8.5v5h8v-5H5z',
+          fill: 'currentColor',
+        },
+      ],
+    ]);
+  }
 
   function folderIcon() {
     return svgIcon('icon folder-icon', [

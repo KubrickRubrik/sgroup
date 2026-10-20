@@ -194,6 +194,10 @@ body {
   opacity: 0.35;
 }
 
+.history-btn[hidden] {
+  display: none;
+}
+
 .tool-icon {
   display: block;
   height: 16px;
@@ -579,8 +583,40 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   font-size: var(--size-subgroup);
 }
 
+.lock-btn {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  margin-left: auto;
+  opacity: 0.55;
+  padding: 1px;
+}
+
+.lock-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  opacity: 1;
+}
+
+.lock-btn.is-locked {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.9;
+}
+
+.lock-btn .lock-icon {
+  display: block;
+  height: 14px;
+  width: 14px;
+}
+
 .count {
   color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
   font-size: var(--size-meta);
   min-width: 14px;
   text-align: right;

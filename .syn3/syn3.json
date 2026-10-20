@@ -120,9 +120,6 @@
     ],
     "version": [
       "version"
-    ],
-    "version/syngroup-2.1.0.vsix": [
-      "version"
     ]
   },
   "added": {
@@ -140,9 +137,6 @@
     },
     "version": {
       "version": 1792353063481
-    },
-    "version/syngroup-2.1.0.vsix": {
-      "version": 1792355966551
     }
   },
   "appearance": {

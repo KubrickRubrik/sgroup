@@ -50,6 +50,8 @@ interface MapGroup {
   parent?: string;
   page?: string;
   columns: ColumnsMode;
+  /** True when map edits to this group are blocked. */
+  locked?: true;
   depth: number;
   /** Height of nested subgroup tree (0 if no children). */
   subtreeHeight: number;
@@ -105,7 +107,7 @@ type IncomingMessage =
   | { type: 'openExternal'; url: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
-  | { type: 'history'; direction: 'back' | 'forward' }
+  | { type: 'history'; direction: 'back' | 'forward' | 'accept'; pageId?: string }
   | { type: 'setCollapsed'; pageId: string; collapsed: Record<string, boolean>; allTopCollapsed: boolean }
   | {
       type: 'toolbar';
@@ -121,7 +123,8 @@ type IncomingMessage =
   | { type: 'dropUris'; uris: string[]; to: string }
   | { type: 'createNote'; markerId: string; text: string }
   | { type: 'updateNote'; noteId: string; text: string }
-  | { type: 'deleteNote'; noteId: string };
+  | { type: 'deleteNote'; noteId: string }
+  | { type: 'toggleLock'; markerId: string };
 
 interface DirListingEntry {
   name: string;
@@ -386,7 +389,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const next: Record<string, boolean> = { ...page.collapsed };
     for (const [id, def] of this.store.markers()) {
-      if (def.parent || this.store.pageOf(id) !== pageId) {
+      if (def.parent || this.store.pageOf(id) !== pageId || this.store.isLocked(id)) {
         continue;
       }
       if (collapsed) {
@@ -396,7 +399,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
     }
     await this.store.updatePageView(pageId, { collapsed: next });
-    await this.syncTopCollapsedContext(collapsed);
+    await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(pageId, next));
+  }
+
+  /** Collapse state of unlocked top-level groups only. */
+  private allUnlockedTopCollapsed(
+    pageId: string,
+    collapsed: Record<string, boolean> = this.store.page(pageId)?.collapsed ?? {},
+  ): boolean {
+    const tops = this.store
+      .markers()
+      .filter(([id, def]) => !def.parent && this.store.pageOf(id) === pageId && !this.store.isLocked(id));
+    return tops.length > 0 && tops.every(([id]) => !!collapsed[id]);
+  }
+
+  private refuseLocked(markerId: string): boolean {
+    if (!this.store.isLocked(markerId)) {
+      return false;
+    }
+    void vscode.window.showWarningMessage('Syn3: группа закрыта');
+    return true;
   }
 
   syncTopCollapsedContext(collapsed: boolean): Thenable<unknown> {
@@ -418,6 +440,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     for (const webview of this.webviews) {
       void this.postState(webview);
     }
+    void this.syncHistoryContext();
+  }
+
+  async historyBack(): Promise<void> {
+    await this.store.undo(this.focusedPageId());
+    await this.syncHistoryContext();
+  }
+
+  async historyForward(): Promise<void> {
+    await this.store.redo(this.focusedPageId());
+    await this.syncHistoryContext();
+  }
+
+  async historyAccept(): Promise<void> {
+    await this.store.accept(this.focusedPageId());
+    await this.syncHistoryContext();
   }
 
   private focusedPageId(): string {
@@ -579,11 +617,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'history') {
+      this.rememberFocus(webview, message.pageId);
+      const pageId = this.pageIdFor(webview);
       if (message.direction === 'back') {
-        await this.store.undo();
+        await this.store.undo(pageId);
+      } else if (message.direction === 'forward') {
+        await this.store.redo(pageId);
       } else {
-        await this.store.redo();
+        await this.store.accept(pageId);
       }
+      await this.syncHistoryContext();
       return;
     }
     if (message.type === 'toolbar') {
@@ -593,11 +636,29 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'setCollapsed') {
       this.rememberFocus(webview, message.pageId);
-      if (this.store.page(message.pageId)) {
-        await this.store.updatePageView(message.pageId, { collapsed: message.collapsed });
+      const page = this.store.page(message.pageId);
+      if (page) {
+        const next: Record<string, boolean> = { ...message.collapsed };
+        for (const [id] of this.store.markers()) {
+          if (!this.store.isLocked(id)) {
+            continue;
+          }
+          if (page.collapsed[id]) {
+            next[id] = true;
+          } else {
+            delete next[id];
+          }
+        }
+        await this.store.updatePageView(message.pageId, { collapsed: next });
+        if (webview === this.lastFocusedWebview) {
+          await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(message.pageId, next));
+        }
       }
-      if (webview === this.lastFocusedWebview) {
-        await this.syncTopCollapsedContext(message.allTopCollapsed);
+      return;
+    }
+    if (message.type === 'toggleLock') {
+      if (this.store.marker(message.markerId)) {
+        await this.store.toggleLock(message.markerId);
       }
       return;
     }
@@ -617,18 +678,32 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'createNote') {
+      if (this.refuseLocked(message.markerId)) {
+        return;
+      }
       await this.store.createNote(message.markerId, message.text);
       return;
     }
     if (message.type === 'updateNote') {
+      const note = this.store.note(message.noteId);
+      if (!note || this.refuseLocked(note.markerId)) {
+        return;
+      }
       await this.store.updateNote(message.noteId, message.text);
       return;
     }
     if (message.type === 'deleteNote') {
+      const note = this.store.note(message.noteId);
+      if (!note || this.refuseLocked(note.markerId)) {
+        return;
+      }
       await this.store.deleteNote(message.noteId);
       return;
     }
     if (message.type === 'setColor') {
+      if (this.refuseLocked(message.markerId)) {
+        return;
+      }
       const color = normalizeHex(message.color);
       if (color && this.store.marker(message.markerId)) {
         await this.store.updateMarker(message.markerId, { color });
@@ -640,6 +715,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.pageKindOfMarker(message.to) === 'notes') {
+        return;
+      }
+      if (this.refuseLocked(message.to) || (message.from && this.refuseLocked(message.from))) {
         return;
       }
       if (message.copy) {
@@ -654,6 +732,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.pageKindOfMarker(message.to) === 'notes') {
+        return;
+      }
+      if (this.refuseLocked(message.to) || (message.from && this.refuseLocked(message.from))) {
         return;
       }
       if (message.copy) {
@@ -677,6 +758,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (this.store.pageOf(message.id) !== this.store.pageOf(message.target)) {
         return;
       }
+      if (this.refuseLocked(message.id)) {
+        return;
+      }
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
       } catch (error) {
@@ -686,6 +770,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'nestMarker') {
       if (this.store.pageOf(message.id) !== this.store.pageOf(message.parent)) {
+        return;
+      }
+      if (this.refuseLocked(message.id) || this.refuseLocked(message.parent)) {
         return;
       }
       const check = this.store.canNest(message.id, message.parent);
@@ -702,6 +789,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'dropUris') {
       if (!this.store.marker(message.to) || this.pageKindOfMarker(message.to) === 'notes') {
+        return;
+      }
+      if (this.refuseLocked(message.to)) {
         return;
       }
       const relPaths = message.uris
@@ -801,6 +891,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         parent: def.parent,
         page: this.store.pageOf(id),
         columns: def.columns ?? 'flow',
+        locked: def.locked === true ? true : undefined,
         depth: this.store.depthOf(id),
         subtreeHeight: this.store.subtreeHeight(id),
         children: this.store.children(id).map(([childId]) => childId),
@@ -843,11 +934,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     await this.syncGroupsLayoutContext(page.groupsLayout);
-    const tops = this.store
-      .markers()
-      .filter(([id, def]) => !def.parent && this.store.pageOf(id) === focused);
-    const allCollapsed = tops.length > 0 && tops.every(([id]) => !!page.collapsed[id]);
-    await this.syncTopCollapsedContext(allCollapsed);
+    await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(focused));
+    await this.syncHistoryContext();
+  }
+
+  private async syncHistoryContext(): Promise<void> {
+    const pageId = this.focusedPageId();
+    await vscode.commands.executeCommand('setContext', 'syn3.canUndo', this.store.canUndo(pageId));
+    await vscode.commands.executeCommand('setContext', 'syn3.canRedo', this.store.canRedo(pageId));
   }
 
   private postActive(): void {
@@ -939,7 +1033,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const next: Record<string, boolean> = { ...page.collapsed };
       for (const [id, def] of this.store.markers()) {
-        if (def.parent || this.store.pageOf(id) !== activePage) {
+        if (def.parent || this.store.pageOf(id) !== activePage || this.store.isLocked(id)) {
           continue;
         }
         if (collapsed) {
@@ -950,7 +1044,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       await this.store.updatePageView(activePage, { collapsed: next });
       if (webview === this.lastFocusedWebview) {
-        await this.syncTopCollapsedContext(collapsed);
+        await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(activePage, next));
       }
       return;
     }
@@ -1036,7 +1130,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const confirm = await vscode.window.showWarningMessage(
-      `Удалить страницу «${page.name}» вместе со всеми группами?`,
+      `Удалить страницу «${page.name}» вместе со всеми группами? Восстановить будет невозможно.`,
       { modal: true },
       'Удалить',
     );
@@ -1075,6 +1169,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   <div class="history-bar">
     <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
       ${icon('arrow-left')}
+    </button>
+    <button id="history-accept" class="history-btn" type="button" title="Готово" aria-label="Готово" hidden>
+      ${icon('check')}
     </button>
     <button id="history-forward" class="history-btn" type="button" title="Вперёд" aria-label="Вперёд" disabled>
       ${icon('arrow-right')}

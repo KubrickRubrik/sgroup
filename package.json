@@ -2,7 +2,7 @@
   "name": "syn3",
   "displayName": "Syn3",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "4.1.2",
+  "version": "4.2.2",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -393,16 +393,6 @@
       ],
       "view/title": [
         {
-          "command": "syn3.historyBack",
-          "when": "view == syn3Map || view == syn3MapBottom",
-          "group": "navigation@-2"
-        },
-        {
-          "command": "syn3.historyForward",
-          "when": "view == syn3Map || view == syn3MapBottom",
-          "group": "navigation@-1"
-        },
-        {
           "command": "syn3.refresh",
           "when": "view == syn3Map || view == syn3MapBottom",
           "group": "more@1"
@@ -511,82 +501,82 @@
         },
         {
           "command": "syn3.rename",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'item'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'item' && !locked",
           "group": "7_modification@1"
         },
         {
           "command": "syn3.setAlias",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/ && !locked",
           "group": "7_modification@1.5"
         },
         {
           "command": "syn3.clearAlias",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/ && hasAlias",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|class|missingClass)$/ && hasAlias && !locked",
           "group": "7_modification@1.6"
         },
         {
           "command": "syn3.relink",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'missing'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'missing' && !locked",
           "group": "7_modification@2"
         },
         {
           "command": "syn3.unassign",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing|class|missingClass)$/",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection =~ /^(item|missing|class|missingClass)$/ && !locked",
           "group": "7_modification@3"
         },
         {
           "command": "syn3.editMarker",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@1"
         },
         {
           "command": "syn3.setAlias",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@1.5"
         },
         {
           "command": "syn3.clearAlias",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && hasAlias",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && hasAlias && !locked",
           "group": "1_marker@1.6"
         },
         {
           "command": "syn3.moveMarkerUp",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@6"
         },
         {
           "command": "syn3.moveMarkerDown",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@7"
         },
         {
           "command": "syn3.deleteMarker",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "2_danger@1"
         },
         {
           "command": "syn3.changeColor",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@3"
         },
         {
           "command": "syn3.changeIcon",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@4"
         },
         {
           "submenu": "syn3.columns",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker'",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
           "group": "1_marker@5.5"
         },
         {
           "command": "syn3.createSubgroup",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2 && !locked",
           "group": "1_marker@2"
         },
         {
           "command": "syn3.unnestMarker",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth > 0",
+          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth > 0 && !locked",
           "group": "1_marker@8"
         }
       ],
@@ -731,16 +721,6 @@
         }
       ],
       "editor/title": [
-        {
-          "command": "syn3.historyBack",
-          "when": "activeWebviewPanelId == 'syn3MapPanel'",
-          "group": "navigation@-2"
-        },
-        {
-          "command": "syn3.historyForward",
-          "when": "activeWebviewPanelId == 'syn3MapPanel'",
-          "group": "navigation@-1"
-        },
         {
           "command": "syn3.refresh",
           "when": "activeWebviewPanelId == 'syn3MapPanel'",

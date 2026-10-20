@@ -3,8 +3,8 @@ import * as crypto from 'crypto';
 /** Undo/redo snapshots, beside the shared markers file. */
 export const HISTORY_PATH = '.syn3/history.json';
 
-/** How many steps Back can restore. */
-export const HISTORY_LIMIT = 50;
+/** How many steps Back can restore per page. */
+export const HISTORY_LIMIT = 200;
 
 export interface HistoryStacks {
   /** Older snapshots, newest at the end. */
@@ -13,8 +13,30 @@ export interface HistoryStacks {
   future: string[];
 }
 
-export function emptyHistory(): HistoryStacks {
+/** Per-page undo/redo stacks in one history file. */
+export interface PageHistoryBook {
+  pages: Record<string, HistoryStacks>;
+}
+
+export function emptyStacks(): HistoryStacks {
   return { past: [], future: [] };
+}
+
+export function emptyHistory(): PageHistoryBook {
+  return { pages: {} };
+}
+
+export function pageStacks(book: PageHistoryBook, pageId: string): HistoryStacks {
+  let stacks = book.pages[pageId];
+  if (!stacks) {
+    stacks = emptyStacks();
+    book.pages[pageId] = stacks;
+  }
+  return stacks;
+}
+
+export function dropPageHistory(book: PageHistoryBook, pageId: string): void {
+  delete book.pages[pageId];
 }
 
 export function fingerprint(snapshot: string): string {
@@ -47,35 +69,60 @@ export function take(stacks: HistoryStacks, direction: -1 | 1, present: string):
   return snapshot;
 }
 
-interface HistoryFile {
-  version: 1;
-  /** Fingerprint of the markers file at the cursor. A mismatch drops the stacks. */
-  cursor: string;
-  past: string[];
-  future: string[];
+interface HistoryFileV2 {
+  version: 2;
+  pages: Record<
+    string,
+    {
+      /** Fingerprint of the page snapshot at the cursor. A mismatch drops that page. */
+      cursor: string;
+      past: string[];
+      future: string[];
+    }
+  >;
 }
 
-export function encodeHistory(stacks: HistoryStacks, cursor: string): string {
-  const file: HistoryFile = {
-    version: 1,
-    cursor,
-    past: stacks.past,
-    future: stacks.future,
-  };
+export function encodeHistory(book: PageHistoryBook, cursors: Record<string, string>): string {
+  const pages: HistoryFileV2['pages'] = {};
+  for (const [pageId, stacks] of Object.entries(book.pages)) {
+    if (stacks.past.length === 0 && stacks.future.length === 0) {
+      continue;
+    }
+    pages[pageId] = {
+      cursor: cursors[pageId] ?? '',
+      past: stacks.past,
+      future: stacks.future,
+    };
+  }
+  const file: HistoryFileV2 = { version: 2, pages };
   return JSON.stringify(file) + '\n';
 }
 
-/** Empty stacks when the file is missing, broken, or belongs to another markers revision. */
-export function decodeHistory(raw: string, cursor: string): HistoryStacks {
+/**
+ * Empty book when the file is missing or broken.
+ * Version 1 (full-file stacks) is discarded.
+ * A page whose cursor no longer matches is dropped.
+ */
+export function decodeHistory(raw: string, cursors: Record<string, string>): PageHistoryBook {
   try {
-    const parsed = JSON.parse(raw) as Partial<HistoryFile>;
-    if (parsed.version !== 1 || parsed.cursor !== cursor) {
+    const parsed = JSON.parse(raw) as Partial<HistoryFileV2>;
+    if (parsed.version !== 2 || !parsed.pages || typeof parsed.pages !== 'object') {
       return emptyHistory();
     }
-    return {
-      past: stringList(parsed.past).slice(-HISTORY_LIMIT),
-      future: stringList(parsed.future).slice(-HISTORY_LIMIT),
-    };
+    const book = emptyHistory();
+    for (const [pageId, entry] of Object.entries(parsed.pages)) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      if (entry.cursor !== cursors[pageId]) {
+        continue;
+      }
+      book.pages[pageId] = {
+        past: stringList(entry.past).slice(-HISTORY_LIMIT),
+        future: stringList(entry.future).slice(-HISTORY_LIMIT),
+      };
+    }
+    return book;
   } catch {
     return emptyHistory();
   }

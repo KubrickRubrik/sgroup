@@ -18,6 +18,14 @@ export function registerCommands(
     return node ? [node] : [];
   }
 
+  function refuseLocked(markerId: string | undefined): boolean {
+    if (!markerId || !store.isLocked(markerId)) {
+      return false;
+    }
+    void vscode.window.showWarningMessage('Syn3: группа закрыта');
+    return true;
+  }
+
   /** Returns the chosen color, `undefined` for "none", or `null` if cancelled. */
   async function pickColor(current?: string): Promise<string | undefined | null> {
     const NONE = '__none__';
@@ -190,6 +198,10 @@ export function registerCommands(
 
   async function unassign(node?: Node, nodes?: readonly Node[]): Promise<void> {
     const nodesList = selected(node, nodes);
+    const locked = nodesList.find((n) => 'markerId' in n && store.isLocked(n.markerId));
+    if (locked && 'markerId' in locked && refuseLocked(locked.markerId)) {
+      return;
+    }
     const items = nodesList
       .filter((n): n is ItemNode => n.kind === 'item')
       .map((n) => ({ relPath: n.relPath, markerId: n.markerId }));
@@ -281,6 +293,9 @@ export function registerCommands(
     if (!node) {
       return;
     }
+    if ('markerId' in node && refuseLocked(node.markerId)) {
+      return;
+    }
     let current = '';
     let prompt = 'Display name shown above the real name. Leave empty to clear.';
     if (node.kind === 'item') {
@@ -315,6 +330,9 @@ export function registerCommands(
 
   async function clearAlias(node?: Node): Promise<void> {
     if (!node) {
+      return;
+    }
+    if ('markerId' in node && refuseLocked(node.markerId)) {
       return;
     }
     if (node.kind === 'item') {
@@ -366,6 +384,9 @@ export function registerCommands(
     if (!node || !oldUri) {
       return;
     }
+    if ('markerId' in node && refuseLocked(node.markerId)) {
+      return;
+    }
     const oldName = path.posix.basename(oldUri.path);
     const isDir = (node.kind === 'item' || node.kind === 'child') && node.isDir;
     const ext = isDir ? '' : path.posix.extname(oldName);
@@ -403,6 +424,9 @@ export function registerCommands(
   async function relink(node?: Node): Promise<void> {
     const target = node;
     if (!target || target.kind !== 'item') {
+      return;
+    }
+    if (refuseLocked(target.markerId)) {
       return;
     }
     const name = path.posix.basename(target.relPath);
@@ -447,6 +471,9 @@ export function registerCommands(
     if (!target || target.kind !== 'marker') {
       return;
     }
+    if (refuseLocked(target.markerId)) {
+      return;
+    }
     const def = store.marker(target.markerId);
     if (!def) {
       return;
@@ -480,6 +507,9 @@ export function registerCommands(
       if (node?.kind !== 'marker') {
         return;
       }
+      if (refuseLocked(node.markerId)) {
+        return;
+      }
       const def = store.marker(node.markerId);
       if (!def) {
         return;
@@ -495,11 +525,17 @@ export function registerCommands(
     if (node?.kind !== 'marker') {
       return;
     }
+    if (refuseLocked(node.markerId)) {
+      return;
+    }
     await createMarkerFlow(node.markerId);
   }
 
   async function unnestMarker(node?: Node): Promise<void> {
     if (node?.kind !== 'marker') {
+      return;
+    }
+    if (refuseLocked(node.markerId)) {
       return;
     }
     const def = store.marker(node.markerId);
@@ -512,6 +548,9 @@ export function registerCommands(
   async function deleteMarker(node?: Node): Promise<void> {
     const target = node;
     if (!target || target.kind !== 'marker') {
+      return;
+    }
+    if (refuseLocked(target.markerId)) {
       return;
     }
     const def = store.marker(target.markerId);
@@ -536,9 +575,13 @@ export function registerCommands(
 
   async function moveMarker(node: Node | undefined, delta: -1 | 1): Promise<void> {
     const target = node;
-    if (target?.kind === 'marker') {
-      await store.moveMarker(target.markerId, delta);
+    if (target?.kind !== 'marker') {
+      return;
     }
+    if (refuseLocked(target.markerId)) {
+      return;
+    }
+    await store.moveMarker(target.markerId, delta);
   }
 
   async function openConfig(): Promise<void> {
@@ -602,9 +645,13 @@ export function registerCommands(
       vscode.commands.registerCommand(
         `syn3.setColumns.${columns}`,
         withNode(async (node) => {
-          if (node?.kind === 'marker') {
-            await store.setColumns(node.markerId, columns);
+          if (node?.kind !== 'marker') {
+            return;
           }
+          if (refuseLocked(node.markerId)) {
+            return;
+          }
+          await store.setColumns(node.markerId, columns);
         }),
       ),
     ),
