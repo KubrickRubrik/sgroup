@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Сборка / установка .vsix для SGroup. Запуск: ./sh_vsix.sh
-# Учитывает уже собранные артефакты в version/syngroup-*.vsix
+# Сборка / установка .vsix для Syn3. Запуск: ./sh_vsix.sh
+# Новые артефакты: version/syn3-*.vsix. Старые version/syngroup-*.vsix тоже входят в baseline.
 if [ -z "${BASH_VERSION:-}" ]; then
     exec /usr/bin/env bash "$0" "$@"
 fi
@@ -74,8 +74,9 @@ pkg_version() {
 list_vsix_versions() {
     local f base
     shopt -s nullglob
-    for f in "$VERSION_DIR"/syngroup-*.vsix; do
+    for f in "$VERSION_DIR"/syn3-*.vsix "$VERSION_DIR"/syngroup-*.vsix; do
         base="$(basename "$f" .vsix)"
+        base="${base#syn3-}"
         base="${base#syngroup-}"
         if [[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             printf '%s\n' "$base"
@@ -97,11 +98,11 @@ version_eq() {
 }
 
 vsix_path() {
-    echo "${VERSION_DIR}/syngroup-$1.vsix"
+    echo "${VERSION_DIR}/syn3-$1.vsix"
 }
 
 vsix_exists() {
-    [[ -f "$(vsix_path "$1")" ]]
+    [[ -f "$(vsix_path "$1")" || -f "${VERSION_DIR}/syngroup-$1.vsix" ]]
 }
 
 baseline_version() {
@@ -162,7 +163,7 @@ confirm_overwrite() {
         return 0
     fi
     if [[ ! -t 0 ]]; then
-        echo "Ошибка: $(vsix_path "$ver") уже есть. Используй bump или --force." >&2
+        echo "Ошибка: v${ver} уже есть в ${VERSION_DIR}/. Используй bump или --force." >&2
         return 1
     fi
     ask_yes "v${ver} уже в ${VERSION_DIR}/. Перезаписать?" "N"
@@ -204,7 +205,11 @@ latest_vsix_file() {
     if [[ -z "$ver" ]]; then
         return 1
     fi
-    vsix_path "$ver"
+    if [[ -f "$(vsix_path "$ver")" ]]; then
+        vsix_path "$ver"
+    else
+        echo "${VERSION_DIR}/syngroup-$ver.vsix"
+    fi
 }
 
 # Окно может быть на именованном профиле (не Default). CLI без --profile
@@ -299,6 +304,7 @@ install_vsix() {
     fi
     local ver
     ver="$(basename "$file" .vsix)"
+    ver="${ver#syn3-}"
     ver="${ver#syngroup-}"
     if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
         ver="$(pkg_version)"
@@ -315,7 +321,7 @@ install_vsix() {
     return 1
 }
 
-# CLI/AppleScript не умеют надёжно reload. Расширение SGroup смотрит этот файл
+# CLI/AppleScript не умеют надёжно reload. Расширение Syn3 смотрит этот файл
 # и вызывает workbench.action.reloadWindow (кнопка 📦 Vsix → command syn3.vsix).
 RELOAD_MARKER="${VERSION_DIR}/.reload-window"
 
@@ -325,7 +331,7 @@ reload_window() {
     rm -f "$RELOAD_MARKER"
     printf '%s\n' "$(date +%s)" > "$RELOAD_MARKER"
     echo "Маркер: $ROOT/$RELOAD_MARKER"
-    echo "SGroup должен перезагрузить окно сам. Если нет — один раз Cmd+R (после этого заработает)."
+    echo "Syn3 должен перезагрузить окно сам. Если нет — один раз Cmd+R (после этого заработает)."
 }
 
 after_build_flow() {
@@ -346,9 +352,9 @@ package_vsix() {
     ver="$(pkg_version)"
     out="$(vsix_path "$ver")"
     if vsix_exists "$ver"; then
-        echo "⚠  Уже есть $out"
+        echo "⚠  Уже есть v${ver} в ${VERSION_DIR}/"
         confirm_overwrite "$ver" || exit 1
-        rm -f "$out"
+        rm -f "$out" "${VERSION_DIR}/syngroup-${ver}.vsix"
     fi
     echo "→ npm run package  (v${ver})"
     npm run package
@@ -398,7 +404,7 @@ main_menu() {
     next_p="$(peek_next patch)"
     next_n="$(peek_next minor)"
     next_m="$(peek_next major)"
-    echo "SGroup vsix"
+    echo "Syn3 vsix"
     if vsix_exists "$pkg"; then
         echo "  1) package — v${pkg} (уже есть в version/)"
     else

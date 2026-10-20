@@ -1148,7 +1148,7 @@ export class MarkerStore implements vscode.Disposable {
       } catch (error) {
         this.sessionConfigPath = legacyRel;
         void vscode.window.showWarningMessage(
-          `SGroup: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
+          `Syn3: не удалось перенести маркеры в ${CONFIG_PATH} — читаю ${legacyRel}. ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -1159,7 +1159,7 @@ export class MarkerStore implements vscode.Disposable {
     const overwrite = 'Перезаписать';
     const keep = 'Оставить';
     const choice = await vscode.window.showWarningMessage(
-      `SGroup: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
+      `Syn3: найдены и ${CONFIG_PATH}, и ${legacyRel}. Перезаписать новый файл старым или оставить ${CONFIG_PATH}?`,
       overwrite,
       keep,
     );
@@ -1170,7 +1170,7 @@ export class MarkerStore implements vscode.Disposable {
         await vscode.workspace.fs.delete(legacyUri);
       } catch (error) {
         void vscode.window.showWarningMessage(
-          `SGroup: не удалось перезаписать ${CONFIG_PATH}. ${
+          `Syn3: не удалось перезаписать ${CONFIG_PATH}. ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -1261,7 +1261,7 @@ export class MarkerStore implements vscode.Disposable {
       this.history = decodeHistory(Buffer.from(raw).toString('utf8'), fingerprint(this.present));
     } catch (error) {
       if (!isFileNotFound(error)) {
-        console.error('SGroup history:', error);
+        console.error('Syn3 history:', error);
       }
       this.history = emptyHistory();
     }
@@ -1297,7 +1297,7 @@ export class MarkerStore implements vscode.Disposable {
       try {
         parsed = normalize(JSON.parse(snapshot));
       } catch (error) {
-        console.error('SGroup history:', error);
+        console.error('Syn3 history:', error);
         return;
       }
       const backup = this.data;
@@ -1327,7 +1327,7 @@ export class MarkerStore implements vscode.Disposable {
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.historyUri, '..'));
       await vscode.workspace.fs.writeFile(this.historyUri, Buffer.from(json, 'utf8'));
     } catch (error) {
-      console.error('SGroup history:', error);
+      console.error('Syn3 history:', error);
     }
   }
 

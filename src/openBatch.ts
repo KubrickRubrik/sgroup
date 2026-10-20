@@ -89,13 +89,13 @@ export async function openTargets(
 
   const ordered = [...fileTargets, ...classes];
   if (ordered.length === 0) {
-    void vscode.window.showInformationMessage('SGroup: nothing to open.');
+    void vscode.window.showInformationMessage('Syn3: nothing to open.');
     return;
   }
   let list = ordered;
   if (list.length > OPEN_BATCH_LIMIT) {
     void vscode.window.showWarningMessage(
-      `SGroup: opening first ${OPEN_BATCH_LIMIT} of ${list.length} items.`,
+      `Syn3: opening first ${OPEN_BATCH_LIMIT} of ${list.length} items.`,
     );
     list = list.slice(0, OPEN_BATCH_LIMIT);
   }

@@ -43,7 +43,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
     const labels = defs.map((def) => (def.icon ? `${def.icon} ${def.label}` : def.label)).join(', ');
     return new vscode.FileDecoration(
       undefined,
-      `SGroup: ${labels}`,
+      `Syn3: ${labels}`,
       labelColor(defs, this.store.appearance.labelSaturation),
     );
   }

@@ -110,7 +110,7 @@ export function registerCommands(
     if (parentId) {
       const parentDepth = store.depthOf(parentId);
       if (parentDepth >= MAX_MARKER_DEPTH) {
-        void vscode.window.showWarningMessage(`SGroup: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+        void vscode.window.showWarningMessage(`Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
         return undefined;
       }
     }
@@ -178,7 +178,7 @@ export function registerCommands(
     const targets = uris && uris.length > 0 ? uris : uri ? [uri] : activeUri();
     const relPaths = targets.map((u) => store.toRelative(u)).filter((p): p is string => p !== undefined);
     if (relPaths.length === 0) {
-      void vscode.window.showWarningMessage('SGroup: select files or folders inside the first workspace folder.');
+      void vscode.window.showWarningMessage('Syn3: select files or folders inside the first workspace folder.');
       return;
     }
     const title = relPaths.length === 1 ? `Mark ${path.posix.basename(relPaths[0])}` : `Mark ${relPaths.length} items`;
@@ -207,17 +207,17 @@ export function registerCommands(
   async function markClass(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-      void vscode.window.showWarningMessage('SGroup: open a file and place the cursor on a class.');
+      void vscode.window.showWarningMessage('Syn3: open a file and place the cursor on a class.');
       return;
     }
     const relPath = store.toRelative(editor.document.uri);
     if (!relPath) {
-      void vscode.window.showWarningMessage('SGroup: file must be inside the workspace folder.');
+      void vscode.window.showWarningMessage('Syn3: file must be inside the workspace folder.');
       return;
     }
     const symbol = await symbolAtCursor(editor);
     if (!symbol?.name) {
-      void vscode.window.showWarningMessage('SGroup: no symbol under the cursor.');
+      void vscode.window.showWarningMessage('Syn3: no symbol under the cursor.');
       return;
     }
     const markerId = await pickMarker(`Mark class ${symbol.name}`);
@@ -244,7 +244,7 @@ export function registerCommands(
     }
     const relPath = store.toRelative(fileUri);
     if (!relPath) {
-      void vscode.window.showWarningMessage('SGroup: file must be inside the workspace folder.');
+      void vscode.window.showWarningMessage('Syn3: file must be inside the workspace folder.');
       return;
     }
     const name = await vscode.window.showInputBox({
@@ -396,7 +396,7 @@ export function registerCommands(
     edit.renameFile(oldUri, vscode.Uri.joinPath(parentUri, newName.trim()));
     const ok = await vscode.workspace.applyEdit(edit);
     if (!ok) {
-      void vscode.window.showErrorMessage(`SGroup: could not rename ${oldName}.`);
+      void vscode.window.showErrorMessage(`Syn3: could not rename ${oldName}.`);
     }
   }
 

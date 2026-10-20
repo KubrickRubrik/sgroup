@@ -75,11 +75,11 @@ function colorEntry(id, description, dark, light) {
 const amount = DEFAULT_SATURATION / 100;
 const colors = [];
 for (const item of PALETTE) {
-  colors.push(colorEntry(item.id, `SGroup marker color: ${item.label}`, item.hex, item.hex));
+  colors.push(colorEntry(item.id, `Syn3 marker color: ${item.label}`, item.hex, item.hex));
   colors.push(
     colorEntry(
       `${item.id}.label`,
-      `SGroup Explorer label tint: ${item.label}`,
+      `Syn3 Explorer label tint: ${item.label}`,
       mixHex(item.hex, NEAR_WHITE, amount),
       mixHex(item.hex, NEAR_BLACK, amount),
     ),

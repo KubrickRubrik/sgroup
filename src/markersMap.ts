@@ -144,7 +144,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   static readonly viewId = 'syn3Map';
   static readonly bottomViewId = 'syn3MapBottom';
   static readonly panelType = 'syn3MapPanel';
-  static readonly panelTitle = 'SYN3';
+  static readonly panelTitle = 'Syn3';
 
   private readonly webviews = new Set<vscode.Webview>();
   private readonly activePageByWebview = new WeakMap<vscode.Webview, string>();
@@ -562,7 +562,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private reportColumnError(error: unknown): void {
     void vscode.window.showWarningMessage(
-      `SGroup: ${error instanceof Error ? error.message : String(error)}`,
+      `Syn3: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -680,7 +680,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
       } catch (error) {
-        void vscode.window.showWarningMessage(`SGroup: ${error instanceof Error ? error.message : String(error)}`);
+        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
       }
       return;
     }
@@ -690,13 +690,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const check = this.store.canNest(message.id, message.parent);
       if (!check.ok) {
-        void vscode.window.showWarningMessage(`SGroup: ${check.reason}`);
+        void vscode.window.showWarningMessage(`Syn3: ${check.reason}`);
         return;
       }
       try {
         await this.store.nestMarker(message.id, message.parent);
       } catch (error) {
-        void vscode.window.showWarningMessage(`SGroup: ${error instanceof Error ? error.message : String(error)}`);
+        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
       }
       return;
     }
@@ -715,7 +715,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         .filter((p): p is string => p !== undefined);
       if (relPaths.length === 0) {
         void vscode.window.showWarningMessage(
-          'SGroup: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
+          'Syn3: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
         );
         return;
       }
@@ -764,7 +764,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
       await webview.postMessage({ type: 'dirListing', relPath, entries });
     } catch {
-      void vscode.window.showWarningMessage(`SGroup: cannot read folder ${relPath}`);
+      void vscode.window.showWarningMessage(`Syn3: cannot read folder ${relPath}`);
       await webview.postMessage({ type: 'dirListing', relPath, entries: [], error: true });
     }
   }

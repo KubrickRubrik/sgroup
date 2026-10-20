@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Проект называется **Syn3**. Идентификатор расширения — `easybusy.syn3`. В палитре команды **Syn3: …**.
+
 ## 4.0.0
 
 - Команды `syn3.*`, настройки `syn3.*`, панели `syn3Map`, `syn3MapBottom`, `syn3Panel`. Маркеры лежат в `.syn3/syn3.json`.

@@ -37,7 +37,7 @@ export class SettingsPanel implements vscode.Disposable {
 
     const panel = vscode.window.createWebviewPanel(
       SettingsPanel.viewType,
-      'SGroup Settings',
+      'Syn3 Settings',
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
@@ -149,7 +149,7 @@ export class SettingsPanel implements vscode.Disposable {
 </head>
 <body>
   <main>
-    <h1>SGroup Settings</h1>
+    <h1>Syn3 Settings</h1>
     <p class="hint">Сохраняются в <code>.syn3/syn3.json</code> этого проекта.</p>
 
     <section>

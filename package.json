@@ -1,6 +1,6 @@
 {
-  "name": "syngroup",
-  "displayName": "SynGroup",
+  "name": "syn3",
+  "displayName": "Syn3",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
   "version": "4.1.2",
   "publisher": "easybusy",
@@ -28,7 +28,7 @@
       "panel": [
         {
           "id": "syn3Panel",
-          "title": "SYN3",
+          "title": "Syn3",
           "icon": "media/map-icon.svg"
         }
       ]
@@ -38,7 +38,7 @@
         {
           "type": "webview",
           "id": "syn3MapBottom",
-          "name": "SYN3",
+          "name": "Syn3",
           "contextualTitle": "Explorer",
           "icon": "media/map-icon.svg"
         }
@@ -47,7 +47,7 @@
         {
           "type": "webview",
           "id": "syn3Map",
-          "name": "SYN3",
+          "name": "Syn3",
           "contextualTitle": "Explorer",
           "visibility": "visible",
           "icon": "media/map-icon.svg"
@@ -58,82 +58,82 @@
       {
         "command": "syn3.assign",
         "title": "Mark…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(tag)"
       },
       {
         "command": "syn3.markClass",
         "title": "Mark Class…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(symbol-class)"
       },
       {
         "command": "syn3.markClassManual",
         "title": "Mark Class Manually…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(symbol-class)"
       },
       {
         "command": "syn3.setAlias",
         "title": "Set Alias…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(whole-word)"
       },
       {
         "command": "syn3.clearAlias",
         "title": "Clear Alias",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.openClass",
         "title": "Open Class",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(go-to-file)"
       },
       {
         "command": "syn3.openItem",
         "title": "Open Item",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(files)"
       },
       {
         "command": "syn3.openFull",
         "title": "Open Full",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(folder-opened)"
       },
       {
         "command": "syn3.unassign",
         "title": "Remove Marker",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(close)"
       },
       {
         "command": "syn3.unassignFromExplorer",
         "title": "Remove Markers",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.rename",
         "title": "Rename…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(edit)"
       },
       {
         "command": "syn3.reveal",
         "title": "Reveal in Explorer View",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.relink",
         "title": "Relink to File…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(link)"
       },
       {
         "command": "syn3.createMarker",
         "title": "Create Marker",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/add-light.svg",
           "dark": "media/icons/add-dark.svg"
@@ -142,7 +142,7 @@
       {
         "command": "syn3.map.collapseGroups",
         "title": "Свернуть все группы",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/collapse-all-light.svg",
           "dark": "media/icons/collapse-all-dark.svg"
@@ -151,7 +151,7 @@
       {
         "command": "syn3.map.expandGroups",
         "title": "Развернуть все группы",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/expand-all-light.svg",
           "dark": "media/icons/expand-all-dark.svg"
@@ -160,31 +160,31 @@
       {
         "command": "syn3.editMarker",
         "title": "Edit Marker…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(edit)"
       },
       {
         "command": "syn3.deleteMarker",
         "title": "Delete Marker",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(trash)"
       },
       {
         "command": "syn3.moveMarkerUp",
         "title": "Move Up",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(arrow-up)"
       },
       {
         "command": "syn3.moveMarkerDown",
         "title": "Move Down",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(arrow-down)"
       },
       {
         "command": "syn3.openConfig",
         "title": "Open Markers File",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/json-light.svg",
           "dark": "media/icons/json-dark.svg"
@@ -193,7 +193,7 @@
       {
         "command": "syn3.openSettings",
         "title": "Open Settings",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/gear-light.svg",
           "dark": "media/icons/gear-dark.svg"
@@ -202,13 +202,13 @@
       {
         "command": "syn3.vsix",
         "title": "Package / Install VSIX…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(package)"
       },
       {
         "command": "syn3.refresh",
         "title": "Refresh",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/refresh-light.svg",
           "dark": "media/icons/refresh-dark.svg"
@@ -217,7 +217,7 @@
       {
         "command": "syn3.historyBack",
         "title": "Назад",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/arrow-left-light.svg",
           "dark": "media/icons/arrow-left-dark.svg"
@@ -227,7 +227,7 @@
       {
         "command": "syn3.historyForward",
         "title": "Вперёд",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/arrow-right-light.svg",
           "dark": "media/icons/arrow-right-dark.svg"
@@ -237,13 +237,13 @@
       {
         "command": "syn3.openMap",
         "title": "Open Map",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(map)"
       },
       {
         "command": "syn3.map.toggleLayout",
         "title": "Toggle Map Layout (Chips / List)",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/list-flat-light.svg",
           "dark": "media/icons/list-flat-dark.svg"
@@ -252,13 +252,13 @@
       {
         "command": "syn3.map.move",
         "title": "Move Map…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(layout-sidebar-right)"
       },
       {
         "command": "syn3.map.toggleColumn",
         "title": "Toggle Map Column Beside Explorer",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/layout-sidebar-left-light.svg",
           "dark": "media/icons/layout-sidebar-left-dark.svg"
@@ -267,7 +267,7 @@
       {
         "command": "syn3.map.toggleRight",
         "title": "Toggle Map Column on the Right",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/sidebar-right-light.svg",
           "dark": "media/icons/sidebar-right-dark.svg"
@@ -276,7 +276,7 @@
       {
         "command": "syn3.map.openBottom",
         "title": "Toggle Map in Bottom Panel",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/layout-panel-light.svg",
           "dark": "media/icons/layout-panel-dark.svg"
@@ -285,19 +285,19 @@
       {
         "command": "syn3.changeColor",
         "title": "Change Color…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(symbol-color)"
       },
       {
         "command": "syn3.changeIcon",
         "title": "Change Icon…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(smiley)"
       },
       {
         "command": "syn3.map.groups.flow",
         "title": "Groups: Flow — click for 1 column",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/word-wrap-light.svg",
           "dark": "media/icons/word-wrap-dark.svg"
@@ -306,7 +306,7 @@
       {
         "command": "syn3.map.groups.1",
         "title": "Groups: 1 column — click for 2 columns",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/list-flat-light.svg",
           "dark": "media/icons/list-flat-dark.svg"
@@ -315,7 +315,7 @@
       {
         "command": "syn3.map.groups.2",
         "title": "Groups: 2 columns — click for 3 columns",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/split-horizontal-light.svg",
           "dark": "media/icons/split-horizontal-dark.svg"
@@ -324,7 +324,7 @@
       {
         "command": "syn3.map.groups.3",
         "title": "Groups: 3 columns — click for flow",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": {
           "light": "media/icons/table-light.svg",
           "dark": "media/icons/table-dark.svg"
@@ -333,33 +333,33 @@
       {
         "command": "syn3.setColumns.flow",
         "title": "Flow",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.setColumns.1",
         "title": "1 Column",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.setColumns.2",
         "title": "2 Columns",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.setColumns.3",
         "title": "3 Columns",
-        "category": "SGroup"
+        "category": "Syn3"
       },
       {
         "command": "syn3.createSubgroup",
         "title": "New Subgroup…",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(new-folder)"
       },
       {
         "command": "syn3.unnestMarker",
         "title": "Move Up a Level",
-        "category": "SGroup",
+        "category": "Syn3",
         "icon": "$(arrow-up)"
       }
     ],
@@ -811,7 +811,7 @@
       }
     ],
     "configuration": {
-      "title": "SGroup",
+      "title": "Syn3",
       "properties": {
         "syn3.map.columnWidth": {
           "type": "number",
@@ -829,7 +829,7 @@
     "colors": [
       {
         "id": "syn3.red",
-        "description": "SGroup marker color: Red",
+        "description": "Syn3 marker color: Red",
         "defaults": {
           "dark": "#e5484d",
           "light": "#e5484d",
@@ -839,7 +839,7 @@
       },
       {
         "id": "syn3.red.label",
-        "description": "SGroup Explorer label tint: Red",
+        "description": "Syn3 Explorer label tint: Red",
         "defaults": {
           "dark": "#e7c8c9",
           "light": "#4f3031",
@@ -849,7 +849,7 @@
       },
       {
         "id": "syn3.tomato",
-        "description": "SGroup marker color: Tomato",
+        "description": "Syn3 marker color: Tomato",
         "defaults": {
           "dark": "#e54d2e",
           "light": "#e54d2e",
@@ -859,7 +859,7 @@
       },
       {
         "id": "syn3.tomato.label",
-        "description": "SGroup Explorer label tint: Tomato",
+        "description": "Syn3 Explorer label tint: Tomato",
         "defaults": {
           "dark": "#e7c9c3",
           "light": "#4f312b",
@@ -869,7 +869,7 @@
       },
       {
         "id": "syn3.orange",
-        "description": "SGroup marker color: Orange",
+        "description": "Syn3 marker color: Orange",
         "defaults": {
           "dark": "#f76b15",
           "light": "#f76b15",
@@ -879,7 +879,7 @@
       },
       {
         "id": "syn3.orange.label",
-        "description": "SGroup Explorer label tint: Orange",
+        "description": "Syn3 Explorer label tint: Orange",
         "defaults": {
           "dark": "#ebcfbe",
           "light": "#533726",
@@ -889,7 +889,7 @@
       },
       {
         "id": "syn3.amber",
-        "description": "SGroup marker color: Amber",
+        "description": "Syn3 marker color: Amber",
         "defaults": {
           "dark": "#ffb224",
           "light": "#ffb224",
@@ -899,7 +899,7 @@
       },
       {
         "id": "syn3.amber.label",
-        "description": "SGroup Explorer label tint: Amber",
+        "description": "Syn3 Explorer label tint: Amber",
         "defaults": {
           "dark": "#edddc1",
           "light": "#554529",
@@ -909,7 +909,7 @@
       },
       {
         "id": "syn3.yellow",
-        "description": "SGroup marker color: Yellow",
+        "description": "Syn3 marker color: Yellow",
         "defaults": {
           "dark": "#f5d90a",
           "light": "#f5d90a",
@@ -919,7 +919,7 @@
       },
       {
         "id": "syn3.yellow.label",
-        "description": "SGroup Explorer label tint: Yellow",
+        "description": "Syn3 Explorer label tint: Yellow",
         "defaults": {
           "dark": "#ebe5bc",
           "light": "#534d24",
@@ -929,7 +929,7 @@
       },
       {
         "id": "syn3.lime",
-        "description": "SGroup marker color: Lime",
+        "description": "Syn3 marker color: Lime",
         "defaults": {
           "dark": "#99d52a",
           "light": "#99d52a",
@@ -939,7 +939,7 @@
       },
       {
         "id": "syn3.lime.label",
-        "description": "SGroup Explorer label tint: Lime",
+        "description": "Syn3 Explorer label tint: Lime",
         "defaults": {
           "dark": "#d8e4c2",
           "light": "#404c2a",
@@ -949,7 +949,7 @@
       },
       {
         "id": "syn3.green",
-        "description": "SGroup marker color: Green",
+        "description": "Syn3 marker color: Green",
         "defaults": {
           "dark": "#30a46c",
           "light": "#30a46c",
@@ -959,7 +959,7 @@
       },
       {
         "id": "syn3.green.label",
-        "description": "SGroup Explorer label tint: Green",
+        "description": "Syn3 Explorer label tint: Green",
         "defaults": {
           "dark": "#c3dacf",
           "light": "#2b4237",
@@ -969,7 +969,7 @@
       },
       {
         "id": "syn3.emerald",
-        "description": "SGroup marker color: Emerald",
+        "description": "Syn3 marker color: Emerald",
         "defaults": {
           "dark": "#10b981",
           "light": "#10b981",
@@ -979,7 +979,7 @@
       },
       {
         "id": "syn3.emerald.label",
-        "description": "SGroup Explorer label tint: Emerald",
+        "description": "Syn3 Explorer label tint: Emerald",
         "defaults": {
           "dark": "#bddfd3",
           "light": "#25473b",
@@ -989,7 +989,7 @@
       },
       {
         "id": "syn3.teal",
-        "description": "SGroup marker color: Teal",
+        "description": "Syn3 marker color: Teal",
         "defaults": {
           "dark": "#12a594",
           "light": "#12a594",
@@ -999,7 +999,7 @@
       },
       {
         "id": "syn3.teal.label",
-        "description": "SGroup Explorer label tint: Teal",
+        "description": "Syn3 Explorer label tint: Teal",
         "defaults": {
           "dark": "#bddbd7",
           "light": "#25433f",
@@ -1009,7 +1009,7 @@
       },
       {
         "id": "syn3.cyan",
-        "description": "SGroup marker color: Cyan",
+        "description": "Syn3 marker color: Cyan",
         "defaults": {
           "dark": "#00a2c7",
           "light": "#00a2c7",
@@ -1019,7 +1019,7 @@
       },
       {
         "id": "syn3.cyan.label",
-        "description": "SGroup Explorer label tint: Cyan",
+        "description": "Syn3 Explorer label tint: Cyan",
         "defaults": {
           "dark": "#badae1",
           "light": "#224249",
@@ -1029,7 +1029,7 @@
       },
       {
         "id": "syn3.sky",
-        "description": "SGroup marker color: Sky",
+        "description": "Syn3 marker color: Sky",
         "defaults": {
           "dark": "#4cc3ff",
           "light": "#4cc3ff",
@@ -1039,7 +1039,7 @@
       },
       {
         "id": "syn3.sky.label",
-        "description": "SGroup Explorer label tint: Sky",
+        "description": "Syn3 Explorer label tint: Sky",
         "defaults": {
           "dark": "#c9e1ed",
           "light": "#314955",
@@ -1049,7 +1049,7 @@
       },
       {
         "id": "syn3.blue",
-        "description": "SGroup marker color: Blue",
+        "description": "Syn3 marker color: Blue",
         "defaults": {
           "dark": "#3e63dd",
           "light": "#3e63dd",
@@ -1059,7 +1059,7 @@
       },
       {
         "id": "syn3.blue.label",
-        "description": "SGroup Explorer label tint: Blue",
+        "description": "Syn3 Explorer label tint: Blue",
         "defaults": {
           "dark": "#c6cde6",
           "light": "#2e354e",
@@ -1069,7 +1069,7 @@
       },
       {
         "id": "syn3.indigo",
-        "description": "SGroup marker color: Indigo",
+        "description": "Syn3 marker color: Indigo",
         "defaults": {
           "dark": "#5b5bd6",
           "light": "#5b5bd6",
@@ -1079,7 +1079,7 @@
       },
       {
         "id": "syn3.indigo.label",
-        "description": "SGroup Explorer label tint: Indigo",
+        "description": "Syn3 Explorer label tint: Indigo",
         "defaults": {
           "dark": "#cccce4",
           "light": "#34344c",
@@ -1089,7 +1089,7 @@
       },
       {
         "id": "syn3.violet",
-        "description": "SGroup marker color: Violet",
+        "description": "Syn3 marker color: Violet",
         "defaults": {
           "dark": "#8e4ec6",
           "light": "#8e4ec6",
@@ -1099,7 +1099,7 @@
       },
       {
         "id": "syn3.violet.label",
-        "description": "SGroup Explorer label tint: Violet",
+        "description": "Syn3 Explorer label tint: Violet",
         "defaults": {
           "dark": "#d6c9e1",
           "light": "#3e3149",
@@ -1109,7 +1109,7 @@
       },
       {
         "id": "syn3.purple",
-        "description": "SGroup marker color: Purple",
+        "description": "Syn3 marker color: Purple",
         "defaults": {
           "dark": "#ab4aba",
           "light": "#ab4aba",
@@ -1119,7 +1119,7 @@
       },
       {
         "id": "syn3.purple.label",
-        "description": "SGroup Explorer label tint: Purple",
+        "description": "Syn3 Explorer label tint: Purple",
         "defaults": {
           "dark": "#dcc8df",
           "light": "#443047",
@@ -1129,7 +1129,7 @@
       },
       {
         "id": "syn3.plum",
-        "description": "SGroup marker color: Plum",
+        "description": "Syn3 marker color: Plum",
         "defaults": {
           "dark": "#b658c4",
           "light": "#b658c4",
@@ -1139,7 +1139,7 @@
       },
       {
         "id": "syn3.plum.label",
-        "description": "SGroup Explorer label tint: Plum",
+        "description": "Syn3 Explorer label tint: Plum",
         "defaults": {
           "dark": "#decbe1",
           "light": "#463349",
@@ -1149,7 +1149,7 @@
       },
       {
         "id": "syn3.pink",
-        "description": "SGroup marker color: Pink",
+        "description": "Syn3 marker color: Pink",
         "defaults": {
           "dark": "#d6409f",
           "light": "#d6409f",
@@ -1159,7 +1159,7 @@
       },
       {
         "id": "syn3.pink.label",
-        "description": "SGroup Explorer label tint: Pink",
+        "description": "Syn3 Explorer label tint: Pink",
         "defaults": {
           "dark": "#e4c6d9",
           "light": "#4c2e41",
@@ -1169,7 +1169,7 @@
       },
       {
         "id": "syn3.rose",
-        "description": "SGroup marker color: Rose",
+        "description": "Syn3 marker color: Rose",
         "defaults": {
           "dark": "#f43f5e",
           "light": "#f43f5e",
@@ -1179,7 +1179,7 @@
       },
       {
         "id": "syn3.rose.label",
-        "description": "SGroup Explorer label tint: Rose",
+        "description": "Syn3 Explorer label tint: Rose",
         "defaults": {
           "dark": "#eac6cc",
           "light": "#522e34",
@@ -1189,7 +1189,7 @@
       },
       {
         "id": "syn3.brown",
-        "description": "SGroup marker color: Brown",
+        "description": "Syn3 marker color: Brown",
         "defaults": {
           "dark": "#ad7f58",
           "light": "#ad7f58",
@@ -1199,7 +1199,7 @@
       },
       {
         "id": "syn3.brown.label",
-        "description": "SGroup Explorer label tint: Brown",
+        "description": "Syn3 Explorer label tint: Brown",
         "defaults": {
           "dark": "#dcd3cb",
           "light": "#443b33",
@@ -1209,7 +1209,7 @@
       },
       {
         "id": "syn3.bronze",
-        "description": "SGroup marker color: Bronze",
+        "description": "Syn3 marker color: Bronze",
         "defaults": {
           "dark": "#a18072",
           "light": "#a18072",
@@ -1219,7 +1219,7 @@
       },
       {
         "id": "syn3.bronze.label",
-        "description": "SGroup Explorer label tint: Bronze",
+        "description": "Syn3 Explorer label tint: Bronze",
         "defaults": {
           "dark": "#dad3d0",
           "light": "#423b38",
@@ -1229,7 +1229,7 @@
       },
       {
         "id": "syn3.gold",
-        "description": "SGroup marker color: Gold",
+        "description": "Syn3 marker color: Gold",
         "defaults": {
           "dark": "#978365",
           "light": "#978365",
@@ -1239,7 +1239,7 @@
       },
       {
         "id": "syn3.gold.label",
-        "description": "SGroup Explorer label tint: Gold",
+        "description": "Syn3 Explorer label tint: Gold",
         "defaults": {
           "dark": "#d8d4ce",
           "light": "#403c36",
@@ -1249,7 +1249,7 @@
       },
       {
         "id": "syn3.gray",
-        "description": "SGroup marker color: Gray",
+        "description": "Syn3 marker color: Gray",
         "defaults": {
           "dark": "#8b8d98",
           "light": "#8b8d98",
@@ -1259,7 +1259,7 @@
       },
       {
         "id": "syn3.gray.label",
-        "description": "SGroup Explorer label tint: Gray",
+        "description": "Syn3 Explorer label tint: Gray",
         "defaults": {
           "dark": "#d5d6d8",
           "light": "#3d3e40",
@@ -1269,7 +1269,7 @@
       },
       {
         "id": "syn3.slate",
-        "description": "SGroup marker color: Slate",
+        "description": "Syn3 marker color: Slate",
         "defaults": {
           "dark": "#64748b",
           "light": "#64748b",
@@ -1279,7 +1279,7 @@
       },
       {
         "id": "syn3.slate.label",
-        "description": "SGroup Explorer label tint: Slate",
+        "description": "Syn3 Explorer label tint: Slate",
         "defaults": {
           "dark": "#ced1d5",
           "light": "#36393d",
