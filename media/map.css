@@ -30,11 +30,6 @@ body {
   margin-left: auto;
 }
 
-/* Sidebar already has layout/create in the view title — keep only ⋯ for pages. */
-.chrome-view .toolbar-extra > :not(.toolbar-more) {
-  display: none;
-}
-
 .toolbar-more {
   position: relative;
 }
