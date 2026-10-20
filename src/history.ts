@@ -103,7 +103,11 @@ export function encodeHistory(book: PageHistoryBook, cursors: Record<string, str
  * Version 1 (full-file stacks) is discarded.
  * A page whose cursor no longer matches is dropped.
  */
-export function decodeHistory(raw: string, cursors: Record<string, string>): PageHistoryBook {
+export function decodeHistory(
+  raw: string,
+  cursors: Record<string, string>,
+  legacyCursors: Record<string, string> = {},
+): PageHistoryBook {
   try {
     const parsed = JSON.parse(raw) as Partial<HistoryFileV2>;
     if (parsed.version !== 2 || !parsed.pages || typeof parsed.pages !== 'object') {
@@ -114,7 +118,7 @@ export function decodeHistory(raw: string, cursors: Record<string, string>): Pag
       if (!entry || typeof entry !== 'object') {
         continue;
       }
-      if (entry.cursor !== cursors[pageId]) {
+      if (entry.cursor !== cursors[pageId] && entry.cursor !== legacyCursors[pageId]) {
         continue;
       }
       book.pages[pageId] = {

@@ -7,7 +7,29 @@
       "order": 1,
       "layout": "chips",
       "groupsLayout": "1",
-      "collapsed": {}
+      "collapsed": {
+        "explorer": {
+          "1": true,
+          "3": true,
+          "4": true,
+          "5": true,
+          "test-dir": true,
+          "ttest-6": true,
+          "version": true
+        },
+        "bottom": {
+          "1": true
+        },
+        "sidebar": {
+          "1": true,
+          "3": true,
+          "4": true,
+          "5": true,
+          "test-dir": true,
+          "ttest-6": true,
+          "version": true
+        }
+      }
     },
     "page-page": {
       "name": "Доки",
@@ -15,7 +37,11 @@
       "order": 2,
       "layout": "chips",
       "groupsLayout": "flow",
-      "collapsed": {}
+      "collapsed": {
+        "explorer": {},
+        "bottom": {},
+        "sidebar": {}
+      }
     }
   },
   "markers": {

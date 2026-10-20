@@ -5,6 +5,7 @@ import {
   ColumnsMode,
   GroupsLayout,
   MapLayout,
+  MapSurface,
   MAX_PAGES,
   MarkerStore,
   PageKind,
@@ -17,12 +18,11 @@ import { cssColor, normalizeHex } from './palette';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 /** Which map surface is showing which page. Survives reload; each surface is independent. */
-const ACTIVE_PAGE_KEYS = {
+const ACTIVE_PAGE_KEYS: Record<MapSurface, string> = {
   explorer: 'syn3.map.activePage.explorer',
   bottom: 'syn3.map.activePage.bottom',
   sidebar: 'syn3.map.activePage.sidebar',
-} as const;
-type MapSurface = keyof typeof ACTIVE_PAGE_KEYS;
+};
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
 const GROUPS_LAYOUT_CONTEXT = 'syn3.map.groupsLayout';
@@ -397,11 +397,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Collapse or expand every top-level group on the focused surface's page. */
   async setTopGroups(collapsed: boolean): Promise<void> {
     const pageId = this.focusedPageId();
+    const surface = this.focusedSurface();
     const page = this.store.page(pageId);
     if (!page) {
       return;
     }
-    const next: Record<string, boolean> = { ...page.collapsed };
+    const next: Record<string, boolean> = { ...page.collapsed[surface] };
     for (const [id, def] of this.store.markers()) {
       if (def.parent || this.store.pageOf(id) !== pageId || this.store.isLocked(id)) {
         continue;
@@ -412,19 +413,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         delete next[id];
       }
     }
-    await this.store.updatePageView(pageId, { collapsed: next });
+    await this.store.setPageCollapsed(pageId, surface, next);
     await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(pageId, next));
   }
 
   /** Collapse state of unlocked top-level groups only. */
-  private allUnlockedTopCollapsed(
-    pageId: string,
-    collapsed: Record<string, boolean> = this.store.page(pageId)?.collapsed ?? {},
-  ): boolean {
+  private allUnlockedTopCollapsed(pageId: string, collapsed?: Record<string, boolean>): boolean {
+    const flags = collapsed ?? this.store.page(pageId)?.collapsed[this.focusedSurface()] ?? {};
     const tops = this.store
       .markers()
       .filter(([id, def]) => !def.parent && this.store.pageOf(id) === pageId && !this.store.isLocked(id));
-    return tops.length > 0 && tops.every(([id]) => !!collapsed[id]);
+    return tops.length > 0 && tops.every(([id]) => !!flags[id]);
   }
 
   private refuseLocked(markerId: string): boolean {
@@ -526,6 +525,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     void this.workspaceState.update(key, pageId);
+  }
+
+  private surfaceOf(webview: vscode.Webview): MapSurface {
+    return this.surfaceByWebview.get(webview) ?? 'explorer';
+  }
+
+  private focusedSurface(): MapSurface {
+    return this.lastFocusedWebview ? this.surfaceOf(this.lastFocusedWebview) : 'explorer';
   }
 
   private rememberFocus(webview: vscode.Webview, pageId?: string): void {
@@ -706,19 +713,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'setCollapsed') {
       this.rememberFocus(webview, message.pageId);
       const page = this.store.page(message.pageId);
+      const surface = this.surfaceOf(webview);
       if (page) {
         const next: Record<string, boolean> = { ...message.collapsed };
+        const current = page.collapsed[surface];
         for (const [id] of this.store.markers()) {
           if (!this.store.isLocked(id)) {
             continue;
           }
-          if (page.collapsed[id]) {
+          if (current[id]) {
             next[id] = true;
           } else {
             delete next[id];
           }
         }
-        await this.store.updatePageView(message.pageId, { collapsed: next });
+        await this.store.setPageCollapsed(message.pageId, surface, next);
         if (webview === this.lastFocusedWebview) {
           await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(message.pageId, next));
         }
@@ -949,13 +958,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (restorePage) {
       this.needsPageRestore.delete(webview);
     }
+    const surface = this.surfaceOf(webview);
     const pages: MapPage[] = this.store.pages().map(([id, def]) => ({
       id,
       name: def.name,
       kind: def.kind,
       layout: def.layout,
       groupsLayout: def.groupsLayout,
-      collapsed: { ...def.collapsed },
+      collapsed: { ...def.collapsed[surface] },
     }));
     const groups: MapGroup[] = await Promise.all(
       this.store.markers().map(async ([id, def]) => ({
@@ -1112,7 +1122,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!page) {
         return;
       }
-      const next: Record<string, boolean> = { ...page.collapsed };
+      const surface = this.surfaceOf(webview);
+      const next: Record<string, boolean> = { ...page.collapsed[surface] };
       for (const [id, def] of this.store.markers()) {
         if (def.parent || this.store.pageOf(id) !== activePage || this.store.isLocked(id)) {
           continue;
@@ -1123,7 +1134,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           delete next[id];
         }
       }
-      await this.store.updatePageView(activePage, { collapsed: next });
+      await this.store.setPageCollapsed(activePage, surface, next);
       if (webview === this.lastFocusedWebview) {
         await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(activePage, next));
       }

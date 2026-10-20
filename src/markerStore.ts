@@ -157,6 +157,21 @@ export interface MarkerDef {
   order: number;
 }
 
+/** Map surface that remembers its own group folds. */
+export const MAP_SURFACES = ['explorer', 'bottom', 'sidebar'] as const;
+export type MapSurface = (typeof MAP_SURFACES)[number];
+
+/** Folded group ids, separate for Explorer, the bottom panel, and the sidebar. */
+export interface SurfaceCollapsed {
+  explorer: Record<string, boolean>;
+  bottom: Record<string, boolean>;
+  sidebar: Record<string, boolean>;
+}
+
+export function emptyCollapsed(): SurfaceCollapsed {
+  return { explorer: {}, bottom: {}, sidebar: {} };
+}
+
 /** Named map page (pager slide). */
 export interface PageDef {
   name: string;
@@ -164,8 +179,8 @@ export interface PageDef {
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
-  /** Collapsed top-level (and nested) group ids on this page. */
-  collapsed: Record<string, boolean>;
+  /** Folded groups on this page, per surface. Not part of undo history. */
+  collapsed: SurfaceCollapsed;
 }
 
 /** Free-text note attached to a group on a notes page. */
@@ -182,7 +197,7 @@ export function defaultPage(name = 'Карта'): PageDef {
     order: 1,
     layout: 'chips',
     groupsLayout: 'flow',
-    collapsed: {},
+    collapsed: emptyCollapsed(),
   };
 }
 
@@ -215,7 +230,7 @@ interface MarkersFile {
   appearance: Appearance;
 }
 
-/** Page-local undo snapshot: groups, items, notes and view — not page order or appearance. */
+/** Page-local undo snapshot: groups, items, notes and view — not folds, page order, or appearance. */
 interface PageSnapshot {
   version: 1;
   page: {
@@ -223,7 +238,6 @@ interface PageSnapshot {
     kind: PageKind;
     layout: MapLayout;
     groupsLayout: GroupsLayout;
-    collapsed: Record<string, boolean>;
   };
   markers: Record<string, MarkerDef>;
   items: Record<string, string[]>;
@@ -736,9 +750,7 @@ export class MarkerStore implements vscode.Disposable {
     }
     delete this.data.markers[id];
     this.removeNotesOfMarker(id);
-    for (const page of Object.values(this.data.pages)) {
-      delete page.collapsed[id];
-    }
+    this.forgetCollapsed(id);
     this.applyOrder(ordered);
     for (const [relPath, ids] of Object.entries(this.data.items)) {
       this.setItem(relPath, ids.filter((x) => x !== id));
@@ -936,7 +948,7 @@ export class MarkerStore implements vscode.Disposable {
 
   async updatePageView(
     id: string,
-    patch: Partial<Pick<PageDef, 'layout' | 'groupsLayout' | 'collapsed'>>,
+    patch: Partial<Pick<PageDef, 'layout' | 'groupsLayout'>>,
   ): Promise<void> {
     const page = this.data.pages[id];
     if (!page) {
@@ -948,9 +960,26 @@ export class MarkerStore implements vscode.Disposable {
     if (patch.groupsLayout !== undefined) {
       page.groupsLayout = normalizeGroupsLayout(patch.groupsLayout);
     }
-    if (patch.collapsed !== undefined) {
-      page.collapsed = { ...patch.collapsed };
+    await this.commit();
+  }
+
+  /** Remember which groups are folded on one surface of one page. Does not create an undo step. */
+  async setPageCollapsed(
+    pageId: string,
+    surface: MapSurface,
+    collapsed: Record<string, boolean>,
+  ): Promise<void> {
+    const page = this.data.pages[pageId];
+    if (!page) {
+      return;
     }
+    const next: Record<string, boolean> = {};
+    for (const [markerId, on] of Object.entries(collapsed)) {
+      if (on && this.data.markers[markerId]) {
+        next[markerId] = true;
+      }
+    }
+    page.collapsed[surface] = next;
     await this.commit();
   }
 
@@ -1355,9 +1384,13 @@ export class MarkerStore implements vscode.Disposable {
   private async loadHistory(): Promise<void> {
     this.pagePresent = this.captureAllPageSnapshots();
     const cursors = this.pageCursors();
+    const legacyCursors: Record<string, string> = {};
+    for (const [pageId] of this.pages()) {
+      legacyCursors[pageId] = fingerprint(this.capturePageSnapshot(pageId, true));
+    }
     try {
       const raw = await vscode.workspace.fs.readFile(this.historyUri);
-      this.history = decodeHistory(Buffer.from(raw).toString('utf8'), cursors);
+      this.history = decodeHistory(Buffer.from(raw).toString('utf8'), cursors, legacyCursors);
     } catch (error) {
       if (!isFileNotFound(error)) {
         console.error('Syn3 history:', error);
@@ -1464,20 +1497,14 @@ export class MarkerStore implements vscode.Disposable {
     return result;
   }
 
-  /** Stable JSON of one page's groups, items, notes and view. */
-  private capturePageSnapshot(pageId: string): string {
+  /** Stable JSON of one page's groups, items, notes and view. Folds are omitted so they never become an undo step. */
+  private capturePageSnapshot(pageId: string, legacyCollapsed = false): string {
     const def = this.data.pages[pageId];
     if (!def) {
       return '';
     }
     const markerIds = this.markerIdsOnPage(pageId);
     const markerSet = new Set(markerIds);
-    const collapsed: Record<string, boolean> = {};
-    for (const markerId of Object.keys(def.collapsed).sort()) {
-      if (def.collapsed[markerId] && markerSet.has(markerId)) {
-        collapsed[markerId] = true;
-      }
-    }
     const markers: Record<string, MarkerDef> = {};
     for (const id of markerIds) {
       const src = this.data.markers[id];
@@ -1579,7 +1606,7 @@ export class MarkerStore implements vscode.Disposable {
         kind: def.kind,
         layout: def.layout,
         groupsLayout: def.groupsLayout,
-        collapsed,
+        ...(legacyCollapsed ? { collapsed: this.legacyCollapsed(def, markerSet) } : {}),
       },
       markers,
       items,
@@ -1702,17 +1729,6 @@ export class MarkerStore implements vscode.Disposable {
     page.kind = normalizePageKind(snap.page.kind) ?? page.kind;
     page.layout = normalizeMapLayout(snap.page.layout);
     page.groupsLayout = normalizeGroupsLayout(snap.page.groupsLayout);
-    const collapsed: Record<string, boolean> = {};
-    for (const [snapId, value] of Object.entries(snap.page.collapsed ?? {})) {
-      if (!value) {
-        continue;
-      }
-      const actualId = idMap.get(snapId);
-      if (actualId) {
-        collapsed[actualId] = true;
-      }
-    }
-    page.collapsed = collapsed;
 
     for (const [relPath, ids] of Object.entries(snap.items ?? {})) {
       const mapped = ids
@@ -1823,19 +1839,13 @@ export class MarkerStore implements vscode.Disposable {
   private capture(): string {
     const pages: Record<string, PageDef> = {};
     for (const [id, def] of this.pages()) {
-      const collapsed: Record<string, boolean> = {};
-      for (const markerId of Object.keys(def.collapsed).sort()) {
-        if (def.collapsed[markerId]) {
-          collapsed[markerId] = true;
-        }
-      }
       pages[id] = {
         name: def.name,
         kind: def.kind,
         order: def.order,
         layout: def.layout,
         groupsLayout: def.groupsLayout,
-        collapsed,
+        collapsed: packCollapsed(def.collapsed),
       };
     }
     const markers: Record<string, MarkerDef> = {};
@@ -2029,13 +2039,30 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
+  private forgetCollapsed(markerId: string): void {
+    for (const page of Object.values(this.data.pages)) {
+      for (const surface of MAP_SURFACES) {
+        delete page.collapsed[surface][markerId];
+      }
+    }
+  }
+
+  /** Flat fold map from before folds were stored per surface. Used only to recognize an existing undo cursor. */
+  private legacyCollapsed(def: PageDef, markerSet: Set<string>): Record<string, boolean> {
+    const collapsed: Record<string, boolean> = {};
+    for (const markerId of Object.keys(def.collapsed.explorer).sort()) {
+      if (def.collapsed.explorer[markerId] && markerSet.has(markerId)) {
+        collapsed[markerId] = true;
+      }
+    }
+    return collapsed;
+  }
+
   /** Drop a marker and its item/class/note links without committing. */
   private purgeMarker(id: string): void {
     delete this.data.markers[id];
     this.removeNotesOfMarker(id);
-    for (const page of Object.values(this.data.pages)) {
-      delete page.collapsed[id];
-    }
+    this.forgetCollapsed(id);
     for (const [relPath, ids] of Object.entries(this.data.items)) {
       this.setItem(
         relPath,
@@ -2124,6 +2151,61 @@ function migrateColorId(color: string): string {
   return prefix ? `syn3.${color.slice(prefix.length)}` : color;
 }
 
+function packFlags(flags: Record<string, boolean> | undefined): Record<string, boolean> {
+  const result: Record<string, boolean> = {};
+  for (const markerId of Object.keys(flags ?? {}).sort()) {
+    if (flags?.[markerId]) {
+      result[markerId] = true;
+    }
+  }
+  return result;
+}
+
+function packCollapsed(collapsed: SurfaceCollapsed): SurfaceCollapsed {
+  return {
+    explorer: packFlags(collapsed.explorer),
+    bottom: packFlags(collapsed.bottom),
+    sidebar: packFlags(collapsed.sidebar),
+  };
+}
+
+function flagMap(raw: unknown): Record<string, boolean> {
+  const result: Record<string, boolean> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return result;
+  }
+  for (const [markerId, on] of Object.entries(raw as Record<string, unknown>)) {
+    if (on === true) {
+      result[markerId] = true;
+    }
+  }
+  return result;
+}
+
+/** Accepts the per-surface object, or the older flat `{ markerId: true }` shared by every surface. */
+function normalizeCollapsed(raw: unknown): SurfaceCollapsed {
+  const collapsed = emptyCollapsed();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return collapsed;
+  }
+  const source = raw as Record<string, unknown>;
+  const perSurface = MAP_SURFACES.some((surface) => {
+    const value = source[surface];
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  });
+  if (perSurface) {
+    for (const surface of MAP_SURFACES) {
+      collapsed[surface] = flagMap(source[surface]);
+    }
+    return collapsed;
+  }
+  const shared = flagMap(source);
+  for (const surface of MAP_SURFACES) {
+    collapsed[surface] = { ...shared };
+  }
+  return collapsed;
+}
+
 function normalize(raw: unknown): MarkersFile {
   const result = emptyData();
   if (!raw || typeof raw !== 'object') {
@@ -2155,21 +2237,13 @@ function normalize(raw: unknown): MarkersFile {
       const kind = normalizePageKind(def.kind) ?? 'files';
       const name =
         typeof def.name === 'string' && def.name.trim() ? capitalize(def.name.trim()) : capitalize(id);
-      const collapsed: Record<string, boolean> = {};
-      if (def.collapsed && typeof def.collapsed === 'object') {
-        for (const [markerId, on] of Object.entries(def.collapsed as Record<string, unknown>)) {
-          if (on) {
-            collapsed[markerId] = true;
-          }
-        }
-      }
       result.pages[id] = {
         name,
         kind,
         order: typeof def.order === 'number' ? def.order : index,
         layout: normalizeMapLayout(def.layout),
         groupsLayout: normalizeGroupsLayout(def.groupsLayout),
-        collapsed,
+        collapsed: normalizeCollapsed(def.collapsed),
       };
     }
   }
@@ -2357,9 +2431,11 @@ function normalize(raw: unknown): MarkersFile {
   }
 
   for (const page of Object.values(result.pages)) {
-    for (const markerId of Object.keys(page.collapsed)) {
-      if (!(markerId in result.markers)) {
-        delete page.collapsed[markerId];
+    for (const surface of MAP_SURFACES) {
+      for (const markerId of Object.keys(page.collapsed[surface])) {
+        if (!(markerId in result.markers)) {
+          delete page.collapsed[surface][markerId];
+        }
       }
     }
   }
