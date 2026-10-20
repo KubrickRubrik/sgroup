@@ -90,6 +90,14 @@
     if (message.type === 'state') {
       closeDirPopover();
       data = message;
+      if (
+        message.restorePage &&
+        message.activePageId &&
+        pages().some((page) => page.id === message.activePageId)
+      ) {
+        uiState.activePageId = message.activePageId;
+        vscode.setState(uiState);
+      }
       ensureActivePage();
       setHistoryButtons(message.history);
       setToolbar(activePage() || message);
@@ -146,6 +154,13 @@
   let isSliding = false;
   let pageSlideToken = 0;
   let renderDeferred = false;
+  let renderFromToggle = false;
+  let isFolding = false;
+  let foldToken = 0;
+  const FOLD_MS = 200;
+  const FOLD_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const FOLD_TRANSITION =
+    'height ' + FOLD_MS + 'ms ' + FOLD_EASE + ', margin-top ' + FOLD_MS + 'ms ' + FOLD_EASE + ', opacity 160ms ease';
   /** @type {((event: TransitionEvent) => void) | null} */
   let slideEndHandler = null;
   let slideTimer = 0;
@@ -360,7 +375,9 @@
       next[groupId] = true;
     }
     persistCollapsed(next);
+    renderFromToggle = true;
     render();
+    renderFromToggle = false;
   }
 
   /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number } | undefined} appearance */
@@ -444,6 +461,11 @@
       setCollapseButton();
       return;
     }
+    if (isFolding && direction === 0 && !renderFromToggle) {
+      renderDeferred = true;
+      setCollapseButton();
+      return;
+    }
     renderDeferred = false;
     cancelSlide();
 
@@ -495,10 +517,7 @@
       root.classList.remove('page-entering');
       stage.style.height = '';
       stage.classList.remove('is-sliding');
-      if (renderDeferred) {
-        renderDeferred = false;
-        render();
-      }
+      flushDeferredRender();
     };
 
     slideEndHandler = (event) => {
@@ -521,6 +540,9 @@
   }
 
   function paintPage() {
+    const folds = captureFolds();
+    foldToken += 1;
+    isFolding = false;
     setCollapseButton();
     root.textContent = '';
     const page = activePage();
@@ -547,6 +569,197 @@
       root.append(renderGroup(group, byId));
     }
     updateActive();
+    playFolds(folds);
+  }
+
+  function flushDeferredRender() {
+    if (renderDeferred && !isSliding && !isFolding) {
+      renderDeferred = false;
+      render();
+    }
+  }
+
+  /**
+   * Groups whose folded state changed since the last paint.
+   * @returns {Array<{ id: string, opening: boolean, height: number, marginTop: string, snapshot: HTMLElement | null }>}
+   */
+  function captureFolds() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return [];
+    }
+    const ids = new Set(pageGroups().map((group) => group.id));
+    /** @type {Array<{ id: string, opening: boolean, height: number, marginTop: string, snapshot: HTMLElement | null }>} */
+    const folds = [];
+    for (const section of root.querySelectorAll('section.group')) {
+      if (!(section instanceof HTMLElement)) {
+        continue;
+      }
+      const id = section.dataset.markerId || '';
+      if (!ids.has(id)) {
+        continue;
+      }
+      const wasCollapsed = section.classList.contains('collapsed');
+      const nowCollapsed = isCollapsed(id);
+      if (wasCollapsed === nowCollapsed) {
+        continue;
+      }
+      const body = section.querySelector(':scope > .children');
+      const opening = wasCollapsed && !nowCollapsed;
+      folds.push({
+        id,
+        opening,
+        height: body instanceof HTMLElement ? body.offsetHeight : 0,
+        marginTop: body instanceof HTMLElement ? getComputedStyle(body).marginTop : '0px',
+        snapshot: !opening && body instanceof HTMLElement ? /** @type {HTMLElement} */ (body.cloneNode(true)) : null,
+      });
+    }
+    return folds;
+  }
+
+  /**
+   * @param {Array<{ id: string, opening: boolean, height: number, marginTop: string, snapshot: HTMLElement | null }>} folds
+   */
+  function playFolds(folds) {
+    if (folds.length === 0) {
+      return;
+    }
+    /** @type {Array<{ section: HTMLElement, opening: boolean, el: HTMLElement | null, height: number, marginTop: string, dots: HTMLElement | null, dotsHeight: number, dotsMargin: string }>} */
+    const jobs = [];
+    for (const fold of folds) {
+      const section = root.querySelector('section.group[data-marker-id="' + CSS.escape(fold.id) + '"]');
+      if (!(section instanceof HTMLElement)) {
+        continue;
+      }
+      if (fold.opening) {
+        const body = section.querySelector(':scope > .children');
+        if (!(body instanceof HTMLElement)) {
+          continue;
+        }
+        jobs.push({
+          section,
+          opening: true,
+          el: body,
+          height: body.offsetHeight,
+          marginTop: getComputedStyle(body).marginTop,
+          dots: null,
+          dotsHeight: 0,
+          dotsMargin: '0px',
+        });
+        continue;
+      }
+      const dots = section.querySelector(':scope > .dots');
+      const dotsEl = dots instanceof HTMLElement ? dots : null;
+      jobs.push({
+        section,
+        opening: false,
+        el: fold.snapshot,
+        height: fold.height,
+        marginTop: fold.marginTop,
+        dots: dotsEl,
+        dotsHeight: dotsEl ? dotsEl.offsetHeight : 0,
+        dotsMargin: dotsEl ? getComputedStyle(dotsEl).marginTop : '0px',
+      });
+    }
+    if (jobs.length === 0) {
+      return;
+    }
+
+    const token = ++foldToken;
+    isFolding = true;
+    for (const job of jobs) {
+      const chevron = job.section.querySelector(':scope > .group-header > .chevron');
+      if (chevron instanceof HTMLElement) {
+        chevron.style.transition = 'none';
+        chevron.style.transform = job.opening ? 'rotate(-90deg)' : 'rotate(0deg)';
+      }
+      if (job.opening && job.el) {
+        primeFold(job.el, '0px', '0px', '1');
+      } else if (job.el) {
+        job.el.setAttribute('aria-hidden', 'true');
+        primeFold(job.el, job.height + 'px', job.marginTop, '1');
+        if (job.dots) {
+          primeFold(job.dots, '0px', '0px', '0');
+          job.section.insertBefore(job.el, job.dots);
+        } else {
+          job.section.append(job.el);
+        }
+      }
+    }
+
+    void root.offsetWidth;
+
+    for (const job of jobs) {
+      const chevron = job.section.querySelector(':scope > .group-header > .chevron');
+      if (chevron instanceof HTMLElement) {
+        chevron.style.transition = 'transform ' + FOLD_MS + 'ms ' + FOLD_EASE;
+        chevron.style.transform = job.opening ? 'rotate(0deg)' : 'rotate(-90deg)';
+      }
+      if (job.opening && job.el) {
+        job.el.style.transition = FOLD_TRANSITION;
+        job.el.style.height = job.height + 'px';
+        job.el.style.marginTop = job.marginTop;
+      } else if (job.el) {
+        job.el.style.transition = FOLD_TRANSITION;
+        job.el.style.height = '0px';
+        job.el.style.marginTop = '0px';
+        job.el.style.opacity = '0';
+        if (job.dots) {
+          job.dots.style.transition = FOLD_TRANSITION;
+          job.dots.style.height = job.dotsHeight + 'px';
+          job.dots.style.marginTop = job.dotsMargin;
+          job.dots.style.opacity = '1';
+        }
+      }
+    }
+
+    window.setTimeout(() => {
+      if (foldToken !== token) {
+        return;
+      }
+      foldToken += 1;
+      isFolding = false;
+      for (const job of jobs) {
+        if (job.opening && job.el) {
+          clearFold(job.el);
+        } else if (job.el) {
+          job.el.remove();
+        }
+        if (job.dots) {
+          clearFold(job.dots);
+        }
+        const chevron = job.section.querySelector(':scope > .group-header > .chevron');
+        if (chevron instanceof HTMLElement) {
+          chevron.style.transition = '';
+          chevron.style.transform = '';
+        }
+      }
+      flushDeferredRender();
+    }, FOLD_MS + 80);
+  }
+
+  /**
+   * @param {HTMLElement} el
+   * @param {string} height
+   * @param {string} marginTop
+   * @param {string} opacity
+   */
+  function primeFold(el, height, marginTop, opacity) {
+    el.style.overflow = 'hidden';
+    el.style.pointerEvents = 'none';
+    el.style.transition = 'none';
+    el.style.height = height;
+    el.style.marginTop = marginTop;
+    el.style.opacity = opacity;
+  }
+
+  /** @param {HTMLElement} el */
+  function clearFold(el) {
+    el.style.overflow = '';
+    el.style.pointerEvents = '';
+    el.style.transition = '';
+    el.style.height = '';
+    el.style.marginTop = '';
+    el.style.opacity = '';
   }
 
   function renderPager() {

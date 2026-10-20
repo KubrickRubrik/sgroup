@@ -106,7 +106,8 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .page-leaving,
-  .map-page.page-entering {
+  .map-page.page-entering,
+  .chevron {
     transition: none;
   }
 }
@@ -539,11 +540,11 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   color: var(--vscode-descriptionForeground);
   display: inline-block;
   font-size: var(--size-meta);
-  transition: transform 0.1s;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
   width: 10px;
 }
 
-.collapsed .chevron {
+.group.collapsed > .group-header > .chevron {
   transform: rotate(-90deg);
 }
 

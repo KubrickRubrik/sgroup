@@ -298,6 +298,11 @@ export class MarkerStore implements vscode.Disposable {
     return this.data.appearance;
   }
 
+  /** True after markers and history have been read. Page ids are meaningful only then. */
+  get ready(): boolean {
+    return this.historyReady;
+  }
+
   canUndo(pageId: string): boolean {
     return (this.history.pages[pageId]?.past.length ?? 0) > 0;
   }

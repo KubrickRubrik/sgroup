@@ -16,6 +16,13 @@ import { openClassAt } from './openClass';
 import { cssColor, normalizeHex } from './palette';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
+/** Which map surface is showing which page. Survives reload; each surface is independent. */
+const ACTIVE_PAGE_KEYS = {
+  explorer: 'syn3.map.activePage.explorer',
+  bottom: 'syn3.map.activePage.bottom',
+  sidebar: 'syn3.map.activePage.sidebar',
+} as const;
+type MapSurface = keyof typeof ACTIVE_PAGE_KEYS;
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
 const GROUPS_LAYOUT_CONTEXT = 'syn3.map.groupsLayout';
@@ -151,6 +158,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private readonly webviews = new Set<vscode.Webview>();
   private readonly activePageByWebview = new WeakMap<vscode.Webview, string>();
+  private readonly surfaceByWebview = new WeakMap<vscode.Webview, MapSurface>();
+  /** Script has posted `ready`, so postMessage will be received. */
+  private readonly readyWebviews = new WeakSet<vscode.Webview>();
+  /** First state after load should open the page saved for this surface. */
+  private readonly needsPageRestore = new WeakSet<vscode.Webview>();
   private readonly subscriptions: vscode.Disposable[];
   private readonly media: vscode.Uri;
   private panel?: vscode.WebviewPanel;
@@ -165,6 +177,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     private readonly store: MarkerStore,
     extensionUri: vscode.Uri,
     private readonly memento: vscode.Memento,
+    private readonly workspaceState: vscode.Memento,
   ) {
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
@@ -186,11 +199,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   // ---- section inside Explorer ----
 
   resolveWebviewView(view: vscode.WebviewView): void {
-    if (view.viewType === MarkersMapProvider.bottomViewId) {
+    const surface: MapSurface = view.viewType === MarkersMapProvider.bottomViewId ? 'bottom' : 'explorer';
+    if (surface === 'bottom') {
       this.bottomView = view;
     }
     const webview = view.webview;
-    this.attach(webview);
+    this.attach(webview, 'view', surface);
     view.onDidChangeVisibility(() => {
       if (view.visible) {
         void this.postState(webview);
@@ -440,7 +454,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     for (const webview of this.webviews) {
       void this.postState(webview);
     }
-    void this.syncHistoryContext();
+    if (this.store.ready) {
+      void this.syncFocusContext();
+    }
   }
 
   async historyBack(): Promise<void> {
@@ -466,25 +482,72 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private pageIdFor(webview: vscode.Webview): string {
-    const stored = this.activePageByWebview.get(webview);
-    if (stored && this.store.page(stored)) {
-      return stored;
+    const hinted = this.activePageByWebview.get(webview);
+    if (hinted && this.store.page(hinted)) {
+      return hinted;
     }
-    return this.store.defaultFilesPageId();
+    if (hinted && this.store.ready) {
+      this.activePageByWebview.delete(webview);
+    }
+    const saved = this.savedPageId(webview);
+    if (saved) {
+      this.activePageByWebview.set(webview, saved);
+      return saved;
+    }
+    const fallback = this.store.defaultFilesPageId();
+    if (this.store.ready && this.store.page(fallback)) {
+      this.activePageByWebview.set(webview, fallback);
+    }
+    return fallback;
+  }
+
+  private savedPageId(webview: vscode.Webview): string | undefined {
+    if (!this.store.ready) {
+      return undefined;
+    }
+    const surface = this.surfaceByWebview.get(webview);
+    if (!surface) {
+      return undefined;
+    }
+    const saved = this.workspaceState.get<string>(ACTIVE_PAGE_KEYS[surface]);
+    return saved && this.store.page(saved) ? saved : undefined;
+  }
+
+  private persistSurfacePage(webview: vscode.Webview, pageId: string): void {
+    if (!this.store.ready || !this.store.page(pageId)) {
+      return;
+    }
+    const surface = this.surfaceByWebview.get(webview);
+    if (!surface) {
+      return;
+    }
+    const key = ACTIVE_PAGE_KEYS[surface];
+    if (this.workspaceState.get<string>(key) === pageId) {
+      return;
+    }
+    void this.workspaceState.update(key, pageId);
   }
 
   private rememberFocus(webview: vscode.Webview, pageId?: string): void {
     this.lastFocusedWebview = webview;
-    if (pageId && this.store.page(pageId)) {
-      this.activePageByWebview.set(webview, pageId);
+    if (!pageId) {
+      return;
     }
+    if (!this.store.page(pageId)) {
+      if (!this.store.ready) {
+        this.activePageByWebview.set(webview, pageId);
+      }
+      return;
+    }
+    this.activePageByWebview.set(webview, pageId);
+    this.persistSurfacePage(webview, pageId);
   }
 
   private adoptPanel(panel: vscode.WebviewPanel): void {
     this.panel = panel;
     panel.title = MarkersMapProvider.panelTitle;
     panel.iconPath = vscode.Uri.joinPath(this.media, 'map-icon.svg');
-    this.attach(panel.webview, 'panel');
+    this.attach(panel.webview, 'panel', 'sidebar');
     panel.onDidChangeViewState(() => {
       if (panel.visible) {
         void this.postState(panel.webview);
@@ -499,7 +562,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
-  private attach(webview: vscode.Webview, chrome: 'view' | 'panel' = 'view'): void {
+  private attach(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): void {
+    this.surfaceByWebview.set(webview, surface);
+    this.needsPageRestore.add(webview);
     webview.options = { enableScripts: true, localResourceRoots: [this.media] };
     webview.html = this.html(webview, chrome);
     webview.onDidReceiveMessage((message: IncomingMessage) => this.onMessage(webview, message));
@@ -606,7 +671,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private async onMessage(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
     if (message.type === 'ready') {
+      this.readyWebviews.add(webview);
       this.rememberFocus(webview, message.pageId);
+      if (!this.store.ready) {
+        return;
+      }
       await this.postState(webview);
       await this.syncFocusContext();
       return;
@@ -873,6 +942,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async postState(webview: vscode.Webview): Promise<void> {
+    if (!this.store.ready || !this.readyWebviews.has(webview)) {
+      return;
+    }
+    const restorePage = this.needsPageRestore.has(webview);
+    if (restorePage) {
+      this.needsPageRestore.delete(webview);
+    }
     const pages: MapPage[] = this.store.pages().map(([id, def]) => ({
       id,
       name: def.name,
@@ -907,9 +983,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       })),
     );
     const pageId = this.pageIdFor(webview);
+    if (restorePage) {
+      this.persistSurfacePage(webview, pageId);
+    }
     const page = this.store.page(pageId);
     await webview.postMessage({
       type: 'state',
+      restorePage: restorePage || undefined,
+      activePageId: restorePage ? pageId : undefined,
       pages,
       groups,
       maxPages: MAX_PAGES,
@@ -1100,6 +1181,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const id = await this.store.createPage(name, kind);
     if (id) {
       this.activePageByWebview.set(webview, id);
+      this.persistSurfacePage(webview, id);
       await webview.postMessage({ type: 'openPage', pageId: id });
     }
   }
@@ -1140,6 +1222,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const neighbor = await this.store.deletePage(pageId);
     if (neighbor) {
       this.activePageByWebview.set(webview, neighbor);
+      this.persistSurfacePage(webview, neighbor);
       await webview.postMessage({ type: 'openPage', pageId: neighbor });
     }
   }

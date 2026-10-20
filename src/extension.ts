@@ -72,7 +72,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const store = new MarkerStore(folder.uri);
   const tree = new MarkersTreeProvider(store);
   const decorations = new MarkerDecorationProvider(store);
-  const map = new MarkersMapProvider(store, context.extensionUri, context.globalState);
+  const map = new MarkersMapProvider(
+    store,
+    context.extensionUri,
+    context.globalState,
+    context.workspaceState,
+  );
   const settings = new SettingsPanel(store, context.extensionUri);
 
   context.subscriptions.push(
