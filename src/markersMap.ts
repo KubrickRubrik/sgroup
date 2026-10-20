@@ -1209,7 +1209,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     </div>
   </div>
   <div id="pager" class="pager" hidden></div>
-  <div id="root"></div>
+  <div id="stage" class="page-stage">
+    <div id="root" class="map-page"></div>
+  </div>
   <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;

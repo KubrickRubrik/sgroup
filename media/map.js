@@ -99,18 +99,16 @@
       render();
       vscode.postMessage({ type: 'activePage', pageId: uiState.activePageId });
     } else if (message.type === 'openPage') {
-      if (message.pageId) {
-        uiState.activePageId = message.pageId;
-        vscode.setState(uiState);
-        if (data && pages().some((page) => page.id === message.pageId)) {
-          setHistoryButtons(data.history);
-          setToolbar(activePage() || data);
-          updatePageMenu();
-          renderPager();
-          render();
-          vscode.postMessage({ type: 'activePage', pageId: message.pageId });
-        }
+      if (!message.pageId) {
+        return;
       }
+      if (pages().some((page) => page.id === message.pageId)) {
+        setActivePage(message.pageId);
+        return;
+      }
+      rememberSlide(message.pageId);
+      uiState.activePageId = message.pageId;
+      vscode.setState(uiState);
     } else if (message.type === 'active' && data) {
       data.active = message.active;
       updateActive(true);
@@ -143,10 +141,20 @@
     }
   }
 
+  /** 1 = next page enters from the right, -1 = previous enters from the left. */
+  let pendingSlide = 0;
+  let isSliding = false;
+  let pageSlideToken = 0;
+  let renderDeferred = false;
+  /** @type {((event: TransitionEvent) => void) | null} */
+  let slideEndHandler = null;
+  let slideTimer = 0;
+
   function setActivePage(pageId) {
     if (!pages().some((page) => page.id === pageId) || uiState.activePageId === pageId) {
       return;
     }
+    rememberSlide(pageId);
     uiState.activePageId = pageId;
     vscode.setState(uiState);
     setHistoryButtons(data && data.history);
@@ -155,6 +163,54 @@
     renderPager();
     render();
     vscode.postMessage({ type: 'activePage', pageId });
+  }
+
+  /** Direction from the current page to `pageId`, using the list as it is now. */
+  function rememberSlide(pageId) {
+    const list = pages();
+    const from = list.findIndex((page) => page.id === uiState.activePageId);
+    const to = list.findIndex((page) => page.id === pageId);
+    if (from < 0 || from === to) {
+      pendingSlide = 0;
+      return;
+    }
+    pendingSlide = to < 0 || to > from ? 1 : -1;
+  }
+
+  function consumeSlideDirection() {
+    const direction = pendingSlide === 1 || pendingSlide === -1 ? pendingSlide : 0;
+    pendingSlide = 0;
+    return direction;
+  }
+
+  function canSlide(direction) {
+    const stage = root.parentElement;
+    return (
+      direction !== 0 &&
+      !!stage &&
+      stage.classList.contains('page-stage') &&
+      root.childElementCount > 0 &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+  }
+
+  function cancelSlide() {
+    pageSlideToken += 1;
+    isSliding = false;
+    window.clearTimeout(slideTimer);
+    if (slideEndHandler) {
+      root.removeEventListener('transitionend', slideEndHandler);
+      slideEndHandler = null;
+    }
+    const stage = root.parentElement;
+    stage?.querySelectorAll('.page-leaving').forEach((node) => node.remove());
+    root.style.transition = '';
+    root.style.transform = '';
+    root.classList.remove('page-entering');
+    if (stage) {
+      stage.style.height = '';
+      stage.classList.remove('is-sliding');
+    }
   }
 
   function pageGroups() {
@@ -382,12 +438,95 @@
     if (!data) {
       return;
     }
+    const direction = consumeSlideDirection();
+    if (isSliding && direction === 0) {
+      renderDeferred = true;
+      setCollapseButton();
+      return;
+    }
+    renderDeferred = false;
+    cancelSlide();
+
+    /** @type {HTMLElement | null} */
+    let leaving = null;
+    let oldHeight = 0;
+    const stage = root.parentElement;
+    if (canSlide(direction) && stage) {
+      oldHeight = root.offsetHeight;
+      leaving = /** @type {HTMLElement} */ (root.cloneNode(true));
+      leaving.removeAttribute('id');
+      leaving.classList.add('page-leaving');
+      leaving.setAttribute('aria-hidden', 'true');
+      leaving.inert = true;
+      stage.append(leaving);
+    }
+
+    paintPage();
+
+    if (!leaving || !stage) {
+      return;
+    }
+
+    const token = ++pageSlideToken;
+    isSliding = true;
+    const enterFrom = direction > 0 ? '100%' : '-100%';
+    const leaveTo = direction > 0 ? '-100%' : '100%';
+    stage.classList.add('is-sliding');
+    stage.style.height = Math.max(oldHeight, root.offsetHeight) + 'px';
+    root.classList.add('page-entering');
+    root.style.transition = 'none';
+    root.style.transform = 'translateX(' + enterFrom + ')';
+
+    const outgoing = leaving;
+    const done = () => {
+      if (pageSlideToken !== token) {
+        return;
+      }
+      pageSlideToken += 1;
+      isSliding = false;
+      window.clearTimeout(slideTimer);
+      if (slideEndHandler) {
+        root.removeEventListener('transitionend', slideEndHandler);
+        slideEndHandler = null;
+      }
+      outgoing.remove();
+      root.style.transition = '';
+      root.style.transform = '';
+      root.classList.remove('page-entering');
+      stage.style.height = '';
+      stage.classList.remove('is-sliding');
+      if (renderDeferred) {
+        renderDeferred = false;
+        render();
+      }
+    };
+
+    slideEndHandler = (event) => {
+      if (event.target !== root || event.propertyName !== 'transform') {
+        return;
+      }
+      done();
+    };
+    root.addEventListener('transitionend', slideEndHandler);
+    slideTimer = window.setTimeout(done, 420);
+
+    outgoing.style.transition = 'none';
+    outgoing.style.transform = 'translateX(0)';
+    void stage.offsetWidth;
+    const slideTiming = 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)';
+    root.style.transition = slideTiming;
+    outgoing.style.transition = slideTiming;
+    root.style.transform = 'translateX(0)';
+    outgoing.style.transform = 'translateX(' + leaveTo + ')';
+  }
+
+  function paintPage() {
     setCollapseButton();
     root.textContent = '';
     const page = activePage();
     const layout = page?.layout || data.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data.groupsLayout || 'flow';
-    root.className = 'layout-' + layout + ' groups-' + groupsLayout;
+    root.className = 'map-page layout-' + layout + ' groups-' + groupsLayout;
     clearDropHighlights();
 
     if (data.error) {
@@ -1622,7 +1761,7 @@
       }
       window.setTimeout(() => {
         wheelLock = false;
-      }, 280);
+      }, 320);
     },
     { passive: false },
   );

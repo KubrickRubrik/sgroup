@@ -80,6 +80,37 @@ body {
   margin: 0 0 8px;
 }
 
+.page-stage {
+  position: relative;
+}
+
+.page-stage.is-sliding {
+  overflow: clip;
+}
+
+.page-leaving {
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 100%;
+}
+
+.page-stage.is-sliding .map-page {
+  pointer-events: none;
+}
+
+.page-leaving,
+.map-page.page-entering {
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-leaving,
+  .map-page.page-entering {
+    transition: none;
+  }
+}
+
 .pager-chip {
   background: var(--vscode-button-secondaryBackground, transparent);
   border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
@@ -702,27 +733,27 @@ body.is-dragging * {
 
 /* Top-level groups placement */
 
-#root.groups-1 {
+.map-page.groups-1 {
   display: block;
 }
 
-#root.groups-2,
-#root.groups-3 {
+.map-page.groups-2,
+.map-page.groups-3 {
   align-items: start;
   column-gap: 10px;
   display: grid;
 }
 
-#root.groups-2 {
+.map-page.groups-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-#root.groups-3 {
+.map-page.groups-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 @media (min-width: 640px) {
-  #root.groups-flow {
+  .map-page.groups-flow {
     align-items: start;
     column-gap: 18px;
     display: grid;
@@ -730,8 +761,8 @@ body.is-dragging * {
   }
 }
 
-#root > .empty,
-#root > .error {
+.map-page > .empty,
+.map-page > .error {
   grid-column: 1 / -1;
 }
 
