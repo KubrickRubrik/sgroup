@@ -373,6 +373,7 @@ body {
 }
 
 .group:not(.nested) {
+  --badge-radius: 8px;
   background: linear-gradient(
     calc(135deg + var(--gradient-turn) * 3.6deg),
     color-mix(in srgb, var(--group-color) var(--card-fill-0), transparent) 0%,
@@ -380,7 +381,7 @@ body {
     color-mix(in srgb, var(--group-color) var(--card-fill-2), transparent) 100%
   );
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--badge-radius);
   padding: 6px;
 }
 
@@ -417,6 +418,8 @@ body {
   margin: 2px 0 0 var(--tree-gutter);
   padding-left: var(--branch-gap);
   position: relative;
+  /* Above the card-border ::before, which covers the whole group. */
+  z-index: 1;
 }
 
 .children > .node {
@@ -530,13 +533,16 @@ body {
 
 .group-header {
   --hover-wash: 0%;
+  --badge-radius: 4px;
   align-items: center;
-  border-radius: 4px;
+  border-radius: var(--badge-radius);
   cursor: default;
   display: flex;
   gap: 6px;
   padding: 2px 3px;
   position: relative;
+  /* Above the card-border ::before, which covers the whole group. */
+  z-index: 1;
   transition: --hover-wash 120ms ease;
   user-select: none;
 }
@@ -708,6 +714,44 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   font-size: var(--size-subgroup);
 }
 
+/* Open editor tab: corner on the badge, inset past its border radius. Focused chain blinks. */
+.tab-mark {
+  background: #fff;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  height: 6px;
+  left: calc(var(--badge-radius, 4px) * 0.3 + 0.5px);
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--badge-radius, 4px) * 0.3 + 0.5px);
+  width: 6px;
+  z-index: 2;
+}
+
+body.vscode-light .tab-mark,
+body.vscode-high-contrast-light .tab-mark {
+  background: #000;
+}
+
+.tab-mark-live {
+  animation: tab-corner-pulse var(--tab-mark-duration, 1s) ease-in-out infinite;
+}
+
+@keyframes tab-corner-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-mark-live {
+    animation: none;
+  }
+}
+
 .lock-btn {
   align-items: center;
   background: transparent;
@@ -748,13 +792,15 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
 }
 
 .item {
+  --badge-radius: 4px;
   align-items: center;
-  border-radius: 4px;
+  border-radius: var(--badge-radius);
   cursor: default;
   display: flex;
   font-size: var(--size-file);
   gap: 5px;
   overflow: hidden;
+  position: relative;
   white-space: nowrap;
 }
 
@@ -926,7 +972,8 @@ body.is-dragging * {
 }
 
 .layout-chips .item {
-  border-radius: 10px;
+  --badge-radius: 10px;
+  border-radius: var(--badge-radius);
   max-width: 100%;
   padding: 1px 8px;
 }
@@ -967,6 +1014,8 @@ body.is-dragging * {
   flex-wrap: wrap;
   gap: 4px;
   margin: 3px 0 0 27px;
+  position: relative;
+  z-index: 1;
 }
 
 .dot {

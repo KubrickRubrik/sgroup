@@ -174,6 +174,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private rightPanel?: vscode.WebviewPanel;
   private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
+  /** Workspace file that last had the editor. Kept when focus moves to the map. */
+  private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
   private lastFocusedWebview?: vscode.Webview;
   /** Skip writing open=false while we close a column ourselves. */
@@ -190,6 +192,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   ) {
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
+    this.lastFocusedRel = this.activeRelPath();
     this.subscriptions = [
       store.onDidChange(() => {
         this.refresh();
@@ -199,7 +202,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         if (editor?.viewColumn !== undefined) {
           this.lastEditorColumn = editor.viewColumn;
         }
+        this.captureFocusedFile(editor);
         this.postActive();
+        this.postTabs();
+      }),
+      vscode.window.tabGroups.onDidChangeTabs(() => {
+        this.captureFocusedFile(vscode.window.activeTextEditor);
+        this.postTabs();
       }),
     ];
   }
@@ -1195,6 +1204,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
       active: this.activeRelPath(),
+      ...this.tabSnapshot(),
       error: this.store.lastError,
       history: this.store.historySteps(),
       open: this.store.surfaceOpen(),
@@ -1228,6 +1238,54 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const active = this.activeRelPath();
     for (const webview of this.webviews) {
       void webview.postMessage({ type: 'active', active });
+    }
+  }
+
+  /**
+   * Workspace file in the editor. No editor (focus on the map) keeps the previous
+   * file. An editor outside the workspace clears the blink.
+   */
+  private captureFocusedFile(editor: vscode.TextEditor | undefined): void {
+    if (!editor) {
+      return;
+    }
+    this.lastFocusedRel = this.store.toRelative(editor.document.uri);
+  }
+
+  /** Open editor tabs in the workspace, and the file whose corner should blink. */
+  private tabSnapshot(): { openPaths: string[]; focusedPath?: string } {
+    const openPaths: string[] = [];
+    const seen = new Set<string>();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const uri = tabUri(tab);
+        if (!uri) {
+          continue;
+        }
+        const rel = this.store.toRelative(uri);
+        if (!rel || seen.has(rel)) {
+          continue;
+        }
+        seen.add(rel);
+        openPaths.push(rel);
+      }
+    }
+    if (this.lastFocusedRel && !seen.has(this.lastFocusedRel)) {
+      this.lastFocusedRel = undefined;
+    }
+    return { openPaths, focusedPath: this.lastFocusedRel };
+  }
+
+  private postTabs(): void {
+    if (!this.store.ready) {
+      return;
+    }
+    const tabs = this.tabSnapshot();
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      void webview.postMessage({ type: 'tabs', ...tabs });
     }
   }
 

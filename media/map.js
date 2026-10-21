@@ -163,6 +163,10 @@
     } else if (message.type === 'active' && data) {
       data.active = message.active;
       updateActive(true);
+    } else if (message.type === 'tabs' && data) {
+      data.openPaths = Array.isArray(message.openPaths) ? message.openPaths : [];
+      data.focusedPath = typeof message.focusedPath === 'string' ? message.focusedPath : '';
+      applyTabMarks();
     } else if (message.type === 'dirListing') {
       fillDirPopover(message);
     }
@@ -467,7 +471,7 @@
     return String(Math.round(value * 10) / 10) + '%';
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number } | undefined} appearance */
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, openFileAnimate?: boolean, openFileDuration?: number } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
@@ -505,6 +509,16 @@
       document.body.style.setProperty('--bg-' + name, pct(amount));
     }
     document.body.style.setProperty('--bg-hover', pct(num(a.bgHover, 10)));
+    const duration = num(a.openFileDuration, 1);
+    document.body.style.setProperty('--tab-mark-duration', duration + 's');
+  }
+
+  function openFileMarks() {
+    const a = data?.appearance || {};
+    return {
+      show: a.openFileMark !== false,
+      animate: a.openFileAnimate !== false,
+    };
   }
 
   document.addEventListener('pointerdown', (event) => {
@@ -686,6 +700,7 @@
       root.append(renderGroup(group, byId));
     }
     updateActive();
+    applyTabMarks();
     playFolds(folds);
   }
 
@@ -1017,7 +1032,11 @@
       (group.alias ? group.alias + '\n' : '') +
       group.label +
       (locked ? '\nLocked' : '\nDrag to reorder or nest');
-    header.addEventListener('click', () => {
+    trackPress(header, (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.lock-btn, .bar')) {
+        return;
+      }
       if (isEmpty || locked) {
         return;
       }
@@ -1287,6 +1306,83 @@
     return node;
   }
 
+  /**
+   * Click inside a draggable row. A positioned child (the open-tab corner) makes
+   * Electron drop the click and sometimes start a drag with no movement.
+   * A stationary press still activates; a real drag is left alone.
+   * @param {HTMLElement} node
+   * @param {(event: Event) => void} onActivate
+   */
+  function trackPress(node, onActivate) {
+    let tracking = false;
+    let moved = false;
+    let dragged = false;
+    let activated = false;
+    let x = 0;
+    let y = 0;
+
+    node.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) {
+        tracking = false;
+        return;
+      }
+      tracking = true;
+      moved = false;
+      dragged = false;
+      activated = false;
+      x = event.clientX;
+      y = event.clientY;
+    });
+
+    node.addEventListener('pointermove', (event) => {
+      if (!tracking || moved || event.buttons === 0) {
+        return;
+      }
+      if (event.clientX !== x || event.clientY !== y) {
+        moved = true;
+      }
+    });
+
+    node.addEventListener('pointerup', (event) => {
+      if (!tracking || event.button !== 0) {
+        return;
+      }
+      tracking = false;
+      if (moved || dragged) {
+        return;
+      }
+      activated = true;
+      onActivate(event);
+    });
+
+    node.addEventListener('pointercancel', () => {
+      tracking = false;
+    });
+
+    node.addEventListener(
+      'dragstart',
+      (event) => {
+        if (!moved) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        dragged = true;
+      },
+      true,
+    );
+
+    node.addEventListener('click', (event) => {
+      if (activated || dragged) {
+        activated = false;
+        dragged = false;
+        event.stopPropagation();
+        return;
+      }
+      onActivate(event);
+    });
+  }
+
   function bindItem(node, item, groupId) {
     const locked = isLocked(groupId);
     node.dataset.rel = item.relPath;
@@ -1306,13 +1402,14 @@
       hasAlias: !!item.alias,
       locked,
     });
-    node.addEventListener('click', (event) => {
+    trackPress(node, (event) => {
       event.stopPropagation();
       if (!item.exists) {
         return;
       }
+      const alt = 'altKey' in event && !!event.altKey;
       if (item.isDir) {
-        if (event.altKey) {
+        if (alt) {
           closeDirPopover();
           vscode.postMessage({ type: 'reveal', relPath: item.relPath });
           return;
@@ -1320,7 +1417,7 @@
         toggleDirPopover(node, item.relPath);
         return;
       }
-      vscode.postMessage({ type: event.altKey ? 'reveal' : 'open', relPath: item.relPath });
+      vscode.postMessage({ type: alt ? 'reveal' : 'open', relPath: item.relPath });
     });
     node.addEventListener('dragstart', (event) => {
       event.stopPropagation();
@@ -1423,6 +1520,7 @@
   function bindClass(node, cls, groupId) {
     const locked = isLocked(groupId);
     node.dataset.classId = cls.id;
+    node.dataset.file = cls.relPath;
     const aliasLine = cls.alias ? cls.alias + '\n' : '';
     node.title =
       aliasLine +
@@ -1440,7 +1538,7 @@
       hasAlias: !!cls.alias,
       locked,
     });
-    node.addEventListener('click', (event) => {
+    trackPress(node, (event) => {
       event.stopPropagation();
       if (!cls.exists) {
         return;
@@ -1835,6 +1933,106 @@
   function moveDropHint(x, y) {
     dropHint.style.left = x + 14 + 'px';
     dropHint.style.top = y + 14 + 'px';
+  }
+
+  /**
+   * Corner on a badge when its file is open. The focused file's chain blinks.
+   * Only the page currently painted on this panel is in the DOM.
+   */
+  function applyTabMarks() {
+    const openPaths = Array.isArray(data?.openPaths) ? data.openPaths : [];
+    const focusedPath = typeof data?.focusedPath === 'string' ? data.focusedPath : '';
+    const marks = openFileMarks();
+    const groups = activePage()?.kind === 'notes' ? [] : pageGroups();
+    const byId = Object.fromEntries(groups.map((group) => [group.id, group]));
+
+    for (const node of root.querySelectorAll('section.group')) {
+      const section = /** @type {HTMLElement} */ (node);
+      const badge = section.classList.contains('nested')
+        ? section.querySelector(':scope > .group-header')
+        : section;
+      const group = byId[section.dataset.markerId || ''];
+      if (!(badge instanceof HTMLElement)) {
+        continue;
+      }
+      const opened = marks.show && !!group && openPaths.some((relPath) => chainHits(group, byId, relPath));
+      const live = marks.animate && !!group && focusedPath !== '' && chainHits(group, byId, focusedPath);
+      setTabCorner(badge, opened, live);
+    }
+
+    for (const node of root.querySelectorAll('.item')) {
+      const item = /** @type {HTMLElement} */ (node);
+      let opened = false;
+      let live = false;
+      if (item.classList.contains('class-item')) {
+        const file = item.dataset.file || '';
+        opened = marks.show && file !== '' && openPaths.includes(file);
+        live = marks.animate && file !== '' && file === focusedPath;
+      } else if (item.classList.contains('dir')) {
+        const folder = item.dataset.rel || '';
+        opened = marks.show && openPaths.some((relPath) => pathCovers(folder, relPath));
+        live = marks.animate && focusedPath !== '' && pathCovers(folder, focusedPath);
+      } else {
+        const relPath = item.dataset.rel || '';
+        opened = marks.show && relPath !== '' && openPaths.includes(relPath);
+        live = marks.animate && relPath !== '' && relPath === focusedPath;
+      }
+      setTabCorner(item, opened, live);
+    }
+  }
+
+  /**
+   * @param {any} group
+   * @param {Record<string, any>} byId
+   * @param {string} relPath
+   * @param {Set<string>} [seen]
+   */
+  function chainHits(group, byId, relPath, seen) {
+    if (!group || !relPath) {
+      return false;
+    }
+    const visited = seen || new Set();
+    if (visited.has(group.id)) {
+      return false;
+    }
+    visited.add(group.id);
+    for (const item of group.items || []) {
+      if (item.isDir ? pathCovers(item.relPath, relPath) : item.relPath === relPath) {
+        return true;
+      }
+    }
+    for (const cls of group.classes || []) {
+      if (cls.relPath === relPath) {
+        return true;
+      }
+    }
+    for (const childId of group.children || []) {
+      if (chainHits(byId[childId], byId, relPath, visited)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** @param {string} folder @param {string} file */
+  function pathCovers(folder, file) {
+    return folder !== '' && (file === folder || file.startsWith(folder + '/'));
+  }
+
+  /** @param {HTMLElement} node @param {boolean} open @param {boolean} live */
+  function setTabCorner(node, open, live) {
+    const mark = node.querySelector(':scope > .tab-mark');
+    if (!open) {
+      mark?.remove();
+      return;
+    }
+    const corner = mark instanceof HTMLElement ? mark : document.createElement('span');
+    if (!mark) {
+      corner.className = 'tab-mark';
+      corner.setAttribute('aria-hidden', 'true');
+      node.prepend(corner);
+    }
+    corner.classList.toggle('tab-mark-live', live);
   }
 
   /** @param {boolean} [scroll] */

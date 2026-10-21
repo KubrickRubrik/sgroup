@@ -257,6 +257,26 @@ export class SettingsPanel implements vscode.Disposable {
       </div>
       <p class="note">0 — цвет текста темы, 100 — цвет полоски группы. Несколько меток — цвет темы.</p>
     </section>
+
+    <section>
+      <h2>Открытый файл</h2>
+      <div class="row">
+        <label for="openFileMark">Показывать маркер</label>
+        <input id="openFileMark" type="checkbox">
+        <span class="value" data-for="openFileMark"></span>
+      </div>
+      <div class="row">
+        <label for="openFileAnimate">Показывать анимацию</label>
+        <input id="openFileAnimate" type="checkbox">
+        <span class="value" data-for="openFileAnimate"></span>
+      </div>
+      <div class="row">
+        <label for="openFileDuration">Время анимации</label>
+        <input id="openFileDuration" type="range" min="0" max="3" step="0.1">
+        <span class="value" data-for="openFileDuration"></span>
+      </div>
+      <p class="note">Уголок на бейдже, если файл открыт во вкладке. Анимация мигает только у цепочки вкладки в фокусе. Время — длина одного цикла, от 0 до 3 с.</p>
+    </section>
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -264,7 +284,7 @@ export class SettingsPanel implements vscode.Disposable {
       'fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale',
       'gradientDirection', 'cardFill', 'cardBorder',
       'bgFolder', 'bgFile', 'bgSubgroup', 'bgClass', 'bgNote', 'bgHover',
-      'labelSaturation',
+      'labelSaturation', 'openFileDuration',
     ];
     const percentKeys = {
       labelSaturation: true,
@@ -280,9 +300,12 @@ export class SettingsPanel implements vscode.Disposable {
     };
     let suppress = false;
 
+    const toggles = ['cardGradient', 'openFileMark', 'openFileAnimate'];
+
     function format(key, value) {
       if (percentKeys[key]) return Math.round(value) + '%';
       if (key === 'fontScale') return Number(value).toFixed(1) + '×';
+      if (key === 'openFileDuration') return Number(value).toFixed(1) + ' с';
       return Number(value).toFixed(2);
     }
 
@@ -295,11 +318,12 @@ export class SettingsPanel implements vscode.Disposable {
         input.value = String(appearance[key]);
         label.textContent = format(key, appearance[key]);
       }
-      const toggle = document.getElementById('cardGradient');
-      const toggleLabel = document.querySelector('[data-for="cardGradient"]');
-      if (toggle && toggleLabel) {
-        toggle.checked = !!appearance.cardGradient;
-        toggleLabel.textContent = appearance.cardGradient ? 'вкл' : 'выкл';
+      for (const key of toggles) {
+        const toggle = document.getElementById(key);
+        const toggleLabel = document.querySelector('[data-for="' + key + '"]');
+        if (!toggle || !toggleLabel) continue;
+        toggle.checked = !!appearance[key];
+        toggleLabel.textContent = appearance[key] ? 'вкл' : 'выкл';
       }
       suppress = false;
     }
@@ -318,13 +342,15 @@ export class SettingsPanel implements vscode.Disposable {
       });
     }
 
-    const gradientToggle = document.getElementById('cardGradient');
-    const gradientLabel = document.querySelector('[data-for="cardGradient"]');
-    gradientToggle.addEventListener('change', () => {
-      if (suppress) return;
-      gradientLabel.textContent = gradientToggle.checked ? 'вкл' : 'выкл';
-      vscode.postMessage({ type: 'setAppearance', appearance: { cardGradient: gradientToggle.checked } });
-    });
+    for (const key of toggles) {
+      const toggle = document.getElementById(key);
+      const toggleLabel = document.querySelector('[data-for="' + key + '"]');
+      toggle.addEventListener('change', () => {
+        if (suppress) return;
+        toggleLabel.textContent = toggle.checked ? 'вкл' : 'выкл';
+        vscode.postMessage({ type: 'setAppearance', appearance: { [key]: toggle.checked } });
+      });
+    }
 
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'state') {

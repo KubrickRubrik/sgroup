@@ -96,6 +96,12 @@ export interface Appearance {
   bgHover: number;
   /** Explorer file-name tint: 0 = theme foreground, 100 = group stripe color. */
   labelSaturation: number;
+  /** Corner on badges whose file is open in an editor tab. */
+  openFileMark: boolean;
+  /** Blink the corner chain of the focused editor tab. */
+  openFileAnimate: boolean;
+  /** Blink cycle length in seconds, 0–3. */
+  openFileDuration: number;
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -115,6 +121,9 @@ export const DEFAULT_APPEARANCE: Appearance = {
   bgNote: 0,
   bgHover: 10,
   labelSaturation: 20,
+  openFileMark: true,
+  openFileAnimate: true,
+  openFileDuration: 1,
 };
 
 const FONT_SCALE_MIN = 0.6;
@@ -125,6 +134,7 @@ const MULTIPLIER_MAX = 5;
 const MULTIPLIER_STEP = 0.1;
 const SATURATION_STEP = 5;
 const GRADIENT_STEP = 1;
+const OPEN_FILE_DURATION_STEP = 0.1;
 
 export function snapFontScale(value: number): number {
   return snap(value, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP);
@@ -145,6 +155,11 @@ export function snapGradientDirection(value: number): number {
 /** 0–100 color amount, step 1. 0 is fully transparent, 100 is solid group color. */
 export function snapPercent(value: number): number {
   return snap(value, 0, 100, GRADIENT_STEP);
+}
+
+/** Open-tab blink cycle, seconds. */
+export function snapOpenFileDuration(value: number): number {
+  return snap(value, 0, 3, OPEN_FILE_DURATION_STEP);
 }
 
 function snap(value: number, min: number, max: number, step: number): number {
@@ -174,6 +189,9 @@ export function normalizeAppearance(raw: unknown): Appearance {
     bgNote: snapPercent(numOr(source.bgNote, DEFAULT_APPEARANCE.bgNote)),
     bgHover: snapPercent(numOr(source.bgHover, DEFAULT_APPEARANCE.bgHover)),
     labelSaturation: snapSaturation(numOr(source.labelSaturation, DEFAULT_APPEARANCE.labelSaturation)),
+    openFileMark: boolOr(source.openFileMark, DEFAULT_APPEARANCE.openFileMark),
+    openFileAnimate: boolOr(source.openFileAnimate, DEFAULT_APPEARANCE.openFileAnimate),
+    openFileDuration: snapOpenFileDuration(numOr(source.openFileDuration, DEFAULT_APPEARANCE.openFileDuration)),
   };
 }
 
