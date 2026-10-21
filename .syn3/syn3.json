@@ -18,7 +18,15 @@
           "version": true
         },
         "bottom": {},
-        "sidebar": {
+        "left": {
+          "1": true,
+          "4": true,
+          "5": true,
+          "test-dir": true,
+          "ttest-6": true,
+          "version": true
+        },
+        "right": {
           "1": true,
           "4": true,
           "5": true,
@@ -37,7 +45,8 @@
       "collapsed": {
         "explorer": {},
         "bottom": {},
-        "sidebar": {}
+        "left": {},
+        "right": {}
       }
     }
   },
@@ -160,6 +169,25 @@
     },
     "version": {
       "version": 1792353063481
+    }
+  },
+  "surfaces": {
+    "explorer": {
+      "page": "map"
+    },
+    "bottom": {
+      "page": "map"
+    },
+    "left": {
+      "page": "map"
+    },
+    "right": {
+      "page": "map"
+    },
+    "open": {
+      "bottom": true,
+      "left": true,
+      "right": false
     }
   },
   "appearance": {

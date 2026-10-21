@@ -17,12 +17,12 @@ import { openClassAt } from './openClass';
 import { cssColor, normalizeHex } from './palette';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
-/** Which map surface is showing which page. Survives reload; each surface is independent. */
-const ACTIVE_PAGE_KEYS: Record<MapSurface, string> = {
+/** Legacy workspace keys for active page per surface (migrated into syn3.json once). */
+const LEGACY_ACTIVE_PAGE_KEYS = {
   explorer: 'syn3.map.activePage.explorer',
   bottom: 'syn3.map.activePage.bottom',
   sidebar: 'syn3.map.activePage.sidebar',
-};
+} as const;
 const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
 const GROUPS_LAYOUT_CONTEXT = 'syn3.map.groupsLayout';
@@ -104,7 +104,12 @@ type IncomingToolbarAction =
   | 'openSettings'
   | 'createPage'
   | 'renamePage'
-  | 'deletePage';
+  | 'deletePage'
+  | 'toggleBottom'
+  | 'toggleLeft'
+  | 'toggleRight';
+
+type ColumnSide = 'left' | 'right';
 
 type IncomingMessage =
   | { type: 'ready'; pageId?: string }
@@ -165,13 +170,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly needsPageRestore = new WeakSet<vscode.Webview>();
   private readonly subscriptions: vscode.Disposable[];
   private readonly media: vscode.Uri;
-  private panel?: vscode.WebviewPanel;
+  private leftPanel?: vscode.WebviewPanel;
+  private rightPanel?: vscode.WebviewPanel;
   private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
   private lastFocusedWebview?: vscode.Webview;
-  /** Which edge the map column was opened on. Cleared when that column closes. */
-  private columnSide?: 'left' | 'right';
+  /** Skip writing open=false while we close a column ourselves. */
+  private closingColumn?: ColumnSide;
+  /** Skip writing open=false while we remove the bottom view ourselves. */
+  private closingBottom = false;
+  private surfacesBootstrapped = false;
 
   constructor(
     private readonly store: MarkerStore,
@@ -182,7 +191,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.subscriptions = [
-      store.onDidChange(() => this.refresh()),
+      store.onDidChange(() => {
+        this.refresh();
+        this.postOpenFlags();
+      }),
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.viewColumn !== undefined) {
           this.lastEditorColumn = editor.viewColumn;
@@ -208,22 +220,75 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     view.onDidChangeVisibility(() => {
       if (view.visible) {
         void this.postState(webview);
+        // Syn3 tab is selected — panel still holds the view. Terminal switch leaves this false.
+        if (surface === 'bottom' && this.store.ready && !this.closingBottom) {
+          void this.store.setSurfaceOpen('bottom', true);
+        }
       }
     });
     view.onDidDispose(() => {
       this.webviews.delete(webview);
       if (this.bottomView === view) {
         this.bottomView = undefined;
+        if (this.store.ready) {
+          void this.store.setSurfaceOpen('bottom', false);
+        }
       }
     });
   }
 
-  /** Show the bottom-panel map, or hide the panel when that map is already open. */
+  /**
+   * After the store is ready: migrate legacy workspace keys once, then open/close
+   * panels to match `surfaces.open` in syn3.json.
+   */
+  async bootstrapSurfaces(): Promise<void> {
+    if (this.surfacesBootstrapped) {
+      return;
+    }
+    this.surfacesBootstrapped = true;
+    if (this.store.needsLegacySurfaceHydration()) {
+      const columnSide =
+        this.memento.get<string>(COLUMN_SIDE_KEY) ?? this.memento.get<string>('sgroup.map.columnSide');
+      await this.store.hydrateSurfacesFromLegacy({
+        pages: {
+          explorer: this.workspaceState.get<string>(LEGACY_ACTIVE_PAGE_KEYS.explorer),
+          bottom: this.workspaceState.get<string>(LEGACY_ACTIVE_PAGE_KEYS.bottom),
+          sidebar: this.workspaceState.get<string>(LEGACY_ACTIVE_PAGE_KEYS.sidebar),
+        },
+        columnSide: columnSide === 'left' || columnSide === 'right' ? columnSide : undefined,
+        bottomAlive: !!this.bottomView,
+      });
+      await this.clearLegacySurfaceState();
+    }
+    await this.syncOpenSurfaces();
+    this.postOpenFlags();
+  }
+
+  /** Show the Syn3 bottom view, or hide only that view (Terminal / Console stay). */
   async toggleBottom(): Promise<boolean> {
-    if (this.bottomView?.visible) {
-      await vscode.commands.executeCommand('workbench.action.closePanel');
+    const markedOpen = this.store.ready ? this.store.isSurfaceOpen('bottom') : !!this.bottomView;
+    if (markedOpen) {
+      this.closingBottom = true;
+      try {
+        await this.hideBottomView();
+      } finally {
+        this.closingBottom = false;
+      }
+      if (this.store.ready) {
+        await this.store.setSurfaceOpen('bottom', false);
+      }
       return true;
     }
+    if (!(await this.focusBottomView())) {
+      return false;
+    }
+    if (this.store.ready) {
+      await this.store.setSurfaceOpen('bottom', true);
+    }
+    return true;
+  }
+
+  private async focusBottomView(): Promise<boolean> {
     const available = await vscode.commands.getCommands(true);
     const command = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.syn3Panel'].find((id) =>
       available.includes(id),
@@ -235,16 +300,33 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return true;
   }
 
-  // ---- narrow editor column next to Explorer ----
+  /** Hides the Syn3 panel tab only — does not close the whole bottom strip. */
+  private async hideBottomView(): Promise<void> {
+    const available = await vscode.commands.getCommands(true);
+    const command = [
+      `${MarkersMapProvider.bottomViewId}.removeView`,
+      `${MarkersMapProvider.bottomViewId}.toggleVisibility`,
+    ].find((id) => available.includes(id));
+    if (command) {
+      if (this.bottomView && !this.bottomView.visible) {
+        await this.focusBottomView();
+      }
+      await vscode.commands.executeCommand(command);
+      return;
+    }
+    // Last resort: hide the panel chrome only if we cannot target the view.
+    if (this.bottomView?.visible) {
+      await vscode.commands.executeCommand('workbench.action.closePanel');
+    }
+  }
+
+  // ---- narrow editor columns next to the code ----
 
   async toggleColumn(): Promise<void> {
     try {
-      if (this.panel && this.columnSide !== 'right') {
-        await this.closeColumn();
+      if (this.leftPanel) {
+        await this.closeColumn('left');
         return;
-      }
-      if (this.panel) {
-        await this.closeColumn();
       }
       await this.openColumn();
     } catch (error) {
@@ -255,12 +337,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Narrow locked editor column on the right of the code, before Cursor's agent group. */
   async toggleRight(): Promise<void> {
     try {
-      if (this.panel && this.columnSide === 'right') {
-        await this.closeColumn();
+      if (this.rightPanel) {
+        await this.closeColumn('right');
         return;
-      }
-      if (this.panel) {
-        await this.closeColumn();
       }
       await this.openRightColumn();
     } catch (error) {
@@ -268,13 +347,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  /** Closes the map webview and the editor group that held it. */
-  private async closeColumn(): Promise<void> {
-    const panel = this.panel;
+  /** Closes one map column and the editor group that held it. */
+  private async closeColumn(side: ColumnSide): Promise<void> {
+    const panel = side === 'left' ? this.leftPanel : this.rightPanel;
     if (!panel) {
-      await this.setColumnSide(undefined);
+      if (this.store.ready) {
+        await this.store.setSurfaceOpen(side, false);
+      }
       return;
     }
+    this.closingColumn = side;
     try {
       const column = panel.viewColumn;
       const group =
@@ -289,21 +371,25 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         panel.dispose();
       }
     } finally {
-      if (this.panel === panel) {
-        try {
-          panel.dispose();
-        } catch {
-          // The group close already disposed it.
-        }
-        this.panel = undefined;
+      this.clearPanelSlot(side, panel);
+      try {
+        panel.dispose();
+      } catch {
+        // The group close already disposed it.
       }
-      await this.setColumnSide(undefined);
+      this.closingColumn = undefined;
+      if (this.store.ready) {
+        await this.store.setSurfaceOpen(side, false);
+      }
     }
   }
 
   async openColumn(): Promise<void> {
-    if (this.panel) {
-      this.panel.reveal(this.panel.viewColumn, true);
+    if (this.leftPanel) {
+      this.leftPanel.reveal(this.leftPanel.viewColumn, true);
+      if (this.store.ready) {
+        await this.store.setSurfaceOpen('left', true);
+      }
       return;
     }
     const previous = vscode.window.activeTextEditor?.document;
@@ -316,8 +402,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       { enableScripts: true, localResourceRoots: [this.media], retainContextWhenHidden: true },
     );
-    this.adoptPanel(panel);
-    await this.setColumnSide('left');
+    this.adoptPanel(panel, 'left');
+    if (this.store.ready) {
+      await this.store.setSurfaceOpen('left', true);
+    }
     await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
     await this.narrowEdgeColumn('start');
 
@@ -329,8 +417,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async openRightColumn(): Promise<void> {
-    if (this.panel && this.columnSide === 'right') {
-      this.panel.reveal(this.panel.viewColumn, true);
+    if (this.rightPanel) {
+      this.rightPanel.reveal(this.rightPanel.viewColumn, true);
+      if (this.store.ready) {
+        await this.store.setSurfaceOpen('right', true);
+      }
       return;
     }
     const previous = vscode.window.activeTextEditor?.document;
@@ -352,8 +443,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       { viewColumn: column, preserveFocus: false },
       { enableScripts: true, localResourceRoots: [this.media], retainContextWhenHidden: true },
     );
-    this.adoptPanel(panel);
-    await this.setColumnSide('right');
+    this.adoptPanel(panel, 'right');
+    if (this.store.ready) {
+      await this.store.setSurfaceOpen('right', true);
+    }
     await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
     await this.narrowViewColumn(panel.viewColumn ?? column);
 
@@ -364,14 +457,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  async deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
-    if (this.panel && this.panel !== panel) {
-      this.panel.dispose();
+  async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown): Promise<void> {
+    const side = this.resolveRestoredSide(state);
+    const existing = side === 'left' ? this.leftPanel : this.rightPanel;
+    if (existing && existing !== panel) {
+      // Keep the already-adopted panel; drop the duplicate restore.
+      panel.dispose();
+      return;
     }
-    const stored =
-      this.memento.get<string>(COLUMN_SIDE_KEY) ?? this.memento.get<string>('sgroup.map.columnSide');
-    this.columnSide = stored === 'left' || stored === 'right' ? stored : undefined;
-    this.adoptPanel(panel);
+    this.adoptPanel(panel, side);
   }
 
   // ---- shared ----
@@ -508,8 +602,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!surface) {
       return undefined;
     }
-    const saved = this.workspaceState.get<string>(ACTIVE_PAGE_KEYS[surface]);
-    return saved && this.store.page(saved) ? saved : undefined;
+    const saved = this.store.surfacePage(surface);
+    return this.store.page(saved) ? saved : undefined;
   }
 
   private persistSurfacePage(webview: vscode.Webview, pageId: string): void {
@@ -520,11 +614,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!surface) {
       return;
     }
-    const key = ACTIVE_PAGE_KEYS[surface];
-    if (this.workspaceState.get<string>(key) === pageId) {
+    if (this.store.surfacePage(surface) === pageId) {
       return;
     }
-    void this.workspaceState.update(key, pageId);
+    void this.store.setSurfacePage(surface, pageId);
   }
 
   private surfaceOf(webview: vscode.Webview): MapSurface {
@@ -550,11 +643,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.persistSurfacePage(webview, pageId);
   }
 
-  private adoptPanel(panel: vscode.WebviewPanel): void {
-    this.panel = panel;
+  private adoptPanel(panel: vscode.WebviewPanel, side: ColumnSide): void {
+    if (side === 'left') {
+      this.leftPanel = panel;
+    } else {
+      this.rightPanel = panel;
+    }
     panel.title = MarkersMapProvider.panelTitle;
     panel.iconPath = vscode.Uri.joinPath(this.media, 'map-icon.svg');
-    this.attach(panel.webview, 'panel', 'sidebar');
+    this.attach(panel.webview, 'panel', side);
     panel.onDidChangeViewState(() => {
       if (panel.visible) {
         void this.postState(panel.webview);
@@ -562,20 +659,107 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
     panel.onDidDispose(() => {
       this.webviews.delete(panel.webview);
-      if (this.panel === panel) {
-        this.panel = undefined;
-        this.columnSide = undefined;
+      const wasSlot = this.clearPanelSlot(side, panel);
+      if (wasSlot && this.closingColumn !== side && this.store.ready) {
+        void this.store.setSurfaceOpen(side, false);
       }
     });
+    if (this.store.ready && !this.store.isSurfaceOpen(side)) {
+      void this.store.setSurfaceOpen(side, true);
+    }
+  }
+
+  private clearPanelSlot(side: ColumnSide, panel: vscode.WebviewPanel): boolean {
+    if (side === 'left' && this.leftPanel === panel) {
+      this.leftPanel = undefined;
+      return true;
+    }
+    if (side === 'right' && this.rightPanel === panel) {
+      this.rightPanel = undefined;
+      return true;
+    }
+    return false;
+  }
+
+  private resolveRestoredSide(state: unknown): ColumnSide {
+    if (state && typeof state === 'object' && !Array.isArray(state)) {
+      const side = (state as { side?: unknown }).side;
+      if (side === 'left' || side === 'right') {
+        return side;
+      }
+    }
+    const stored =
+      this.memento.get<string>(COLUMN_SIDE_KEY) ?? this.memento.get<string>('sgroup.map.columnSide');
+    if (stored === 'right') {
+      return 'right';
+    }
+    return 'left';
   }
 
   private attach(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): void {
     this.surfaceByWebview.set(webview, surface);
     this.needsPageRestore.add(webview);
     webview.options = { enableScripts: true, localResourceRoots: [this.media] };
-    webview.html = this.html(webview, chrome);
+    webview.html = this.html(webview, chrome, surface);
     webview.onDidReceiveMessage((message: IncomingMessage) => this.onMessage(webview, message));
     this.webviews.add(webview);
+  }
+
+  /** Open/close left, right, and bottom to match flags in syn3.json. */
+  private async syncOpenSurfaces(): Promise<void> {
+    if (!this.store.ready) {
+      return;
+    }
+    const open = this.store.surfaceOpen();
+    if (open.left && !this.leftPanel) {
+      try {
+        await this.openColumn();
+      } catch (error) {
+        this.reportColumnError(error);
+      }
+    } else if (!open.left && this.leftPanel) {
+      await this.closeColumn('left');
+    }
+    if (open.right && !this.rightPanel) {
+      try {
+        await this.openRightColumn();
+      } catch (error) {
+        this.reportColumnError(error);
+      }
+    } else if (!open.right && this.rightPanel) {
+      await this.closeColumn('right');
+    }
+    if (open.bottom && !this.bottomView) {
+      await this.focusBottomView();
+    } else if (!open.bottom && this.bottomView) {
+      this.closingBottom = true;
+      try {
+        await this.hideBottomView();
+      } finally {
+        this.closingBottom = false;
+      }
+    }
+  }
+
+  private postOpenFlags(): void {
+    if (!this.store.ready) {
+      return;
+    }
+    const open = this.store.surfaceOpen();
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      void webview.postMessage({ type: 'openFlags', open });
+    }
+  }
+
+  private async clearLegacySurfaceState(): Promise<void> {
+    await this.memento.update(COLUMN_SIDE_KEY, undefined);
+    await this.memento.update('sgroup.map.columnSide', undefined);
+    await this.workspaceState.update(LEGACY_ACTIVE_PAGE_KEYS.explorer, undefined);
+    await this.workspaceState.update(LEGACY_ACTIVE_PAGE_KEYS.bottom, undefined);
+    await this.workspaceState.update(LEGACY_ACTIVE_PAGE_KEYS.sidebar, undefined);
   }
 
   /** Shrinks the leftmost top-level editor column to `syn3.map.columnWidth` pixels. */
@@ -635,9 +819,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   /** Focuses the leftmost or rightmost group that actually holds a file. */
   private async focusEdgeCodeGroup(edge: 'start' | 'end'): Promise<boolean> {
-    const mapColumn = this.panel?.viewColumn;
+    const mapColumns = new Set(
+      [this.leftPanel?.viewColumn, this.rightPanel?.viewColumn].filter(
+        (column): column is vscode.ViewColumn => column !== undefined,
+      ),
+    );
     const groups = vscode.window.tabGroups.all.filter((group) => {
-      if (group.viewColumn < 1 || group.viewColumn === mapColumn) {
+      if (group.viewColumn < 1 || mapColumns.has(group.viewColumn)) {
         return false;
       }
       return group.tabs.some((tab) => tabUri(tab) !== undefined);
@@ -663,11 +851,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       preserveFocus: false,
     });
     return true;
-  }
-
-  private async setColumnSide(side: 'left' | 'right' | undefined): Promise<void> {
-    this.columnSide = side;
-    await this.memento.update(COLUMN_SIDE_KEY, side);
   }
 
   private reportColumnError(error: unknown): void {
@@ -937,16 +1120,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  /** Files must never open inside the map's own column. */
+  /** Files must never open inside a map column. */
   private targetColumn(): vscode.ViewColumn | undefined {
-    const mapColumn = this.panel?.viewColumn;
-    if (mapColumn === undefined) {
+    const mapColumns = new Set(
+      [this.leftPanel?.viewColumn, this.rightPanel?.viewColumn].filter(
+        (column): column is vscode.ViewColumn => column !== undefined,
+      ),
+    );
+    if (mapColumns.size === 0) {
       return undefined;
     }
-    if (this.lastEditorColumn !== undefined && this.lastEditorColumn !== mapColumn) {
+    if (this.lastEditorColumn !== undefined && !mapColumns.has(this.lastEditorColumn)) {
       return this.lastEditorColumn;
     }
-    const other = vscode.window.tabGroups.all.find((group) => group.viewColumn !== mapColumn);
+    const other = vscode.window.tabGroups.all.find((group) => !mapColumns.has(group.viewColumn));
     return other?.viewColumn ?? vscode.ViewColumn.Beside;
   }
 
@@ -1010,6 +1197,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       active: this.activeRelPath(),
       error: this.store.lastError,
       history: this.store.historySteps(),
+      open: this.store.surfaceOpen(),
+      surface: this.surfaceOf(webview),
     });
   }
 
@@ -1093,6 +1282,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     action: IncomingToolbarAction,
     pageId?: string,
   ): Promise<void> {
+    if (action === 'toggleBottom') {
+      if (!(await this.toggleBottom())) {
+        const reload = 'Reload Window';
+        const choice = await vscode.window.showWarningMessage(
+          'Syn3: вкладка в нижней панели ещё не зарегистрирована — нужна полная перезагрузка окна.',
+          reload,
+        );
+        if (choice === reload) {
+          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+      }
+      return;
+    }
+    if (action === 'toggleLeft') {
+      await this.toggleColumn();
+      return;
+    }
+    if (action === 'toggleRight') {
+      await this.toggleRight();
+      return;
+    }
     const activePage = pageId && this.store.page(pageId) ? pageId : this.pageIdFor(webview);
     if (action === 'toggleLayout') {
       const page = this.store.page(activePage);
@@ -1246,11 +1456,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return `<img class="tool-icon tone-light" src="${light}" alt=""${modeAttr}${hiddenAttr}><img class="tool-icon tone-dark" src="${dark}" alt=""${modeAttr}${hiddenAttr}>`;
   }
 
-  private html(webview: vscode.Webview, chrome: 'view' | 'panel'): string {
+  private html(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): string {
     const nonce = crypto.randomBytes(16).toString('base64');
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.css'));
     const js = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.js'));
     const icon = (name: string, mode?: string, hidden = false) => this.toolIcon(webview, name, mode, hidden);
+    const sideAttr = surface === 'left' || surface === 'right' ? ` data-side="${surface}"` : '';
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1259,7 +1470,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${css}">
 </head>
-<body class="chrome-${chrome}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+<body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="history-bar">
     <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
       ${icon('arrow-left')}
@@ -1287,6 +1498,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ${icon('collapse-all', 'collapse')}
         ${icon('expand-all', 'expand', true)}
       </button>
+      <div class="toolbar-panels">
+        <button id="toolbar-panels" class="history-btn" type="button" title="Toggle panels" aria-label="Toggle panels" aria-haspopup="true" aria-expanded="false">
+          ${icon('menu')}
+        </button>
+        <div id="toolbar-panels-menu" class="toolbar-panels-menu" hidden role="group" aria-label="Panel toggles">
+          <button type="button" id="panel-toggle-bottom" class="history-btn" data-action="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="false">
+            ${icon('layout-panel')}
+          </button>
+          <button type="button" id="panel-toggle-left" class="history-btn" data-action="toggleLeft" title="Toggle left sidebar" aria-label="Toggle left sidebar" aria-pressed="false">
+            ${icon('layout-sidebar-left')}
+          </button>
+          <button type="button" id="panel-toggle-right" class="history-btn" data-action="toggleRight" title="Toggle right sidebar" aria-label="Toggle right sidebar" aria-pressed="false">
+            ${icon('sidebar-right')}
+          </button>
+        </div>
+      </div>
       <div class="toolbar-more">
         <button id="toolbar-more" class="history-btn" type="button" title="Дополнительные действия" aria-label="Дополнительные действия" aria-haspopup="menu">
           ${icon('ellipsis')}

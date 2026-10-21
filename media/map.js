@@ -23,29 +23,60 @@
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
+  const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
+  const toolbarPanelsMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-panels-menu'));
+  const panelToggleBottom = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-bottom'));
+  const panelToggleLeft = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-left'));
+  const panelToggleRight = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-right'));
 
   toolbarLayout?.addEventListener('click', () => {
-    closeToolbarMenu();
+    closeToolbarMenus();
     postToolbar('toggleLayout');
   });
   toolbarGroups?.addEventListener('click', () => {
-    closeToolbarMenu();
+    closeToolbarMenus();
     postToolbar('cycleGroups');
   });
   toolbarCreate?.addEventListener('click', () => {
-    closeToolbarMenu();
+    closeToolbarMenus();
     postToolbar('createMarker');
   });
   toolbarCollapse?.addEventListener('click', () => {
-    closeToolbarMenu();
+    closeToolbarMenus();
     postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
+  });
+  toolbarPanels?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!toolbarPanelsMenu) {
+      return;
+    }
+    const open = toolbarPanelsMenu.hidden;
+    closeToolbarMenus();
+    if (open) {
+      toolbarPanelsMenu.hidden = false;
+      toolbarPanels?.setAttribute('aria-expanded', 'true');
+    }
+  });
+  toolbarPanelsMenu?.addEventListener('click', (event) => {
+    const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
+    const button = target?.closest('button');
+    const action = button?.dataset.action;
+    if (!action || button?.disabled) {
+      return;
+    }
+    closeToolbarMenus();
+    postToolbar(action);
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
     if (!toolbarMenu) {
       return;
     }
-    toolbarMenu.hidden = !toolbarMenu.hidden;
+    const open = toolbarMenu.hidden;
+    closeToolbarMenus();
+    if (open) {
+      toolbarMenu.hidden = false;
+    }
   });
   toolbarMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -54,15 +85,21 @@
     if (!action || button?.disabled) {
       return;
     }
-    closeToolbarMenu();
+    closeToolbarMenus();
     postToolbar(action);
   });
   const MIME = 'application/vnd.syn3';
   const MAX_DEPTH = 2;
   const PAGE_MIME = 'application/vnd.syn3.page';
 
-  /** @type {{ activePageId?: string }} */
+  /** @type {{ activePageId?: string, side?: 'left' | 'right' }} */
   const uiState = vscode.getState() || {};
+  const bodySide = document.body.getAttribute('data-side');
+  if (bodySide === 'left' || bodySide === 'right') {
+    uiState.side = bodySide;
+    vscode.setState(uiState);
+  }
+  /** @type {any} */
   let data = null;
   const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
   /** @type {string | null} */
@@ -101,11 +138,17 @@
       ensureActivePage();
       setHistoryButtons(message.history);
       setToolbar(activePage() || message);
+      setPanelToggles(message.open);
       updatePageMenu();
       applyAppearance(message.appearance);
       renderPager();
       render();
       vscode.postMessage({ type: 'activePage', pageId: uiState.activePageId });
+    } else if (message.type === 'openFlags') {
+      if (data) {
+        data.open = message.open;
+      }
+      setPanelToggles(message.open);
     } else if (message.type === 'openPage') {
       if (!message.pageId) {
         return;
@@ -269,10 +312,14 @@
     }
   }
 
-  function closeToolbarMenu() {
+  function closeToolbarMenus() {
     if (toolbarMenu) {
       toolbarMenu.hidden = true;
     }
+    if (toolbarPanelsMenu) {
+      toolbarPanelsMenu.hidden = true;
+    }
+    toolbarPanels?.setAttribute('aria-expanded', 'false');
   }
 
   /** @param {{ layout?: string, groupsLayout?: string }} message */
@@ -296,6 +343,23 @@
       toolbarLayout.title =
         message.layout === 'list' ? 'Toggle Map Layout (List / Chips)' : 'Toggle Map Layout (Chips / List)';
     }
+  }
+
+  /** @param {{ bottom?: boolean, left?: boolean, right?: boolean } | undefined} open */
+  function setPanelToggles(open) {
+    const flags = open || {};
+    setPressed(panelToggleBottom, !!flags.bottom);
+    setPressed(panelToggleLeft, !!flags.left);
+    setPressed(panelToggleRight, !!flags.right);
+  }
+
+  /** @param {HTMLButtonElement | null} button @param {boolean} pressed */
+  function setPressed(button, pressed) {
+    if (!button) {
+      return;
+    }
+    button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    button.classList.toggle('is-pressed', pressed);
   }
 
   function isEmptyGroup(group) {
@@ -446,7 +510,14 @@
   document.addEventListener('pointerdown', (event) => {
     const target = /** @type {Node | null} */ (event.target);
     if (toolbarMenu && !toolbarMenu.hidden && target && !toolbarMenu.parentElement?.contains(target)) {
-      closeToolbarMenu();
+      closeToolbarMenus();
+    } else if (
+      toolbarPanelsMenu &&
+      !toolbarPanelsMenu.hidden &&
+      target &&
+      !toolbarPanelsMenu.parentElement?.contains(target)
+    ) {
+      closeToolbarMenus();
     }
     if (!dirPopoverState) {
       return;
@@ -464,7 +535,7 @@
     if (event.key !== 'Escape') {
       return;
     }
-    closeToolbarMenu();
+    closeToolbarMenus();
     if (dirPopoverState) {
       closeDirPopover();
     }

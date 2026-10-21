@@ -68,6 +68,29 @@ html::-webkit-scrollbar {
   margin-left: auto;
 }
 
+.toolbar-panels {
+  position: relative;
+}
+
+.toolbar-panels-menu {
+  align-items: center;
+  background: var(--vscode-menu-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 40;
+}
+
+.toolbar-panels-menu[hidden] {
+  display: none;
+}
+
 .toolbar-more {
   position: relative;
 }
@@ -253,6 +276,11 @@ html::-webkit-scrollbar {
   justify-content: center;
   padding: 0;
   width: 22px;
+}
+
+.history-btn.is-pressed,
+.history-btn[aria-pressed='true'] {
+  background: var(--vscode-toolbar-activeBackground, var(--vscode-button-secondaryBackground, rgba(127, 127, 127, 0.3)));
 }
 
 .history-btn:hover:not(:disabled) {

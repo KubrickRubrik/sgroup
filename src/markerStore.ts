@@ -205,19 +205,43 @@ export interface MarkerDef {
   order: number;
 }
 
-/** Map surface that remembers its own group folds. */
-export const MAP_SURFACES = ['explorer', 'bottom', 'sidebar'] as const;
+/** Map surface that remembers its own group folds and active page. */
+export const MAP_SURFACES = ['explorer', 'bottom', 'left', 'right'] as const;
 export type MapSurface = (typeof MAP_SURFACES)[number];
 
-/** Folded group ids, separate for Explorer, the bottom panel, and the sidebar. */
+/** Panels whose open/closed state is stored in the config. */
+export const OPEN_SURFACES = ['bottom', 'left', 'right'] as const;
+export type OpenSurface = (typeof OPEN_SURFACES)[number];
+
+/** Folded group ids, separate for Explorer, bottom, left column, and right column. */
 export interface SurfaceCollapsed {
   explorer: Record<string, boolean>;
   bottom: Record<string, boolean>;
-  sidebar: Record<string, boolean>;
+  left: Record<string, boolean>;
+  right: Record<string, boolean>;
 }
 
 export function emptyCollapsed(): SurfaceCollapsed {
-  return { explorer: {}, bottom: {}, sidebar: {} };
+  return { explorer: {}, bottom: {}, left: {}, right: {} };
+}
+
+/** Active page per surface and open flags for movable panels. Not part of undo history. */
+export interface SurfacesState {
+  explorer: { page: string };
+  bottom: { page: string };
+  left: { page: string };
+  right: { page: string };
+  open: { bottom: boolean; left: boolean; right: boolean };
+}
+
+export function emptySurfaces(defaultPage = DEFAULT_PAGE_ID): SurfacesState {
+  return {
+    explorer: { page: defaultPage },
+    bottom: { page: defaultPage },
+    left: { page: defaultPage },
+    right: { page: defaultPage },
+    open: { bottom: false, left: false, right: false },
+  };
 }
 
 /** Named map page (pager slide). */
@@ -276,6 +300,8 @@ interface MarkersFile {
   classAdded: Record<string, Record<string, number>>;
   notes: Record<string, NoteDef>;
   appearance: Appearance;
+  /** Active page and open flags per map surface. */
+  surfaces: SurfacesState;
 }
 
 /** Page-local undo snapshot: groups, items, notes and view — not folds, page order, or appearance. */
@@ -310,6 +336,7 @@ function emptyData(): MarkersFile {
     classAdded: {},
     notes: {},
     appearance: { ...DEFAULT_APPEARANCE },
+    surfaces: emptySurfaces(),
   };
 }
 
@@ -341,6 +368,8 @@ export class MarkerStore implements vscode.Disposable {
   private history: PageHistoryBook = emptyHistory();
   /** False until the history file has been read, so startup cannot record a step. */
   private historyReady = false;
+  /** True when the loaded file had no `surfaces` block — workspace state may hydrate it once. */
+  private surfacesNeedLegacyHydration = false;
   private queue: Promise<void> = Promise.resolve();
 
   readonly onDidChange = this.changeEmitter.event;
@@ -972,6 +1001,13 @@ export class MarkerStore implements vscode.Disposable {
       }
       delete this.data.pages[id];
       this.applyPageOrder(this.pages().map(([pageId]) => pageId));
+      if (neighbor) {
+        for (const surface of MAP_SURFACES) {
+          if (this.data.surfaces[surface].page === id) {
+            this.data.surfaces[surface] = { page: neighbor };
+          }
+        }
+      }
       await this.commitNow();
       dropPageHistory(this.history, id);
       delete this.pagePresent[id];
@@ -1029,6 +1065,88 @@ export class MarkerStore implements vscode.Disposable {
     }
     page.collapsed[surface] = next;
     await this.commit();
+  }
+
+  /** Active page id stored for a map surface. */
+  surfacePage(surface: MapSurface): string {
+    const pageId = this.data.surfaces[surface]?.page;
+    return pageId && this.data.pages[pageId] ? pageId : this.defaultFilesPageId();
+  }
+
+  /** Open flags for bottom / left / right panels. */
+  surfaceOpen(): SurfacesState['open'] {
+    return { ...this.data.surfaces.open };
+  }
+
+  isSurfaceOpen(surface: OpenSurface): boolean {
+    return !!this.data.surfaces.open[surface];
+  }
+
+  /** True when the config lacked a `surfaces` block and workspace state may still seed it. */
+  needsLegacySurfaceHydration(): boolean {
+    return this.surfacesNeedLegacyHydration;
+  }
+
+  /** Persist which page a surface is showing. Does not create an undo step. */
+  async setSurfacePage(surface: MapSurface, pageId: string): Promise<void> {
+    if (!this.data.pages[pageId]) {
+      return;
+    }
+    if (this.data.surfaces[surface].page === pageId) {
+      return;
+    }
+    this.data.surfaces[surface] = { page: pageId };
+    await this.commit();
+  }
+
+  /** Persist whether a movable panel is open. Does not create an undo step. */
+  async setSurfaceOpen(surface: OpenSurface, open: boolean): Promise<void> {
+    if (this.data.surfaces.open[surface] === open) {
+      return;
+    }
+    this.data.surfaces.open[surface] = open;
+    await this.commit();
+  }
+
+  /**
+   * One-shot: copy old workspace active pages / column side into `surfaces`,
+   * and rewrite the markers file so `surfaces` + left/right folds land on disk.
+   * Only runs when the markers file had no `surfaces` block.
+   */
+  async hydrateSurfacesFromLegacy(legacy: {
+    pages?: Partial<Record<'explorer' | 'bottom' | 'sidebar', string>>;
+    columnSide?: 'left' | 'right';
+    bottomAlive?: boolean;
+  }): Promise<void> {
+    if (!this.surfacesNeedLegacyHydration) {
+      return;
+    }
+    this.surfacesNeedLegacyHydration = false;
+    await this.enqueue(async () => {
+      const pages = legacy.pages ?? {};
+      const apply = (surface: MapSurface, pageId: string | undefined) => {
+        if (pageId && this.data.pages[pageId]) {
+          this.data.surfaces[surface] = { page: pageId };
+        }
+      };
+      apply('explorer', pages.explorer);
+      apply('bottom', pages.bottom);
+      apply('left', pages.sidebar);
+      apply('right', pages.sidebar);
+      if (legacy.columnSide === 'left') {
+        this.data.surfaces.open.left = true;
+      } else if (legacy.columnSide === 'right') {
+        this.data.surfaces.open.right = true;
+      }
+      if (legacy.bottomAlive) {
+        this.data.surfaces.open.bottom = true;
+      }
+      const next = this.capture();
+      await this.writeConfig(next);
+      this.present = next;
+      this.baseline = undefined;
+      this.changeEmitter.fire();
+    });
   }
 
   // ---- notes ----
@@ -1392,11 +1510,15 @@ export class MarkerStore implements vscode.Disposable {
     let next: MarkersFile | undefined;
     try {
       raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
-      next = normalize(JSON.parse(raw));
+      const parsed = JSON.parse(raw) as unknown;
+      this.surfacesNeedLegacyHydration =
+        !parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !('surfaces' in parsed);
+      next = normalize(parsed);
       this.lastError = undefined;
     } catch (error) {
       if (isFileNotFound(error)) {
         next = emptyData();
+        this.surfacesNeedLegacyHydration = true;
         this.lastError = undefined;
       } else {
         this.lastError = `Cannot read ${this.sessionConfigPath}: ${error instanceof Error ? error.message : String(error)}`;
@@ -1896,6 +2018,7 @@ export class MarkerStore implements vscode.Disposable {
         collapsed: packCollapsed(def.collapsed),
       };
     }
+    const surfaces = packSurfaces(this.data.surfaces, this.data.pages, this.defaultFilesPageId());
     const markers: Record<string, MarkerDef> = {};
     for (const [id, def] of this.markers()) {
       const entry = { label: def.label } as MarkerDef;
@@ -1985,6 +2108,7 @@ export class MarkerStore implements vscode.Disposable {
       markers,
       items,
       added,
+      surfaces,
       appearance: this.data.appearance,
     };
     if (Object.keys(aliases).length > 0) {
@@ -2213,7 +2337,27 @@ function packCollapsed(collapsed: SurfaceCollapsed): SurfaceCollapsed {
   return {
     explorer: packFlags(collapsed.explorer),
     bottom: packFlags(collapsed.bottom),
-    sidebar: packFlags(collapsed.sidebar),
+    left: packFlags(collapsed.left),
+    right: packFlags(collapsed.right),
+  };
+}
+
+function packSurfaces(
+  surfaces: SurfacesState,
+  pages: Record<string, PageDef>,
+  fallbackPage: string,
+): SurfacesState {
+  const pageOrFallback = (pageId: string) => (pageId in pages ? pageId : fallbackPage);
+  return {
+    explorer: { page: pageOrFallback(surfaces.explorer.page) },
+    bottom: { page: pageOrFallback(surfaces.bottom.page) },
+    left: { page: pageOrFallback(surfaces.left.page) },
+    right: { page: pageOrFallback(surfaces.right.page) },
+    open: {
+      bottom: !!surfaces.open.bottom,
+      left: !!surfaces.open.left,
+      right: !!surfaces.open.right,
+    },
   };
 }
 
@@ -2237,13 +2381,23 @@ function normalizeCollapsed(raw: unknown): SurfaceCollapsed {
     return collapsed;
   }
   const source = raw as Record<string, unknown>;
-  const perSurface = MAP_SURFACES.some((surface) => {
+  const legacyKeys = [...MAP_SURFACES, 'sidebar'] as const;
+  const perSurface = legacyKeys.some((surface) => {
     const value = source[surface];
     return !!value && typeof value === 'object' && !Array.isArray(value);
   });
   if (perSurface) {
     for (const surface of MAP_SURFACES) {
       collapsed[surface] = flagMap(source[surface]);
+    }
+    const sidebar = flagMap(source.sidebar);
+    if (Object.keys(sidebar).length > 0) {
+      if (Object.keys(collapsed.left).length === 0) {
+        collapsed.left = { ...sidebar };
+      }
+      if (Object.keys(collapsed.right).length === 0) {
+        collapsed.right = { ...sidebar };
+      }
     }
     return collapsed;
   }
@@ -2252,6 +2406,36 @@ function normalizeCollapsed(raw: unknown): SurfaceCollapsed {
     collapsed[surface] = { ...shared };
   }
   return collapsed;
+}
+
+function normalizeSurfaces(
+  raw: unknown,
+  pages: Record<string, PageDef>,
+  fallbackPage: string,
+): SurfacesState {
+  const result = emptySurfaces(fallbackPage);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return result;
+  }
+  const source = raw as Record<string, unknown>;
+  for (const surface of MAP_SURFACES) {
+    const entry = source[surface];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue;
+    }
+    const page = (entry as { page?: unknown }).page;
+    if (typeof page === 'string' && page in pages) {
+      result[surface] = { page };
+    }
+  }
+  const open = source.open;
+  if (open && typeof open === 'object' && !Array.isArray(open)) {
+    const flags = open as Record<string, unknown>;
+    for (const side of OPEN_SURFACES) {
+      result.open[side] = flags[side] === true;
+    }
+  }
+  return result;
 }
 
 function normalize(raw: unknown): MarkersFile {
@@ -2270,6 +2454,7 @@ function normalize(raw: unknown): MarkersFile {
     classAdded?: unknown;
     notes?: unknown;
     appearance?: unknown;
+    surfaces?: unknown;
   };
   result.appearance = normalizeAppearance(source.appearance);
 
@@ -2336,6 +2521,7 @@ function normalize(raw: unknown): MarkersFile {
     Object.entries(result.pages)
       .sort((a, b) => a[1].order - b[1].order || a[0].localeCompare(b[0]))
       .find(([, p]) => p.kind === 'files')?.[0] ?? Object.keys(result.pages)[0];
+  result.surfaces = normalizeSurfaces(source.surfaces, result.pages, fallbackPage);
   for (const def of Object.values(result.markers)) {
     if (def.parent) {
       delete def.page;
