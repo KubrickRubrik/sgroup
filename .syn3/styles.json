@@ -2,46 +2,60 @@
   "version": 1,
   "styles": {
     "general": {
-      "fontGroup": 1.1,
-      "fontSubgroup": 1.1,
-      "fontFolder": 0.95,
-      "fontFile": 0.95,
-      "fontScale": 1,
-      "gradientDirection": 48,
-      "cardGradient": true,
-      "cardFill": 9,
-      "cardBorder": 55,
-      "bgFolder": 4,
-      "bgFile": 5,
-      "bgSubgroup": 0,
-      "bgClass": 8,
-      "bgNote": 0,
-      "bgHover": 5,
-      "labelSaturation": 70,
-      "openFileMark": true,
-      "openFileAnimate": true,
-      "openFileDuration": 1.5
+      "appearance": {
+        "fontGroup": 1.1,
+        "fontSubgroup": 1.1,
+        "fontFolder": 0.95,
+        "fontFile": 0.95,
+        "fontScale": 1,
+        "gradientDirection": 48,
+        "cardGradient": true,
+        "cardFill": 9,
+        "cardBorder": 55,
+        "bgFolder": 4,
+        "bgFile": 5,
+        "bgSubgroup": 0,
+        "bgClass": 8,
+        "bgNote": 0,
+        "bgHover": 5,
+        "labelSaturation": 70,
+        "openFileMark": true,
+        "openFileAnimate": true,
+        "openFileDuration": 1.5
+      },
+      "open": {
+        "bottom": false,
+        "left": false,
+        "right": true
+      }
     },
     "profile-профиль-1": {
-      "fontGroup": 1.2,
-      "fontSubgroup": 1.15,
-      "fontFolder": 0.95,
-      "fontFile": 0.95,
-      "fontScale": 1,
-      "gradientDirection": 48,
-      "cardGradient": false,
-      "cardFill": 9,
-      "cardBorder": 55,
-      "bgFolder": 4,
-      "bgFile": 5,
-      "bgSubgroup": 0,
-      "bgClass": 8,
-      "bgNote": 0,
-      "bgHover": 5,
-      "labelSaturation": 70,
-      "openFileMark": true,
-      "openFileAnimate": true,
-      "openFileDuration": 1.5
+      "appearance": {
+        "fontGroup": 1.2,
+        "fontSubgroup": 1.15,
+        "fontFolder": 0.95,
+        "fontFile": 0.95,
+        "fontScale": 1,
+        "gradientDirection": 48,
+        "cardGradient": false,
+        "cardFill": 9,
+        "cardBorder": 55,
+        "bgFolder": 4,
+        "bgFile": 5,
+        "bgSubgroup": 0,
+        "bgClass": 8,
+        "bgNote": 0,
+        "bgHover": 5,
+        "labelSaturation": 70,
+        "openFileMark": true,
+        "openFileAnimate": true,
+        "openFileDuration": 1.5
+      },
+      "open": {
+        "bottom": true,
+        "left": false,
+        "right": false
+      }
     }
   }
 }

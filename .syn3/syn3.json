@@ -17,11 +17,7 @@
           "ttest-6": true,
           "version": true
         },
-        "bottom": {
-          "5": true,
-          "test-dir": true,
-          "ttest-6": true
-        },
+        "bottom": {},
         "left": {
           "1": true,
           "3": true,

@@ -271,7 +271,7 @@ export function emptySurfaces(defaultPage = DEFAULT_PAGE_ID): SurfacesState {
     bottom: { page: defaultPage },
     left: { page: defaultPage },
     right: { page: defaultPage },
-    open: { bottom: false, left: false, right: false },
+    open: { ...emptyPanelOpen() },
   };
 }
 
@@ -339,6 +339,24 @@ interface MarkersFile {
   surfaces: SurfacesState;
 }
 
+/** Open/closed state of movable map panels, stored per style profile. */
+export interface PanelOpenState {
+  bottom: boolean;
+  left: boolean;
+  right: boolean;
+}
+
+/** Default for «Общий»: only the right sidebar. */
+export function emptyPanelOpen(): PanelOpenState {
+  return { bottom: false, left: false, right: true };
+}
+
+/** Per-profile appearance and panel layout. */
+export interface ProfileStyle {
+  appearance: Appearance;
+  open: PanelOpenState;
+}
+
 interface ProfilesFile {
   version: 1;
   active: string;
@@ -347,7 +365,7 @@ interface ProfilesFile {
 
 interface StylesFile {
   version: 1;
-  styles: Record<string, Appearance>;
+  styles: Record<string, ProfileStyle>;
 }
 
 function emptyProfiles(): ProfilesFile {
@@ -358,10 +376,25 @@ function emptyProfiles(): ProfilesFile {
   };
 }
 
-function emptyStyles(seed: Appearance = DEFAULT_APPEARANCE): StylesFile {
+function emptyStyles(
+  seed: Appearance = DEFAULT_APPEARANCE,
+  open: PanelOpenState = emptyPanelOpen(),
+): StylesFile {
   return {
     version: 1,
-    styles: { [GENERAL_PROFILE_ID]: normalizeAppearance(seed) },
+    styles: {
+      [GENERAL_PROFILE_ID]: {
+        appearance: normalizeAppearance(seed),
+        open: { ...open },
+      },
+    },
+  };
+}
+
+function cloneProfileStyle(style: ProfileStyle): ProfileStyle {
+  return {
+    appearance: normalizeAppearance({ ...style.appearance }),
+    open: { ...style.open },
   };
 }
 
@@ -461,10 +494,19 @@ export class MarkerStore implements vscode.Disposable {
 
   /** Appearance of the active profile. */
   get appearance(): Appearance {
+    return this.activeProfileStyle().appearance;
+  }
+
+  /** Panel open flags of the active profile. */
+  private activeProfileStyle(): ProfileStyle {
     const id = this.profilesData.active;
-    return this.stylesData.styles[id] ?? this.stylesData.styles[GENERAL_PROFILE_ID] ?? {
-      ...DEFAULT_APPEARANCE,
-    };
+    return (
+      this.stylesData.styles[id] ??
+      this.stylesData.styles[GENERAL_PROFILE_ID] ?? {
+        appearance: { ...DEFAULT_APPEARANCE },
+        open: emptyPanelOpen(),
+      }
+    );
   }
 
   /** Profiles in creation order. «Общий» is always first. */
@@ -559,8 +601,11 @@ export class MarkerStore implements vscode.Disposable {
   async setAppearance(partial: Partial<Appearance>): Promise<void> {
     await this.enqueue(async () => {
       const id = this.ensureActiveProfileId();
-      const current = this.stylesData.styles[id] ?? { ...DEFAULT_APPEARANCE };
-      this.stylesData.styles[id] = normalizeAppearance({ ...current, ...partial });
+      const current = this.activeProfileStyle();
+      this.stylesData.styles[id] = {
+        appearance: normalizeAppearance({ ...current.appearance, ...partial }),
+        open: { ...current.open },
+      };
       await this.persistStyles();
       this.changeEmitter.fire();
     });
@@ -575,14 +620,15 @@ export class MarkerStore implements vscode.Disposable {
         return;
       }
       this.profilesData.active = id;
+      this.mirrorActiveOpenToSurfaces();
       await this.persistProfiles();
       this.changeEmitter.fire();
     });
   }
 
   /**
-   * Create a profile that copies the active profile's styles and becomes active.
-   * Returns the new id, or undefined when the name is rejected.
+   * Create a profile that copies the active profile's styles (appearance + panels)
+   * and becomes active. Returns the new id, or undefined when the name is rejected.
    */
   async createProfile(name: string): Promise<string | undefined> {
     return await this.enqueueResult(async () => {
@@ -591,14 +637,12 @@ export class MarkerStore implements vscode.Disposable {
         return undefined;
       }
       const id = this.uniqueProfileId(trimmed);
-      const activeId = this.ensureActiveProfileId();
-      const source =
-        this.stylesData.styles[activeId] ??
-        this.stylesData.styles[GENERAL_PROFILE_ID] ??
-        normalizeAppearance(DEFAULT_APPEARANCE);
+      this.ensureActiveProfileId();
+      const source = this.activeProfileStyle();
       this.profilesData.profiles.push({ id, name: trimmed });
-      this.stylesData.styles[id] = normalizeAppearance({ ...source });
+      this.stylesData.styles[id] = cloneProfileStyle(source);
       this.profilesData.active = id;
+      this.mirrorActiveOpenToSurfaces();
       await this.persistProfiles();
       await this.persistStyles();
       this.changeEmitter.fire();
@@ -639,6 +683,7 @@ export class MarkerStore implements vscode.Disposable {
       delete this.stylesData.styles[id];
       if (this.profilesData.active === id) {
         this.profilesData.active = GENERAL_PROFILE_ID;
+        this.mirrorActiveOpenToSurfaces();
       }
       await this.persistProfiles();
       await this.persistStyles();
@@ -1272,13 +1317,13 @@ export class MarkerStore implements vscode.Disposable {
     return pageId && this.data.pages[pageId] ? pageId : this.defaultFilesPageId();
   }
 
-  /** Open flags for bottom / left / right panels. */
-  surfaceOpen(): SurfacesState['open'] {
-    return { ...this.data.surfaces.open };
+  /** Open flags for bottom / left / right panels (from the active profile). */
+  surfaceOpen(): PanelOpenState {
+    return { ...this.activeProfileStyle().open };
   }
 
   isSurfaceOpen(surface: OpenSurface): boolean {
-    return !!this.data.surfaces.open[surface];
+    return !!this.activeProfileStyle().open[surface];
   }
 
   /** True when the config lacked a `surfaces` block and workspace state may still seed it. */
@@ -1298,13 +1343,22 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  /** Persist whether a movable panel is open. Does not create an undo step. */
+  /** Persist whether a movable panel is open on the active profile. Does not create an undo step. */
   async setSurfaceOpen(surface: OpenSurface, open: boolean): Promise<void> {
-    if (this.data.surfaces.open[surface] === open) {
-      return;
-    }
-    this.data.surfaces.open[surface] = open;
-    await this.commit();
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const current = this.activeProfileStyle();
+      if (current.open[surface] === open) {
+        return;
+      }
+      this.stylesData.styles[id] = {
+        appearance: { ...current.appearance },
+        open: { ...current.open, [surface]: open },
+      };
+      this.mirrorActiveOpenToSurfaces();
+      await this.persistStyles();
+      this.changeEmitter.fire();
+    });
   }
 
   /**
@@ -1340,6 +1394,13 @@ export class MarkerStore implements vscode.Disposable {
       if (legacy.bottomAlive) {
         this.data.surfaces.open.bottom = true;
       }
+      const activeId = this.ensureActiveProfileId();
+      const current = this.activeProfileStyle();
+      this.stylesData.styles[activeId] = {
+        appearance: { ...current.appearance },
+        open: { ...this.data.surfaces.open },
+      };
+      await this.persistStyles();
       const next = this.capture();
       await this.writeConfig(next);
       this.present = next;
@@ -1797,16 +1858,18 @@ export class MarkerStore implements vscode.Disposable {
 
   /**
    * Load profiles.json and styles.json. When styles.json is missing, seed «Общий»
-   * from the legacy appearance block in syn3.json and rewrite markers without it.
+   * from the legacy appearance block and current panel open flags in syn3.json.
    */
   private async loadProfilesAndStyles(): Promise<void> {
     const stylesExist = await fileExists(this.stylesUri);
     const profilesExist = await fileExists(this.profilesUri);
     const seed = normalizeAppearance(this.data.appearance);
+    const seedOpen = { ...this.data.surfaces.open };
 
     if (!stylesExist) {
-      this.stylesData = emptyStyles(seed);
+      this.stylesData = emptyStyles(seed, seedOpen);
       this.profilesData = emptyProfiles();
+      this.mirrorActiveOpenToSurfaces();
       await this.persistStyles();
       await this.persistProfiles();
       // Drop legacy appearance from syn3.json on the next markers write.
@@ -1816,11 +1879,14 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
 
-    await this.reloadStylesFromDisk(false);
+    await this.reloadStylesFromDisk(false, seedOpen);
     if (!profilesExist) {
       const ids = Object.keys(this.stylesData.styles);
       if (!ids.includes(GENERAL_PROFILE_ID)) {
-        this.stylesData.styles[GENERAL_PROFILE_ID] = seed;
+        this.stylesData.styles[GENERAL_PROFILE_ID] = {
+          appearance: seed,
+          open: { ...seedOpen },
+        };
       }
       this.profilesData = {
         version: 1,
@@ -1835,9 +1901,12 @@ export class MarkerStore implements vscode.Disposable {
       await this.persistProfiles();
       await this.persistStyles();
     } else {
-      await this.reloadProfilesFromDisk(false);
+      await this.reloadProfilesFromDisk(false, seedOpen);
     }
-    this.ensureGeneralProfile(seed);
+    this.ensureGeneralProfile(seed, seedOpen);
+    this.mirrorActiveOpenToSurfaces();
+    // Rewrite styles.json if entries were still flat appearance-only.
+    await this.persistStyles();
     // Drop legacy appearance from syn3.json if it is still on disk.
     try {
       const raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
@@ -1852,7 +1921,7 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private async reloadProfilesFromDisk(notify = true): Promise<void> {
+  private async reloadProfilesFromDisk(notify = true, seedOpen?: PanelOpenState): Promise<void> {
     try {
       const raw = Buffer.from(await vscode.workspace.fs.readFile(this.profilesUri)).toString('utf8');
       this.profilesData = normalizeProfiles(JSON.parse(raw));
@@ -1862,29 +1931,34 @@ export class MarkerStore implements vscode.Disposable {
       }
       this.profilesData = emptyProfiles();
     }
-    this.ensureGeneralProfile(this.stylesData.styles[GENERAL_PROFILE_ID] ?? DEFAULT_APPEARANCE);
+    const seed = this.stylesData.styles[GENERAL_PROFILE_ID]?.appearance ?? DEFAULT_APPEARANCE;
+    this.ensureGeneralProfile(seed, seedOpen ?? this.data.surfaces.open);
+    this.mirrorActiveOpenToSurfaces();
     if (notify) {
       this.changeEmitter.fire();
     }
   }
 
-  private async reloadStylesFromDisk(notify = true): Promise<void> {
+  private async reloadStylesFromDisk(notify = true, seedOpen?: PanelOpenState): Promise<void> {
+    const fallbackOpen = seedOpen ?? this.data.surfaces.open;
     try {
       const raw = Buffer.from(await vscode.workspace.fs.readFile(this.stylesUri)).toString('utf8');
-      this.stylesData = normalizeStyles(JSON.parse(raw));
+      this.stylesData = normalizeStyles(JSON.parse(raw), fallbackOpen);
     } catch (error) {
       if (!isFileNotFound(error)) {
         console.error('Syn3 styles:', error);
       }
-      this.stylesData = emptyStyles(this.data.appearance);
+      this.stylesData = emptyStyles(this.data.appearance, fallbackOpen);
     }
-    this.ensureGeneralProfile(this.stylesData.styles[GENERAL_PROFILE_ID] ?? DEFAULT_APPEARANCE);
+    const seed = this.stylesData.styles[GENERAL_PROFILE_ID]?.appearance ?? DEFAULT_APPEARANCE;
+    this.ensureGeneralProfile(seed, fallbackOpen);
+    this.mirrorActiveOpenToSurfaces();
     if (notify) {
       this.changeEmitter.fire();
     }
   }
 
-  private ensureGeneralProfile(seed: Appearance): void {
+  private ensureGeneralProfile(seed: Appearance, seedOpen: PanelOpenState = emptyPanelOpen()): void {
     if (!this.profilesData.profiles.some((p) => p.id === GENERAL_PROFILE_ID)) {
       this.profilesData.profiles.unshift({ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME });
     } else {
@@ -1898,7 +1972,10 @@ export class MarkerStore implements vscode.Disposable {
       ];
     }
     if (!this.stylesData.styles[GENERAL_PROFILE_ID]) {
-      this.stylesData.styles[GENERAL_PROFILE_ID] = normalizeAppearance(seed);
+      this.stylesData.styles[GENERAL_PROFILE_ID] = {
+        appearance: normalizeAppearance(seed),
+        open: { ...seedOpen },
+      };
     }
     if (!this.profilesData.profiles.some((p) => p.id === this.profilesData.active)) {
       this.profilesData.active = GENERAL_PROFILE_ID;
@@ -1906,8 +1983,13 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private ensureActiveProfileId(): string {
-    this.ensureGeneralProfile(DEFAULT_APPEARANCE);
+    this.ensureGeneralProfile(DEFAULT_APPEARANCE, this.data.surfaces.open);
     return this.profilesData.active;
+  }
+
+  /** Keep syn3.json `surfaces.open` mirrored for capture / legacy readers. */
+  private mirrorActiveOpenToSurfaces(): void {
+    this.data.surfaces.open = { ...this.activeProfileStyle().open };
   }
 
   private uniqueProfileId(name: string): string {
@@ -1950,11 +2032,13 @@ export class MarkerStore implements vscode.Disposable {
   private async persistStyles(): Promise<void> {
     this.writingStyles = true;
     try {
-      const styles: Record<string, Appearance> = {};
+      const styles: Record<string, ProfileStyle> = {};
       for (const profile of this.profilesData.profiles) {
-        styles[profile.id] = normalizeAppearance(
-          this.stylesData.styles[profile.id] ?? DEFAULT_APPEARANCE,
-        );
+        const current = this.stylesData.styles[profile.id];
+        styles[profile.id] = {
+          appearance: normalizeAppearance(current?.appearance ?? DEFAULT_APPEARANCE),
+          open: normalizePanelOpen(current?.open),
+        };
       }
       this.stylesData = { version: 1, styles };
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.stylesUri, '..'));
@@ -2873,8 +2957,41 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
   return result;
 }
 
-function normalizeStyles(raw: unknown): StylesFile {
-  const result = emptyStyles();
+function normalizePanelOpen(raw: unknown, fallback: PanelOpenState = emptyPanelOpen()): PanelOpenState {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...fallback };
+  }
+  const source = raw as Partial<Record<OpenSurface, unknown>>;
+  return {
+    bottom: typeof source.bottom === 'boolean' ? source.bottom : fallback.bottom,
+    left: typeof source.left === 'boolean' ? source.left : fallback.left,
+    right: typeof source.right === 'boolean' ? source.right : fallback.right,
+  };
+}
+
+function normalizeProfileStyle(raw: unknown, fallbackOpen: PanelOpenState = emptyPanelOpen()): ProfileStyle {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      appearance: { ...DEFAULT_APPEARANCE },
+      open: { ...fallbackOpen },
+    };
+  }
+  const source = raw as { appearance?: unknown; open?: unknown; fontGroup?: unknown };
+  // Legacy flat appearance object (pre-panels).
+  if (!('appearance' in source) && !('open' in source) && 'fontGroup' in source) {
+    return {
+      appearance: normalizeAppearance(raw),
+      open: { ...fallbackOpen },
+    };
+  }
+  return {
+    appearance: normalizeAppearance(source.appearance ?? raw),
+    open: normalizePanelOpen(source.open, fallbackOpen),
+  };
+}
+
+function normalizeStyles(raw: unknown, fallbackOpen: PanelOpenState = emptyPanelOpen()): StylesFile {
+  const result = emptyStyles(DEFAULT_APPEARANCE, fallbackOpen);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return result;
   }
@@ -2882,12 +2999,15 @@ function normalizeStyles(raw: unknown): StylesFile {
   if (!source.styles || typeof source.styles !== 'object' || Array.isArray(source.styles)) {
     return result;
   }
-  const styles: Record<string, Appearance> = {};
+  const styles: Record<string, ProfileStyle> = {};
   for (const [id, value] of Object.entries(source.styles as Record<string, unknown>)) {
-    styles[id] = normalizeAppearance(value);
+    styles[id] = normalizeProfileStyle(value, fallbackOpen);
   }
   if (!styles[GENERAL_PROFILE_ID]) {
-    styles[GENERAL_PROFILE_ID] = normalizeAppearance(DEFAULT_APPEARANCE);
+    styles[GENERAL_PROFILE_ID] = {
+      appearance: normalizeAppearance(DEFAULT_APPEARANCE),
+      open: { ...fallbackOpen },
+    };
   }
   return { version: 1, styles };
 }

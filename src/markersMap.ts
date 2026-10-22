@@ -185,6 +185,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Skip writing open=false while we remove the bottom view ourselves. */
   private closingBottom = false;
   private surfacesBootstrapped = false;
+  /** Last applied profile panel flags — skip sync when only appearance changed. */
+  private lastSyncedOpenKey = '';
 
   constructor(
     private readonly store: MarkerStore,
@@ -199,6 +201,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       store.onDidChange(() => {
         this.refresh();
         this.postOpenFlags();
+        void this.syncOpenSurfacesIfNeeded();
       }),
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.viewColumn !== undefined) {
@@ -271,7 +274,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       await this.clearLegacySurfaceState();
     }
-    await this.syncOpenSurfaces();
+    await this.syncOpenSurfacesIfNeeded(true);
     this.postOpenFlags();
   }
 
@@ -716,7 +719,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.webviews.add(webview);
   }
 
-  /** Open/close left, right, and bottom to match flags in syn3.json. */
+  /** Open/close left, right, and bottom to match the active profile. */
+  private async syncOpenSurfacesIfNeeded(force = false): Promise<void> {
+    if (!this.store.ready) {
+      return;
+    }
+    const open = this.store.surfaceOpen();
+    const key = `${open.bottom ? 1 : 0}${open.left ? 1 : 0}${open.right ? 1 : 0}`;
+    if (!force && key === this.lastSyncedOpenKey) {
+      return;
+    }
+    this.lastSyncedOpenKey = key;
+    await this.syncOpenSurfaces();
+  }
+
   private async syncOpenSurfaces(): Promise<void> {
     if (!this.store.ready) {
       return;
