@@ -314,6 +314,13 @@ export class SettingsPanel implements vscode.Disposable {
       flex: 1;
       white-space: nowrap;
     }
+    .profile-row .profile-bound-count {
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      flex-shrink: 0;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.75;
+    }
     .profile-row .profile-actions {
       display: flex;
       flex-shrink: 0;
@@ -653,6 +660,14 @@ export class SettingsPanel implements vscode.Disposable {
         name.className = 'profile-name';
         name.textContent = profile.name;
         row.append(name);
+        const bound = typeof profile.boundCount === 'number' ? profile.boundCount : 0;
+        if (bound > 0) {
+          const count = document.createElement('span');
+          count.className = 'profile-bound-count';
+          count.textContent = String(bound);
+          count.title = 'Привязано: ' + bound;
+          row.append(count);
+        }
         if (profile.id !== GENERAL_ID) {
           const actions = document.createElement('span');
           actions.className = 'profile-actions';

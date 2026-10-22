@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -21,13 +22,18 @@ export const MAX_MARKER_DEPTH = 2;
 
 /** Fixed markers file relative to the workspace folder. */
 export const CONFIG_PATH = '.syn3/syn3.json';
-/** Profile list and active id. */
+/** Profile list and per-machine bindings (`sProfileIds`). */
 export const PROFILES_PATH = '.syn3/profiles.json';
 /** Appearance per profile id. */
 export const STYLES_PATH = '.syn3/styles.json';
 /** Built-in profile: always present, cannot be renamed or deleted. */
 export const GENERAL_PROFILE_ID = 'general';
 export const GENERAL_PROFILE_NAME = 'Общий';
+
+/** SHA-256 of `vscode.env.machineId` — stored in profile `sProfileIds`, not the raw id. */
+export function hashMachineId(machineId: string = vscode.env.machineId): string {
+  return crypto.createHash('sha256').update(machineId).digest('hex');
+}
 /** Older locations, newest first. */
 const LEGACY_CONFIG_PATHS = [
   '.sgroup/sgroup.json',
@@ -70,6 +76,16 @@ export function normalizeGroupsLayout(value: unknown): GroupsLayout {
 export interface StyleProfile {
   id: string;
   name: string;
+  /** SHA-256 hashes of machine ids currently bound to this profile. */
+  sProfileIds: string[];
+}
+
+/** Profile row for UI — no machine hashes. */
+export interface StyleProfileInfo {
+  id: string;
+  name: string;
+  /** How many machines are bound to this profile (`sProfileIds.length`). */
+  boundCount: number;
 }
 
 /** Map font scales, card paint, and Explorer label saturation, stored per profile in styles.json. */
@@ -359,7 +375,6 @@ export interface ProfileStyle {
 
 interface ProfilesFile {
   version: 1;
-  active: string;
   profiles: StyleProfile[];
 }
 
@@ -371,9 +386,28 @@ interface StylesFile {
 function emptyProfiles(): ProfilesFile {
   return {
     version: 1,
-    active: GENERAL_PROFILE_ID,
-    profiles: [{ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME }],
+    profiles: [{ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: [] }],
   };
+}
+
+function normalizeSProfileIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string' || !item.trim()) {
+      continue;
+    }
+    const id = item.trim();
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
 }
 
 function emptyStyles(
@@ -448,6 +482,8 @@ export class MarkerStore implements vscode.Disposable {
   private data: MarkersFile = emptyData();
   private profilesData: ProfilesFile = emptyProfiles();
   private stylesData: StylesFile = emptyStyles();
+  /** Active profile for this machine — derived from `sProfileIds`, not persisted. */
+  private activeId = GENERAL_PROFILE_ID;
   private watchers: vscode.FileSystemWatcher[] = [];
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   /** When migration fails, read this path for the current session instead of CONFIG_PATH. */
@@ -499,7 +535,7 @@ export class MarkerStore implements vscode.Disposable {
 
   /** Panel open flags of the active profile. */
   private activeProfileStyle(): ProfileStyle {
-    const id = this.profilesData.active;
+    const id = this.activeId;
     return (
       this.stylesData.styles[id] ??
       this.stylesData.styles[GENERAL_PROFILE_ID] ?? {
@@ -509,19 +545,22 @@ export class MarkerStore implements vscode.Disposable {
     );
   }
 
-  /** Profiles in creation order. «Общий» is always first. */
-  profiles(): StyleProfile[] {
-    return this.profilesData.profiles.map((p) => ({ ...p }));
+  /** Profiles in creation order. «Общий» is always first. Machine hashes stay private. */
+  profiles(): StyleProfileInfo[] {
+    return this.profilesData.profiles.map(({ id, name, sProfileIds }) => ({
+      id,
+      name,
+      boundCount: sProfileIds.length,
+    }));
   }
 
   get activeProfileId(): string {
-    return this.profilesData.active;
+    return this.activeId;
   }
 
   get activeProfileName(): string {
     return (
-      this.profilesData.profiles.find((p) => p.id === this.profilesData.active)?.name ??
-      GENERAL_PROFILE_NAME
+      this.profilesData.profiles.find((p) => p.id === this.activeId)?.name ?? GENERAL_PROFILE_NAME
     );
   }
 
@@ -616,10 +655,12 @@ export class MarkerStore implements vscode.Disposable {
       if (!this.profilesData.profiles.some((p) => p.id === id)) {
         return;
       }
-      if (this.profilesData.active === id) {
+      const hash = hashMachineId();
+      const owner = this.profilesData.profiles.find((p) => p.sProfileIds.includes(hash));
+      if (owner?.id === id && this.activeId === id) {
         return;
       }
-      this.profilesData.active = id;
+      this.moveMachineToProfile(id);
       this.mirrorActiveOpenToSurfaces();
       await this.persistProfiles();
       this.changeEmitter.fire();
@@ -639,9 +680,9 @@ export class MarkerStore implements vscode.Disposable {
       const id = this.uniqueProfileId(trimmed);
       this.ensureActiveProfileId();
       const source = this.activeProfileStyle();
-      this.profilesData.profiles.push({ id, name: trimmed });
+      this.profilesData.profiles.push({ id, name: trimmed, sProfileIds: [] });
       this.stylesData.styles[id] = cloneProfileStyle(source);
-      this.profilesData.active = id;
+      this.moveMachineToProfile(id);
       this.mirrorActiveOpenToSurfaces();
       await this.persistProfiles();
       await this.persistStyles();
@@ -679,10 +720,11 @@ export class MarkerStore implements vscode.Disposable {
       if (index < 0) {
         return false;
       }
+      const wasActive = this.activeId === id;
       this.profilesData.profiles.splice(index, 1);
       delete this.stylesData.styles[id];
-      if (this.profilesData.active === id) {
-        this.profilesData.active = GENERAL_PROFILE_ID;
+      if (wasActive) {
+        this.moveMachineToProfile(GENERAL_PROFILE_ID);
         this.mirrorActiveOpenToSurfaces();
       }
       await this.persistProfiles();
@@ -1869,6 +1911,7 @@ export class MarkerStore implements vscode.Disposable {
     if (!stylesExist) {
       this.stylesData = emptyStyles(seed, seedOpen);
       this.profilesData = emptyProfiles();
+      this.bindMachineToProfiles();
       this.mirrorActiveOpenToSurfaces();
       await this.persistStyles();
       await this.persistProfiles();
@@ -1890,20 +1933,23 @@ export class MarkerStore implements vscode.Disposable {
       }
       this.profilesData = {
         version: 1,
-        active: GENERAL_PROFILE_ID,
         profiles: [
-          { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME },
+          { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: [] },
           ...ids
             .filter((id) => id !== GENERAL_PROFILE_ID)
-            .map((id) => ({ id, name: id })),
+            .map((id) => ({ id, name: id, sProfileIds: [] as string[] })),
         ],
       };
+      this.bindMachineToProfiles();
       await this.persistProfiles();
       await this.persistStyles();
     } else {
       await this.reloadProfilesFromDisk(false, seedOpen);
     }
     this.ensureGeneralProfile(seed, seedOpen);
+    if (this.bindMachineToProfiles()) {
+      await this.persistProfiles();
+    }
     this.mirrorActiveOpenToSurfaces();
     // Rewrite styles.json if entries were still flat appearance-only.
     await this.persistStyles();
@@ -1933,6 +1979,9 @@ export class MarkerStore implements vscode.Disposable {
     }
     const seed = this.stylesData.styles[GENERAL_PROFILE_ID]?.appearance ?? DEFAULT_APPEARANCE;
     this.ensureGeneralProfile(seed, seedOpen ?? this.data.surfaces.open);
+    if (this.bindMachineToProfiles()) {
+      await this.persistProfiles();
+    }
     this.mirrorActiveOpenToSurfaces();
     if (notify) {
       this.changeEmitter.fire();
@@ -1960,14 +2009,16 @@ export class MarkerStore implements vscode.Disposable {
 
   private ensureGeneralProfile(seed: Appearance, seedOpen: PanelOpenState = emptyPanelOpen()): void {
     if (!this.profilesData.profiles.some((p) => p.id === GENERAL_PROFILE_ID)) {
-      this.profilesData.profiles.unshift({ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME });
+      this.profilesData.profiles.unshift({
+        id: GENERAL_PROFILE_ID,
+        name: GENERAL_PROFILE_NAME,
+        sProfileIds: [],
+      });
     } else {
       const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
-      if (general) {
-        general.name = GENERAL_PROFILE_NAME;
-      }
+      const sProfileIds = general?.sProfileIds ?? [];
       this.profilesData.profiles = [
-        { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME },
+        { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds },
         ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
       ];
     }
@@ -1977,14 +2028,62 @@ export class MarkerStore implements vscode.Disposable {
         open: { ...seedOpen },
       };
     }
-    if (!this.profilesData.profiles.some((p) => p.id === this.profilesData.active)) {
-      this.profilesData.active = GENERAL_PROFILE_ID;
-    }
   }
 
   private ensureActiveProfileId(): string {
     this.ensureGeneralProfile(DEFAULT_APPEARANCE, this.data.surfaces.open);
-    return this.profilesData.active;
+    if (!this.profilesData.profiles.some((p) => p.id === this.activeId)) {
+      this.moveMachineToProfile(GENERAL_PROFILE_ID);
+    }
+    return this.activeId;
+  }
+
+  /**
+   * Resolve this machine's active profile from `sProfileIds`.
+   * Exactly one owner → use it. Zero or many → «Общий», strip our hash elsewhere, seed Общий.
+   * @returns true when profiles were mutated and should be persisted.
+   */
+  private bindMachineToProfiles(): boolean {
+    const hash = hashMachineId();
+    const owners = this.profilesData.profiles.filter((p) => p.sProfileIds.includes(hash));
+    if (owners.length === 1) {
+      this.activeId = owners[0].id;
+      return false;
+    }
+    let changed = false;
+    for (const profile of this.profilesData.profiles) {
+      const next = profile.sProfileIds.filter((id) => id !== hash);
+      if (next.length !== profile.sProfileIds.length) {
+        profile.sProfileIds = next;
+        changed = true;
+      }
+    }
+    const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    if (general && !general.sProfileIds.includes(hash)) {
+      general.sProfileIds.push(hash);
+      changed = true;
+    }
+    this.activeId = GENERAL_PROFILE_ID;
+    return changed;
+  }
+
+  /** Move this machine's hash onto `profileId`; leave other machines untouched. */
+  private moveMachineToProfile(profileId: string): void {
+    const hash = hashMachineId();
+    for (const profile of this.profilesData.profiles) {
+      profile.sProfileIds = profile.sProfileIds.filter((id) => id !== hash);
+    }
+    const target = this.profilesData.profiles.find((p) => p.id === profileId);
+    if (target) {
+      target.sProfileIds.push(hash);
+      this.activeId = profileId;
+    } else {
+      const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+      if (general) {
+        general.sProfileIds.push(hash);
+      }
+      this.activeId = GENERAL_PROFILE_ID;
+    }
   }
 
   /** Keep syn3.json `surfaces.open` mirrored for capture / legacy readers. */
@@ -2013,8 +2112,11 @@ export class MarkerStore implements vscode.Disposable {
     try {
       const payload: ProfilesFile = {
         version: 1,
-        active: this.profilesData.active,
-        profiles: this.profilesData.profiles.map((p) => ({ id: p.id, name: p.name })),
+        profiles: this.profilesData.profiles.map((p) => ({
+          id: p.id,
+          name: p.name,
+          sProfileIds: [...p.sProfileIds],
+        })),
       };
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.profilesUri, '..'));
       await vscode.workspace.fs.writeFile(
@@ -2926,20 +3028,26 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return result;
   }
-  const source = raw as { active?: unknown; profiles?: unknown };
+  const source = raw as { profiles?: unknown };
   const profiles: StyleProfile[] = [];
   const seen = new Set<string>();
+  let generalIds: string[] = [];
   if (Array.isArray(source.profiles)) {
     for (const entry of source.profiles) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
         continue;
       }
-      const item = entry as { id?: unknown; name?: unknown };
+      const item = entry as { id?: unknown; name?: unknown; sProfileIds?: unknown };
       if (typeof item.id !== 'string' || !item.id.trim()) {
         continue;
       }
       const id = item.id.trim();
-      if (seen.has(id) || id === GENERAL_PROFILE_ID) {
+      const sProfileIds = normalizeSProfileIds(item.sProfileIds);
+      if (id === GENERAL_PROFILE_ID) {
+        generalIds = sProfileIds;
+        continue;
+      }
+      if (seen.has(id)) {
         continue;
       }
       const name =
@@ -2948,12 +3056,13 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         continue;
       }
       seen.add(id);
-      profiles.push({ id, name });
+      profiles.push({ id, name, sProfileIds });
     }
   }
-  result.profiles = [{ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME }, ...profiles];
-  const active = typeof source.active === 'string' ? source.active : GENERAL_PROFILE_ID;
-  result.active = result.profiles.some((p) => p.id === active) ? active : GENERAL_PROFILE_ID;
+  result.profiles = [
+    { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: generalIds },
+    ...profiles,
+  ];
   return result;
 }
 

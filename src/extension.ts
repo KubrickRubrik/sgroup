@@ -125,8 +125,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('syn3.map.toggleLayout', () => map.toggleLayout()),
-    ...['flow', '1', '2', '3'].map((state) => {
-      return vscode.commands.registerCommand(`syn3.map.groups.${state}`, () => map.cycleGroupsLayout());
+    ...(['flow', '1', '2', '3'] as const).map((state) => {
+      return vscode.commands.registerCommand(`syn3.map.groups.${state}`, () => map.setGroupsLayout(state));
     }),
     vscode.commands.registerCommand('syn3.map.collapseGroups', () => map.setTopGroups(true)),
     vscode.commands.registerCommand('syn3.map.expandGroups', () => map.setTopGroups(false)),

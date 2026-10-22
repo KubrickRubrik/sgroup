@@ -24,7 +24,6 @@ const LEGACY_ACTIVE_PAGE_KEYS = {
   bottom: 'syn3.map.activePage.bottom',
   sidebar: 'syn3.map.activePage.sidebar',
 } as const;
-const GROUPS_LAYOUT_CYCLE: GroupsLayout[] = ['flow', '1', '2', '3'];
 /** Context key that selects which groups-layout button is shown in view/editor titles. */
 const GROUPS_LAYOUT_CONTEXT = 'syn3.map.groupsLayout';
 /** True when every top-level group on the map is collapsed. */
@@ -95,8 +94,8 @@ interface EditorLayout {
 }
 
 type IncomingToolbarAction =
-  | 'toggleLayout'
-  | 'cycleGroups'
+  | 'setLayout'
+  | 'setGroupsLayout'
   | 'createMarker'
   | 'collapseGroups'
   | 'expandGroups'
@@ -126,7 +125,9 @@ type IncomingMessage =
       type: 'toolbar';
       action: IncomingToolbarAction;
       pageId?: string;
+      value?: string;
     }
+  | { type: 'runCommand'; command: string; arg?: Record<string, unknown> }
   | { type: 'reorderPages'; orderedIds: string[] }
   | { type: 'setColor'; markerId: string; color: string }
   | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
@@ -484,17 +485,24 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   // ---- shared ----
 
-  /** Flow → 1 → 2 → 3 → flow for top-level group placement on the focused surface's page. */
-  async cycleGroupsLayout(): Promise<void> {
+  /** Set top-level group placement on the focused surface's page. */
+  async setGroupsLayout(layout: GroupsLayout): Promise<void> {
     const pageId = this.focusedPageId();
-    const page = this.store.page(pageId);
-    if (!page) {
+    if (!this.store.page(pageId)) {
       return;
     }
-    const current = normalizeGroupsLayout(page.groupsLayout);
-    const next = GROUPS_LAYOUT_CYCLE[(GROUPS_LAYOUT_CYCLE.indexOf(current) + 1) % GROUPS_LAYOUT_CYCLE.length];
+    const next = normalizeGroupsLayout(layout);
     await this.store.updatePageView(pageId, { groupsLayout: next });
     await this.syncGroupsLayoutContext(next);
+  }
+
+  /** Set chips/list layout on the focused surface's page. */
+  async setLayout(layout: MapLayout): Promise<void> {
+    const pageId = this.focusedPageId();
+    if (!this.store.page(pageId)) {
+      return;
+    }
+    await this.store.updatePageView(pageId, { layout: normalizeMapLayout(layout) });
   }
 
   syncGroupsLayoutContext(layout?: GroupsLayout): Thenable<unknown> {
@@ -917,7 +925,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'toolbar') {
       this.rememberFocus(webview, message.pageId);
-      await this.onToolbar(webview, message.action, message.pageId);
+      await this.onToolbar(webview, message.action, message.pageId, message.value);
+      return;
+    }
+    if (message.type === 'runCommand') {
+      this.rememberFocus(webview);
+      if (typeof message.command === 'string' && message.command.startsWith('syn3.')) {
+        await vscode.commands.executeCommand(message.command, message.arg);
+      }
       return;
     }
     if (message.type === 'setCollapsed') {
@@ -1363,6 +1378,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     webview: vscode.Webview,
     action: IncomingToolbarAction,
     pageId?: string,
+    value?: string,
   ): Promise<void> {
     if (action === 'toggleBottom') {
       if (!(await this.toggleBottom())) {
@@ -1386,21 +1402,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const activePage = pageId && this.store.page(pageId) ? pageId : this.pageIdFor(webview);
-    if (action === 'toggleLayout') {
-      const page = this.store.page(activePage);
-      if (page) {
-        await this.store.updatePageView(activePage, {
-          layout: normalizeMapLayout(page.layout) === 'chips' ? 'list' : 'chips',
-        });
+    if (action === 'setLayout') {
+      if (this.store.page(activePage)) {
+        await this.store.updatePageView(activePage, { layout: normalizeMapLayout(value) });
       }
       return;
     }
-    if (action === 'cycleGroups') {
-      const page = this.store.page(activePage);
-      if (page) {
-        const current = normalizeGroupsLayout(page.groupsLayout);
-        const next =
-          GROUPS_LAYOUT_CYCLE[(GROUPS_LAYOUT_CYCLE.indexOf(current) + 1) % GROUPS_LAYOUT_CYCLE.length];
+    if (action === 'setGroupsLayout') {
+      if (this.store.page(activePage)) {
+        const next = normalizeGroupsLayout(value);
         await this.store.updatePageView(activePage, { groupsLayout: next });
         if (webview === this.lastFocusedWebview) {
           await this.syncGroupsLayoutContext(next);
@@ -1646,15 +1656,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       ${icon('arrow-right')}
     </button>
     <div class="toolbar-extra">
-      <button id="toolbar-layout" class="history-btn" type="button" title="Toggle Map Layout (Chips / List)" aria-label="Toggle Map Layout">
-        ${icon('list-flat')}
-      </button>
-      <button id="toolbar-groups" class="history-btn" type="button" title="Groups: Flow — click for 1 column" aria-label="Groups">
-        ${icon('word-wrap', 'flow')}
-        ${icon('list-flat', '1', true)}
-        ${icon('split-horizontal', '2', true)}
-        ${icon('table', '3', true)}
-      </button>
+      <div class="toolbar-view">
+        <button id="toolbar-view" class="history-btn" type="button" title="Вид" aria-label="Вид" aria-haspopup="menu" aria-expanded="false">
+          ${icon('chevron-down')}
+        </button>
+        <div id="toolbar-view-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Вид"></div>
+      </div>
       <button id="toolbar-create" class="history-btn" type="button" title="Create Marker" aria-label="Create Marker">
         ${icon('add')}
       </button>

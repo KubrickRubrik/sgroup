@@ -1,14 +1,17 @@
 {
   "version": 1,
-  "active": "profile-профиль-1",
   "profiles": [
     {
       "id": "general",
-      "name": "Общий"
+      "name": "Общий",
+      "sProfileIds": []
     },
     {
       "id": "profile-профиль-1",
-      "name": "Профиль один"
+      "name": "Профиль один",
+      "sProfileIds": [
+        "006048e5b595917b50ffc76109a305faf4dabcbc279c90cabc75664736adfde8"
+      ]
     }
   ]
 }

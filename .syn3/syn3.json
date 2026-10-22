@@ -91,6 +91,7 @@
       "label": "Version",
       "color": "syn3.tomato",
       "icon": "🔥",
+      "columns": "2",
       "order": 1,
       "page": "map"
     },
@@ -188,8 +189,8 @@
     },
     "open": {
       "bottom": true,
-      "left": true,
-      "right": true
+      "left": false,
+      "right": false
     }
   },
   "aliases": {

@@ -17,8 +17,9 @@
     vscode.postMessage({ type: 'history', direction: 'forward', pageId: uiState.activePageId });
   });
 
-  const toolbarGroups = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-groups'));
-  const toolbarLayout = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-layout'));
+  const toolbarView = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-view'));
+  const toolbarViewMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-view-menu'));
+  const toolbarViewWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-view'));
   const toolbarCreate = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-create'));
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
@@ -36,20 +37,84 @@
   const panelToggleLeft = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-left'));
   const panelToggleRight = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-right'));
 
-  toolbarLayout?.addEventListener('click', () => {
+  /** Floating context menu for map targets. */
+  const contextMenu = document.createElement('div');
+  contextMenu.className = 'syn3-menu syn3-context-menu';
+  contextMenu.hidden = true;
+  contextMenu.setAttribute('role', 'menu');
+  contextMenu.setAttribute('aria-label', 'Контекстное меню');
+  document.body.append(contextMenu);
+
+  /** @type {{ kind: 'toolbar' | 'context', viewExpanded: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  let openMenuState = null;
+  const MENU_CLOSE_MS = 300;
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const menuCloseTimers = new Map();
+
+  /** @param {string} [id] */
+  function cancelMenuClose(id) {
+    if (id) {
+      const timer = menuCloseTimers.get(id);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        menuCloseTimers.delete(id);
+      }
+      return;
+    }
+    for (const timer of menuCloseTimers.values()) {
+      clearTimeout(timer);
+    }
+    menuCloseTimers.clear();
+  }
+
+  /**
+   * @param {string} id
+   * @param {() => void} fn
+   */
+  function scheduleMenuClose(id, fn) {
+    cancelMenuClose(id);
+    menuCloseTimers.set(
+      id,
+      setTimeout(() => {
+        menuCloseTimers.delete(id);
+        fn();
+      }, MENU_CLOSE_MS),
+    );
+  }
+
+  const toolbarPanelsWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-panels'));
+
+  toolbarView?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!toolbarViewMenu) {
+      return;
+    }
+    const open = toolbarViewMenu.hidden;
+    cancelMenuClose();
     closeToolbarMenus();
-    postToolbar('toggleLayout');
+    closeContextMenu();
+    if (open) {
+      openToolbarViewMenu();
+    }
   });
-  toolbarGroups?.addEventListener('click', () => {
-    closeToolbarMenus();
-    postToolbar('cycleGroups');
+  toolbarViewWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-view');
+  });
+  toolbarViewWrap?.addEventListener('mouseleave', () => {
+    if (toolbarViewMenu && !toolbarViewMenu.hidden) {
+      scheduleMenuClose('toolbar-view', () => closeToolbarViewMenu());
+    }
   });
   toolbarCreate?.addEventListener('click', () => {
+    cancelMenuClose();
     closeToolbarMenus();
+    closeContextMenu();
     postToolbar('createMarker');
   });
   toolbarCollapse?.addEventListener('click', () => {
+    cancelMenuClose();
     closeToolbarMenus();
+    closeContextMenu();
     postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
   });
   toolbarPanels?.addEventListener('click', (event) => {
@@ -58,7 +123,9 @@
       return;
     }
     const open = toolbarPanelsMenu.hidden;
+    cancelMenuClose();
     closeToolbarMenus();
+    closeContextMenu();
     if (open) {
       toolbarPanelsMenu.hidden = false;
       toolbarPanels?.setAttribute('aria-expanded', 'true');
@@ -71,8 +138,22 @@
     if (!action || button?.disabled) {
       return;
     }
+    cancelMenuClose();
     closeToolbarMenus();
     postToolbar(action);
+  });
+  toolbarPanelsWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-panels');
+  });
+  toolbarPanelsWrap?.addEventListener('mouseleave', () => {
+    if (toolbarPanelsMenu && !toolbarPanelsMenu.hidden) {
+      scheduleMenuClose('toolbar-panels', () => {
+        if (toolbarPanelsMenu) {
+          toolbarPanelsMenu.hidden = true;
+        }
+        toolbarPanels?.setAttribute('aria-expanded', 'false');
+      });
+    }
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -80,7 +161,9 @@
       return;
     }
     const open = toolbarMenu.hidden;
+    cancelMenuClose();
     closeToolbarMenus();
+    closeContextMenu();
     if (open) {
       toolbarMenu.hidden = false;
     }
@@ -92,24 +175,34 @@
     if (!action || button?.disabled) {
       return;
     }
+    cancelMenuClose();
     closeToolbarMenus();
     postToolbar(action);
   });
+  toolbarMoreWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-more');
+  });
   toolbarMoreWrap?.addEventListener('mouseleave', () => {
     if (toolbarMenu && !toolbarMenu.hidden) {
-      closeToolbarMenus();
+      scheduleMenuClose('toolbar-more', () => {
+        if (toolbarMenu) {
+          toolbarMenu.hidden = true;
+        }
+      });
     }
   });
 
   toolbarProfileWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-profile');
     closeToolbarMenus();
+    closeContextMenu();
     if (toolbarProfileMenu) {
       toolbarProfileMenu.hidden = false;
       toolbarProfile?.setAttribute('aria-expanded', 'true');
     }
   });
   toolbarProfileWrap?.addEventListener('mouseleave', () => {
-    closeProfileMenu();
+    scheduleMenuClose('toolbar-profile', () => closeProfileMenu());
   });
   toolbarProfileAdd?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -144,6 +237,49 @@
     }
     vscode.postMessage({ type: 'profile', action: 'activate', id });
     closeProfileMenu();
+  });
+
+  /** Skip leave-close while the context menu DOM is rebuilt (toggle/highlight). */
+  let ignoreContextLeave = false;
+
+  contextMenu.addEventListener('mouseenter', () => {
+    ignoreContextLeave = false;
+    cancelMenuClose('context');
+  });
+  contextMenu.addEventListener('mouseleave', () => {
+    if (ignoreContextLeave) {
+      return;
+    }
+    scheduleMenuClose('context', () => closeContextMenu());
+  });
+  contextMenu.addEventListener('click', (event) => {
+    handleSyn3MenuClick(event, 'context');
+  });
+  toolbarViewMenu?.addEventListener('click', (event) => {
+    handleSyn3MenuClick(event, 'toolbar');
+  });
+
+  document.addEventListener('contextmenu', (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const host = target?.closest('[data-syn3-context]');
+    if (!(host instanceof HTMLElement)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const raw = host.getAttribute('data-syn3-context');
+    if (!raw) {
+      return;
+    }
+    let ctx;
+    try {
+      ctx = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    cancelMenuClose();
+    closeToolbarMenus();
+    openContextMenu(ctx, event.clientX, event.clientY);
   });
   const MIME = 'application/vnd.syn3';
   const MAX_DEPTH = 2;
@@ -375,6 +511,7 @@
   }
 
   function closeToolbarMenus() {
+    cancelMenuClose();
     if (toolbarMenu) {
       toolbarMenu.hidden = true;
     }
@@ -382,10 +519,557 @@
       toolbarPanelsMenu.hidden = true;
     }
     toolbarPanels?.setAttribute('aria-expanded', 'false');
+    closeToolbarViewMenu();
     closeProfileMenu();
   }
 
+  function closeToolbarViewMenu() {
+    cancelMenuClose('toolbar-view');
+    if (toolbarViewMenu) {
+      toolbarViewMenu.hidden = true;
+      toolbarViewMenu.style.maxHeight = '';
+      const chrome = ensureMenuChrome(toolbarViewMenu);
+      chrome.scroller.scrollTop = 0;
+      chrome.bar.hidden = true;
+    }
+    toolbarView?.setAttribute('aria-expanded', 'false');
+    if (openMenuState?.kind === 'toolbar') {
+      openMenuState = null;
+    }
+  }
+
+  function closeContextMenu() {
+    cancelMenuClose('context');
+    contextMenu.hidden = true;
+    contextMenu.style.maxHeight = '';
+    const chrome = ensureMenuChrome(contextMenu);
+    chrome.scroller.replaceChildren();
+    chrome.scroller.scrollTop = 0;
+    chrome.bar.hidden = true;
+    if (openMenuState?.kind === 'context') {
+      openMenuState = null;
+    }
+  }
+
+  /** @type {WeakSet<HTMLElement>} */
+  const menuScrollBound = new WeakSet();
+
+  /**
+   * Custom 4px overlay scrollbar (same idea as the map page bar).
+   * @param {HTMLElement} menu
+   */
+  function ensureMenuChrome(menu) {
+    let scroller = /** @type {HTMLElement | null} */ (menu.querySelector(':scope > .syn3-menu-scroller'));
+    let bar = /** @type {HTMLElement | null} */ (menu.querySelector(':scope > .syn3-menu-scrollbar'));
+    if (!scroller) {
+      scroller = document.createElement('div');
+      scroller.className = 'syn3-menu-scroller';
+      while (menu.firstChild) {
+        const child = menu.firstChild;
+        if (child instanceof HTMLElement && child.classList.contains('syn3-menu-scrollbar')) {
+          break;
+        }
+        scroller.append(child);
+      }
+      menu.insertBefore(scroller, menu.firstChild);
+    }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'syn3-menu-scrollbar';
+      bar.hidden = true;
+      const thumbNode = document.createElement('div');
+      thumbNode.className = 'syn3-menu-scrollbar-thumb';
+      bar.append(thumbNode);
+      menu.append(bar);
+    }
+    const thumb = /** @type {HTMLElement} */ (bar.firstElementChild);
+    if (!menuScrollBound.has(menu)) {
+      menuScrollBound.add(menu);
+      scroller.addEventListener(
+        'scroll',
+        () => {
+          updateMenuScrollbar(menu);
+        },
+        { passive: true },
+      );
+    }
+    return { scroller, bar, thumb };
+  }
+
+  /** @param {HTMLElement} menu */
+  function updateMenuScrollbar(menu) {
+    const { scroller, bar, thumb } = ensureMenuChrome(menu);
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    if (max <= 1) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    const track = Math.max(0, scroller.clientHeight);
+    const thumbHeight = Math.max(16, (scroller.clientHeight / scroller.scrollHeight) * track);
+    const top = (scroller.scrollTop / max) * (track - thumbHeight);
+    thumb.style.height = thumbHeight + 'px';
+    thumb.style.transform = 'translateY(' + top + 'px)';
+  }
+
+  function openToolbarViewMenu() {
+    if (!toolbarViewMenu || !toolbarView || !toolbarViewWrap) {
+      return;
+    }
+    cancelMenuClose('toolbar-view');
+    openMenuState = { kind: 'toolbar', viewExpanded: true };
+    fillViewSections(toolbarViewMenu, { includeGroupColumns: false });
+    toolbarViewMenu.hidden = false;
+    toolbarView.setAttribute('aria-expanded', 'true');
+    positionToolbarMenu(toolbarViewMenu, toolbarViewWrap);
+  }
+
+  /**
+   * @param {Record<string, unknown>} ctx
+   * @param {number} x
+   * @param {number} y
+   */
+  function openContextMenu(ctx, x, y) {
+    cancelMenuClose('context');
+    // Always start collapsed; user expands «Вид» explicitly.
+    openMenuState = { kind: 'context', viewExpanded: false, ctx, x, y };
+    renderContextMenu();
+    contextMenu.hidden = false;
+    positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  function renderContextMenu() {
+    if (!openMenuState || openMenuState.kind !== 'context' || !openMenuState.ctx) {
+      return;
+    }
+    const ctx = openMenuState.ctx;
+    const expanded = openMenuState.viewExpanded;
+    // replaceChildren can synthesize mouseleave; ignore it until the pointer moves again.
+    ignoreContextLeave = true;
+    cancelMenuClose('context');
+    const { scroller } = ensureMenuChrome(contextMenu);
+    scroller.replaceChildren();
+    for (const item of contextMenuItems(ctx)) {
+      if (item.kind === 'separator') {
+        scroller.append(menuSeparator());
+        continue;
+      }
+      if (item.kind === 'view') {
+        const block = document.createElement('div');
+        block.className = 'syn3-menu-view-block';
+        const row = menuAction('', expanded ? 'is-expanded' : '');
+        row.dataset.menuAction = 'toggleView';
+        const viewLabel = document.createElement('span');
+        viewLabel.className = 'syn3-menu-item-label';
+        viewLabel.textContent = 'Вид';
+        const viewChevron = document.createElement('span');
+        viewChevron.className = 'syn3-menu-item-chevron';
+        viewChevron.textContent = expanded ? '▴' : '▾';
+        viewChevron.setAttribute('aria-hidden', 'true');
+        row.append(viewLabel, viewChevron);
+        block.append(row);
+        if (expanded) {
+          const nest = document.createElement('div');
+          nest.className = 'syn3-menu-nest';
+          fillViewSections(nest, {
+            includeGroupColumns: !ctx.locked,
+            columns: typeof ctx.columns === 'string' ? ctx.columns : 'flow',
+            markerId: typeof ctx.markerId === 'string' ? ctx.markerId : undefined,
+          });
+          block.append(nest);
+        }
+        scroller.append(block);
+        continue;
+      }
+      if (item.kind === 'unlock') {
+        const row = menuAction('Разблокировать');
+        row.dataset.menuAction = 'unlock';
+        scroller.append(row);
+        continue;
+      }
+      const row = menuAction(item.label);
+      row.dataset.command = item.command;
+      scroller.append(row);
+    }
+    updateMenuScrollbar(contextMenu);
+  }
+
+  /**
+   * @param {Record<string, unknown>} ctx
+   * @returns {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'unlock' } | { kind: 'separator' }>}
+   */
+  function contextMenuItems(ctx) {
+    const section = String(ctx.webviewSection || '');
+    const locked = !!ctx.locked;
+    const hasAlias = !!ctx.hasAlias;
+    const depth = Number(ctx.depth) || 0;
+    const isDir = !!ctx.isDir;
+    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'unlock' } | { kind: 'separator' }>} */
+    const items = [];
+
+    if (section === 'item') {
+      items.push({ kind: 'command', command: 'syn3.reveal', label: 'Reveal in Explorer View' });
+    }
+    if (section === 'class') {
+      items.push({ kind: 'command', command: 'syn3.openClass', label: 'Open Class' });
+      items.push({ kind: 'command', command: 'syn3.reveal', label: 'Reveal in Explorer View' });
+    }
+    if (section === 'marker') {
+      items.push({ kind: 'command', command: 'syn3.openItem', label: 'Open Item' });
+      items.push({ kind: 'command', command: 'syn3.openFull', label: 'Open Full' });
+    }
+    if (section === 'item' && isDir) {
+      items.push({ kind: 'command', command: 'syn3.openItem', label: 'Open Item' });
+      items.push({ kind: 'command', command: 'syn3.openFull', label: 'Open Full' });
+    }
+
+    // View / layout only on the group header, not on files or classes inside.
+    if (section === 'marker') {
+      items.push({ kind: 'view' });
+    }
+
+    if (section === 'item' && !locked) {
+      items.push({ kind: 'command', command: 'syn3.rename', label: 'Rename…' });
+    }
+    if ((section === 'item' || section === 'class' || section === 'missingClass') && !locked) {
+      items.push({ kind: 'command', command: 'syn3.setAlias', label: 'Set Alias…' });
+    }
+    if (
+      (section === 'item' || section === 'class' || section === 'missingClass') &&
+      hasAlias &&
+      !locked
+    ) {
+      items.push({ kind: 'command', command: 'syn3.clearAlias', label: 'Clear Alias' });
+    }
+    if (section === 'missing' && !locked) {
+      items.push({ kind: 'command', command: 'syn3.relink', label: 'Relink to File…' });
+    }
+    if (
+      (section === 'item' ||
+        section === 'missing' ||
+        section === 'class' ||
+        section === 'missingClass') &&
+      !locked
+    ) {
+      items.push({ kind: 'command', command: 'syn3.unassign', label: 'Remove Marker' });
+    }
+
+    if (section === 'marker' && !locked) {
+      items.push({ kind: 'command', command: 'syn3.editMarker', label: 'Edit Marker…' });
+      items.push({ kind: 'command', command: 'syn3.setAlias', label: 'Set Alias…' });
+      if (hasAlias) {
+        items.push({ kind: 'command', command: 'syn3.clearAlias', label: 'Clear Alias' });
+      }
+      if (depth < 2) {
+        items.push({ kind: 'command', command: 'syn3.createSubgroup', label: 'New Subgroup…' });
+      }
+      items.push({ kind: 'command', command: 'syn3.changeColor', label: 'Change Color…' });
+      items.push({ kind: 'command', command: 'syn3.changeIcon', label: 'Change Icon…' });
+      items.push({ kind: 'command', command: 'syn3.moveMarkerUp', label: 'Move Up' });
+      items.push({ kind: 'command', command: 'syn3.moveMarkerDown', label: 'Move Down' });
+      if (depth > 0) {
+        items.push({ kind: 'command', command: 'syn3.unnestMarker', label: 'Move Up a Level' });
+      }
+      items.push({ kind: 'command', command: 'syn3.deleteMarker', label: 'Delete Marker' });
+    }
+
+    if (section === 'marker' && locked) {
+      items.push({ kind: 'unlock' });
+    }
+
+    return items;
+  }
+
+  /**
+   * @param {HTMLElement} root
+   * @param {{ includeGroupColumns: boolean, columns?: string, markerId?: string }} options
+   */
+  function fillViewSections(root, options) {
+    const isMenu = root.classList.contains('syn3-menu');
+    const target = isMenu ? ensureMenuChrome(root).scroller : root;
+    target.replaceChildren();
+    const page = activePage();
+    const layout = page?.layout || data?.layout || 'chips';
+    const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
+
+    // One framed «Вид» block: no dividers between map/group subsections.
+    target.append(menuLabel('Вид карты'));
+    target.append(menuChoice('Карточки', layout === 'chips', { set: 'layout', value: 'chips' }));
+    target.append(menuChoice('Список', layout === 'list', { set: 'layout', value: 'list' }));
+    target.append(menuLabel('Раскладка карты'));
+    target.append(menuChoice('Поток', groupsLayout === 'flow', { set: 'groups', value: 'flow' }));
+    target.append(menuChoice('1 колонка', groupsLayout === '1', { set: 'groups', value: '1' }));
+    target.append(menuChoice('2 колонки', groupsLayout === '2', { set: 'groups', value: '2' }));
+    target.append(menuChoice('3 колонки', groupsLayout === '3', { set: 'groups', value: '3' }));
+
+    if (options.includeGroupColumns && options.markerId) {
+      const columns = options.columns === '1' || options.columns === '2' || options.columns === '3'
+        ? options.columns
+        : 'flow';
+      target.append(menuLabel('Раскладка группы'));
+      target.append(
+        menuChoice('Поток', columns === 'flow', {
+          set: 'columns',
+          value: 'flow',
+          markerId: options.markerId,
+        }),
+      );
+      target.append(
+        menuChoice('1 колонка', columns === '1', {
+          set: 'columns',
+          value: '1',
+          markerId: options.markerId,
+        }),
+      );
+      target.append(
+        menuChoice('2 колонки', columns === '2', {
+          set: 'columns',
+          value: '2',
+          markerId: options.markerId,
+        }),
+      );
+      target.append(
+        menuChoice('3 колонки', columns === '3', {
+          set: 'columns',
+          value: '3',
+          markerId: options.markerId,
+        }),
+      );
+    }
+    if (isMenu) {
+      updateMenuScrollbar(root);
+    }
+  }
+
+  /** @param {string} text */
+  function menuLabel(text) {
+    const node = document.createElement('div');
+    node.className = 'syn3-menu-label';
+    node.textContent = text;
+    return node;
+  }
+
+  function menuSeparator() {
+    const node = document.createElement('div');
+    node.className = 'syn3-menu-separator';
+    node.setAttribute('role', 'separator');
+    return node;
+  }
+
+  /**
+   * @param {string} label
+   * @param {string} [extraClass]
+   */
+  function menuAction(label, extraClass) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'syn3-menu-item' + (extraClass ? ' ' + extraClass : '');
+    button.setAttribute('role', 'menuitem');
+    button.textContent = label;
+    return button;
+  }
+
+  /**
+   * @param {string} label
+   * @param {boolean} active
+   * @param {{ set: string, value: string, markerId?: string }} dataAttrs
+   */
+  function menuChoice(label, active, dataAttrs) {
+    const button = menuAction(label, active ? 'is-active' : '');
+    button.dataset.set = dataAttrs.set;
+    button.dataset.value = dataAttrs.value;
+    if (dataAttrs.markerId) {
+      button.dataset.markerId = dataAttrs.markerId;
+    }
+    return button;
+  }
+
+  /**
+   * @param {MouseEvent} event
+   * @param {'toolbar' | 'context'} source
+   */
+  function handleSyn3MenuClick(event, source) {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const button = target?.closest('button');
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    event.stopPropagation();
+    // Rebuilds replace DOM and can fire mouseleave — keep the menu open.
+    if (source === 'context') {
+      cancelMenuClose('context');
+    }
+
+    if (button.dataset.menuAction === 'toggleView') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.viewExpanded = !openMenuState.viewExpanded;
+        renderContextMenu();
+        cancelMenuClose('context');
+        positionMenu(contextMenu, {
+          left: openMenuState.x ?? 0,
+          top: openMenuState.y ?? 0,
+          preferBelow: true,
+        });
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'unlock') {
+      const markerId = openMenuState?.ctx && typeof openMenuState.ctx.markerId === 'string'
+        ? openMenuState.ctx.markerId
+        : undefined;
+      if (markerId) {
+        vscode.postMessage({ type: 'toggleLock', markerId });
+        if (openMenuState?.ctx) {
+          openMenuState.ctx.locked = false;
+          renderContextMenu();
+        }
+      }
+      return;
+    }
+
+    if (button.dataset.set === 'layout' && button.dataset.value) {
+      const page = activePage();
+      if (page) {
+        page.layout = button.dataset.value;
+      }
+      applyPageChrome();
+      postToolbarValue('setLayout', button.dataset.value);
+      refreshOpenViewHighlights();
+      return;
+    }
+    if (button.dataset.set === 'groups' && button.dataset.value) {
+      const page = activePage();
+      if (page) {
+        page.groupsLayout = button.dataset.value;
+      }
+      applyPageChrome();
+      postToolbarValue('setGroupsLayout', button.dataset.value);
+      refreshOpenViewHighlights();
+      return;
+    }
+    if (button.dataset.set === 'columns' && button.dataset.value && button.dataset.markerId) {
+      vscode.postMessage({
+        type: 'runCommand',
+        command: 'syn3.setColumns.' + button.dataset.value,
+        arg: { markerId: button.dataset.markerId },
+      });
+      if (openMenuState?.kind === 'context' && openMenuState.ctx) {
+        openMenuState.ctx.columns = button.dataset.value;
+        renderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.command && source === 'context' && openMenuState?.ctx) {
+      vscode.postMessage({
+        type: 'runCommand',
+        command: button.dataset.command,
+        arg: openMenuState.ctx,
+      });
+    }
+  }
+
+  function refreshOpenViewHighlights() {
+    if (openMenuState?.kind === 'toolbar' && toolbarViewMenu && !toolbarViewMenu.hidden) {
+      fillViewSections(toolbarViewMenu, { includeGroupColumns: false });
+      return;
+    }
+    if (openMenuState?.kind === 'context' && openMenuState.viewExpanded) {
+      renderContextMenu();
+    }
+  }
+
+  /**
+   * Keep the toolbar dropdown inside `.toolbar-view` so mouseleave covers button + menu.
+   * @param {HTMLElement} menu
+   * @param {HTMLElement} wrap
+   */
+  function positionToolbarMenu(menu, wrap) {
+    const pad = 4;
+    ensureMenuChrome(menu);
+    menu.style.visibility = 'hidden';
+    menu.hidden = false;
+    menu.style.maxHeight = '';
+    menu.style.left = 'auto';
+    menu.style.right = '0';
+    menu.style.top = '100%';
+    menu.style.bottom = 'auto';
+
+    const wrapRect = wrap.getBoundingClientRect();
+    const height = menu.offsetHeight || 120;
+    const spaceBelow = window.innerHeight - wrapRect.bottom - pad;
+    const spaceAbove = wrapRect.top - pad;
+    if (height > spaceBelow && spaceAbove > spaceBelow) {
+      menu.style.top = 'auto';
+      menu.style.bottom = '100%';
+    }
+
+    const available = Math.max(
+      80,
+      menu.style.bottom === '100%' ? spaceAbove : spaceBelow,
+    );
+    if (height > available) {
+      menu.style.maxHeight = available + 'px';
+    }
+    menu.style.visibility = '';
+    updateMenuScrollbar(menu);
+  }
+
+  /**
+   * @param {HTMLElement} menu
+   * @param {{ left: number, top: number, preferBelow?: boolean, keepPosition?: boolean }} at
+   */
+  function positionMenu(menu, at) {
+    const pad = 4;
+    ensureMenuChrome(menu);
+    menu.style.visibility = 'hidden';
+    menu.hidden = false;
+    menu.style.maxHeight = '';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+
+    const width = menu.offsetWidth || 180;
+    const height = menu.offsetHeight || 120;
+    const maxLeft = Math.max(pad, window.innerWidth - width - pad);
+    let left = Math.min(Math.max(pad, at.left), maxLeft);
+    let top = at.top;
+
+    if (!at.keepPosition) {
+      if (at.preferBelow !== false && top + height > window.innerHeight - pad) {
+        top = Math.max(pad, at.top - height);
+      }
+      if (top + height > window.innerHeight - pad) {
+        top = pad;
+      }
+    } else {
+      top = Math.min(Math.max(pad, at.top), Math.max(pad, window.innerHeight - pad));
+    }
+
+    const available = window.innerHeight - top - pad;
+    if (height > available) {
+      menu.style.maxHeight = Math.max(80, available) + 'px';
+    }
+
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.style.visibility = '';
+    updateMenuScrollbar(menu);
+  }
+
+  function postToolbarValue(action, value) {
+    vscode.postMessage({ type: 'toolbar', action, value, pageId: uiState.activePageId });
+  }
+
+  function applyPageChrome() {
+    const page = activePage();
+    const layout = page?.layout || data?.layout || 'chips';
+    const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
+    root.className = 'map-page layout-' + layout + ' groups-' + groupsLayout;
+  }
+
   function closeProfileMenu() {
+    cancelMenuClose('toolbar-profile');
     if (toolbarProfileMenu) {
       toolbarProfileMenu.hidden = true;
     }
@@ -421,7 +1105,7 @@
   }
 
   /**
-   * @param {{ id: string, name: string }[] | undefined} profiles
+   * @param {{ id: string, name: string, boundCount?: number }[] | undefined} profiles
    * @param {string | undefined} activeId
    */
   function renderProfiles(profiles, activeId) {
@@ -437,6 +1121,13 @@
       const name = el('span', 'profile-name');
       name.textContent = profile.name;
       row.append(name);
+      const bound = typeof profile.boundCount === 'number' ? profile.boundCount : 0;
+      if (bound > 0) {
+        const count = el('span', 'profile-bound-count');
+        count.textContent = String(bound);
+        count.title = 'Привязано: ' + bound;
+        row.append(count);
+      }
       if (profile.id !== 'general') {
         const actions = el('span', 'profile-actions');
         const renameBtn = el('button', '');
@@ -461,26 +1152,8 @@
   }
 
   /** @param {{ layout?: string, groupsLayout?: string }} message */
-  function setToolbar(message) {
-    const mode = message.groupsLayout === '1' || message.groupsLayout === '2' || message.groupsLayout === '3'
-      ? message.groupsLayout
-      : 'flow';
-    const groupTitles = {
-      flow: 'Groups: Flow — click for 1 column',
-      1: 'Groups: 1 column — click for 2 columns',
-      2: 'Groups: 2 columns — click for 3 columns',
-      3: 'Groups: 3 columns — click for flow',
-    };
-    if (toolbarGroups) {
-      toolbarGroups.title = groupTitles[mode];
-      toolbarGroups.querySelectorAll('.tool-icon').forEach((img) => {
-        img.hidden = img.getAttribute('data-mode') !== mode;
-      });
-    }
-    if (toolbarLayout) {
-      toolbarLayout.title =
-        message.layout === 'list' ? 'Toggle Map Layout (List / Chips)' : 'Toggle Map Layout (Chips / List)';
-    }
+  function setToolbar(_message) {
+    refreshOpenViewHighlights();
   }
 
   /** @param {{ bottom?: boolean, left?: boolean, right?: boolean } | undefined} open */
@@ -1130,7 +1803,7 @@
 
     const header = el('div', 'group-header');
     header.draggable = !locked;
-    setContext(header, {
+    setMapContext(header, {
       webviewSection: 'marker',
       markerId: group.id,
       depth: group.depth || 0,
@@ -1528,7 +2201,7 @@
       aliasLine +
       (item.exists ? item.relPath + '\n' + clickHint : item.relPath + '\nMissing') +
       (locked ? '\nLocked' : '\nDrag to another group · Alt+Drag to copy');
-    setContext(node, {
+    setMapContext(node, {
       webviewSection: item.exists ? 'item' : 'missing',
       markerId: groupId,
       relPath: item.relPath,
@@ -1664,7 +2337,7 @@
       (cls.line ? ':' + cls.line : '') +
       (cls.exists ? '\nClick: open at class' : '\nMissing file') +
       (locked ? '\nLocked' : '\nDrag to another group · Alt+Drag to copy');
-    setContext(node, {
+    setMapContext(node, {
       webviewSection: cls.exists ? 'class' : 'missingClass',
       markerId: groupId,
       classId: cls.id,
@@ -2187,6 +2860,10 @@
 
   function setContext(node, context) {
     node.dataset.vscodeContext = JSON.stringify({ ...context, preventDefaultContextMenuItems: true });
+  }
+
+  function setMapContext(node, context) {
+    node.dataset.syn3Context = JSON.stringify(context);
   }
 
   const colorInput = document.createElement('input');

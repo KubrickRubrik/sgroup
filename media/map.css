@@ -68,8 +68,153 @@ html::-webkit-scrollbar {
   margin-left: auto;
 }
 
+.toolbar-view {
+  position: relative;
+}
+
+.toolbar-view-menu {
+  left: auto;
+  min-width: 180px;
+  position: absolute;
+  right: 0;
+  top: 100%;
+}
+
 .toolbar-panels {
   position: relative;
+}
+
+.syn3-menu {
+  background: var(--vscode-menu-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  overflow: hidden;
+  padding: 0;
+  z-index: 50;
+}
+
+.syn3-menu[hidden] {
+  display: none;
+}
+
+.syn3-menu-scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px 0;
+  scrollbar-width: none;
+}
+
+.syn3-menu-scroller::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+.syn3-menu-scrollbar {
+  bottom: 4px;
+  pointer-events: none;
+  position: absolute;
+  right: 1px;
+  top: 4px;
+  width: 4px;
+  z-index: 1;
+}
+
+.syn3-menu-scrollbar[hidden] {
+  display: none;
+}
+
+.syn3-menu-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.55));
+  border-radius: 2px;
+  position: absolute;
+  right: 0;
+  width: 4px;
+}
+
+.syn3-context-menu {
+  position: fixed;
+}
+
+.syn3-menu-label {
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+  padding: 6px 12px 2px;
+  text-transform: uppercase;
+}
+
+.syn3-menu-separator {
+  background: color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+  height: 1px;
+  margin: 4px 0;
+  pointer-events: none;
+}
+
+.syn3-menu-item {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 13px;
+  gap: 8px;
+  padding: 4px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.syn3-menu-item-label {
+  flex: 1;
+  text-align: left;
+}
+
+.syn3-menu-item-chevron {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.syn3-menu-item:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
+.syn3-menu-item.is-active {
+  background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)) 55%, transparent);
+}
+
+.syn3-menu-item.is-expanded {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 40%, transparent);
+}
+
+.syn3-menu-view-block {
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+  margin: 4px 0;
+  padding: 2px 0;
+}
+
+.syn3-menu-nest {
+  padding: 0;
+}
+
+.syn3-menu-nest .syn3-menu-item {
+  padding-left: 20px;
+}
+
+.syn3-menu-nest .syn3-menu-label {
+  padding-left: 20px;
 }
 
 .toolbar-panels-menu {
@@ -152,6 +297,14 @@ html::-webkit-scrollbar {
 .toolbar-profile-row .profile-name {
   flex: 1;
   white-space: nowrap;
+}
+
+.toolbar-profile-row .profile-bound-count {
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
 }
 
 .toolbar-profile-row .profile-actions {
