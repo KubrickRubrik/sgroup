@@ -161,11 +161,17 @@ export class SettingsPanel implements vscode.Disposable {
   private html(webview: vscode.Webview): string {
     const nonce = crypto.randomBytes(16).toString('base64');
     const generalId = GENERAL_PROFILE_ID;
+    const personLight = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'icons', 'person-light.svg'),
+    );
+    const personDark = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'icons', 'person-dark.svg'),
+    );
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     html, body {
@@ -199,39 +205,77 @@ export class SettingsPanel implements vscode.Disposable {
       text-align: right;
     }
     .profile-switch-btn {
+      align-items: center;
       background: var(--vscode-button-secondaryBackground, transparent);
       border: 1px solid var(--vscode-button-border, var(--vscode-widget-border, transparent));
       border-radius: 4px;
       color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
       cursor: pointer;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       font: inherit;
-      gap: 2px;
-      min-width: 120px;
-      padding: 6px 10px;
-      text-align: right;
+      gap: 10px;
+      min-width: 0;
+      padding: 4px 6px 4px 10px;
     }
     .profile-switch-btn:hover {
       background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
     }
-    .profile-switch-label {
-      font-size: 0.85em;
-      opacity: 0.85;
+    .profile-switch-text {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+      text-align: right;
     }
     .profile-switch-name {
       font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .profile-switch-label {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+    }
+    .profile-switch-avatar {
+      align-items: center;
+      background: var(--vscode-button-secondaryBackground, rgba(127, 127, 127, 0.18));
+      border: 1px solid var(--vscode-widget-border, transparent);
+      border-radius: 50%;
+      display: flex;
+      flex-shrink: 0;
+      height: 32px;
+      justify-content: center;
+      width: 32px;
+    }
+    .profile-switch-avatar img {
+      display: none;
+      height: 16px;
+      width: 16px;
+    }
+    body:not(.vscode-dark):not(.vscode-high-contrast) .profile-switch-avatar .tone-light,
+    body.vscode-high-contrast-light .profile-switch-avatar .tone-light {
+      display: block;
+    }
+    body.vscode-dark .profile-switch-avatar .tone-dark,
+    body.vscode-high-contrast .profile-switch-avatar .tone-dark {
+      display: block;
     }
     .profile-menu {
       background: var(--vscode-menu-background, var(--vscode-editor-background));
       border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
       border-radius: 4px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
-      min-width: 200px;
+      box-sizing: border-box;
+      min-width: 100%;
+      overflow: hidden;
       padding: 4px 0;
       position: absolute;
       right: 0;
       top: 100%;
+      width: max-content;
       z-index: 40;
     }
     .profile-menu[hidden] {
@@ -241,12 +285,14 @@ export class SettingsPanel implements vscode.Disposable {
       display: flex;
       flex-direction: column;
       max-height: 240px;
-      overflow: auto;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
     .profile-row {
       align-items: center;
       background: transparent;
       border: none;
+      box-sizing: border-box;
       color: var(--vscode-menu-foreground, var(--vscode-foreground));
       cursor: pointer;
       display: flex;
@@ -255,6 +301,7 @@ export class SettingsPanel implements vscode.Disposable {
       gap: 6px;
       padding: 4px 8px 4px 12px;
       text-align: left;
+      white-space: nowrap;
       width: 100%;
     }
     .profile-row:hover {
@@ -265,9 +312,6 @@ export class SettingsPanel implements vscode.Disposable {
     }
     .profile-row .profile-name {
       flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
       white-space: nowrap;
     }
     .profile-row .profile-actions {
@@ -296,15 +340,18 @@ export class SettingsPanel implements vscode.Disposable {
     .profile-create {
       align-items: center;
       border-top: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+      box-sizing: border-box;
       display: flex;
       gap: 4px;
       margin-top: 4px;
       padding: 6px 8px;
+      width: 100%;
     }
     .profile-create input {
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border, transparent);
       border-radius: 2px;
+      box-sizing: border-box;
       color: var(--vscode-input-foreground);
       flex: 1;
       font: inherit;
@@ -384,8 +431,14 @@ export class SettingsPanel implements vscode.Disposable {
       <h1>Syn3 Settings</h1>
       <div class="profile-switch" id="profile-switch">
         <button type="button" class="profile-switch-btn" id="profile-switch-btn" aria-haspopup="menu" aria-expanded="false">
-          <span class="profile-switch-label">Активный профиль</span>
-          <span class="profile-switch-name" id="profile-switch-name"></span>
+          <span class="profile-switch-text">
+            <span class="profile-switch-name" id="profile-switch-name"></span>
+            <span class="profile-switch-label">активный</span>
+          </span>
+          <span class="profile-switch-avatar" aria-hidden="true">
+            <img class="tone-light" src="${personLight}" alt="">
+            <img class="tone-dark" src="${personDark}" alt="">
+          </span>
         </button>
         <div class="profile-menu" id="profile-menu" hidden role="menu" aria-label="Профили">
           <div class="profile-list" id="profile-list"></div>

@@ -105,10 +105,11 @@ html::-webkit-scrollbar {
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
   left: 0;
-  min-width: 200px;
+  min-width: max-content;
   padding: 4px 0;
   position: absolute;
   top: 100%;
+  width: max-content;
   z-index: 40;
 }
 
@@ -120,7 +121,8 @@ html::-webkit-scrollbar {
   display: flex;
   flex-direction: column;
   max-height: 240px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .toolbar-profile-row {
@@ -135,6 +137,7 @@ html::-webkit-scrollbar {
   gap: 6px;
   padding: 4px 8px 4px 12px;
   text-align: left;
+  white-space: nowrap;
   width: 100%;
 }
 
@@ -148,9 +151,6 @@ html::-webkit-scrollbar {
 
 .toolbar-profile-row .profile-name {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

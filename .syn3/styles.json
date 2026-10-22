@@ -29,7 +29,7 @@
       "fontFile": 0.95,
       "fontScale": 1,
       "gradientDirection": 48,
-      "cardGradient": true,
+      "cardGradient": false,
       "cardFill": 9,
       "cardBorder": 55,
       "bgFolder": 4,
