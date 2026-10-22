@@ -9,17 +9,9 @@
       "groupsLayout": "1",
       "collapsed": {
         "explorer": {
-          "1": true,
-          "3": true,
-          "4": true,
-          "5": true,
-          "test-dir": true,
-          "ttest-6": true,
-          "version": true
+          "1": true
         },
-        "bottom": {
-          "version": true
-        },
+        "bottom": {},
         "left": {
           "1": true,
           "3": true,
@@ -44,7 +36,7 @@
       "kind": "notes",
       "order": 2,
       "layout": "chips",
-      "groupsLayout": "flow",
+      "groupsLayout": "1",
       "collapsed": {
         "explorer": {},
         "bottom": {},
@@ -61,7 +53,7 @@
       "alias": "тестовая группа 1",
       "columns": "1",
       "locked": true,
-      "order": 2,
+      "order": 10,
       "page": "map"
     },
     "2": {
@@ -74,19 +66,19 @@
       "label": "Тест 3",
       "color": "syn3.sky",
       "icon": "🔥",
-      "order": 3,
+      "order": 11,
       "page": "map"
     },
     "4": {
       "label": "Тест 4",
-      "order": 4,
+      "order": 12,
       "page": "map"
     },
     "5": {
       "label": "Тест 5",
       "color": "syn3.blue",
       "icon": "📌",
-      "order": 5,
+      "order": 13,
       "page": "map"
     },
     "version": {
@@ -94,7 +86,7 @@
       "color": "#de3c1b",
       "icon": "🔥",
       "columns": "2",
-      "order": 1,
+      "order": 9,
       "page": "map"
     },
     "2-2": {
@@ -107,12 +99,12 @@
     "ttest-6": {
       "label": "Ttest 6",
       "icon": "⭐",
-      "order": 6,
+      "order": 14,
       "page": "map"
     },
     "test-dir": {
       "label": "Test_dir",
-      "order": 7,
+      "order": 15,
       "page": "map"
     },
     "1-2": {
@@ -120,7 +112,14 @@
       "color": "syn3.red",
       "icon": "⭐",
       "columns": "flow",
-      "order": 1,
+      "order": 4,
+      "page": "page-page"
+    },
+    "group-2": {
+      "label": "Group 2",
+      "color": "syn3.lime",
+      "icon": "🔥",
+      "order": 5,
       "page": "page-page"
     }
   },
@@ -192,7 +191,7 @@
     "open": {
       "bottom": true,
       "left": false,
-      "right": false
+      "right": true
     }
   },
   "aliases": {
@@ -255,10 +254,48 @@
       "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA",
       "order": 1
     },
+    "note-4": {
+      "parentNote": "note-3",
+      "text": "Заметка 2",
+      "order": 1,
+      "color": "#676f6e",
+      "locked": true
+    },
+    "note-5": {
+      "parentNote": "note-4",
+      "text": "Заметка 3",
+      "order": 1,
+      "color": "#ff000d",
+      "locked": true
+    },
+    "note-6": {
+      "markerId": "version",
+      "text": "Вот это так заметка",
+      "order": 1,
+      "color": "#401d17"
+    },
+    "note-7": {
+      "markerId": "group-2",
+      "text": "Моя заметка заметка",
+      "order": 1
+    },
     "note-2": {
       "markerId": "1-2",
       "text": "Запись 2\nhttps://www.youtube.com/",
       "order": 2
+    },
+    "note-8": {
+      "page": "page-page",
+      "text": "Моя заметка",
+      "order": 3,
+      "color": "#657a9a"
+    },
+    "note-3": {
+      "page": "map",
+      "text": "Моя заметка",
+      "order": 8,
+      "color": "#bfbfbf",
+      "locked": true
     }
   }
 }

@@ -1,0 +1,298 @@
+/** UI language stored per profile in Appearance. */
+export type Syn3Locale = 'en' | 'ru';
+
+export const LOCALES: readonly Syn3Locale[] = ['en', 'ru'];
+
+export function normalizeLocale(raw: unknown): Syn3Locale {
+  return raw === 'en' || raw === 'ru' ? raw : 'ru';
+}
+
+/** Flat string table for map webview, settings, and extension dialogs. */
+export type Syn3Strings = Record<keyof typeof EN, string>;
+
+const EN = {
+  // Language / settings shell
+  language: 'Language',
+  languageEn: 'English',
+  languageRu: 'Russian',
+  settingsTitle: 'Syn3 Settings',
+  settingsHint: 'Styles of the active profile are saved in {path} of this project.',
+  profileActive: 'active',
+  profiles: 'Profiles',
+  profileNewPlaceholder: 'New profile',
+  profileNewAria: 'New profile name',
+  profileCreate: 'Create profile',
+  profileRename: 'Rename',
+  profileDelete: 'Delete',
+  profileBound: 'Bound: {n}',
+  profileRenameTitle: 'Rename profile',
+  profileRenamePrompt: 'Profile name',
+  profileNameEmpty: 'Name cannot be empty',
+  profileNameTaken: 'That name is already taken',
+  profileDeleteConfirm: 'Delete profile “{name}”? This cannot be undone.',
+  profileDeleteAction: 'Delete',
+
+  // Settings sections
+  sectionFont: 'Map font',
+  sectionGroup: 'Group',
+  sectionContentBg: 'Content background',
+  sectionExplorer: 'Explorer',
+  sectionOpenFile: 'Open file',
+  labelFontGroup: 'Group',
+  labelFontSubgroup: 'Subgroup',
+  labelFontFolder: 'Folder',
+  labelFontFile: 'File',
+  labelFontScale: 'Multiplier',
+  noteFont: 'Final size = base × multiplier × editor font.',
+  labelCardGradient: 'Gradient',
+  labelCardFill: 'Card fill',
+  labelCardBorder: 'Card border',
+  labelGradientDirection: 'Gradient direction',
+  noteGroup:
+    'Gradient paints fill and border together. Off removes both colors; sliders stay stored. 0 strength is transparent, 100 is solid bright edge. Direction: 0 is the default angle, 100% is a full turn.',
+  labelBgFolder: 'Folder',
+  labelBgFile: 'File',
+  labelBgSubgroup: 'Subgroup',
+  labelBgClass: 'Class',
+  labelBgNote: 'Note',
+  labelBgHover: 'Hover',
+  noteContentBg:
+    'Same share for chip and list row. 0 is transparent, 100 is solid group color. Hover lays white over the fill: 0 adds nothing, 100 is solid white. The parent title stays clear at rest and uses the same hover.',
+  labelSaturation: 'Name saturation',
+  noteExplorer: '0 is theme text color, 100 is the group stripe color. Multiple marks use the theme color.',
+  labelOpenFileMark: 'Show marker',
+  labelOpenFileAnimate: 'Show animation',
+  labelOpenFileDuration: 'Animation time',
+  noteOpenFile:
+    'Corner on the badge when the file is open in a tab. Animation blinks only on the focused tab chain. Time is one cycle length, from 0 to 3 s.',
+  toggleOn: 'on',
+  toggleOff: 'off',
+  secondsUnit: 's',
+
+  // Toolbar
+  toolbarProfile: 'Profile',
+  toolbarBack: 'Back',
+  toolbarDone: 'Done',
+  toolbarForward: 'Forward',
+  toolbarView: 'View',
+  toolbarCreate: 'Create',
+  toolbarCollapse: 'Collapse all groups',
+  toolbarExpand: 'Expand all groups',
+  toolbarPanels: 'Toggle panels',
+  toolbarPanelsGroup: 'Panel toggles',
+  toolbarPanelBottom: 'Toggle bottom panel',
+  toolbarPanelLeft: 'Toggle left sidebar',
+  toolbarPanelRight: 'Toggle right sidebar',
+  toolbarMore: 'More actions',
+  menuNewPage: 'New Page',
+  menuRenamePage: 'Rename Page',
+  menuDeletePage: 'Delete Page',
+  menuRefresh: 'Refresh',
+  menuOpenMarkers: 'Open Markers File',
+  menuOpenSettings: 'Open Settings',
+
+  // View / create menus
+  viewMap: 'Map view',
+  viewCards: 'Cards',
+  viewList: 'List',
+  viewMapLayout: 'Map layout',
+  viewGroupLayout: 'Group layout',
+  viewFlow: 'Flow',
+  viewCol1: '1 column',
+  viewCol2: '2 columns',
+  viewCol3: '3 columns',
+  createGroup: 'Group',
+  createNote: 'Note',
+  createSubgroup: 'Subgroup',
+
+  // Context menu
+  contextMenu: 'Context menu',
+  menuReveal: 'Reveal in Explorer View',
+  menuOpenClass: 'Open Class',
+  menuOpenItem: 'Open Item',
+  menuOpenFull: 'Open Full',
+  menuRename: 'Rename…',
+  menuSetAlias: 'Set Alias…',
+  menuClearAlias: 'Clear Alias',
+  menuRelink: 'Relink to File…',
+  menuRemoveMarker: 'Remove Marker',
+  menuEditMarker: 'Edit Marker…',
+  menuChangeColor: 'Change Color…',
+  menuChangeIcon: 'Change Icon…',
+  menuMoveUp: 'Move Up',
+  menuMoveDown: 'Move Down',
+  menuUnnest: 'Move Up a Level',
+  menuUnlock: 'Unlock',
+  menuDelete: 'Delete',
+  menuDeleteGroup: 'Delete group',
+  menuDeleteNote: 'Delete note',
+  menuDeleteAll: 'Delete all',
+
+  // In-map chrome tied to menus / cards
+  notePlaceholder: 'Your note',
+  noteFallback: 'Note',
+  changeColor: 'Change color',
+  groupLocked: 'Group is locked',
+  noteLocked: 'Note is locked',
+  unlockGroup: 'Unlock group',
+  lockGroup: 'Lock group',
+  unlockNote: 'Unlock note',
+  lockNote: 'Lock note',
+  dragHint: 'Drag to reorder or nest',
+  locked: 'Locked',
+  pageKindFiles: 'files',
+  pageKindNotes: 'notes',
+} as const;
+
+const RU: Syn3Strings = {
+  language: 'Язык',
+  languageEn: 'Английский',
+  languageRu: 'Русский',
+  settingsTitle: 'Syn3 Settings',
+  settingsHint: 'Стили активного профиля сохраняются в {path} этого проекта.',
+  profileActive: 'активный',
+  profiles: 'Профили',
+  profileNewPlaceholder: 'Новый профиль',
+  profileNewAria: 'Имя нового профиля',
+  profileCreate: 'Создать профиль',
+  profileRename: 'Переименовать',
+  profileDelete: 'Удалить',
+  profileBound: 'Привязано: {n}',
+  profileRenameTitle: 'Переименовать профиль',
+  profileRenamePrompt: 'Имя профиля',
+  profileNameEmpty: 'Имя не может быть пустым',
+  profileNameTaken: 'Такое имя уже занято',
+  profileDeleteConfirm: 'Удалить профиль «{name}»? Восстановить будет невозможно.',
+  profileDeleteAction: 'Удалить',
+
+  sectionFont: 'Шрифт карты',
+  sectionGroup: 'Группа',
+  sectionContentBg: 'Фон содержимого',
+  sectionExplorer: 'Explorer',
+  sectionOpenFile: 'Открытый файл',
+  labelFontGroup: 'Группа',
+  labelFontSubgroup: 'Подгруппа',
+  labelFontFolder: 'Папка',
+  labelFontFile: 'Файл',
+  labelFontScale: 'Множитель',
+  noteFont: 'Итоговый размер = база × множитель × шрифт редактора.',
+  labelCardGradient: 'Градиент',
+  labelCardFill: 'Фон карточки',
+  labelCardBorder: 'Бордер карточки',
+  labelGradientDirection: 'Направление градиента',
+  noteGroup:
+    'Градиент красит фон и бордер вместе. Выключенный убирает оба цвета, ползунки при этом сохраняются. 0 у силы — прозрачно, 100 — сплошной яркий край. Направление: 0 — угол по умолчанию, 100% — полный оборот.',
+  labelBgFolder: 'Папка',
+  labelBgFile: 'Файл',
+  labelBgSubgroup: 'Подгруппа',
+  labelBgClass: 'Класс',
+  labelBgNote: 'Заметка',
+  labelBgHover: 'Наведение',
+  noteContentBg:
+    'Одна доля и у чипа, и у полосы списка. 0 — прозрачно, 100 — сплошной цвет группы. Наведение кладёт белый поверх фона: 0 ничего не добавляет, 100 — сплошной белый. Заголовок родителя в покое прозрачный и берёт то же наведение.',
+  labelSaturation: 'Насыщенность имени',
+  noteExplorer: '0 — цвет текста темы, 100 — цвет полоски группы. Несколько меток — цвет темы.',
+  labelOpenFileMark: 'Показывать маркер',
+  labelOpenFileAnimate: 'Показывать анимацию',
+  labelOpenFileDuration: 'Время анимации',
+  noteOpenFile:
+    'Уголок на бейдже, если файл открыт во вкладке. Анимация мигает только у цепочки вкладки в фокусе. Время — длина одного цикла, от 0 до 3 с.',
+  toggleOn: 'вкл',
+  toggleOff: 'выкл',
+  secondsUnit: 'с',
+
+  toolbarProfile: 'Профиль',
+  toolbarBack: 'Назад',
+  toolbarDone: 'Готово',
+  toolbarForward: 'Вперёд',
+  toolbarView: 'Вид',
+  toolbarCreate: 'Создать',
+  toolbarCollapse: 'Свернуть все группы',
+  toolbarExpand: 'Развернуть все группы',
+  toolbarPanels: 'Панели',
+  toolbarPanelsGroup: 'Переключатели панелей',
+  toolbarPanelBottom: 'Нижняя панель',
+  toolbarPanelLeft: 'Левая боковая панель',
+  toolbarPanelRight: 'Правая боковая панель',
+  toolbarMore: 'Дополнительные действия',
+  menuNewPage: 'Новая страница',
+  menuRenamePage: 'Переименовать страницу',
+  menuDeletePage: 'Удалить страницу',
+  menuRefresh: 'Обновить',
+  menuOpenMarkers: 'Открыть файл маркеров',
+  menuOpenSettings: 'Открыть настройки',
+
+  viewMap: 'Вид карты',
+  viewCards: 'Карточки',
+  viewList: 'Список',
+  viewMapLayout: 'Раскладка карты',
+  viewGroupLayout: 'Раскладка группы',
+  viewFlow: 'Поток',
+  viewCol1: '1 колонка',
+  viewCol2: '2 колонки',
+  viewCol3: '3 колонки',
+  createGroup: 'Группа',
+  createNote: 'Заметка',
+  createSubgroup: 'Подгруппа',
+
+  contextMenu: 'Контекстное меню',
+  menuReveal: 'Показать в Explorer',
+  menuOpenClass: 'Открыть класс',
+  menuOpenItem: 'Открыть элемент',
+  menuOpenFull: 'Открыть полностью',
+  menuRename: 'Переименовать…',
+  menuSetAlias: 'Задать псевдоним…',
+  menuClearAlias: 'Сбросить псевдоним',
+  menuRelink: 'Привязать к файлу…',
+  menuRemoveMarker: 'Убрать маркер',
+  menuEditMarker: 'Изменить маркер…',
+  menuChangeColor: 'Изменить цвет…',
+  menuChangeIcon: 'Изменить иконку…',
+  menuMoveUp: 'Выше',
+  menuMoveDown: 'Ниже',
+  menuUnnest: 'На уровень выше',
+  menuUnlock: 'Разблокировать',
+  menuDelete: 'Удалить',
+  menuDeleteGroup: 'Удалить группу',
+  menuDeleteNote: 'Удалить заметку',
+  menuDeleteAll: 'Удалить все',
+
+  notePlaceholder: 'Ваша заметка',
+  noteFallback: 'Заметка',
+  changeColor: 'Изменить цвет',
+  groupLocked: 'Группа закрыта',
+  noteLocked: 'Заметка закрыта',
+  unlockGroup: 'Открыть группу',
+  lockGroup: 'Закрыть группу',
+  unlockNote: 'Открыть заметку',
+  lockNote: 'Закрыть заметку',
+  dragHint: 'Перетащите, чтобы изменить порядок или вложить',
+  locked: 'Закрыто',
+  pageKindFiles: 'файлы',
+  pageKindNotes: 'записи',
+};
+
+const TABLES: Record<Syn3Locale, Syn3Strings> = {
+  en: EN,
+  ru: RU,
+};
+
+export type Syn3StringKey = keyof typeof EN;
+
+export function stringsFor(locale: Syn3Locale): Syn3Strings {
+  return TABLES[locale] ?? TABLES.en;
+}
+
+export function t(
+  locale: Syn3Locale,
+  key: Syn3StringKey,
+  vars?: Record<string, string | number>,
+): string {
+  let text: string = stringsFor(locale)[key] ?? EN[key] ?? key;
+  if (vars) {
+    for (const [name, value] of Object.entries(vars)) {
+      text = text.replaceAll(`{${name}}`, String(value));
+    }
+  }
+  return text;
+}

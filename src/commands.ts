@@ -556,6 +556,7 @@ export function registerCommands(
     const def = store.marker(target.markerId);
     const count = store.itemsOf(target.markerId).length;
     const childCount = store.children(target.markerId).length;
+    const noteCount = store.notesOf(target.markerId).length;
     const details: string[] = [];
     if (count > 0) {
       details.push(`It will be removed from ${count} item(s). Files are not touched.`);
@@ -563,12 +564,15 @@ export function registerCommands(
     if (childCount > 0) {
       details.push(`${childCount} subgroup(s) will move up one level.`);
     }
+    if (noteCount > 0) {
+      details.push(`${noteCount} note(s) will move up one level.`);
+    }
     const answer = await vscode.window.showWarningMessage(
-      `Delete marker "${def?.label ?? target.markerId}"?`,
+      `Удалить группу «${def?.label ?? target.markerId}»?`,
       { modal: true, detail: details.length > 0 ? details.join(' ') : undefined },
-      'Delete',
+      'Удалить',
     );
-    if (answer === 'Delete') {
+    if (answer === 'Удалить') {
       await store.deleteMarker(target.markerId);
     }
   }

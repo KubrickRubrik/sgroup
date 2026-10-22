@@ -524,6 +524,54 @@ html::-webkit-scrollbar {
   outline: none;
 }
 
+.note-card > .note-header {
+  --note-first-line: calc(1.35 * var(--size-subgroup) + 4px);
+  align-items: flex-start;
+}
+
+.note-card:not(.nested) > .note-header {
+  --note-first-line: calc(1.35 * var(--size-group) + 4px);
+}
+
+.note-card .note-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.note-card .note-header .note-input {
+  background: color-mix(in srgb, var(--group-color) var(--bg-note, 12%), transparent);
+  border-color: transparent;
+  font-size: var(--size-subgroup);
+  line-height: 1.35;
+  min-height: 0;
+  padding: 2px 6px;
+  resize: none;
+}
+
+.note-card .note-header .note-input:focus {
+  background: var(--vscode-input-background);
+  border-color: var(--vscode-focusBorder, #4daafc);
+  color: var(--vscode-input-foreground);
+}
+
+.note-card:not(.nested) .note-header .note-input {
+  font-size: var(--size-group);
+}
+
+.note-card .note-header > .lock-btn,
+.note-card .note-header > .count {
+  align-items: center;
+  display: inline-flex;
+  height: var(--note-first-line);
+  justify-content: center;
+  margin-top: 0;
+}
+
+.note-card.locked .note-input {
+  cursor: default;
+  opacity: 0.85;
+}
+
 .dot.note-dot {
   background: var(--vscode-textLink-foreground, #4daafc);
 }

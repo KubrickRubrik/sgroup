@@ -21,7 +21,8 @@
         "labelSaturation": 70,
         "openFileMark": true,
         "openFileAnimate": true,
-        "openFileDuration": 1.5
+        "openFileDuration": 1.5,
+        "language": "en"
       },
       "open": {
         "bottom": false,
@@ -37,7 +38,7 @@
         "fontFile": 0.95,
         "fontScale": 1,
         "gradientDirection": 48,
-        "cardGradient": false,
+        "cardGradient": true,
         "cardFill": 9,
         "cardBorder": 55,
         "bgFolder": 4,
@@ -49,7 +50,8 @@
         "labelSaturation": 70,
         "openFileMark": true,
         "openFileAnimate": true,
-        "openFileDuration": 1.5
+        "openFileDuration": 1.5,
+        "language": "ru"
       },
       "open": {
         "bottom": true,

@@ -9,11 +9,13 @@ import {
   MapSurface,
   MAX_PAGES,
   MarkerStore,
+  NOTE_ROOT_COLOR,
   PageKind,
   normalizeGroupsLayout,
   normalizeMapLayout,
   normalizePageKind,
 } from './markerStore';
+import { normalizeLocale, stringsFor, t } from './i18n';
 import { openClassAt } from './openClass';
 import { cssColor, normalizeHex } from './palette';
 
@@ -63,9 +65,26 @@ interface MapGroup {
   /** Height of nested subgroup tree (0 if no children). */
   subtreeHeight: number;
   children: string[];
+  /** Direct child note ids (shared order with children). */
+  noteChildren: string[];
   items: MapItem[];
   classes: MapClass[];
-  notes: MapNote[];
+  order: number;
+}
+
+interface MapNote {
+  id: string;
+  text: string;
+  page?: string;
+  markerId?: string;
+  parentNote?: string;
+  locked?: true;
+  depth: number;
+  subtreeHeight: number;
+  children: string[];
+  order: number;
+  /** Resolved CSS color for the card. */
+  color: string;
 }
 
 interface MapPage {
@@ -75,12 +94,6 @@ interface MapPage {
   layout: MapLayout;
   groupsLayout: GroupsLayout;
   collapsed: Record<string, boolean>;
-}
-
-interface MapNote {
-  id: string;
-  markerId: string;
-  text: string;
 }
 
 interface EditorGroupLayout {
@@ -97,6 +110,7 @@ type IncomingToolbarAction =
   | 'setLayout'
   | 'setGroupsLayout'
   | 'createMarker'
+  | 'createNote'
   | 'collapseGroups'
   | 'expandGroups'
   | 'refresh'
@@ -129,16 +143,41 @@ type IncomingMessage =
     }
   | { type: 'runCommand'; command: string; arg?: Record<string, unknown> }
   | { type: 'reorderPages'; orderedIds: string[] }
-  | { type: 'setColor'; markerId: string; color: string }
+  | { type: 'setColor'; markerId?: string; noteId?: string; color: string }
   | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
   | { type: 'moveClass'; classId: string; from: string; to: string; copy?: boolean }
   | { type: 'placeMarker'; id: string; target: string; position: 'before' | 'after' }
+  | {
+      type: 'placeMarkerAtNote';
+      id: string;
+      targetNoteId: string;
+      position: 'before' | 'after';
+    }
   | { type: 'nestMarker'; id: string; parent: string }
   | { type: 'dropUris'; uris: string[]; to: string }
-  | { type: 'createNote'; markerId: string; text: string }
+  | {
+      type: 'createNote';
+      page?: string;
+      markerId?: string;
+      parentNote?: string;
+      text?: string;
+      focus?: boolean;
+    }
   | { type: 'updateNote'; noteId: string; text: string }
-  | { type: 'deleteNote'; noteId: string }
+  | { type: 'deleteNote'; noteId: string; tree?: boolean }
+  | { type: 'deleteMarkerTree'; markerId: string }
+  | {
+      type: 'placeNote';
+      id: string;
+      targetKind: 'marker' | 'note';
+      targetId: string;
+      position: 'before' | 'after';
+    }
+  | { type: 'nestNote'; id: string; markerId?: string; noteId?: string }
+  | { type: 'unnestNote'; id: string }
+  | { type: 'moveNote'; id: string; delta: -1 | 1 }
   | { type: 'toggleLock'; markerId: string }
+  | { type: 'toggleNoteLock'; noteId: string }
   | { type: 'profile'; action: 'activate' | 'create' | 'rename' | 'delete'; id?: string; name?: string };
 
 interface DirListingEntry {
@@ -188,6 +227,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private surfacesBootstrapped = false;
   /** Last applied profile panel flags — skip sync when only appearance changed. */
   private lastSyncedOpenKey = '';
+  /** Note id to focus in the next state push (after create). */
+  private focusNoteId?: string;
 
   constructor(
     private readonly store: MarkerStore,
@@ -510,7 +551,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return vscode.commands.executeCommand('setContext', GROUPS_LAYOUT_CONTEXT, value);
   }
 
-  /** Collapse or expand every top-level group on the focused surface's page. */
+  /** Collapse or expand every top-level group and foldable root note on the focused page. */
   async setTopGroups(collapsed: boolean): Promise<void> {
     const pageId = this.focusedPageId();
     const surface = this.focusedSurface();
@@ -529,17 +570,34 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         delete next[id];
       }
     }
+    for (const [id] of this.store.rootNotes(pageId)) {
+      if (this.store.isNoteLocked(id) || this.store.noteSubtreeHeight(id) === 0) {
+        continue;
+      }
+      if (collapsed) {
+        next[id] = true;
+      } else {
+        delete next[id];
+      }
+    }
     await this.store.setPageCollapsed(pageId, surface, next);
     await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(pageId, next));
   }
 
-  /** Collapse state of unlocked top-level groups only. */
+  /** Collapse state of unlocked top-level groups and root notes that can fold. */
   private allUnlockedTopCollapsed(pageId: string, collapsed?: Record<string, boolean>): boolean {
     const flags = collapsed ?? this.store.page(pageId)?.collapsed[this.focusedSurface()] ?? {};
     const tops = this.store
       .markers()
       .filter(([id, def]) => !def.parent && this.store.pageOf(id) === pageId && !this.store.isLocked(id));
-    return tops.length > 0 && tops.every(([id]) => !!flags[id]);
+    const noteTops = this.store
+      .rootNotes(pageId)
+      .filter(
+        ([id]) =>
+          !this.store.isNoteLocked(id) && this.store.noteSubtreeHeight(id) > 0,
+      );
+    const all = [...tops.map(([id]) => id), ...noteTops.map(([id]) => id)];
+    return all.length > 0 && all.every((id) => !!flags[id]);
   }
 
   private refuseLocked(markerId: string): boolean {
@@ -548,6 +606,39 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     void vscode.window.showWarningMessage('Syn3: группа закрыта');
     return true;
+  }
+
+  private refuseNoteLocked(noteId: string): boolean {
+    if (!this.store.isNoteLocked(noteId)) {
+      return false;
+    }
+    void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+    return true;
+  }
+
+  /** CSS color for a note card: own color, else parent note / group / root slate. */
+  private noteColor(noteId: string): string {
+    let current: string | undefined = noteId;
+    const seen = new Set<string>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const def = this.store.note(current);
+      if (!def) {
+        break;
+      }
+      if (def.color) {
+        return cssColor(def.color) ?? def.color;
+      }
+      if (def.page) {
+        return cssColor(NOTE_ROOT_COLOR) ?? NOTE_ROOT_COLOR;
+      }
+      if (def.markerId) {
+        const marker = this.store.marker(def.markerId);
+        return marker?.color ? cssColor(marker.color) ?? marker.color : cssColor(NOTE_ROOT_COLOR) ?? NOTE_ROOT_COLOR;
+      }
+      current = def.parentNote;
+    }
+    return cssColor(NOTE_ROOT_COLOR) ?? NOTE_ROOT_COLOR;
   }
 
   syncTopCollapsedContext(collapsed: boolean): Thenable<unknown> {
@@ -952,6 +1043,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             delete next[id];
           }
         }
+        for (const [id] of this.store.notes()) {
+          if (!this.store.isNoteLocked(id)) {
+            continue;
+          }
+          if (current[id]) {
+            next[id] = true;
+          } else {
+            delete next[id];
+          }
+        }
         await this.store.setPageCollapsed(message.pageId, surface, next);
         if (webview === this.lastFocusedWebview) {
           await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(message.pageId, next));
@@ -985,15 +1086,36 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'createNote') {
-      if (this.refuseLocked(message.markerId)) {
-        return;
+      let createdId: string | undefined;
+      if (message.parentNote) {
+        if (this.refuseNoteLocked(message.parentNote)) {
+          return;
+        }
+        createdId = await this.store.createNote(
+          { parentNote: message.parentNote },
+          message.text ?? '',
+        );
+      } else if (message.markerId) {
+        if (this.refuseLocked(message.markerId)) {
+          return;
+        }
+        createdId = await this.store.createNote(
+          { markerId: message.markerId },
+          message.text ?? '',
+        );
+      } else if (message.page && this.store.page(message.page)) {
+        createdId = await this.store.createNote({ page: message.page }, message.text ?? '');
       }
-      await this.store.createNote(message.markerId, message.text);
+      if (createdId && message.focus) {
+        // onDidChange already refreshed without focus — push again with the new id.
+        this.focusNoteId = createdId;
+        this.refresh();
+      }
       return;
     }
     if (message.type === 'updateNote') {
       const note = this.store.note(message.noteId);
-      if (!note || this.refuseLocked(note.markerId)) {
+      if (!note || this.refuseNoteLocked(message.noteId)) {
         return;
       }
       await this.store.updateNote(message.noteId, message.text);
@@ -1001,18 +1123,133 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'deleteNote') {
       const note = this.store.note(message.noteId);
-      if (!note || this.refuseLocked(note.markerId)) {
+      if (!note || this.refuseNoteLocked(message.noteId)) {
         return;
       }
-      await this.store.deleteNote(message.noteId);
+      if (message.tree) {
+        const answer = await vscode.window.showWarningMessage(
+          'Удалить заметку и все вложенные заметки?',
+          { modal: true },
+          'Удалить все',
+        );
+        if (answer === 'Удалить все') {
+          await this.store.deleteNoteTree(message.noteId);
+        }
+      } else {
+        const childCount = this.store.noteChildren(message.noteId).length;
+        const answer = await vscode.window.showWarningMessage(
+          'Удалить заметку?',
+          {
+            modal: true,
+            detail:
+              childCount > 0
+                ? `${childCount} вложенных заметки поднимутся на уровень выше.`
+                : undefined,
+          },
+          'Удалить',
+        );
+        if (answer === 'Удалить') {
+          await this.store.deleteNote(message.noteId);
+        }
+      }
+      return;
+    }
+    if (message.type === 'deleteMarkerTree') {
+      if (!this.store.marker(message.markerId) || this.refuseLocked(message.markerId)) {
+        return;
+      }
+      const def = this.store.marker(message.markerId);
+      const answer = await vscode.window.showWarningMessage(
+        `Удалить группу «${def?.label ?? message.markerId}» и все вложения?`,
+        { modal: true, detail: 'Файлы на диске не удаляются. Метки снимаются со всей ветки.' },
+        'Удалить все',
+      );
+      if (answer === 'Удалить все') {
+        await this.store.deleteMarkerTree(message.markerId);
+      }
+      return;
+    }
+    if (message.type === 'placeNote') {
+      if (this.refuseNoteLocked(message.id)) {
+        return;
+      }
+      try {
+        await this.store.placeNote(
+          message.id,
+          { kind: message.targetKind, id: message.targetId },
+          message.position,
+        );
+      } catch (error) {
+        void vscode.window.showWarningMessage(
+          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return;
+    }
+    if (message.type === 'nestNote') {
+      if (this.refuseNoteLocked(message.id)) {
+        return;
+      }
+      if (message.noteId && this.refuseNoteLocked(message.noteId)) {
+        return;
+      }
+      if (message.markerId && this.refuseLocked(message.markerId)) {
+        return;
+      }
+      try {
+        await this.store.nestNote(message.id, {
+          markerId: message.markerId,
+          noteId: message.noteId,
+        });
+      } catch (error) {
+        void vscode.window.showWarningMessage(
+          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return;
+    }
+    if (message.type === 'unnestNote') {
+      if (this.refuseNoteLocked(message.id)) {
+        return;
+      }
+      await this.store.unnestNote(message.id);
+      return;
+    }
+    if (message.type === 'moveNote') {
+      if (this.refuseNoteLocked(message.id)) {
+        return;
+      }
+      await this.store.moveNote(message.id, message.delta);
+      return;
+    }
+    if (message.type === 'toggleNoteLock') {
+      if (!this.store.note(message.noteId)) {
+        return;
+      }
+      await this.store.toggleNoteLock(message.noteId);
       return;
     }
     if (message.type === 'setColor') {
+      const color = normalizeHex(message.color);
+      if (!color) {
+        return;
+      }
+      if (typeof message.noteId === 'string') {
+        if (this.refuseNoteLocked(message.noteId)) {
+          return;
+        }
+        if (this.store.note(message.noteId)) {
+          await this.store.setNoteColor(message.noteId, color);
+        }
+        return;
+      }
+      if (typeof message.markerId !== 'string') {
+        return;
+      }
       if (this.refuseLocked(message.markerId)) {
         return;
       }
-      const color = normalizeHex(message.color);
-      if (color && this.store.marker(message.markerId)) {
+      if (this.store.marker(message.markerId)) {
         await this.store.updateMarker(message.markerId, { color });
       }
       return;
@@ -1070,6 +1307,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
+      } catch (error) {
+        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    if (message.type === 'placeMarkerAtNote') {
+      const notePage = this.store.pageOfNote(message.targetNoteId);
+      if (this.store.pageOf(message.id) !== notePage) {
+        return;
+      }
+      if (this.refuseLocked(message.id)) {
+        return;
+      }
+      try {
+        await this.store.placeMarkerAtNote(message.id, message.targetNoteId, message.position);
       } catch (error) {
         void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1214,32 +1466,49 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         depth: this.store.depthOf(id),
         subtreeHeight: this.store.subtreeHeight(id),
         children: this.store.children(id).map(([childId]) => childId),
+        noteChildren: this.store.notesOf(id).map(([noteId]) => noteId),
+        order: def.order,
         items: await Promise.all(this.store.itemsOf(id).map((relPath) => this.mapItem(relPath))),
         classes: await Promise.all(
           this.store.classesOf(id).map(([classId, classDef]) => this.mapClass(classId, classDef)),
         ),
-        notes: this.store.notesOf(id).map(([noteId, note]) => ({
-          id: noteId,
-          markerId: note.markerId,
-          text: note.text,
-        })),
       })),
     );
+    const notes: MapNote[] = this.store.notes().map(([id, def]) => ({
+      id,
+      text: def.text,
+      page: def.page,
+      markerId: def.markerId,
+      parentNote: def.parentNote,
+      locked: def.locked === true ? true : undefined,
+      depth: this.store.noteDepthOf(id),
+      subtreeHeight: this.store.noteSubtreeHeight(id),
+      children: this.store.noteChildren(id).map(([childId]) => childId),
+      order: def.order,
+      color: this.noteColor(id),
+    }));
     const pageId = this.pageIdFor(webview);
     if (restorePage) {
       this.persistSurfacePage(webview, pageId);
     }
     const page = this.store.page(pageId);
+    const focusNoteId = this.focusNoteId;
+    this.focusNoteId = undefined;
+    const locale = normalizeLocale(this.store.appearance.language);
     await webview.postMessage({
       type: 'state',
       restorePage: restorePage || undefined,
       activePageId: restorePage ? pageId : undefined,
       pages,
       groups,
+      notes,
+      focusNoteId,
       maxPages: MAX_PAGES,
       layout: page?.layout ?? 'chips',
       groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
+      locale,
+      i18n: stringsFor(locale),
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       active: this.activeRelPath(),
@@ -1436,6 +1705,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           delete next[id];
         }
       }
+      for (const [id] of this.store.rootNotes(activePage)) {
+        if (this.store.isNoteLocked(id) || this.store.noteSubtreeHeight(id) === 0) {
+          continue;
+        }
+        if (collapsed) {
+          next[id] = true;
+        } else {
+          delete next[id];
+        }
+      }
       await this.store.setPageCollapsed(activePage, surface, next);
       if (webview === this.lastFocusedWebview) {
         await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(activePage, next));
@@ -1444,6 +1723,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (action === 'createMarker') {
       await vscode.commands.executeCommand('syn3.createMarker', activePage);
+      return;
+    }
+    if (action === 'createNote') {
+      const id = await this.store.createNote({ page: activePage }, '');
+      if (id) {
+        this.focusNoteId = id;
+        this.refresh();
+      }
       return;
     }
     if (action === 'createPage') {
@@ -1494,17 +1781,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!current) {
         return;
       }
+      const locale = normalizeLocale(this.store.appearance.language);
       const next = await vscode.window.showInputBox({
-        title: 'Переименовать профиль',
-        prompt: 'Имя профиля',
+        title: t(locale, 'profileRenameTitle'),
+        prompt: t(locale, 'profileRenamePrompt'),
         value: current.name,
         validateInput: (v) => {
           const trimmed = v.trim();
           if (!trimmed) {
-            return 'Имя не может быть пустым';
+            return t(locale, 'profileNameEmpty');
           }
           if (!this.store.isValidProfileName(trimmed, id)) {
-            return 'Такое имя уже занято';
+            return t(locale, 'profileNameTaken');
           }
           return undefined;
         },
@@ -1523,12 +1811,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!current) {
         return;
       }
+      const locale = normalizeLocale(this.store.appearance.language);
+      const deleteLabel = t(locale, 'profileDeleteAction');
       const confirm = await vscode.window.showWarningMessage(
-        `Удалить профиль «${current.name}»? Восстановить будет невозможно.`,
+        t(locale, 'profileDeleteConfirm', { name: current.name }),
         { modal: true },
-        'Удалить',
+        deleteLabel,
       );
-      if (confirm !== 'Удалить') {
+      if (confirm !== deleteLabel) {
         return;
       }
       await this.store.deleteProfile(id);
@@ -1662,9 +1952,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </button>
         <div id="toolbar-view-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Вид"></div>
       </div>
-      <button id="toolbar-create" class="history-btn" type="button" title="Create Marker" aria-label="Create Marker">
-        ${icon('add')}
-      </button>
+      <div class="toolbar-view toolbar-create">
+        <button id="toolbar-create" class="history-btn" type="button" title="Создать" aria-label="Создать" aria-haspopup="menu" aria-expanded="false">
+          ${icon('add')}
+        </button>
+        <div id="toolbar-create-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Создать"></div>
+      </div>
       <button id="toolbar-collapse" class="history-btn" type="button" title="Свернуть все группы" aria-label="Свернуть все группы">
         ${icon('collapse-all', 'collapse')}
         ${icon('expand-all', 'expand', true)}

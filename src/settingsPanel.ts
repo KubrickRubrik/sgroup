@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
+import { normalizeLocale, stringsFor, t, Syn3Locale } from './i18n';
 import {
   Appearance,
   DEFAULT_APPEARANCE,
@@ -103,17 +104,18 @@ export class SettingsPanel implements vscode.Disposable {
       if (!current) {
         return;
       }
+      const locale = this.locale();
       const next = await vscode.window.showInputBox({
-        title: 'Переименовать профиль',
-        prompt: 'Имя профиля',
+        title: t(locale, 'profileRenameTitle'),
+        prompt: t(locale, 'profileRenamePrompt'),
         value: current.name,
         validateInput: (v) => {
           const trimmed = v.trim();
           if (!trimmed) {
-            return 'Имя не может быть пустым';
+            return t(locale, 'profileNameEmpty');
           }
           if (!this.store.isValidProfileName(trimmed, id)) {
-            return 'Такое имя уже занято';
+            return t(locale, 'profileNameTaken');
           }
           return undefined;
         },
@@ -132,22 +134,30 @@ export class SettingsPanel implements vscode.Disposable {
       if (!current) {
         return;
       }
+      const locale = this.locale();
+      const deleteLabel = t(locale, 'profileDeleteAction');
       const confirm = await vscode.window.showWarningMessage(
-        `Удалить профиль «${current.name}»? Восстановить будет невозможно.`,
+        t(locale, 'profileDeleteConfirm', { name: current.name }),
         { modal: true },
-        'Удалить',
+        deleteLabel,
       );
-      if (confirm !== 'Удалить') {
+      if (confirm !== deleteLabel) {
         return;
       }
       await this.store.deleteProfile(id);
     }
   }
 
+  private locale(): Syn3Locale {
+    return normalizeLocale(this.store.appearance.language);
+  }
+
   private async postState(): Promise<void> {
     if (!this.panel) {
       return;
     }
+    const locale = this.locale();
+    this.panel.title = t(locale, 'settingsTitle');
     await this.panel.webview.postMessage({
       type: 'state',
       appearance: this.store.appearance,
@@ -155,6 +165,9 @@ export class SettingsPanel implements vscode.Disposable {
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       activeProfileName: this.store.activeProfileName,
+      locale,
+      i18n: stringsFor(locale),
+      stylesPath: STYLES_PATH,
     });
   }
 
@@ -430,152 +443,174 @@ export class SettingsPanel implements vscode.Disposable {
       font-size: 0.9em;
       margin: 4px 0 0;
     }
+    select {
+      background: var(--vscode-dropdown-background, var(--vscode-input-background));
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
+      border-radius: 2px;
+      color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+      font: inherit;
+      grid-column: 2 / span 2;
+      justify-self: stretch;
+      max-width: 220px;
+      padding: 4px 8px;
+    }
   </style>
 </head>
 <body>
   <main>
     <div class="title-row">
-      <h1>Syn3 Settings</h1>
+      <h1 data-i18n="settingsTitle">Syn3 Settings</h1>
       <div class="profile-switch" id="profile-switch">
         <button type="button" class="profile-switch-btn" id="profile-switch-btn" aria-haspopup="menu" aria-expanded="false">
           <span class="profile-switch-text">
             <span class="profile-switch-name" id="profile-switch-name"></span>
-            <span class="profile-switch-label">активный</span>
+            <span class="profile-switch-label" data-i18n="profileActive">active</span>
           </span>
           <span class="profile-switch-avatar" aria-hidden="true">
             <img class="tone-light" src="${personLight}" alt="">
             <img class="tone-dark" src="${personDark}" alt="">
           </span>
         </button>
-        <div class="profile-menu" id="profile-menu" hidden role="menu" aria-label="Профили">
+        <div class="profile-menu" id="profile-menu" hidden role="menu" data-i18n-aria="profiles">
           <div class="profile-list" id="profile-list"></div>
           <div class="profile-create">
-            <input id="profile-name" type="text" placeholder="Новый профиль" aria-label="Имя нового профиля" maxlength="64">
-            <button type="button" id="profile-add" title="Создать профиль" aria-label="Создать профиль">+</button>
+            <input id="profile-name" type="text" data-i18n-placeholder="profileNewPlaceholder" data-i18n-aria="profileNewAria" maxlength="64">
+            <button type="button" id="profile-add" data-i18n-title="profileCreate" data-i18n-aria="profileCreate">+</button>
           </div>
         </div>
       </div>
     </div>
-    <p class="hint">Стили активного профиля сохраняются в <code>${STYLES_PATH}</code> этого проекта.</p>
+    <p class="hint" id="settings-hint"></p>
 
     <section>
-      <h2>Шрифт карты</h2>
+      <h2 data-i18n="language">Language</h2>
       <div class="row">
-        <label for="fontGroup">Группа</label>
+        <label for="language" data-i18n="language">Language</label>
+        <select id="language">
+          <option value="en" data-i18n="languageEn">English</option>
+          <option value="ru" data-i18n="languageRu">Russian</option>
+        </select>
+      </div>
+    </section>
+
+    <section>
+      <h2 data-i18n="sectionFont">Map font</h2>
+      <div class="row">
+        <label for="fontGroup" data-i18n="labelFontGroup">Group</label>
         <input id="fontGroup" type="range" min="0.6" max="2" step="0.05">
         <span class="value" data-for="fontGroup"></span>
       </div>
       <div class="row">
-        <label for="fontSubgroup">Подгруппа</label>
+        <label for="fontSubgroup" data-i18n="labelFontSubgroup">Subgroup</label>
         <input id="fontSubgroup" type="range" min="0.6" max="2" step="0.05">
         <span class="value" data-for="fontSubgroup"></span>
       </div>
       <div class="row">
-        <label for="fontFolder">Папка</label>
+        <label for="fontFolder" data-i18n="labelFontFolder">Folder</label>
         <input id="fontFolder" type="range" min="0.6" max="2" step="0.05">
         <span class="value" data-for="fontFolder"></span>
       </div>
       <div class="row">
-        <label for="fontFile">Файл</label>
+        <label for="fontFile" data-i18n="labelFontFile">File</label>
         <input id="fontFile" type="range" min="0.6" max="2" step="0.05">
         <span class="value" data-for="fontFile"></span>
       </div>
       <div class="row">
-        <label for="fontScale">Множитель</label>
+        <label for="fontScale" data-i18n="labelFontScale">Multiplier</label>
         <input id="fontScale" type="range" min="1" max="5" step="0.1">
         <span class="value" data-for="fontScale"></span>
       </div>
-      <p class="note">Итоговый размер = база × множитель × шрифт редактора.</p>
+      <p class="note" data-i18n="noteFont"></p>
     </section>
 
     <section>
-      <h2>Группа</h2>
+      <h2 data-i18n="sectionGroup">Group</h2>
       <div class="row">
-        <label for="cardGradient">Градиент</label>
+        <label for="cardGradient" data-i18n="labelCardGradient">Gradient</label>
         <input id="cardGradient" type="checkbox">
         <span class="value" data-for="cardGradient"></span>
       </div>
       <div class="row">
-        <label for="cardFill">Фон карточки</label>
+        <label for="cardFill" data-i18n="labelCardFill">Card fill</label>
         <input id="cardFill" type="range" min="0" max="100" step="1">
         <span class="value" data-for="cardFill"></span>
       </div>
       <div class="row">
-        <label for="cardBorder">Бордер карточки</label>
+        <label for="cardBorder" data-i18n="labelCardBorder">Card border</label>
         <input id="cardBorder" type="range" min="0" max="100" step="1">
         <span class="value" data-for="cardBorder"></span>
       </div>
       <div class="row">
-        <label for="gradientDirection">Направление градиента</label>
+        <label for="gradientDirection" data-i18n="labelGradientDirection">Gradient direction</label>
         <input id="gradientDirection" type="range" min="0" max="100" step="1">
         <span class="value" data-for="gradientDirection"></span>
       </div>
-      <p class="note">Градиент красит фон и бордер вместе. Выключенный убирает оба цвета, ползунки при этом сохраняются. 0 у силы — прозрачно, 100 — сплошной яркий край. Направление: 0 — угол по умолчанию, 100% — полный оборот.</p>
+      <p class="note" data-i18n="noteGroup"></p>
     </section>
 
     <section>
-      <h2>Фон содержимого</h2>
+      <h2 data-i18n="sectionContentBg">Content background</h2>
       <div class="row">
-        <label for="bgFolder">Папка</label>
+        <label for="bgFolder" data-i18n="labelBgFolder">Folder</label>
         <input id="bgFolder" type="range" min="0" max="100" step="1">
         <span class="value" data-for="bgFolder"></span>
       </div>
       <div class="row">
-        <label for="bgFile">Файл</label>
+        <label for="bgFile" data-i18n="labelBgFile">File</label>
         <input id="bgFile" type="range" min="0" max="100" step="1">
         <span class="value" data-for="bgFile"></span>
       </div>
       <div class="row">
-        <label for="bgSubgroup">Подгруппа</label>
+        <label for="bgSubgroup" data-i18n="labelBgSubgroup">Subgroup</label>
         <input id="bgSubgroup" type="range" min="0" max="100" step="1">
         <span class="value" data-for="bgSubgroup"></span>
       </div>
       <div class="row">
-        <label for="bgClass">Класс</label>
+        <label for="bgClass" data-i18n="labelBgClass">Class</label>
         <input id="bgClass" type="range" min="0" max="100" step="1">
         <span class="value" data-for="bgClass"></span>
       </div>
       <div class="row">
-        <label for="bgNote">Заметка</label>
+        <label for="bgNote" data-i18n="labelBgNote">Note</label>
         <input id="bgNote" type="range" min="0" max="100" step="1">
         <span class="value" data-for="bgNote"></span>
       </div>
       <div class="row">
-        <label for="bgHover">Наведение</label>
+        <label for="bgHover" data-i18n="labelBgHover">Hover</label>
         <input id="bgHover" type="range" min="0" max="100" step="1">
         <span class="value" data-for="bgHover"></span>
       </div>
-      <p class="note">Одна доля и у чипа, и у полосы списка. 0 — прозрачно, 100 — сплошной цвет группы. Наведение кладёт белый поверх фона: 0 ничего не добавляет, 100 — сплошной белый. Заголовок родителя в покое прозрачный и берёт то же наведение.</p>
+      <p class="note" data-i18n="noteContentBg"></p>
     </section>
 
     <section>
-      <h2>Explorer</h2>
+      <h2 data-i18n="sectionExplorer">Explorer</h2>
       <div class="row">
-        <label for="labelSaturation">Насыщенность имени</label>
+        <label for="labelSaturation" data-i18n="labelSaturation">Name saturation</label>
         <input id="labelSaturation" type="range" min="0" max="100" step="5">
         <span class="value" data-for="labelSaturation"></span>
       </div>
-      <p class="note">0 — цвет текста темы, 100 — цвет полоски группы. Несколько меток — цвет темы.</p>
+      <p class="note" data-i18n="noteExplorer"></p>
     </section>
 
     <section>
-      <h2>Открытый файл</h2>
+      <h2 data-i18n="sectionOpenFile">Open file</h2>
       <div class="row">
-        <label for="openFileMark">Показывать маркер</label>
+        <label for="openFileMark" data-i18n="labelOpenFileMark">Show marker</label>
         <input id="openFileMark" type="checkbox">
         <span class="value" data-for="openFileMark"></span>
       </div>
       <div class="row">
-        <label for="openFileAnimate">Показывать анимацию</label>
+        <label for="openFileAnimate" data-i18n="labelOpenFileAnimate">Show animation</label>
         <input id="openFileAnimate" type="checkbox">
         <span class="value" data-for="openFileAnimate"></span>
       </div>
       <div class="row">
-        <label for="openFileDuration">Время анимации</label>
+        <label for="openFileDuration" data-i18n="labelOpenFileDuration">Animation time</label>
         <input id="openFileDuration" type="range" min="0" max="3" step="0.1">
         <span class="value" data-for="openFileDuration"></span>
       </div>
-      <p class="note">Уголок на бейдже, если файл открыт во вкладке. Анимация мигает только у цепочки вкладки в фокусе. Время — длина одного цикла, от 0 до 3 с.</p>
+      <p class="note" data-i18n="noteOpenFile"></p>
     </section>
   </main>
   <script nonce="${nonce}">
@@ -600,6 +635,9 @@ export class SettingsPanel implements vscode.Disposable {
       bgHover: true,
     };
     let suppress = false;
+    /** @type {Record<string, string>} */
+    let i18n = {};
+    let stylesPath = ${JSON.stringify(STYLES_PATH)};
 
     const toggles = ['cardGradient', 'openFileMark', 'openFileAnimate'];
     const switchWrap = document.getElementById('profile-switch');
@@ -609,12 +647,47 @@ export class SettingsPanel implements vscode.Disposable {
     const profileList = document.getElementById('profile-list');
     const profileName = document.getElementById('profile-name');
     const profileAdd = document.getElementById('profile-add');
+    const languageSelect = document.getElementById('language');
+    const settingsHint = document.getElementById('settings-hint');
+
+    function tr(key) {
+      return i18n[key] || key;
+    }
 
     function format(key, value) {
       if (percentKeys[key]) return Math.round(value) + '%';
       if (key === 'fontScale') return Number(value).toFixed(1) + '×';
-      if (key === 'openFileDuration') return Number(value).toFixed(1) + ' с';
+      if (key === 'openFileDuration') return Number(value).toFixed(1) + ' ' + tr('secondsUnit');
       return Number(value).toFixed(2);
+    }
+
+    function applyLocale() {
+      document.querySelectorAll('[data-i18n]').forEach((node) => {
+        const key = node.getAttribute('data-i18n');
+        if (key) node.textContent = tr(key);
+      });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
+        const key = node.getAttribute('data-i18n-placeholder');
+        if (key) node.setAttribute('placeholder', tr(key));
+      });
+      document.querySelectorAll('[data-i18n-aria]').forEach((node) => {
+        const key = node.getAttribute('data-i18n-aria');
+        if (key) node.setAttribute('aria-label', tr(key));
+      });
+      document.querySelectorAll('[data-i18n-title]').forEach((node) => {
+        const key = node.getAttribute('data-i18n-title');
+        if (key) node.setAttribute('title', tr(key));
+      });
+      if (settingsHint) {
+        settingsHint.innerHTML = '';
+        const text = tr('settingsHint');
+        const parts = text.split('{path}');
+        settingsHint.append(document.createTextNode(parts[0] || ''));
+        const code = document.createElement('code');
+        code.textContent = stylesPath;
+        settingsHint.append(code);
+        settingsHint.append(document.createTextNode(parts[1] || ''));
+      }
     }
 
     function apply(appearance) {
@@ -631,7 +704,10 @@ export class SettingsPanel implements vscode.Disposable {
         const toggleLabel = document.querySelector('[data-for="' + key + '"]');
         if (!toggle || !toggleLabel) continue;
         toggle.checked = !!appearance[key];
-        toggleLabel.textContent = appearance[key] ? 'вкл' : 'выкл';
+        toggleLabel.textContent = appearance[key] ? tr('toggleOn') : tr('toggleOff');
+      }
+      if (languageSelect) {
+        languageSelect.value = appearance.language === 'ru' ? 'ru' : 'en';
       }
       suppress = false;
     }
@@ -665,7 +741,7 @@ export class SettingsPanel implements vscode.Disposable {
           const count = document.createElement('span');
           count.className = 'profile-bound-count';
           count.textContent = String(bound);
-          count.title = 'Привязано: ' + bound;
+          count.title = tr('profileBound').replace('{n}', String(bound));
           row.append(count);
         }
         if (profile.id !== GENERAL_ID) {
@@ -673,15 +749,15 @@ export class SettingsPanel implements vscode.Disposable {
           actions.className = 'profile-actions';
           const renameBtn = document.createElement('button');
           renameBtn.type = 'button';
-          renameBtn.title = 'Переименовать';
-          renameBtn.setAttribute('aria-label', 'Переименовать');
+          renameBtn.title = tr('profileRename');
+          renameBtn.setAttribute('aria-label', tr('profileRename'));
           renameBtn.setAttribute('data-profile-action', 'rename');
           renameBtn.setAttribute('data-profile-id', profile.id);
           renameBtn.textContent = '✎';
           const deleteBtn = document.createElement('button');
           deleteBtn.type = 'button';
-          deleteBtn.title = 'Удалить';
-          deleteBtn.setAttribute('aria-label', 'Удалить');
+          deleteBtn.title = tr('profileDelete');
+          deleteBtn.setAttribute('aria-label', tr('profileDelete'));
           deleteBtn.setAttribute('data-profile-action', 'delete');
           deleteBtn.setAttribute('data-profile-id', profile.id);
           deleteBtn.textContent = '×';
@@ -694,7 +770,7 @@ export class SettingsPanel implements vscode.Disposable {
 
     function isCreatableProfileName(name) {
       const lower = name.toLocaleLowerCase();
-      if (lower === 'общий') return false;
+      if (lower === 'общий' || lower === 'general') return false;
       const rows = profileList ? profileList.querySelectorAll('[data-profile-id]') : [];
       for (const row of rows) {
         const label = row.querySelector('.profile-name');
@@ -732,10 +808,16 @@ export class SettingsPanel implements vscode.Disposable {
       const toggleLabel = document.querySelector('[data-for="' + key + '"]');
       toggle.addEventListener('change', () => {
         if (suppress) return;
-        toggleLabel.textContent = toggle.checked ? 'вкл' : 'выкл';
+        toggleLabel.textContent = toggle.checked ? tr('toggleOn') : tr('toggleOff');
         vscode.postMessage({ type: 'setAppearance', appearance: { [key]: toggle.checked } });
       });
     }
+
+    languageSelect?.addEventListener('change', () => {
+      if (suppress) return;
+      const value = languageSelect.value === 'ru' ? 'ru' : 'en';
+      vscode.postMessage({ type: 'setAppearance', appearance: { language: value } });
+    });
 
     switchBtn?.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -782,6 +864,13 @@ export class SettingsPanel implements vscode.Disposable {
 
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'state') {
+        if (event.data.i18n && typeof event.data.i18n === 'object') {
+          i18n = event.data.i18n;
+        }
+        if (typeof event.data.stylesPath === 'string') {
+          stylesPath = event.data.stylesPath;
+        }
+        applyLocale();
         apply(event.data.appearance);
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);
       }

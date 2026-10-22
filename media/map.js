@@ -7,6 +7,13 @@
   const historyAccept = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-accept'));
   const historyForward = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-forward'));
 
+  /** @type {Record<string, string>} */
+  let i18nBag = {};
+  /** @param {string} key */
+  function t(key) {
+    return i18nBag[key] || key;
+  }
+
   historyBack?.addEventListener('click', () => {
     vscode.postMessage({ type: 'history', direction: 'back', pageId: uiState.activePageId });
   });
@@ -19,8 +26,10 @@
 
   const toolbarView = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-view'));
   const toolbarViewMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-view-menu'));
-  const toolbarViewWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-view'));
+  const toolbarViewWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-view:not(.toolbar-create)'));
   const toolbarCreate = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-create'));
+  const toolbarCreateMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-create-menu'));
+  const toolbarCreateWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-create'));
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
@@ -42,10 +51,10 @@
   contextMenu.className = 'syn3-menu syn3-context-menu';
   contextMenu.hidden = true;
   contextMenu.setAttribute('role', 'menu');
-  contextMenu.setAttribute('aria-label', 'Контекстное меню');
+  contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'context', viewExpanded: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   const MENU_CLOSE_MS = 300;
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
@@ -105,11 +114,29 @@
       scheduleMenuClose('toolbar-view', () => closeToolbarViewMenu());
     }
   });
-  toolbarCreate?.addEventListener('click', () => {
+  toolbarCreate?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!toolbarCreateMenu) {
+      return;
+    }
+    const open = toolbarCreateMenu.hidden;
     cancelMenuClose();
     closeToolbarMenus();
     closeContextMenu();
-    postToolbar('createMarker');
+    if (open) {
+      openToolbarCreateMenu();
+    }
+  });
+  toolbarCreateWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-create');
+  });
+  toolbarCreateWrap?.addEventListener('mouseleave', () => {
+    if (toolbarCreateMenu && !toolbarCreateMenu.hidden) {
+      scheduleMenuClose('toolbar-create', () => closeToolbarCreateMenu());
+    }
+  });
+  toolbarCreateMenu?.addEventListener('click', (event) => {
+    handleSyn3MenuClick(event, 'toolbar-create');
   });
   toolbarCollapse?.addEventListener('click', () => {
     cancelMenuClose();
@@ -329,6 +356,10 @@
         vscode.setState(uiState);
       }
       ensureActivePage();
+      if (message.i18n && typeof message.i18n === 'object') {
+        i18nBag = message.i18n;
+      }
+      applyToolbarLocale();
       setHistoryButtons(message.history);
       setToolbar(activePage() || message);
       setPanelToggles(message.open);
@@ -337,6 +368,9 @@
       applyAppearance(message.appearance);
       renderPager();
       render();
+      if (typeof message.focusNoteId === 'string') {
+        focusNoteInput(message.focusNoteId);
+      }
       vscode.postMessage({ type: 'activePage', pageId: uiState.activePageId });
     } else if (message.type === 'openFlags') {
       if (data) {
@@ -477,6 +511,86 @@
     return data.groups.filter((group) => (group.page || page.id) === page.id);
   }
 
+  /** @param {string} noteId @param {string} pageId */
+  function noteBelongsToPage(noteId, pageId) {
+    const notes = Array.isArray(data?.notes) ? data.notes : [];
+    let current = notes.find((n) => n.id === noteId);
+    const seen = new Set();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      if (current.page === pageId) {
+        return true;
+      }
+      if (current.markerId) {
+        const group = (data?.groups || []).find((g) => g.id === current.markerId);
+        return !!group && (group.page || pageId) === pageId;
+      }
+      current = notes.find((n) => n.id === current.parentNote);
+    }
+    return false;
+  }
+
+  function pageNotes() {
+    const page = activePage();
+    if (!data || !page || !Array.isArray(data.notes)) {
+      return [];
+    }
+    return data.notes.filter((note) => noteBelongsToPage(note.id, page.id));
+  }
+
+  function notesById() {
+    return Object.fromEntries((data?.notes || []).map((n) => [n.id, n]));
+  }
+
+  /** Mixed root cards on the active page, sorted by shared order. */
+  function rootCards() {
+    const page = activePage();
+    if (!page) {
+      return [];
+    }
+    /** @type {Array<{ kind: 'marker' | 'note', id: string, order: number }>} */
+    const items = [];
+    for (const group of pageGroups().filter((g) => !g.parent)) {
+      items.push({ kind: 'marker', id: group.id, order: group.order || 0 });
+    }
+    for (const note of (data?.notes || []).filter((n) => n.page === page.id)) {
+      items.push({ kind: 'note', id: note.id, order: note.order || 0 });
+    }
+    return items.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  }
+
+  /** Direct child cards of a group: notes and subgroups, shared order. */
+  function groupChildCards(group) {
+    /** @type {Array<{ kind: 'marker' | 'note', id: string, order: number }>} */
+    const items = [];
+    const byId = Object.fromEntries(pageGroups().map((g) => [g.id, g]));
+    for (const childId of group.children || []) {
+      const child = byId[childId];
+      if (child) {
+        items.push({ kind: 'marker', id: childId, order: child.order || 0 });
+      }
+    }
+    const noteMap = notesById();
+    for (const noteId of group.noteChildren || []) {
+      const note = noteMap[noteId];
+      if (note) {
+        items.push({ kind: 'note', id: noteId, order: note.order || 0 });
+      }
+    }
+    return items.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  }
+
+  /** @param {string} noteId */
+  function focusNoteInput(noteId) {
+    requestAnimationFrame(() => {
+      const node = root.querySelector('.note-card[data-note-id="' + noteId + '"] textarea.note-input');
+      if (node instanceof HTMLTextAreaElement) {
+        node.focus();
+        node.setSelectionRange(node.value.length, node.value.length);
+      }
+    });
+  }
+
   function updatePageMenu() {
     const list = pages();
     const max = typeof data?.maxPages === 'number' ? data.maxPages : 3;
@@ -498,16 +612,113 @@
     const forward = pageHistory && pageHistory.forward ? pageHistory.forward : 0;
     if (historyBack) {
       historyBack.disabled = back === 0;
-      historyBack.title = back ? 'Назад (' + back + ')' : 'Назад';
+      const backLabel = t('toolbarBack');
+      historyBack.title = back ? backLabel + ' (' + back + ')' : backLabel;
+      historyBack.setAttribute('aria-label', historyBack.title);
     }
     if (historyForward) {
       historyForward.disabled = forward === 0;
-      historyForward.title = forward ? 'Вперёд (' + forward + ')' : 'Вперёд';
+      const forwardLabel = t('toolbarForward');
+      historyForward.title = forward ? forwardLabel + ' (' + forward + ')' : forwardLabel;
+      historyForward.setAttribute('aria-label', historyForward.title);
     }
     if (historyAccept) {
       historyAccept.hidden = back + forward === 0;
-      historyAccept.title = 'Готово';
+      historyAccept.title = t('toolbarDone');
+      historyAccept.setAttribute('aria-label', historyAccept.title);
     }
+  }
+
+  /** Apply profile language to static toolbar chrome and more-menu labels. */
+  function applyToolbarLocale() {
+    contextMenu.setAttribute('aria-label', t('contextMenu'));
+    setBtnLocale(toolbarProfile, 'toolbarProfile');
+    setElLocale(toolbarProfileMenu, 'profiles', 'aria-label');
+    if (toolbarProfileName) {
+      toolbarProfileName.placeholder = t('profileNewPlaceholder');
+      toolbarProfileName.setAttribute('aria-label', t('profileNewAria'));
+    }
+    setBtnLocale(toolbarProfileAdd, 'profileCreate');
+    setBtnLocale(toolbarView, 'toolbarView');
+    setElLocale(toolbarViewMenu, 'toolbarView', 'aria-label');
+    setBtnLocale(toolbarCreate, 'toolbarCreate');
+    setElLocale(toolbarCreateMenu, 'toolbarCreate', 'aria-label');
+    setBtnLocale(toolbarPanels, 'toolbarPanels');
+    setElLocale(toolbarPanelsMenu, 'toolbarPanelsGroup', 'aria-label');
+    setBtnLocale(panelToggleBottom, 'toolbarPanelBottom');
+    setBtnLocale(panelToggleLeft, 'toolbarPanelLeft');
+    setBtnLocale(panelToggleRight, 'toolbarPanelRight');
+    setBtnLocale(toolbarMore, 'toolbarMore');
+    setMenuItemLocale('menu-create-page', 'menuNewPage');
+    setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
+    setMenuItemLocale('menu-delete-page', 'menuDeletePage');
+    setMenuItemLocaleByAction('refresh', 'menuRefresh');
+    setMenuItemLocaleByAction('openConfig', 'menuOpenMarkers');
+    setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
+    setCollapseButton();
+  }
+
+  /**
+   * @param {HTMLElement | null} node
+   * @param {string} key
+   */
+  function setBtnLocale(node, key) {
+    if (!node) {
+      return;
+    }
+    const label = t(key);
+    node.title = label;
+    node.setAttribute('aria-label', label);
+  }
+
+  /**
+   * @param {HTMLElement | null} node
+   * @param {string} key
+   * @param {string} attr
+   */
+  function setElLocale(node, key, attr) {
+    if (!node) {
+      return;
+    }
+    node.setAttribute(attr, t(key));
+  }
+
+  /**
+   * More-menu buttons keep an icon child; only replace the trailing text node.
+   * @param {string} id
+   * @param {string} key
+   */
+  function setMenuItemLocale(id, key) {
+    const button = document.getElementById(id);
+    if (!(button instanceof HTMLElement)) {
+      return;
+    }
+    setMenuButtonText(button, t(key));
+  }
+
+  /**
+   * @param {string} action
+   * @param {string} key
+   */
+  function setMenuItemLocaleByAction(action, key) {
+    const button = toolbarMenu?.querySelector('[data-action="' + action + '"]');
+    if (!(button instanceof HTMLElement)) {
+      return;
+    }
+    setMenuButtonText(button, t(key));
+  }
+
+  /**
+   * @param {HTMLElement} button
+   * @param {string} label
+   */
+  function setMenuButtonText(button, label) {
+    const icon = button.querySelector('.tool-icon, img, svg');
+    button.replaceChildren();
+    if (icon) {
+      button.append(icon);
+    }
+    button.append(document.createTextNode(label));
   }
 
   function closeToolbarMenus() {
@@ -520,7 +731,59 @@
     }
     toolbarPanels?.setAttribute('aria-expanded', 'false');
     closeToolbarViewMenu();
+    closeToolbarCreateMenu();
     closeProfileMenu();
+  }
+
+  function closeToolbarCreateMenu() {
+    cancelMenuClose('toolbar-create');
+    if (toolbarCreateMenu) {
+      toolbarCreateMenu.hidden = true;
+    }
+    toolbarCreate?.setAttribute('aria-expanded', 'false');
+    if (openMenuState?.kind === 'toolbar-create') {
+      openMenuState = null;
+    }
+  }
+
+  function openToolbarCreateMenu() {
+    if (!toolbarCreateMenu || !toolbarCreateWrap) {
+      return;
+    }
+    openMenuState = { kind: 'toolbar-create', viewExpanded: false };
+    fillCreateMenu(toolbarCreateMenu);
+    positionToolbarMenu(toolbarCreateMenu, toolbarCreateWrap);
+    toolbarCreate?.setAttribute('aria-expanded', 'true');
+  }
+
+  /** @param {HTMLElement} root */
+  function fillCreateMenu(menuRoot) {
+    const isMenu = menuRoot.classList.contains('syn3-menu');
+    const target = isMenu ? ensureMenuChrome(menuRoot).scroller : menuRoot;
+    target.replaceChildren();
+    target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
+    target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
+    if (isMenu) {
+      updateMenuScrollbar(menuRoot);
+    }
+  }
+
+  /**
+   * @param {string} label
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string }} attrs
+   */
+  function menuActionChoice(label, attrs) {
+    const button = menuAction(label);
+    if (attrs.toolbar) {
+      button.dataset.toolbar = attrs.toolbar;
+    }
+    if (attrs.create) {
+      button.dataset.create = attrs.create;
+    }
+    if (attrs.deleteAction) {
+      button.dataset.deleteAction = attrs.deleteAction;
+    }
+    return button;
   }
 
   function closeToolbarViewMenu() {
@@ -631,11 +894,48 @@
    */
   function openContextMenu(ctx, x, y) {
     cancelMenuClose('context');
-    // Always start collapsed; user expands «Вид» explicitly.
-    openMenuState = { kind: 'context', viewExpanded: false, ctx, x, y };
+    // Always start collapsed; user expands «Вид» / «Создать» / delete explicitly.
+    openMenuState = {
+      kind: 'context',
+      viewExpanded: false,
+      createExpanded: false,
+      deleteExpanded: false,
+      ctx,
+      x,
+      y,
+    };
     renderContextMenu();
     contextMenu.hidden = false;
     positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  /**
+   * @param {string} label
+   * @param {boolean} expanded
+   * @param {string} toggleAction
+   * @param {(nest: HTMLElement) => void} fillNest
+   */
+  function appendExpandableMenuBlock(scroller, label, expanded, toggleAction, fillNest) {
+    const block = document.createElement('div');
+    block.className = 'syn3-menu-view-block';
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = toggleAction;
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    const chevron = document.createElement('span');
+    chevron.className = 'syn3-menu-item-chevron';
+    chevron.textContent = expanded ? '▴' : '▾';
+    chevron.setAttribute('aria-hidden', 'true');
+    row.append(title, chevron);
+    block.append(row);
+    if (expanded) {
+      const nest = document.createElement('div');
+      nest.className = 'syn3-menu-nest';
+      fillNest(nest);
+      block.append(nest);
+    }
+    scroller.append(block);
   }
 
   function renderContextMenu() {
@@ -643,7 +943,8 @@
       return;
     }
     const ctx = openMenuState.ctx;
-    const expanded = openMenuState.viewExpanded;
+    const section = String(ctx.webviewSection || '');
+    const depth = Number(ctx.depth) || 0;
     // replaceChildren can synthesize mouseleave; ignore it until the pointer moves again.
     ignoreContextLeave = true;
     cancelMenuClose('context');
@@ -655,34 +956,56 @@
         continue;
       }
       if (item.kind === 'view') {
-        const block = document.createElement('div');
-        block.className = 'syn3-menu-view-block';
-        const row = menuAction('', expanded ? 'is-expanded' : '');
-        row.dataset.menuAction = 'toggleView';
-        const viewLabel = document.createElement('span');
-        viewLabel.className = 'syn3-menu-item-label';
-        viewLabel.textContent = 'Вид';
-        const viewChevron = document.createElement('span');
-        viewChevron.className = 'syn3-menu-item-chevron';
-        viewChevron.textContent = expanded ? '▴' : '▾';
-        viewChevron.setAttribute('aria-hidden', 'true');
-        row.append(viewLabel, viewChevron);
-        block.append(row);
-        if (expanded) {
-          const nest = document.createElement('div');
-          nest.className = 'syn3-menu-nest';
+        appendExpandableMenuBlock(scroller, t('toolbarView'), !!openMenuState.viewExpanded, 'toggleView', (nest) => {
           fillViewSections(nest, {
             includeGroupColumns: !ctx.locked,
             columns: typeof ctx.columns === 'string' ? ctx.columns : 'flow',
             markerId: typeof ctx.markerId === 'string' ? ctx.markerId : undefined,
           });
-          block.append(nest);
-        }
-        scroller.append(block);
+        });
+        continue;
+      }
+      if (item.kind === 'create') {
+        appendExpandableMenuBlock(
+          scroller,
+          t('toolbarCreate'),
+          !!openMenuState.createExpanded,
+          'toggleCreate',
+          (nest) => {
+            if (section === 'marker' && depth < 2) {
+              nest.append(menuActionChoice(t('createSubgroup'), { create: 'subgroup' }));
+            }
+            if (section === 'marker' || (section === 'note' && depth < 2)) {
+              nest.append(menuActionChoice(t('createNote'), { create: 'note' }));
+            }
+          },
+        );
+        continue;
+      }
+      if (item.kind === 'delete') {
+        const isNote = section === 'note';
+        appendExpandableMenuBlock(
+          scroller,
+          t('menuDelete'),
+          !!openMenuState.deleteExpanded,
+          'toggleDelete',
+          (nest) => {
+            nest.append(
+              menuActionChoice(isNote ? t('menuDeleteNote') : t('menuDeleteGroup'), {
+                deleteAction: 'one',
+              }),
+            );
+            nest.append(
+              menuActionChoice(t('menuDeleteAll'), {
+                deleteAction: 'all',
+              }),
+            );
+          },
+        );
         continue;
       }
       if (item.kind === 'unlock') {
-        const row = menuAction('Разблокировать');
+        const row = menuAction(t('menuUnlock'));
         row.dataset.menuAction = 'unlock';
         scroller.append(row);
         continue;
@@ -704,23 +1027,23 @@
     const hasAlias = !!ctx.hasAlias;
     const depth = Number(ctx.depth) || 0;
     const isDir = !!ctx.isDir;
-    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'unlock' } | { kind: 'separator' }>} */
+    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'unlock' } | { kind: 'separator' }>} */
     const items = [];
 
     if (section === 'item') {
-      items.push({ kind: 'command', command: 'syn3.reveal', label: 'Reveal in Explorer View' });
+      items.push({ kind: 'command', command: 'syn3.reveal', label: t('menuReveal') });
     }
     if (section === 'class') {
-      items.push({ kind: 'command', command: 'syn3.openClass', label: 'Open Class' });
-      items.push({ kind: 'command', command: 'syn3.reveal', label: 'Reveal in Explorer View' });
+      items.push({ kind: 'command', command: 'syn3.openClass', label: t('menuOpenClass') });
+      items.push({ kind: 'command', command: 'syn3.reveal', label: t('menuReveal') });
     }
     if (section === 'marker') {
-      items.push({ kind: 'command', command: 'syn3.openItem', label: 'Open Item' });
-      items.push({ kind: 'command', command: 'syn3.openFull', label: 'Open Full' });
+      items.push({ kind: 'command', command: 'syn3.openItem', label: t('menuOpenItem') });
+      items.push({ kind: 'command', command: 'syn3.openFull', label: t('menuOpenFull') });
     }
     if (section === 'item' && isDir) {
-      items.push({ kind: 'command', command: 'syn3.openItem', label: 'Open Item' });
-      items.push({ kind: 'command', command: 'syn3.openFull', label: 'Open Full' });
+      items.push({ kind: 'command', command: 'syn3.openItem', label: t('menuOpenItem') });
+      items.push({ kind: 'command', command: 'syn3.openFull', label: t('menuOpenFull') });
     }
 
     // View / layout only on the group header, not on files or classes inside.
@@ -729,20 +1052,20 @@
     }
 
     if (section === 'item' && !locked) {
-      items.push({ kind: 'command', command: 'syn3.rename', label: 'Rename…' });
+      items.push({ kind: 'command', command: 'syn3.rename', label: t('menuRename') });
     }
     if ((section === 'item' || section === 'class' || section === 'missingClass') && !locked) {
-      items.push({ kind: 'command', command: 'syn3.setAlias', label: 'Set Alias…' });
+      items.push({ kind: 'command', command: 'syn3.setAlias', label: t('menuSetAlias') });
     }
     if (
       (section === 'item' || section === 'class' || section === 'missingClass') &&
       hasAlias &&
       !locked
     ) {
-      items.push({ kind: 'command', command: 'syn3.clearAlias', label: 'Clear Alias' });
+      items.push({ kind: 'command', command: 'syn3.clearAlias', label: t('menuClearAlias') });
     }
     if (section === 'missing' && !locked) {
-      items.push({ kind: 'command', command: 'syn3.relink', label: 'Relink to File…' });
+      items.push({ kind: 'command', command: 'syn3.relink', label: t('menuRelink') });
     }
     if (
       (section === 'item' ||
@@ -751,29 +1074,39 @@
         section === 'missingClass') &&
       !locked
     ) {
-      items.push({ kind: 'command', command: 'syn3.unassign', label: 'Remove Marker' });
+      items.push({ kind: 'command', command: 'syn3.unassign', label: t('menuRemoveMarker') });
     }
 
     if (section === 'marker' && !locked) {
-      items.push({ kind: 'command', command: 'syn3.editMarker', label: 'Edit Marker…' });
-      items.push({ kind: 'command', command: 'syn3.setAlias', label: 'Set Alias…' });
+      items.push({ kind: 'command', command: 'syn3.editMarker', label: t('menuEditMarker') });
+      items.push({ kind: 'command', command: 'syn3.setAlias', label: t('menuSetAlias') });
       if (hasAlias) {
-        items.push({ kind: 'command', command: 'syn3.clearAlias', label: 'Clear Alias' });
+        items.push({ kind: 'command', command: 'syn3.clearAlias', label: t('menuClearAlias') });
       }
-      if (depth < 2) {
-        items.push({ kind: 'command', command: 'syn3.createSubgroup', label: 'New Subgroup…' });
-      }
-      items.push({ kind: 'command', command: 'syn3.changeColor', label: 'Change Color…' });
-      items.push({ kind: 'command', command: 'syn3.changeIcon', label: 'Change Icon…' });
-      items.push({ kind: 'command', command: 'syn3.moveMarkerUp', label: 'Move Up' });
-      items.push({ kind: 'command', command: 'syn3.moveMarkerDown', label: 'Move Down' });
+      items.push({ kind: 'create' });
+      items.push({ kind: 'command', command: 'syn3.changeColor', label: t('menuChangeColor') });
+      items.push({ kind: 'command', command: 'syn3.changeIcon', label: t('menuChangeIcon') });
+      items.push({ kind: 'command', command: 'syn3.moveMarkerUp', label: t('menuMoveUp') });
+      items.push({ kind: 'command', command: 'syn3.moveMarkerDown', label: t('menuMoveDown') });
       if (depth > 0) {
-        items.push({ kind: 'command', command: 'syn3.unnestMarker', label: 'Move Up a Level' });
+        items.push({ kind: 'command', command: 'syn3.unnestMarker', label: t('menuUnnest') });
       }
-      items.push({ kind: 'command', command: 'syn3.deleteMarker', label: 'Delete Marker' });
+      items.push({ kind: 'delete' });
     }
 
-    if (section === 'marker' && locked) {
+    if (section === 'note' && !locked) {
+      if (depth < 2) {
+        items.push({ kind: 'create' });
+      }
+      items.push({ kind: 'command', command: 'syn3.moveNoteUp', label: t('menuMoveUp') });
+      items.push({ kind: 'command', command: 'syn3.moveNoteDown', label: t('menuMoveDown') });
+      if (ctx.markerId || ctx.parentNote) {
+        items.push({ kind: 'command', command: 'syn3.unnestNote', label: t('menuUnnest') });
+      }
+      items.push({ kind: 'delete' });
+    }
+
+    if ((section === 'marker' || section === 'note') && locked) {
       items.push({ kind: 'unlock' });
     }
 
@@ -792,44 +1125,44 @@
     const layout = page?.layout || data?.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
 
-    // One framed «Вид» block: no dividers between map/group subsections.
-    target.append(menuLabel('Вид карты'));
-    target.append(menuChoice('Карточки', layout === 'chips', { set: 'layout', value: 'chips' }));
-    target.append(menuChoice('Список', layout === 'list', { set: 'layout', value: 'list' }));
-    target.append(menuLabel('Раскладка карты'));
-    target.append(menuChoice('Поток', groupsLayout === 'flow', { set: 'groups', value: 'flow' }));
-    target.append(menuChoice('1 колонка', groupsLayout === '1', { set: 'groups', value: '1' }));
-    target.append(menuChoice('2 колонки', groupsLayout === '2', { set: 'groups', value: '2' }));
-    target.append(menuChoice('3 колонки', groupsLayout === '3', { set: 'groups', value: '3' }));
+    // One framed View block: no dividers between map/group subsections.
+    target.append(menuLabel(t('viewMap')));
+    target.append(menuChoice(t('viewCards'), layout === 'chips', { set: 'layout', value: 'chips' }));
+    target.append(menuChoice(t('viewList'), layout === 'list', { set: 'layout', value: 'list' }));
+    target.append(menuLabel(t('viewMapLayout')));
+    target.append(menuChoice(t('viewFlow'), groupsLayout === 'flow', { set: 'groups', value: 'flow' }));
+    target.append(menuChoice(t('viewCol1'), groupsLayout === '1', { set: 'groups', value: '1' }));
+    target.append(menuChoice(t('viewCol2'), groupsLayout === '2', { set: 'groups', value: '2' }));
+    target.append(menuChoice(t('viewCol3'), groupsLayout === '3', { set: 'groups', value: '3' }));
 
     if (options.includeGroupColumns && options.markerId) {
       const columns = options.columns === '1' || options.columns === '2' || options.columns === '3'
         ? options.columns
         : 'flow';
-      target.append(menuLabel('Раскладка группы'));
+      target.append(menuLabel(t('viewGroupLayout')));
       target.append(
-        menuChoice('Поток', columns === 'flow', {
+        menuChoice(t('viewFlow'), columns === 'flow', {
           set: 'columns',
           value: 'flow',
           markerId: options.markerId,
         }),
       );
       target.append(
-        menuChoice('1 колонка', columns === '1', {
+        menuChoice(t('viewCol1'), columns === '1', {
           set: 'columns',
           value: '1',
           markerId: options.markerId,
         }),
       );
       target.append(
-        menuChoice('2 колонки', columns === '2', {
+        menuChoice(t('viewCol2'), columns === '2', {
           set: 'columns',
           value: '2',
           markerId: options.markerId,
         }),
       );
       target.append(
-        menuChoice('3 колонки', columns === '3', {
+        menuChoice(t('viewCol3'), columns === '3', {
           set: 'columns',
           value: '3',
           markerId: options.markerId,
@@ -886,7 +1219,7 @@
 
   /**
    * @param {MouseEvent} event
-   * @param {'toolbar' | 'context'} source
+   * @param {'toolbar' | 'toolbar-create' | 'context'} source
    */
   function handleSyn3MenuClick(event, source) {
     const target = event.target instanceof HTMLElement ? event.target : null;
@@ -900,9 +1233,17 @@
       cancelMenuClose('context');
     }
 
+    if (button.dataset.toolbar) {
+      closeToolbarMenus();
+      postToolbar(button.dataset.toolbar);
+      return;
+    }
+
     if (button.dataset.menuAction === 'toggleView') {
       if (openMenuState?.kind === 'context') {
         openMenuState.viewExpanded = !openMenuState.viewExpanded;
+        openMenuState.createExpanded = false;
+        openMenuState.deleteExpanded = false;
         renderContextMenu();
         cancelMenuClose('context');
         positionMenu(contextMenu, {
@@ -914,14 +1255,111 @@
       return;
     }
 
+    if (button.dataset.menuAction === 'toggleCreate') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.createExpanded = !openMenuState.createExpanded;
+        openMenuState.viewExpanded = false;
+        openMenuState.deleteExpanded = false;
+        renderContextMenu();
+        cancelMenuClose('context');
+        positionMenu(contextMenu, {
+          left: openMenuState.x ?? 0,
+          top: openMenuState.y ?? 0,
+          preferBelow: true,
+        });
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleDelete') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.deleteExpanded = !openMenuState.deleteExpanded;
+        openMenuState.viewExpanded = false;
+        openMenuState.createExpanded = false;
+        renderContextMenu();
+        cancelMenuClose('context');
+        positionMenu(contextMenu, {
+          left: openMenuState.x ?? 0,
+          top: openMenuState.y ?? 0,
+          preferBelow: true,
+        });
+      }
+      return;
+    }
+
+    if (button.dataset.create) {
+      const ctx = openMenuState?.ctx;
+      const section = ctx && typeof ctx.webviewSection === 'string' ? ctx.webviewSection : '';
+      if (button.dataset.create === 'subgroup' && section === 'marker' && typeof ctx?.markerId === 'string') {
+        vscode.postMessage({
+          type: 'runCommand',
+          command: 'syn3.createSubgroup',
+          arg: ctx,
+        });
+        closeContextMenu();
+        return;
+      }
+      if (button.dataset.create === 'note') {
+        if (section === 'marker' && typeof ctx?.markerId === 'string') {
+          vscode.postMessage({
+            type: 'createNote',
+            markerId: ctx.markerId,
+            text: '',
+            focus: true,
+          });
+        } else if (section === 'note' && typeof ctx?.noteId === 'string') {
+          vscode.postMessage({
+            type: 'createNote',
+            parentNote: ctx.noteId,
+            text: '',
+            focus: true,
+          });
+        }
+        closeContextMenu();
+        return;
+      }
+    }
+
+    if (button.dataset.deleteAction) {
+      const ctx = openMenuState?.ctx;
+      const section = ctx && typeof ctx.webviewSection === 'string' ? ctx.webviewSection : '';
+      if (section === 'marker' && typeof ctx?.markerId === 'string') {
+        if (button.dataset.deleteAction === 'all') {
+          vscode.postMessage({ type: 'deleteMarkerTree', markerId: ctx.markerId });
+        } else {
+          vscode.postMessage({
+            type: 'runCommand',
+            command: 'syn3.deleteMarker',
+            arg: ctx,
+          });
+        }
+        closeContextMenu();
+        return;
+      }
+      if (section === 'note' && typeof ctx?.noteId === 'string') {
+        vscode.postMessage({
+          type: 'deleteNote',
+          noteId: ctx.noteId,
+          tree: button.dataset.deleteAction === 'all',
+        });
+        closeContextMenu();
+        return;
+      }
+    }
+
     if (button.dataset.menuAction === 'unlock') {
-      const markerId = openMenuState?.ctx && typeof openMenuState.ctx.markerId === 'string'
-        ? openMenuState.ctx.markerId
-        : undefined;
+      const ctx = openMenuState?.ctx;
+      if (ctx && ctx.webviewSection === 'note' && typeof ctx.noteId === 'string') {
+        vscode.postMessage({ type: 'toggleNoteLock', noteId: ctx.noteId });
+        ctx.locked = false;
+        renderContextMenu();
+        return;
+      }
+      const markerId = ctx && typeof ctx.markerId === 'string' ? ctx.markerId : undefined;
       if (markerId) {
         vscode.postMessage({ type: 'toggleLock', markerId });
-        if (openMenuState?.ctx) {
-          openMenuState.ctx.locked = false;
+        if (ctx) {
+          ctx.locked = false;
           renderContextMenu();
         }
       }
@@ -962,11 +1400,32 @@
     }
 
     if (button.dataset.command && source === 'context' && openMenuState?.ctx) {
+      const cmd = button.dataset.command;
+      const ctx = openMenuState.ctx;
+      if (cmd === 'syn3.moveNoteUp' || cmd === 'syn3.moveNoteDown') {
+        if (typeof ctx.noteId === 'string') {
+          vscode.postMessage({
+            type: 'moveNote',
+            id: ctx.noteId,
+            delta: cmd === 'syn3.moveNoteUp' ? -1 : 1,
+          });
+        }
+        closeContextMenu();
+        return;
+      }
+      if (cmd === 'syn3.unnestNote') {
+        if (typeof ctx.noteId === 'string') {
+          vscode.postMessage({ type: 'unnestNote', id: ctx.noteId });
+        }
+        closeContextMenu();
+        return;
+      }
       vscode.postMessage({
         type: 'runCommand',
-        command: button.dataset.command,
-        arg: openMenuState.ctx,
+        command: cmd,
+        arg: ctx,
       });
+      closeContextMenu();
     }
   }
 
@@ -1091,7 +1550,7 @@
   /** @param {string} name */
   function isCreatableProfileName(name) {
     const lower = name.toLocaleLowerCase();
-    if (lower === 'общий') {
+    if (lower === 'общий' || lower === 'general') {
       return false;
     }
     const rows = toolbarProfileList?.querySelectorAll('[data-profile-id]') || [];
@@ -1125,22 +1584,22 @@
       if (bound > 0) {
         const count = el('span', 'profile-bound-count');
         count.textContent = String(bound);
-        count.title = 'Привязано: ' + bound;
+        count.title = t('profileBound').replace('{n}', String(bound));
         row.append(count);
       }
       if (profile.id !== 'general') {
         const actions = el('span', 'profile-actions');
         const renameBtn = el('button', '');
         renameBtn.type = 'button';
-        renameBtn.title = 'Переименовать';
-        renameBtn.setAttribute('aria-label', 'Переименовать');
+        renameBtn.title = t('profileRename');
+        renameBtn.setAttribute('aria-label', t('profileRename'));
         renameBtn.setAttribute('data-profile-action', 'rename');
         renameBtn.setAttribute('data-profile-id', profile.id);
         renameBtn.textContent = '✎';
         const deleteBtn = el('button', '');
         deleteBtn.type = 'button';
-        deleteBtn.title = 'Удалить';
-        deleteBtn.setAttribute('aria-label', 'Удалить');
+        deleteBtn.title = t('profileDelete');
+        deleteBtn.setAttribute('aria-label', t('profileDelete'));
         deleteBtn.setAttribute('data-profile-action', 'delete');
         deleteBtn.setAttribute('data-profile-id', profile.id);
         deleteBtn.textContent = '×';
@@ -1178,7 +1637,7 @@
       group.items.length === 0 &&
       (group.children || []).length === 0 &&
       (group.classes || []).length === 0 &&
-      (group.notes || []).length === 0
+      (group.noteChildren || []).length === 0
     );
   }
 
@@ -1194,16 +1653,27 @@
   function isLocked(groupOrId) {
     if (typeof groupOrId === 'string') {
       const group = data?.groups?.find((item) => item.id === groupOrId);
-      return !!group?.locked;
+      if (group) {
+        return !!group.locked;
+      }
+      const note = data?.notes?.find((item) => item.id === groupOrId);
+      return !!note?.locked;
     }
     return !!groupOrId?.locked;
   }
 
-  /** Top-level groups that can actually fold on the active page. */
+  /** Top-level groups and foldable root notes that can actually fold. */
   function collapsibleTopGroups() {
-    return pageGroups().filter(
+    const groups = pageGroups().filter(
       (group) => !group.parent && !isEmptyGroup(group) && !isLocked(group),
     );
+    const notes = (data?.notes || []).filter(
+      (note) =>
+        note.page === activePage()?.id &&
+        !isLocked(note) &&
+        (note.children || []).length > 0,
+    );
+    return [...groups, ...notes];
   }
 
   function allTopCollapsed() {
@@ -1217,7 +1687,7 @@
     const mode = collapsed ? 'expand' : 'collapse';
     if (toolbarCollapse) {
       toolbarCollapse.disabled = groups.length === 0;
-      toolbarCollapse.title = collapsed ? 'Развернуть все группы' : 'Свернуть все группы';
+      toolbarCollapse.title = collapsed ? t('toolbarExpand') : t('toolbarCollapse');
       toolbarCollapse.setAttribute('aria-label', toolbarCollapse.title);
       toolbarCollapse.querySelectorAll('.tool-icon').forEach((img) => {
         img.hidden = img.getAttribute('data-mode') !== mode;
@@ -1493,18 +1963,30 @@
       root.append(el('div', 'error', data.error));
     }
     const groups = pageGroups();
-    if (groups.length === 0) {
+    const cards = rootCards();
+    if (cards.length === 0) {
       const emptyText =
         page?.kind === 'notes'
-          ? 'No groups yet. Create a marker, then add notes inside it.'
+          ? 'Пока пусто. Создай группу или заметку.'
           : 'No markers yet. Right-click a file in the Explorer → "Mark…", or drag files here onto a group.';
       root.append(el('div', 'empty', emptyText));
       return;
     }
 
     const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
-    for (const group of groups.filter((g) => !g.parent)) {
-      root.append(renderGroup(group, byId));
+    const noteMap = notesById();
+    for (const card of cards) {
+      if (card.kind === 'marker') {
+        const group = byId[card.id];
+        if (group) {
+          root.append(renderGroup(group, byId));
+        }
+      } else {
+        const note = noteMap[card.id];
+        if (note) {
+          root.append(renderNoteCard(note, noteMap));
+        }
+      }
     }
     updateActive();
     applyTabMarks();
@@ -1526,14 +2008,17 @@
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       return [];
     }
-    const ids = new Set(pageGroups().map((group) => group.id));
+    const ids = new Set([
+      ...pageGroups().map((group) => group.id),
+      ...pageNotes().map((note) => note.id),
+    ]);
     /** @type {Array<{ id: string, opening: boolean, height: number, marginTop: string, snapshot: HTMLElement | null }>} */
     const folds = [];
     for (const section of root.querySelectorAll('section.group')) {
       if (!(section instanceof HTMLElement)) {
         continue;
       }
-      const id = section.dataset.markerId || '';
+      const id = section.dataset.markerId || section.dataset.noteId || '';
       if (!ids.has(id)) {
         continue;
       }
@@ -1565,7 +2050,9 @@
     /** @type {Array<{ section: HTMLElement, opening: boolean, el: HTMLElement | null, height: number, marginTop: string, dots: HTMLElement | null, dotsHeight: number, dotsMargin: string }>} */
     const jobs = [];
     for (const fold of folds) {
-      const section = root.querySelector('section.group[data-marker-id="' + CSS.escape(fold.id) + '"]');
+      const section =
+        root.querySelector('section.group[data-marker-id="' + CSS.escape(fold.id) + '"]') ||
+        root.querySelector('section.group[data-note-id="' + CSS.escape(fold.id) + '"]');
       if (!(section instanceof HTMLElement)) {
         continue;
       }
@@ -1717,7 +2204,10 @@
       chip.type = 'button';
       chip.draggable = true;
       chip.dataset.pageId = page.id;
-      chip.title = page.kind === 'notes' ? page.name + ' (записи)' : page.name + ' (файлы)';
+      chip.title =
+        page.kind === 'notes'
+          ? page.name + ' (' + t('pageKindNotes') + ')'
+          : page.name + ' (' + t('pageKindFiles') + ')';
       chip.addEventListener('click', () => setActivePage(page.id));
       chip.addEventListener('dragstart', (event) => {
         pageDragId = page.id;
@@ -1777,7 +2267,8 @@
     group.items.sort((a, b) => Number(b.isDir) - Number(a.isDir));
     const childIds = group.children || [];
     const classList = group.classes || [];
-    const noteList = group.notes || [];
+    const noteChildIds = group.noteChildren || [];
+    const noteMap = notesById();
     const page = activePage();
     const isNotesPage = page?.kind === 'notes';
     const isEmpty = isEmptyGroup(group);
@@ -1813,7 +2304,7 @@
       locked,
     });
     const bar = el('span', 'bar');
-    bar.title = locked ? 'Group is locked' : 'Change color';
+    bar.title = locked ? t('groupLocked') : t('changeColor');
     bar.addEventListener('click', (event) => {
       event.stopPropagation();
       if (locked) {
@@ -1834,12 +2325,16 @@
     header.append(labelWrap);
     header.append(lockButton(group));
     header.append(
-      el('span', 'count', String(group.items.length + classList.length + noteList.length + childIds.length)),
+      el(
+        'span',
+        'count',
+        String(group.items.length + classList.length + noteChildIds.length + childIds.length),
+      ),
     );
     header.title =
       (group.alias ? group.alias + '\n' : '') +
       group.label +
-      (locked ? '\nLocked' : '\nDrag to reorder or nest');
+      (locked ? '\n' + t('locked') : '\n' + t('dragHint'));
     trackPress(header, (event) => {
       const target = event.target;
       if (target instanceof Element && target.closest('.lock-btn')) {
@@ -1861,21 +2356,21 @@
     bindGroupSection(section, header, group);
 
     if (isEmpty) {
-      if (isNotesPage && !collapsed && !locked) {
-        section.append(renderNoteComposer(group.id));
-      }
       return section;
     }
 
     if (collapsed) {
       const dots = el('div', 'dots');
-      if (isNotesPage) {
-        for (const note of noteList) {
-          const dot = el('span', 'dot note-dot');
-          dot.title = note.text;
-          dots.append(dot);
+      for (const noteId of noteChildIds) {
+        const note = noteMap[noteId];
+        if (!note) {
+          continue;
         }
-      } else {
+        const dot = el('span', 'dot note-dot');
+        dot.title = note.text || t('notePlaceholder');
+        dots.append(dot);
+      }
+      if (!isNotesPage) {
         for (const item of group.items) {
           const dot = el('span', 'dot' + (item.exists ? '' : ' missing'));
           bindItem(dot, item, group.id);
@@ -1892,15 +2387,7 @@
     }
 
     const children = el('div', 'children');
-    if (isNotesPage) {
-      if (noteList.length > 0) {
-        const block = el('div', 'node block block-notes');
-        for (const note of noteList) {
-          block.append(renderNote(note, group.id));
-        }
-        children.append(block);
-      }
-    } else {
+    if (!isNotesPage) {
       const dirs = group.items.filter((item) => item.isDir);
       const files = group.items.filter((item) => !item.isDir);
       for (const [kind, list] of [
@@ -1924,14 +2411,18 @@
         children.append(block);
       }
     }
-    for (const childId of childIds) {
-      const child = byId[childId];
-      if (child) {
-        children.append(renderGroup(child, byId));
+    for (const card of groupChildCards(group)) {
+      if (card.kind === 'marker') {
+        const child = byId[card.id];
+        if (child) {
+          children.append(renderGroup(child, byId));
+        }
+      } else {
+        const note = noteMap[card.id];
+        if (note) {
+          children.append(renderNoteCard(note, noteMap));
+        }
       }
-    }
-    if (isNotesPage && !locked) {
-      children.append(renderNoteComposer(group.id));
     }
     if (children.childElementCount > 0) {
       section.append(children);
@@ -1979,7 +2470,7 @@
     const locked = isLocked(group);
     const button = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
     button.type = 'button';
-    button.title = locked ? 'Unlock group' : 'Lock group';
+    button.title = locked ? t('unlockGroup') : t('lockGroup');
     button.setAttribute('aria-label', button.title);
     button.setAttribute('aria-pressed', locked ? 'true' : 'false');
     button.append(locked ? lockClosedIcon() : lockOpenIcon());
@@ -2020,90 +2511,307 @@
     return fragment;
   }
 
-  function renderNote(note, groupId) {
-    const locked = isLocked(groupId);
-    const node = el('div', 'note');
-    node.dataset.noteId = note.id;
-    setContext(node, {
+  /**
+   * Note card: root looks like a group; nested looks like a subgroup header with text field.
+   * @param {*} note
+   * @param {Record<string, *>} noteMap
+   */
+  function renderNoteCard(note, noteMap) {
+    const locked = isLocked(note);
+    const childIds = note.children || [];
+    const hasChildren = childIds.length > 0;
+    const nested = !!(note.markerId || note.parentNote);
+    const collapsed = hasChildren && isCollapsed(note.id);
+    const section = el(
+      'section',
+      'group note-card' +
+        (collapsed ? ' collapsed' : '') +
+        (locked ? ' locked' : '') +
+        (nested ? ' nested node' : '') +
+        (!hasChildren ? ' empty-group' : ''),
+    );
+    section.dataset.noteId = note.id;
+    section.dataset.depth = String(note.depth || 0);
+    if (note.color) {
+      section.style.setProperty('--group-color', note.color);
+    }
+
+    const header = el('div', 'group-header note-header');
+    header.draggable = !locked;
+    setMapContext(header, {
       webviewSection: 'note',
-      markerId: groupId,
       noteId: note.id,
+      markerId: note.markerId,
+      parentNote: note.parentNote,
+      depth: note.depth || 0,
       locked,
     });
-    const body = el('div', 'note-body');
-    body.append(linkify(note.text));
-    body.title = locked ? 'Group is locked' : 'Click to edit';
-    body.addEventListener('click', () => {
+    header.append(el('span', 'chevron', hasChildren ? '▾' : ''));
+    const bar = el('span', 'bar');
+    bar.title = locked ? t('noteLocked') : t('changeColor');
+    bar.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (locked) {
+        flashLock(note.id, header);
+        return;
+      }
+      openColorPicker(note.id, bar, section, 'note');
+    });
+    header.append(bar);
+    const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
+    input.rows = Math.min(6, Math.max(1, (note.text || '').split('\n').length || 1));
+    input.value = note.text || '';
+    input.placeholder = t('notePlaceholder');
+    input.readOnly = locked;
+    input.title = locked ? t('noteLocked') : '';
+    let lastSaved = note.text || '';
+    const save = () => {
       if (locked) {
         return;
       }
-      beginEditNote(node, note, groupId);
-    });
-    node.append(body);
-    return node;
-  }
-
-  function beginEditNote(node, note, groupId) {
-    if (isLocked(groupId)) {
-      return;
-    }
-    node.textContent = '';
-    const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
-    input.value = note.text;
-    input.rows = Math.min(6, Math.max(2, note.text.split('\n').length));
-    node.append(input);
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-    const finish = (save) => {
-      input.removeEventListener('keydown', onKey);
-      input.removeEventListener('blur', onBlur);
-      if (save) {
-        vscode.postMessage({ type: 'updateNote', noteId: note.id, text: input.value });
-      } else {
-        const parent = node.parentElement;
-        node.replaceWith(renderNote(note, groupId));
-        void parent;
+      const next = input.value;
+      if (next === lastSaved) {
+        return;
       }
+      lastSaved = next;
+      vscode.postMessage({ type: 'updateNote', noteId: note.id, text: next });
     };
-    const onKey = (event) => {
+    input.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        finish(false);
+        input.value = lastSaved;
+        input.blur();
       }
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        finish(true);
-      }
-    };
-    const onBlur = () => finish(true);
-    input.addEventListener('keydown', onKey);
-    input.addEventListener('blur', onBlur);
-  }
-
-  function renderNoteComposer(groupId) {
-    const wrap = el('div', 'note-composer');
-    const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
-    input.rows = 2;
-    input.placeholder = 'Новая запись… Enter — сохранить';
-    const submit = () => {
-      if (isLocked(groupId)) {
-        return;
-      }
-      const text = input.value.trim();
-      if (!text) {
-        return;
-      }
-      vscode.postMessage({ type: 'createNote', markerId: groupId, text });
-      input.value = '';
-    };
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        submit();
+        input.blur();
       }
     });
-    wrap.append(input);
-    return wrap;
+    input.addEventListener('blur', save);
+    input.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (locked) {
+        flashLock(note.id, header);
+      }
+    });
+    input.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+      if (locked) {
+        // Keep focus off a locked field so the click feels like a group header tap.
+        event.preventDefault();
+      }
+    });
+    const field = el('span', 'group-text note-field');
+    field.append(input);
+    header.append(field);
+    header.append(noteLockButton(note));
+    if (hasChildren) {
+      header.append(el('span', 'count', String(childIds.length)));
+    }
+    header.title = locked ? t('locked') : t('dragHint');
+    trackPress(header, (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.lock-btn')) {
+        return;
+      }
+      if (locked) {
+        flashLock(note.id, header);
+        return;
+      }
+      if (target instanceof Element && (target.closest('textarea') || target.closest('.bar'))) {
+        return;
+      }
+      if (!hasChildren) {
+        return;
+      }
+      toggleCollapsed(note.id);
+    });
+    section.append(header);
+    bindNoteSection(section, header, note);
+
+    if (!hasChildren || collapsed) {
+      if (collapsed && hasChildren) {
+        const dots = el('div', 'dots');
+        for (const childId of childIds) {
+          const child = noteMap[childId];
+          const dot = el('span', 'dot note-dot');
+          dot.title = child?.text || t('notePlaceholder');
+          dots.append(dot);
+        }
+        section.append(dots);
+      }
+      return section;
+    }
+
+    const children = el('div', 'children');
+    const ordered = childIds
+      .map((id) => noteMap[id])
+      .filter(Boolean)
+      .sort((a, b) => (a.order || 0) - (b.order || 0) || a.id.localeCompare(b.id));
+    for (const child of ordered) {
+      children.append(renderNoteCard(child, noteMap));
+    }
+    section.append(children);
+    return section;
+  }
+
+  function noteLockButton(note) {
+    const locked = isLocked(note);
+    const button = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    button.type = 'button';
+    button.title = locked ? t('unlockNote') : t('lockNote');
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', locked ? 'true' : 'false');
+    button.append(locked ? lockClosedIcon() : lockOpenIcon());
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({ type: 'toggleNoteLock', noteId: note.id });
+    });
+    button.addEventListener('dragstart', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    return button;
+  }
+
+  function bindNoteSection(section, header, note) {
+    header.addEventListener('dragstart', (event) => {
+      event.stopPropagation();
+      if (isLocked(note)) {
+        event.preventDefault();
+        return;
+      }
+      beginDrag(
+        event,
+        {
+          kind: 'note',
+          id: note.id,
+          depth: note.depth || 0,
+          subtreeHeight: note.subtreeHeight || 0,
+          label: note.text || t('noteFallback'),
+        },
+        'move',
+        note.text || t('noteFallback'),
+      );
+      section.classList.add('dragging');
+    });
+    header.addEventListener('dragend', () => {
+      section.classList.remove('dragging');
+      endDrag();
+    });
+
+    section.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const payload = readPayload(event);
+      const decision = decideNoteDrop(event, header, note, payload);
+      applyNoteDecision(event, section, header, note, decision);
+    });
+
+    section.addEventListener('drop', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const payload = readPayload(event);
+      const decision = decideNoteDrop(event, header, note, payload);
+      clearDropHighlights();
+      hideDropHint();
+      document.body.classList.remove('is-dragging');
+      if (!decision || decision.blocked) {
+        return;
+      }
+      if (decision.action === 'place') {
+        if (decision.dragKind === 'note') {
+          vscode.postMessage({
+            type: 'placeNote',
+            id: decision.id,
+            targetKind: 'note',
+            targetId: note.id,
+            position: decision.position,
+          });
+        } else {
+          vscode.postMessage({
+            type: 'placeMarkerAtNote',
+            id: decision.id,
+            targetNoteId: note.id,
+            position: decision.position,
+          });
+        }
+        return;
+      }
+      if (decision.action === 'nest' && decision.dragKind === 'note') {
+        vscode.postMessage({ type: 'nestNote', id: decision.id, noteId: note.id });
+      }
+    });
+  }
+
+  /**
+   * @param {DragEvent} event
+   * @param {HTMLElement} header
+   * @param {*} note
+   * @param {*} payload
+   */
+  function decideNoteDrop(event, header, note, payload) {
+    if (!payload) {
+      return null;
+    }
+    if (payload.kind === 'note') {
+      if (payload.id === note.id || isLocked(note)) {
+        return { blocked: true };
+      }
+      const rect = header.getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const band = rect.height / 3;
+      if (y < band) {
+        return { action: 'place', id: payload.id, position: 'before', dragKind: 'note' };
+      }
+      if (y > rect.height - band) {
+        return { action: 'place', id: payload.id, position: 'after', dragKind: 'note' };
+      }
+      const nextDepth = (note.depth || 0) + 1 + (payload.subtreeHeight || 0);
+      if (nextDepth > MAX_DEPTH) {
+        return { blocked: true, reason: 'depth' };
+      }
+      return { action: 'nest', id: payload.id, dragKind: 'note' };
+    }
+    if (payload.kind === 'marker') {
+      // Markers may sit beside a note at the same scope, not inside it.
+      if (note.parentNote || isLocked(note)) {
+        return { blocked: true };
+      }
+      const rect = header.getBoundingClientRect();
+      const before = event.clientY < rect.top + rect.height / 2;
+      return {
+        action: 'place',
+        id: payload.id,
+        position: before ? 'before' : 'after',
+        dragKind: 'marker',
+      };
+    }
+    return { blocked: true };
+  }
+
+  function applyNoteDecision(event, section, header, note, decision) {
+    clearDropHighlights();
+    if (!decision) {
+      return;
+    }
+    if (decision.blocked) {
+      section.classList.add('drop-blocked');
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'none';
+      }
+      return;
+    }
+    if (decision.action === 'place') {
+      header.classList.add(decision.position === 'before' ? 'drop-before' : 'drop-after');
+      section.classList.add('drop-target');
+    } else if (decision.action === 'nest') {
+      section.classList.add('drop-into');
+      header.classList.add('drop-into');
+    }
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
   }
 
   function renderItem(item, groupId) {
@@ -2463,16 +3171,30 @@
         return;
       }
       if (decision.action === 'place') {
-        vscode.postMessage({
-          type: 'placeMarker',
-          id: decision.id,
-          target: group.id,
-          position: decision.position,
-        });
+        if (decision.dragKind === 'note') {
+          vscode.postMessage({
+            type: 'placeNote',
+            id: decision.id,
+            targetKind: 'marker',
+            targetId: group.id,
+            position: decision.position,
+          });
+        } else {
+          vscode.postMessage({
+            type: 'placeMarker',
+            id: decision.id,
+            target: group.id,
+            position: decision.position,
+          });
+        }
         return;
       }
       if (decision.action === 'nest') {
-        vscode.postMessage({ type: 'nestMarker', id: decision.id, parent: group.id });
+        if (decision.dragKind === 'note') {
+          vscode.postMessage({ type: 'nestNote', id: decision.id, markerId: group.id });
+        } else {
+          vscode.postMessage({ type: 'nestMarker', id: decision.id, parent: group.id });
+        }
         return;
       }
       if (decision.action === 'item') {
@@ -2482,10 +3204,54 @@
   }
 
   /**
-   * @returns {{ action: string, mode: string, hint: string, blocked?: boolean, id?: string, position?: string } | null}
+   * @returns {{ action: string, mode: string, hint: string, blocked?: boolean, id?: string, position?: string, dragKind?: string } | null}
    */
   function decideDrop(event, header, group, payload) {
     const notesPage = activePage()?.kind === 'notes';
+    if (payload && payload.kind === 'note') {
+      if (isLocked(group)) {
+        return {
+          action: 'nest',
+          mode: 'blocked',
+          hint: 'Group is locked',
+          blocked: true,
+          id: payload.id,
+          dragKind: 'note',
+        };
+      }
+      const overHeader = header.contains(/** @type {Node} */ (event.target)) || event.target === header;
+      if (overHeader) {
+        const rect = header.getBoundingClientRect();
+        const y = (event.clientY - rect.top) / Math.max(rect.height, 1);
+        if (y < 0.25) {
+          return {
+            action: 'place',
+            mode: 'before',
+            hint: 'Place before "' + group.label + '"',
+            id: payload.id,
+            position: 'before',
+            dragKind: 'note',
+          };
+        }
+        if (y > 0.75) {
+          return {
+            action: 'place',
+            mode: 'after',
+            hint: 'Place after "' + group.label + '"',
+            id: payload.id,
+            position: 'after',
+            dragKind: 'note',
+          };
+        }
+      }
+      return {
+        action: 'nest',
+        mode: 'into',
+        hint: 'Nest into "' + group.label + '"',
+        id: payload.id,
+        dragKind: 'note',
+      };
+    }
     if (payload && payload.kind === 'marker') {
       if (payload.id === group.id) {
         return null;
@@ -2915,7 +3681,7 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ markerId: string, section: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note', id: string, section: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
@@ -2923,18 +3689,28 @@
   });
   colorInput.addEventListener('change', () => {
     if (colorTarget) {
-      vscode.postMessage({ type: 'setColor', markerId: colorTarget.markerId, color: colorInput.value });
+      if (colorTarget.kind === 'note') {
+        vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
+      } else {
+        vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: colorInput.value });
+      }
     }
     colorTarget = null;
   });
 
-  /** Opens the system color picker; must be called from a user gesture. */
-  function openColorPicker(markerId, bar, section) {
+  /**
+   * Opens the system color picker; must be called from a user gesture.
+   * @param {string} id
+   * @param {HTMLElement} bar
+   * @param {HTMLElement} section
+   * @param {'marker' | 'note'} [kind]
+   */
+  function openColorPicker(id, bar, section, kind = 'marker') {
     const rect = bar.getBoundingClientRect();
     colorInput.style.left = rect.left + 'px';
     colorInput.style.top = rect.bottom + 'px';
     colorInput.value = toHex(getComputedStyle(bar).backgroundColor) || '#8b8d98';
-    colorTarget = { markerId, section };
+    colorTarget = { kind, id, section };
     if (typeof colorInput.showPicker === 'function') {
       try {
         colorInput.showPicker();

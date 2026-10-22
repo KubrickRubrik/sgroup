@@ -15,6 +15,7 @@ import {
   take,
   type PageHistoryBook,
 } from './history';
+import { normalizeLocale, Syn3Locale } from './i18n';
 import { normalizeHex } from './palette';
 
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
@@ -131,6 +132,8 @@ export interface Appearance {
   openFileAnimate: boolean;
   /** Blink cycle length in seconds, 0–3. */
   openFileDuration: number;
+  /** Syn3 UI language for menus and settings of this profile. */
+  language: Syn3Locale;
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -153,6 +156,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   openFileMark: true,
   openFileAnimate: true,
   openFileDuration: 1,
+  language: 'ru',
 };
 
 const FONT_SCALE_MIN = 0.6;
@@ -221,6 +225,7 @@ export function normalizeAppearance(raw: unknown): Appearance {
     openFileMark: boolOr(source.openFileMark, DEFAULT_APPEARANCE.openFileMark),
     openFileAnimate: boolOr(source.openFileAnimate, DEFAULT_APPEARANCE.openFileAnimate),
     openFileDuration: snapOpenFileDuration(numOr(source.openFileDuration, DEFAULT_APPEARANCE.openFileDuration)),
+    language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
   };
 }
 
@@ -302,12 +307,36 @@ export interface PageDef {
   collapsed: SurfaceCollapsed;
 }
 
-/** Free-text note attached to a group on a notes page. */
+/** Default theme color for a root note card (same gradient as a group). */
+export const NOTE_ROOT_COLOR = 'syn3.slate';
+
+/**
+ * Free-text note card. Exactly one home: page (root), markerId (inside a group),
+ * or parentNote (inside another note).
+ */
 export interface NoteDef {
-  markerId: string;
+  /** Root card on a page. */
+  page?: string;
+  /** Inside a group. */
+  markerId?: string;
+  /** Inside another note. */
+  parentNote?: string;
   text: string;
   order: number;
+  /** Theme color id (`syn3.slate`, …) or `#rrggbb`. Absent → inherit from parent/group. */
+  color?: string;
+  /** When true, map edits to this note are blocked. Absent means open. */
+  locked?: true;
 }
+
+/** Sibling in a shared order list of groups and notes. */
+export type SiblingRef = { kind: 'marker'; id: string } | { kind: 'note'; id: string };
+
+/** Where a note lives — exactly one field. */
+export type NoteHome =
+  | { page: string; markerId?: undefined; parentNote?: undefined }
+  | { markerId: string; page?: undefined; parentNote?: undefined }
+  | { parentNote: string; page?: undefined; markerId?: undefined };
 
 export function defaultPage(name = 'Карта'): PageDef {
   return {
@@ -734,16 +763,16 @@ export class MarkerStore implements vscode.Disposable {
     });
   }
 
-  /** Empty, «Общий», and duplicate names (case-insensitive) are rejected. */
+  /** Empty, reserved general names, and duplicate names (case-insensitive) are rejected. */
   isValidProfileName(name: string, excludeId?: string): boolean {
     const trimmed = name.trim();
     if (!trimmed) {
       return false;
     }
-    if (trimmed.toLocaleLowerCase() === GENERAL_PROFILE_NAME.toLocaleLowerCase()) {
+    const lower = trimmed.toLocaleLowerCase();
+    if (lower === GENERAL_PROFILE_NAME.toLocaleLowerCase() || lower === 'general') {
       return false;
     }
-    const lower = trimmed.toLocaleLowerCase();
     return !this.profilesData.profiles.some(
       (p) => p.id !== excludeId && p.name.toLocaleLowerCase() === lower,
     );
@@ -857,14 +886,121 @@ export class MarkerStore implements vscode.Disposable {
     );
   }
 
+  /** Direct child notes of a group (not nested under another note). */
   notesOf(markerId: string): Array<[string, NoteDef]> {
     return Object.entries(this.data.notes)
-      .filter(([, def]) => def.markerId === markerId)
+      .filter(([, def]) => def.markerId === markerId && !def.parentNote && !def.page)
+      .sort((a, b) => a[1].order - b[1].order || a[0].localeCompare(b[0]));
+  }
+
+  /** Direct child notes of a note. */
+  noteChildren(parentNoteId: string): Array<[string, NoteDef]> {
+    return Object.entries(this.data.notes)
+      .filter(([, def]) => def.parentNote === parentNoteId)
+      .sort((a, b) => a[1].order - b[1].order || a[0].localeCompare(b[0]));
+  }
+
+  /** Root notes on a page. */
+  rootNotes(pageId: string): Array<[string, NoteDef]> {
+    return Object.entries(this.data.notes)
+      .filter(([, def]) => def.page === pageId && !def.markerId && !def.parentNote)
       .sort((a, b) => a[1].order - b[1].order || a[0].localeCompare(b[0]));
   }
 
   note(id: string): NoteDef | undefined {
     return this.data.notes[id];
+  }
+
+  /** Page id of a note via its home (page, group, or ancestor note). */
+  pageOfNote(noteId: string): string | undefined {
+    let current: string | undefined = noteId;
+    const seen = new Set<string>();
+    while (current && this.data.notes[current] && !seen.has(current)) {
+      seen.add(current);
+      const def: NoteDef = this.data.notes[current];
+      if (def.page) {
+        return def.page;
+      }
+      if (def.markerId) {
+        return this.pageOf(def.markerId);
+      }
+      current = def.parentNote;
+    }
+    return undefined;
+  }
+
+  /** Depth of a note counted only along `parentNote` (0 at page/group root). */
+  noteDepthOf(id: string): number {
+    let depth = 0;
+    let current = this.data.notes[id]?.parentNote;
+    const seen = new Set<string>();
+    while (current && this.data.notes[current] && !seen.has(current)) {
+      seen.add(current);
+      depth++;
+      current = this.data.notes[current].parentNote;
+    }
+    return depth;
+  }
+
+  /** Height of the note subtree rooted at `id` (0 if no child notes). */
+  noteSubtreeHeight(id: string): number {
+    const kids = this.noteChildren(id);
+    if (kids.length === 0) {
+      return 0;
+    }
+    return 1 + Math.max(...kids.map(([childId]) => this.noteSubtreeHeight(childId)));
+  }
+
+  /** All descendant note ids including `noteId` itself when `includeSelf`. */
+  descendantNotes(noteId: string, includeSelf = true): string[] {
+    const result: string[] = includeSelf ? [noteId] : [];
+    const visit = (id: string) => {
+      for (const [childId] of this.noteChildren(id)) {
+        result.push(childId);
+        visit(childId);
+      }
+    };
+    visit(noteId);
+    return result;
+  }
+
+  /** True when the note itself is locked on the map. */
+  isNoteLocked(noteId: string): boolean {
+    return this.data.notes[noteId]?.locked === true;
+  }
+
+  /**
+   * Mixed siblings that share one order space.
+   * Pass `pageId` for page root, `markerId` for inside a group, `noteId` for inside a note.
+   */
+  mixedSiblings(scope: {
+    pageId?: string;
+    markerId?: string;
+    noteId?: string;
+  }): SiblingRef[] {
+    const items: Array<SiblingRef & { order: number; tie: string }> = [];
+    if (scope.noteId) {
+      for (const [id, def] of this.noteChildren(scope.noteId)) {
+        items.push({ kind: 'note', id, order: def.order, tie: id });
+      }
+    } else if (scope.markerId) {
+      for (const [id, def] of this.children(scope.markerId)) {
+        items.push({ kind: 'marker', id, order: def.order, tie: id });
+      }
+      for (const [id, def] of this.notesOf(scope.markerId)) {
+        items.push({ kind: 'note', id, order: def.order, tie: id });
+      }
+    } else if (scope.pageId) {
+      for (const [id, def] of this.children(undefined, scope.pageId)) {
+        items.push({ kind: 'marker', id, order: def.order, tie: id });
+      }
+      for (const [id, def] of this.rootNotes(scope.pageId)) {
+        items.push({ kind: 'note', id, order: def.order, tie: id });
+      }
+    }
+    return items
+      .sort((a, b) => a.order - b.order || a.tie.localeCompare(b.tie))
+      .map(({ kind, id }) => ({ kind, id }) as SiblingRef);
   }
 
   depthOf(id: string): number {
@@ -911,6 +1047,33 @@ export class MarkerStore implements vscode.Disposable {
     const height = this.subtreeHeight(id);
     if (parentDepth + 1 + height > MAX_MARKER_DEPTH) {
       return { ok: false, reason: `Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.` };
+    }
+    return { ok: true };
+  }
+
+  canNestNote(id: string, parentNoteId: string): NestResult {
+    if (!this.data.notes[id] || !this.data.notes[parentNoteId]) {
+      return { ok: false, reason: 'Note not found.' };
+    }
+    if (id === parentNoteId) {
+      return { ok: false, reason: 'A note cannot be nested inside itself.' };
+    }
+    let ancestor: string | undefined = parentNoteId;
+    const seen = new Set<string>();
+    while (ancestor) {
+      if (ancestor === id) {
+        return { ok: false, reason: 'A note cannot be nested inside its own child.' };
+      }
+      if (seen.has(ancestor)) {
+        break;
+      }
+      seen.add(ancestor);
+      ancestor = this.data.notes[ancestor]?.parentNote;
+    }
+    const parentDepth = this.noteDepthOf(parentNoteId);
+    const height = this.noteSubtreeHeight(id);
+    if (parentDepth + 1 + height > MAX_MARKER_DEPTH) {
+      return { ok: false, reason: `Maximum nesting depth is ${MAX_MARKER_DEPTH} notes.` };
     }
     return { ok: true };
   }
@@ -1018,8 +1181,10 @@ export class MarkerStore implements vscode.Disposable {
           ? def.page
           : this.defaultFilesPageId()
         : undefined;
-    const siblings = this.children(parent, page);
-    const maxOrder = Math.max(0, ...siblings.map(([, m]) => m.order));
+    const mixed = this.mixedSiblings(
+      parent !== undefined ? { markerId: parent } : { pageId: page },
+    );
+    const maxOrder = this.maxSiblingOrder(mixed);
     let columns = normalizeColumns(def.columns);
     if (columns === undefined && parent !== undefined) {
       columns = normalizeColumns(this.data.markers[parent].columns);
@@ -1060,14 +1225,14 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Toggle lock on `id` and cascade to children whose lock matched the parent
-   * before this click. Mismatched children (and their subtrees) stay as-is.
+   * Toggle lock on a group and cascade to child groups and direct notes whose
+   * lock matched before this click. Mismatched children stay as-is.
    */
   async toggleLock(id: string): Promise<void> {
     if (!this.data.markers[id]) {
       return;
     }
-    const apply = (markerId: string) => {
+    const applyMarker = (markerId: string) => {
       const def = this.data.markers[markerId];
       if (!def) {
         return;
@@ -1080,14 +1245,33 @@ export class MarkerStore implements vscode.Disposable {
       }
       for (const [childId, child] of this.children(markerId)) {
         if ((child.locked === true) === wasLocked) {
-          apply(childId);
+          applyMarker(childId);
+        }
+      }
+      for (const [noteId, note] of this.notesOf(markerId)) {
+        if ((note.locked === true) === wasLocked) {
+          this.applyNoteLock(noteId, wasLocked);
         }
       }
     };
-    apply(id);
+    applyMarker(id);
     await this.commit();
   }
 
+  /**
+   * Toggle lock on a note and cascade to child notes whose lock matched before
+   * this click.
+   */
+  async toggleNoteLock(id: string): Promise<void> {
+    if (!this.data.notes[id]) {
+      return;
+    }
+    const wasLocked = this.data.notes[id].locked === true;
+    this.applyNoteLock(id, wasLocked);
+    await this.commit();
+  }
+
+  /** Delete a group; lift subgroups and notes one level up. */
   async deleteMarker(id: string): Promise<void> {
     const def = this.data.markers[id];
     if (!def) {
@@ -1095,15 +1279,22 @@ export class MarkerStore implements vscode.Disposable {
     }
     const grandParent = def.parent;
     const page = grandParent === undefined ? this.pageOf(id) : undefined;
-    const children = this.children(id);
-    const siblings = this.children(grandParent, page)
-      .map(([markerId]) => markerId)
-      .filter((markerId) => markerId !== id);
-    const insertAt = siblings.length;
-    // Lift children to the deleted marker's parent, keeping relative order.
-    const lifted = children.map(([childId]) => childId);
-    const ordered = [...siblings.slice(0, insertAt), ...lifted, ...siblings.slice(insertAt)];
-    for (const childId of lifted) {
+    const scope =
+      grandParent !== undefined
+        ? { markerId: grandParent }
+        : page
+          ? { pageId: page }
+          : undefined;
+    const siblings = scope
+      ? this.mixedSiblings(scope).filter((s) => !(s.kind === 'marker' && s.id === id))
+      : [];
+    const liftedMarkers = this.children(id).map(([childId]) => childId);
+    const liftedNotes = this.notesOf(id).map(([noteId]) => noteId);
+    const lifted: SiblingRef[] = [
+      ...liftedMarkers.map((childId) => ({ kind: 'marker' as const, id: childId })),
+      ...liftedNotes.map((noteId) => ({ kind: 'note' as const, id: noteId })),
+    ];
+    for (const childId of liftedMarkers) {
       this.data.markers[childId].parent = grandParent;
       if (grandParent === undefined && page) {
         this.data.markers[childId].page = page;
@@ -1111,16 +1302,41 @@ export class MarkerStore implements vscode.Disposable {
         delete this.data.markers[childId].page;
       }
     }
+    for (const noteId of liftedNotes) {
+      this.setNoteHome(noteId, grandParent ? { markerId: grandParent } : page ? { page } : { page: this.defaultFilesPageId() });
+    }
     delete this.data.markers[id];
-    this.removeNotesOfMarker(id);
     this.forgetCollapsed(id);
-    this.applyOrder(ordered);
-    for (const [relPath, ids] of Object.entries(this.data.items)) {
-      this.setItem(relPath, ids.filter((x) => x !== id));
+    this.unlinkMarkerAssignments(id);
+    const ordered = [...siblings, ...lifted];
+    this.applySiblingOrder(ordered);
+    await this.commit();
+  }
+
+  /** Delete a group and every nested group / note under it. */
+  async deleteMarkerTree(id: string): Promise<void> {
+    if (!this.data.markers[id]) {
+      return;
     }
-    for (const [classId, ids] of Object.entries(this.data.classItems)) {
-      this.setClassItem(classId, ids.filter((x) => x !== id));
+    const def = this.data.markers[id];
+    const grandParent = def.parent;
+    const page = grandParent === undefined ? this.pageOf(id) : undefined;
+    const scope =
+      grandParent !== undefined
+        ? { markerId: grandParent }
+        : page
+          ? { pageId: page }
+          : undefined;
+    const siblings = scope
+      ? this.mixedSiblings(scope).filter((s) => !(s.kind === 'marker' && s.id === id))
+      : [];
+    for (const markerId of this.descendantMarkers(id, true)) {
+      for (const [noteId] of this.notesOf(markerId)) {
+        this.purgeNoteTree(noteId);
+      }
+      this.purgeMarker(markerId);
     }
+    this.applySiblingOrder(siblings);
     await this.commit();
   }
 
@@ -1130,14 +1346,23 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     const page = def.parent === undefined ? this.pageOf(id) : undefined;
-    const ordered = this.children(def.parent, page).map(([markerId]) => markerId);
-    const index = ordered.indexOf(id);
+    const scope =
+      def.parent !== undefined
+        ? { markerId: def.parent }
+        : page
+          ? { pageId: page }
+          : undefined;
+    if (!scope) {
+      return;
+    }
+    const ordered = this.mixedSiblings(scope);
+    const index = ordered.findIndex((s) => s.kind === 'marker' && s.id === id);
     const target = index + delta;
     if (index < 0 || target < 0 || target >= ordered.length) {
       return;
     }
     [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
-    this.applyOrder(ordered);
+    this.applySiblingOrder(ordered);
     await this.commit();
   }
 
@@ -1159,28 +1384,98 @@ export class MarkerStore implements vscode.Disposable {
         throw new Error(`Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
       }
     }
+    const oldScope =
+      oldParent !== undefined
+        ? { markerId: oldParent }
+        : oldPage
+          ? { pageId: oldPage }
+          : undefined;
     this.data.markers[id].parent = parent;
     if (parent === undefined) {
       this.data.markers[id].page = targetPage;
     } else {
       delete this.data.markers[id].page;
     }
-    const ordered = this.children(parent, parent === undefined ? targetPage : undefined)
-      .map(([markerId]) => markerId)
-      .filter((markerId) => markerId !== id);
-    let index = ordered.indexOf(targetId);
+    const newScope =
+      parent !== undefined
+        ? { markerId: parent }
+        : targetPage
+          ? { pageId: targetPage }
+          : undefined;
+    if (!newScope) {
+      return;
+    }
+    const ordered = this.mixedSiblings(newScope).filter((s) => !(s.kind === 'marker' && s.id === id));
+    let index = ordered.findIndex((s) => s.kind === 'marker' && s.id === targetId);
     if (index < 0) {
       index = ordered.length;
     } else if (position === 'after') {
       index += 1;
     }
-    ordered.splice(index, 0, id);
-    this.applyOrder(ordered);
-    if (oldParent !== parent || oldPage !== targetPage) {
-      this.applyOrder(
-        this.children(oldParent, oldParent === undefined ? oldPage : undefined).map(
-          ([markerId]) => markerId,
-        ),
+    ordered.splice(index, 0, { kind: 'marker', id });
+    this.applySiblingOrder(ordered);
+    if (oldScope && (oldParent !== parent || oldPage !== targetPage)) {
+      this.applySiblingOrder(
+        this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'marker' && s.id === id)),
+      );
+    }
+    await this.commit();
+  }
+
+  /** Place a marker before/after a note that shares the same parent scope. */
+  async placeMarkerAtNote(
+    id: string,
+    targetNoteId: string,
+    position: 'before' | 'after',
+  ): Promise<void> {
+    const note = this.data.notes[targetNoteId];
+    if (!this.data.markers[id] || !note || note.parentNote) {
+      return;
+    }
+    const parent = note.markerId;
+    const targetPage = note.page ?? (parent ? this.pageOf(parent) : undefined);
+    const oldParent = this.data.markers[id].parent;
+    const oldPage = this.pageOf(id);
+    if (parent) {
+      const check = this.canNest(id, parent);
+      if (!check.ok) {
+        throw new Error(check.reason);
+      }
+    } else if (this.subtreeHeight(id) > MAX_MARKER_DEPTH) {
+      throw new Error(`Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+    }
+    const oldScope =
+      oldParent !== undefined
+        ? { markerId: oldParent }
+        : oldPage
+          ? { pageId: oldPage }
+          : undefined;
+    this.data.markers[id].parent = parent;
+    if (parent === undefined) {
+      this.data.markers[id].page = targetPage;
+    } else {
+      delete this.data.markers[id].page;
+    }
+    const newScope = parent
+      ? { markerId: parent }
+      : targetPage
+        ? { pageId: targetPage }
+        : undefined;
+    if (!newScope) {
+      return;
+    }
+    const ordered = this.mixedSiblings(newScope).filter((s) => !(s.kind === 'marker' && s.id === id));
+    let index = ordered.findIndex((s) => s.kind === 'note' && s.id === targetNoteId);
+    if (index < 0) {
+      index = ordered.length;
+    } else if (position === 'after') {
+      index += 1;
+    }
+    ordered.splice(index, 0, { kind: 'marker', id });
+    this.applySiblingOrder(ordered);
+    if (oldScope && (oldParent !== parent || oldPage !== targetPage)) {
+      this.applySiblingOrder(
+        this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'marker' && s.id === id)),
       );
     }
     await this.commit();
@@ -1193,18 +1488,22 @@ export class MarkerStore implements vscode.Disposable {
     }
     const oldParent = this.data.markers[id].parent;
     const oldPage = this.pageOf(id);
+    const oldScope =
+      oldParent !== undefined
+        ? { markerId: oldParent }
+        : oldPage
+          ? { pageId: oldPage }
+          : undefined;
     this.data.markers[id].parent = parentId;
     delete this.data.markers[id].page;
-    const ordered = this.children(parentId)
-      .map(([markerId]) => markerId)
-      .filter((markerId) => markerId !== id);
-    ordered.push(id);
-    this.applyOrder(ordered);
-    if (oldParent !== parentId) {
-      this.applyOrder(
-        this.children(oldParent, oldParent === undefined ? oldPage : undefined).map(
-          ([markerId]) => markerId,
-        ),
+    const ordered = this.mixedSiblings({ markerId: parentId }).filter(
+      (s) => !(s.kind === 'marker' && s.id === id),
+    );
+    ordered.push({ kind: 'marker', id });
+    this.applySiblingOrder(ordered);
+    if (oldScope && oldParent !== parentId) {
+      this.applySiblingOrder(
+        this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'marker' && s.id === id)),
       );
     }
     await this.commit();
@@ -1218,10 +1517,17 @@ export class MarkerStore implements vscode.Disposable {
     const parentId = def.parent;
     const grandParent = this.data.markers[parentId]?.parent;
     const page = this.pageOf(parentId);
-    const siblings = this.children(grandParent, grandParent === undefined ? page : undefined)
-      .map(([markerId]) => markerId)
-      .filter((markerId) => markerId !== id);
-    const parentIndex = siblings.indexOf(parentId);
+    const newScope =
+      grandParent !== undefined
+        ? { markerId: grandParent }
+        : page
+          ? { pageId: page }
+          : undefined;
+    if (!newScope) {
+      return;
+    }
+    const siblings = this.mixedSiblings(newScope).filter((s) => !(s.kind === 'marker' && s.id === id));
+    const parentIndex = siblings.findIndex((s) => s.kind === 'marker' && s.id === parentId);
     const insertAt = parentIndex < 0 ? siblings.length : parentIndex + 1;
     this.data.markers[id].parent = grandParent;
     if (grandParent === undefined && page) {
@@ -1229,9 +1535,9 @@ export class MarkerStore implements vscode.Disposable {
     } else {
       delete this.data.markers[id].page;
     }
-    siblings.splice(insertAt, 0, id);
-    this.applyOrder(siblings);
-    this.applyOrder(this.children(parentId).map(([markerId]) => markerId));
+    siblings.splice(insertAt, 0, { kind: 'marker', id });
+    this.applySiblingOrder(siblings);
+    this.applySiblingOrder(this.mixedSiblings({ markerId: parentId }));
     await this.commit();
   }
 
@@ -1283,7 +1589,13 @@ export class MarkerStore implements vscode.Disposable {
         this.descendantMarkers(rootId, true),
       );
       for (const markerId of toRemove) {
+        for (const [noteId] of this.notesOf(markerId)) {
+          this.purgeNoteTree(noteId);
+        }
         this.purgeMarker(markerId);
+      }
+      for (const [noteId] of this.rootNotes(id)) {
+        this.purgeNoteTree(noteId);
       }
       delete this.data.pages[id];
       this.applyPageOrder(this.pages().map(([pageId]) => pageId));
@@ -1344,9 +1656,9 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     const next: Record<string, boolean> = {};
-    for (const [markerId, on] of Object.entries(collapsed)) {
-      if (on && this.data.markers[markerId]) {
-        next[markerId] = true;
+    for (const [id, on] of Object.entries(collapsed)) {
+      if (on && (this.data.markers[id] || this.data.notes[id])) {
+        next[id] = true;
       }
     }
     page.collapsed[surface] = next;
@@ -1453,22 +1765,42 @@ export class MarkerStore implements vscode.Disposable {
 
   // ---- notes ----
 
-  async createNote(markerId: string, text: string): Promise<string | undefined> {
-    if (!this.data.markers[markerId]) {
-      return undefined;
-    }
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-    const pageId = this.pageOf(markerId);
-    if (!pageId || this.data.pages[pageId]?.kind !== 'notes') {
+  /**
+   * Create a note card. Exactly one of page / markerId / parentNote.
+   * Empty text is allowed (placeholder shown in the UI).
+   */
+  async createNote(home: NoteHome, text = ''): Promise<string | undefined> {
+    if (home.parentNote) {
+      if (!this.data.notes[home.parentNote]) {
+        return undefined;
+      }
+      if (this.noteDepthOf(home.parentNote) >= MAX_MARKER_DEPTH) {
+        return undefined;
+      }
+    } else if (home.markerId) {
+      if (!this.data.markers[home.markerId]) {
+        return undefined;
+      }
+    } else if (!home.page || !this.data.pages[home.page]) {
       return undefined;
     }
     const id = this.uniqueNoteId();
-    const siblings = this.notesOf(markerId);
-    const maxOrder = Math.max(0, ...siblings.map(([, n]) => n.order));
-    this.data.notes[id] = { markerId, text: trimmed, order: maxOrder + 1 };
+    const scope = home.parentNote
+      ? { noteId: home.parentNote }
+      : home.markerId
+        ? { markerId: home.markerId }
+        : { pageId: home.page };
+    const maxOrder = this.maxSiblingOrder(this.mixedSiblings(scope));
+    const entry: NoteDef = { text: text.trim(), order: maxOrder + 1 };
+    if (home.parentNote) {
+      entry.parentNote = home.parentNote;
+    } else if (home.markerId) {
+      entry.markerId = home.markerId;
+    } else {
+      entry.page = home.page;
+      entry.color = NOTE_ROOT_COLOR;
+    }
+    this.data.notes[id] = entry;
     await this.commit();
     return id;
   }
@@ -1478,24 +1810,242 @@ export class MarkerStore implements vscode.Disposable {
     if (!note) {
       return;
     }
-    const trimmed = text.trim();
-    if (!trimmed) {
-      delete this.data.notes[id];
-      this.applyNoteOrder(note.markerId);
-      await this.commit();
-      return;
-    }
-    note.text = trimmed;
+    note.text = text.trim();
     await this.commit();
   }
 
+  async setNoteColor(id: string, color: string): Promise<void> {
+    const note = this.data.notes[id];
+    if (!note) {
+      return;
+    }
+    const next = migrateColorId(normalizeHex(color) ?? color);
+    if (!next) {
+      return;
+    }
+    note.color = next;
+    await this.commit();
+  }
+
+  /** Delete a note; lift child notes one level up. */
   async deleteNote(id: string): Promise<void> {
     const note = this.data.notes[id];
     if (!note) {
       return;
     }
+    const home = this.noteHomeOf(id);
+    if (!home) {
+      return;
+    }
+    const scope = this.scopeOfNoteHome(home);
+    const siblings = this.mixedSiblings(scope).filter((s) => !(s.kind === 'note' && s.id === id));
+    const lifted = this.noteChildren(id).map(([childId]) => childId);
+    for (const childId of lifted) {
+      this.setNoteHome(childId, home);
+    }
     delete this.data.notes[id];
-    this.applyNoteOrder(note.markerId);
+    this.forgetCollapsed(id);
+    this.applySiblingOrder([
+      ...siblings,
+      ...lifted.map((childId) => ({ kind: 'note' as const, id: childId })),
+    ]);
+    await this.commit();
+  }
+
+  /** Delete a note and its entire nested note tree. */
+  async deleteNoteTree(id: string): Promise<void> {
+    const note = this.data.notes[id];
+    if (!note) {
+      return;
+    }
+    const home = this.noteHomeOf(id);
+    if (!home) {
+      return;
+    }
+    const scope = this.scopeOfNoteHome(home);
+    const siblings = this.mixedSiblings(scope).filter((s) => !(s.kind === 'note' && s.id === id));
+    this.purgeNoteTree(id);
+    this.applySiblingOrder(siblings);
+    await this.commit();
+  }
+
+  async moveNote(id: string, delta: -1 | 1): Promise<void> {
+    const home = this.noteHomeOf(id);
+    if (!home) {
+      return;
+    }
+    const ordered = this.mixedSiblings(this.scopeOfNoteHome(home));
+    const index = ordered.findIndex((s) => s.kind === 'note' && s.id === id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= ordered.length) {
+      return;
+    }
+    [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+    this.applySiblingOrder(ordered);
+    await this.commit();
+  }
+
+  async placeNote(
+    id: string,
+    target: SiblingRef,
+    position: 'before' | 'after',
+  ): Promise<void> {
+    if (!this.data.notes[id]) {
+      return;
+    }
+    if (target.kind === 'note' && target.id === id) {
+      return;
+    }
+    const oldHome = this.noteHomeOf(id);
+    if (!oldHome) {
+      return;
+    }
+    let newHome: NoteHome | undefined;
+    if (target.kind === 'marker') {
+      const marker = this.data.markers[target.id];
+      if (!marker) {
+        return;
+      }
+      if (marker.parent) {
+        newHome = { markerId: marker.parent };
+      } else {
+        const page = this.pageOf(target.id);
+        if (!page) {
+          return;
+        }
+        newHome = { page };
+      }
+    } else {
+      const targetNote = this.data.notes[target.id];
+      if (!targetNote) {
+        return;
+      }
+      newHome = this.noteHomeOf(target.id);
+    }
+    if (!newHome) {
+      return;
+    }
+    if (newHome.parentNote) {
+      const check = this.canNestNote(id, newHome.parentNote);
+      if (!check.ok) {
+        throw new Error(check.reason);
+      }
+    }
+    const oldScope = this.scopeOfNoteHome(oldHome);
+    this.setNoteHome(id, newHome);
+    const newScope = this.scopeOfNoteHome(newHome);
+    const ordered = this.mixedSiblings(newScope).filter((s) => !(s.kind === 'note' && s.id === id));
+    let index = ordered.findIndex((s) => s.kind === target.kind && s.id === target.id);
+    if (index < 0) {
+      index = ordered.length;
+    } else if (position === 'after') {
+      index += 1;
+    }
+    ordered.splice(index, 0, { kind: 'note', id });
+    this.applySiblingOrder(ordered);
+    if (
+      oldHome.page !== newHome.page ||
+      oldHome.markerId !== newHome.markerId ||
+      oldHome.parentNote !== newHome.parentNote
+    ) {
+      this.applySiblingOrder(
+        this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'note' && s.id === id)),
+      );
+    }
+    await this.commit();
+  }
+
+  async nestNote(id: string, parent: { markerId?: string; noteId?: string }): Promise<void> {
+    if (!this.data.notes[id]) {
+      return;
+    }
+    const oldHome = this.noteHomeOf(id);
+    if (!oldHome) {
+      return;
+    }
+    let newHome: NoteHome;
+    if (parent.noteId) {
+      const check = this.canNestNote(id, parent.noteId);
+      if (!check.ok) {
+        throw new Error(check.reason);
+      }
+      newHome = { parentNote: parent.noteId };
+    } else if (parent.markerId && this.data.markers[parent.markerId]) {
+      newHome = { markerId: parent.markerId };
+    } else {
+      return;
+    }
+    const oldScope = this.scopeOfNoteHome(oldHome);
+    this.setNoteHome(id, newHome);
+    const ordered = this.mixedSiblings(this.scopeOfNoteHome(newHome)).filter(
+      (s) => !(s.kind === 'note' && s.id === id),
+    );
+    ordered.push({ kind: 'note', id });
+    this.applySiblingOrder(ordered);
+    if (
+      oldHome.page !== newHome.page ||
+      oldHome.markerId !== newHome.markerId ||
+      oldHome.parentNote !== newHome.parentNote
+    ) {
+      this.applySiblingOrder(
+        this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'note' && s.id === id)),
+      );
+    }
+    await this.commit();
+  }
+
+  async unnestNote(id: string): Promise<void> {
+    const note = this.data.notes[id];
+    if (!note) {
+      return;
+    }
+    let newHome: NoteHome | undefined;
+    let anchorId: string | undefined;
+    if (note.parentNote) {
+      const parent = this.data.notes[note.parentNote];
+      if (!parent) {
+        return;
+      }
+      newHome = this.noteHomeOf(note.parentNote);
+      anchorId = note.parentNote;
+    } else if (note.markerId) {
+      const marker = this.data.markers[note.markerId];
+      if (!marker) {
+        return;
+      }
+      if (marker.parent) {
+        newHome = { markerId: marker.parent };
+      } else {
+        const page = this.pageOf(note.markerId);
+        if (!page) {
+          return;
+        }
+        newHome = { page };
+      }
+      anchorId = note.markerId;
+    } else {
+      return;
+    }
+    if (!newHome || !anchorId) {
+      return;
+    }
+    const oldHome = this.noteHomeOf(id);
+    if (!oldHome) {
+      return;
+    }
+    const oldScope = this.scopeOfNoteHome(oldHome);
+    this.setNoteHome(id, newHome);
+    const siblings = this.mixedSiblings(this.scopeOfNoteHome(newHome)).filter(
+      (s) => !(s.kind === 'note' && s.id === id),
+    );
+    const anchorKind: SiblingRef['kind'] = note.parentNote ? 'note' : 'marker';
+    const parentIndex = siblings.findIndex((s) => s.kind === anchorKind && s.id === anchorId);
+    const insertAt = parentIndex < 0 ? siblings.length : parentIndex + 1;
+    siblings.splice(insertAt, 0, { kind: 'note', id });
+    this.applySiblingOrder(siblings);
+    this.applySiblingOrder(
+      this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'note' && s.id === id)),
+    );
     await this.commit();
   }
 
@@ -2350,10 +2900,10 @@ export class MarkerStore implements vscode.Disposable {
     }
     const notes: Record<string, NoteDef> = {};
     for (const [noteId, note] of Object.entries(this.data.notes)) {
-      if (!markerSet.has(note.markerId) || !note.text.trim()) {
-        continue;
+      const packed = this.packNote(noteId, note, pageId, markerSet);
+      if (packed) {
+        notes[noteId] = packed;
       }
-      notes[noteId] = { markerId: note.markerId, text: note.text, order: note.order };
     }
     const payload: PageSnapshot = {
       version: 1,
@@ -2422,11 +2972,17 @@ export class MarkerStore implements vscode.Disposable {
     }
 
     const keepIds = new Set(idMap.values());
+    const notesOnPage = Object.keys(this.data.notes).filter(
+      (noteId) => this.pageOfNote(noteId) === pageId,
+    );
+    for (const noteId of notesOnPage) {
+      if (this.data.notes[noteId]) {
+        this.purgeNoteTree(noteId);
+      }
+    }
     for (const id of currentIds) {
       if (!keepIds.has(id)) {
         this.purgeMarker(id);
-      } else {
-        this.removeNotesOfMarker(id);
       }
     }
 
@@ -2548,21 +3104,61 @@ export class MarkerStore implements vscode.Disposable {
       }
     }
 
-    for (const [snapNoteId, note] of Object.entries(snap.notes ?? {})) {
-      const markerId = idMap.get(note.markerId);
-      if (!markerId || !this.data.markers[markerId]) {
+    const noteIdMap = new Map<string, string>();
+    const snapNotes = Object.entries(snap.notes ?? {});
+    for (const [snapNoteId] of snapNotes) {
+      const existing = this.data.notes[snapNoteId];
+      if (!existing) {
+        noteIdMap.set(snapNoteId, snapNoteId);
+      } else {
+        const page = this.pageOfNote(snapNoteId);
+        noteIdMap.set(snapNoteId, page === pageId ? snapNoteId : this.uniqueNoteId());
+      }
+    }
+    // Parents before children so parentNote refs resolve.
+    const orderedSnapNotes = this.orderSnapshotNotes(
+      Object.fromEntries(snapNotes.map(([id, def]) => [id, def])),
+    );
+    for (const snapNoteId of orderedSnapNotes) {
+      const note = snap.notes[snapNoteId];
+      if (!note) {
         continue;
       }
-      let actualNoteId = snapNoteId;
-      const existing = this.data.notes[actualNoteId];
-      if (existing && existing.markerId !== markerId) {
-        actualNoteId = this.uniqueNoteId();
-      }
-      this.data.notes[actualNoteId] = {
-        markerId,
-        text: note.text,
-        order: note.order,
+      const actualNoteId = noteIdMap.get(snapNoteId) ?? snapNoteId;
+      const entry: NoteDef = {
+        text: typeof note.text === 'string' ? note.text : '',
+        order: typeof note.order === 'number' ? note.order : 1,
       };
+      if (typeof note.color === 'string' && note.color) {
+        entry.color = migrateColorId(normalizeHex(note.color) ?? note.color);
+      }
+      if (note.locked === true) {
+        entry.locked = true;
+      }
+      if (note.parentNote) {
+        const parent = noteIdMap.get(note.parentNote) ?? note.parentNote;
+        if (!this.data.notes[parent] && parent !== actualNoteId) {
+          // Parent will be restored in this same pass when ordered correctly;
+          // if missing from snap, skip nesting.
+          if (!snap.notes[note.parentNote]) {
+            continue;
+          }
+        }
+        entry.parentNote = parent;
+      } else if (note.markerId) {
+        const markerId = idMap.get(note.markerId);
+        if (!markerId || !this.data.markers[markerId]) {
+          continue;
+        }
+        entry.markerId = markerId;
+      } else if (note.page === pageId || (!note.page && !note.markerId && !note.parentNote)) {
+        entry.page = pageId;
+      } else if (typeof note.page === 'string' && this.data.pages[note.page]) {
+        entry.page = note.page;
+      } else {
+        continue;
+      }
+      this.data.notes[actualNoteId] = entry;
     }
   }
 
@@ -2683,10 +3279,10 @@ export class MarkerStore implements vscode.Disposable {
     }
     const notes: Record<string, NoteDef> = {};
     for (const [id, def] of this.notes()) {
-      if (!this.data.markers[def.markerId] || !def.text.trim()) {
-        continue;
+      const packed = this.packNoteForPersist(id, def);
+      if (packed) {
+        notes[id] = packed;
       }
-      notes[id] = { markerId: def.markerId, text: def.text, order: def.order };
     }
     const payload: Record<string, unknown> = {
       version: 1,
@@ -2772,6 +3368,31 @@ export class MarkerStore implements vscode.Disposable {
     });
   }
 
+  private applySiblingOrder(ordered: SiblingRef[]): void {
+    ordered.forEach((item, index) => {
+      if (item.kind === 'marker' && this.data.markers[item.id]) {
+        this.data.markers[item.id].order = index + 1;
+      }
+      if (item.kind === 'note' && this.data.notes[item.id]) {
+        this.data.notes[item.id].order = index + 1;
+      }
+    });
+  }
+
+  private maxSiblingOrder(siblings: SiblingRef[]): number {
+    let max = 0;
+    for (const s of siblings) {
+      const order =
+        s.kind === 'marker'
+          ? this.data.markers[s.id]?.order
+          : this.data.notes[s.id]?.order;
+      if (typeof order === 'number' && order > max) {
+        max = order;
+      }
+    }
+    return max;
+  }
+
   private applyPageOrder(ordered: string[]): void {
     ordered.forEach((pageId, index) => {
       if (this.data.pages[pageId]) {
@@ -2780,26 +3401,179 @@ export class MarkerStore implements vscode.Disposable {
     });
   }
 
-  private applyNoteOrder(markerId: string): void {
-    this.notesOf(markerId).forEach(([noteId], index) => {
-      if (this.data.notes[noteId]) {
-        this.data.notes[noteId].order = index + 1;
-      }
-    });
+  private noteHomeOf(id: string): NoteHome | undefined {
+    const def = this.data.notes[id];
+    if (!def) {
+      return undefined;
+    }
+    if (def.parentNote) {
+      return { parentNote: def.parentNote };
+    }
+    if (def.markerId) {
+      return { markerId: def.markerId };
+    }
+    if (def.page) {
+      return { page: def.page };
+    }
+    return undefined;
   }
 
-  private removeNotesOfMarker(markerId: string): void {
-    for (const [noteId, def] of Object.entries(this.data.notes)) {
-      if (def.markerId === markerId) {
-        delete this.data.notes[noteId];
+  private scopeOfNoteHome(home: NoteHome): {
+    pageId?: string;
+    markerId?: string;
+    noteId?: string;
+  } {
+    if (home.parentNote) {
+      return { noteId: home.parentNote };
+    }
+    if (home.markerId) {
+      return { markerId: home.markerId };
+    }
+    return { pageId: home.page };
+  }
+
+  private setNoteHome(id: string, home: NoteHome): void {
+    const def = this.data.notes[id];
+    if (!def) {
+      return;
+    }
+    delete def.page;
+    delete def.markerId;
+    delete def.parentNote;
+    if (home.parentNote) {
+      def.parentNote = home.parentNote;
+    } else if (home.markerId) {
+      def.markerId = home.markerId;
+    } else {
+      def.page = home.page;
+    }
+  }
+
+  private applyNoteLock(noteId: string, wasLocked: boolean): void {
+    const def = this.data.notes[noteId];
+    if (!def) {
+      return;
+    }
+    if (wasLocked) {
+      delete def.locked;
+    } else {
+      def.locked = true;
+    }
+    for (const [childId, child] of this.noteChildren(noteId)) {
+      if ((child.locked === true) === wasLocked) {
+        this.applyNoteLock(childId, wasLocked);
       }
     }
   }
 
-  private forgetCollapsed(markerId: string): void {
+  private unlinkMarkerAssignments(id: string): void {
+    for (const [relPath, ids] of Object.entries(this.data.items)) {
+      this.setItem(
+        relPath,
+        ids.filter((x) => x !== id),
+      );
+    }
+    for (const [classId, ids] of Object.entries(this.data.classItems)) {
+      this.setClassItem(
+        classId,
+        ids.filter((x) => x !== id),
+      );
+    }
+  }
+
+  private purgeNoteTree(noteId: string): void {
+    for (const id of this.descendantNotes(noteId, true)) {
+      delete this.data.notes[id];
+      this.forgetCollapsed(id);
+    }
+  }
+
+  private packNote(
+    noteId: string,
+    note: NoteDef,
+    pageId: string,
+    markerSet: Set<string>,
+  ): NoteDef | undefined {
+    if (this.pageOfNote(noteId) !== pageId) {
+      return undefined;
+    }
+    if (note.markerId && !markerSet.has(note.markerId)) {
+      return undefined;
+    }
+    if (note.parentNote && !this.data.notes[note.parentNote]) {
+      return undefined;
+    }
+    return this.packNoteForPersist(noteId, note);
+  }
+
+  private packNoteForPersist(_id: string, def: NoteDef): NoteDef | undefined {
+    if (def.parentNote) {
+      if (!this.data.notes[def.parentNote]) {
+        return undefined;
+      }
+      const entry: NoteDef = { parentNote: def.parentNote, text: def.text, order: def.order };
+      if (def.color) {
+        entry.color = def.color;
+      }
+      if (def.locked) {
+        entry.locked = true;
+      }
+      return entry;
+    }
+    if (def.markerId) {
+      if (!this.data.markers[def.markerId]) {
+        return undefined;
+      }
+      const entry: NoteDef = { markerId: def.markerId, text: def.text, order: def.order };
+      if (def.color) {
+        entry.color = def.color;
+      }
+      if (def.locked) {
+        entry.locked = true;
+      }
+      return entry;
+    }
+    if (def.page && this.data.pages[def.page]) {
+      const entry: NoteDef = { page: def.page, text: def.text, order: def.order };
+      if (def.color) {
+        entry.color = def.color;
+      }
+      if (def.locked) {
+        entry.locked = true;
+      }
+      return entry;
+    }
+    return undefined;
+  }
+
+  private orderSnapshotNotes(notes: Record<string, NoteDef>): string[] {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const visit = (id: string) => {
+      if (seen.has(id) || !notes[id]) {
+        return;
+      }
+      const parent = notes[id].parentNote;
+      if (parent && notes[parent]) {
+        visit(parent);
+      }
+      if (!seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    };
+    for (const id of Object.keys(notes).sort(
+      (a, b) => notes[a].order - notes[b].order || a.localeCompare(b),
+    )) {
+      visit(id);
+    }
+    return result;
+  }
+
+  private forgetCollapsed(id: string): void {
     for (const page of Object.values(this.data.pages)) {
       for (const surface of MAP_SURFACES) {
-        delete page.collapsed[surface][markerId];
+        delete page.collapsed[surface][id];
       }
     }
   }
@@ -2815,23 +3589,11 @@ export class MarkerStore implements vscode.Disposable {
     return collapsed;
   }
 
-  /** Drop a marker and its item/class/note links without committing. */
+  /** Drop a marker and its item/class links without committing. Notes must be purged separately. */
   private purgeMarker(id: string): void {
     delete this.data.markers[id];
-    this.removeNotesOfMarker(id);
     this.forgetCollapsed(id);
-    for (const [relPath, ids] of Object.entries(this.data.items)) {
-      this.setItem(
-        relPath,
-        ids.filter((x) => x !== id),
-      );
-    }
-    for (const [classId, ids] of Object.entries(this.data.classItems)) {
-      this.setClassItem(
-        classId,
-        ids.filter((x) => x !== id),
-      );
-    }
+    this.unlinkMarkerAssignments(id);
   }
 
   private uniqueId(label: string): string {
@@ -3312,46 +4074,123 @@ function normalize(raw: unknown): MarkersFile {
 
   if (source.notes && typeof source.notes === 'object') {
     let index = 0;
-    for (const [id, value] of Object.entries(source.notes as Record<string, unknown>)) {
+    const rawNotes = Object.entries(source.notes as Record<string, unknown>);
+    // First pass: notes without parentNote (page / marker homes).
+    for (const [id, value] of rawNotes) {
       index++;
       if (!value || typeof value !== 'object') {
         continue;
       }
       const def = value as Partial<NoteDef>;
-      const markerId = typeof def.markerId === 'string' ? def.markerId : '';
+      if (typeof def.parentNote === 'string' && def.parentNote) {
+        continue;
+      }
       const text = typeof def.text === 'string' ? def.text.trim() : '';
-      if (!markerId || !(markerId in result.markers) || !text) {
+      const order = typeof def.order === 'number' ? def.order : index;
+      const locked = def.locked === true ? true : undefined;
+      const color =
+        typeof def.color === 'string' && def.color
+          ? migrateColorId(normalizeHex(def.color) ?? def.color)
+          : undefined;
+      const page = typeof def.page === 'string' ? def.page : undefined;
+      const markerId = typeof def.markerId === 'string' ? def.markerId : undefined;
+      if (page && page in result.pages && !markerId) {
+        result.notes[id] = {
+          page,
+          text,
+          order,
+          ...(color ? { color } : { color: NOTE_ROOT_COLOR }),
+          ...(locked ? { locked: true as const } : {}),
+        };
         continue;
       }
-      const pageId = (() => {
-        let current: string | undefined = markerId;
-        const seen = new Set<string>();
-        while (current && result.markers[current] && !seen.has(current)) {
-          seen.add(current);
-          const marker: MarkerDef = result.markers[current];
-          if (!marker.parent) {
-            return marker.page;
-          }
-          current = marker.parent;
+      if (markerId && markerId in result.markers) {
+        result.notes[id] = {
+          markerId,
+          text,
+          order,
+          ...(color ? { color } : {}),
+          ...(locked ? { locked: true as const } : {}),
+        };
+      }
+    }
+    // Second pass: nested notes (parentNote must already exist or be added in order).
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [id, value] of rawNotes) {
+        if (result.notes[id] || !value || typeof value !== 'object') {
+          continue;
         }
-        return undefined;
-      })();
-      if (!pageId || result.pages[pageId]?.kind !== 'notes') {
-        continue;
+        const def = value as Partial<NoteDef>;
+        const parentNote = typeof def.parentNote === 'string' ? def.parentNote : undefined;
+        if (!parentNote || !(parentNote in result.notes)) {
+          continue;
+        }
+        const text = typeof def.text === 'string' ? def.text.trim() : '';
+        const order = typeof def.order === 'number' ? def.order : ++index;
+        const color =
+          typeof def.color === 'string' && def.color
+            ? migrateColorId(normalizeHex(def.color) ?? def.color)
+            : undefined;
+        result.notes[id] = {
+          parentNote,
+          text,
+          order,
+          ...(color ? { color } : {}),
+          ...(def.locked === true ? { locked: true as const } : {}),
+        };
+        changed = true;
       }
-      result.notes[id] = {
-        markerId,
-        text,
-        order: typeof def.order === 'number' ? def.order : index,
-      };
+    }
+
+    // Legacy: notes and subgroups used separate order spaces; keep notes first.
+    const bumpMarkersAfterNotes = (
+      noteOrders: number[],
+      markerIds: string[],
+    ) => {
+      if (noteOrders.length === 0 || markerIds.length === 0) {
+        return;
+      }
+      const maxNote = Math.max(...noteOrders);
+      const sorted = markerIds
+        .slice()
+        .sort(
+          (a, b) =>
+            (result.markers[a]?.order ?? 0) - (result.markers[b]?.order ?? 0) ||
+            a.localeCompare(b),
+        );
+      sorted.forEach((markerId, i) => {
+        if (result.markers[markerId]) {
+          result.markers[markerId].order = maxNote + 1 + i;
+        }
+      });
+    };
+    for (const pageId of Object.keys(result.pages)) {
+      const rootNoteOrders = Object.values(result.notes)
+        .filter((n) => n.page === pageId)
+        .map((n) => n.order);
+      const rootMarkers = Object.entries(result.markers)
+        .filter(([, m]) => !m.parent && m.page === pageId)
+        .map(([id]) => id);
+      bumpMarkersAfterNotes(rootNoteOrders, rootMarkers);
+    }
+    for (const markerId of Object.keys(result.markers)) {
+      const noteOrders = Object.values(result.notes)
+        .filter((n) => n.markerId === markerId)
+        .map((n) => n.order);
+      const childMarkers = Object.entries(result.markers)
+        .filter(([, m]) => m.parent === markerId)
+        .map(([id]) => id);
+      bumpMarkersAfterNotes(noteOrders, childMarkers);
     }
   }
 
   for (const page of Object.values(result.pages)) {
     for (const surface of MAP_SURFACES) {
-      for (const markerId of Object.keys(page.collapsed[surface])) {
-        if (!(markerId in result.markers)) {
-          delete page.collapsed[surface][markerId];
+      for (const id of Object.keys(page.collapsed[surface])) {
+        if (!(id in result.markers) && !(id in result.notes)) {
+          delete page.collapsed[surface][id];
         }
       }
     }
