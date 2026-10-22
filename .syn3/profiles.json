@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "active": "profile-профиль-1",
+  "profiles": [
+    {
+      "id": "general",
+      "name": "Общий"
+    },
+    {
+      "id": "profile-профиль-1",
+      "name": "профиль 1"
+    }
+  ]
+}

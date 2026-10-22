@@ -23,6 +23,13 @@
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
+  const toolbarMoreWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-more'));
+  const toolbarProfile = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile'));
+  const toolbarProfileMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-menu'));
+  const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
+  const toolbarProfileName = /** @type {HTMLInputElement | null} */ (document.getElementById('toolbar-profile-name'));
+  const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
+  const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
   const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
   const toolbarPanelsMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-panels-menu'));
   const panelToggleBottom = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-bottom'));
@@ -88,6 +95,56 @@
     closeToolbarMenus();
     postToolbar(action);
   });
+  toolbarMoreWrap?.addEventListener('mouseleave', () => {
+    if (toolbarMenu && !toolbarMenu.hidden) {
+      closeToolbarMenus();
+    }
+  });
+
+  toolbarProfileWrap?.addEventListener('mouseenter', () => {
+    closeToolbarMenus();
+    if (toolbarProfileMenu) {
+      toolbarProfileMenu.hidden = false;
+      toolbarProfile?.setAttribute('aria-expanded', 'true');
+    }
+  });
+  toolbarProfileWrap?.addEventListener('mouseleave', () => {
+    closeProfileMenu();
+  });
+  toolbarProfileAdd?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    submitProfileCreate();
+  });
+  toolbarProfileName?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitProfileCreate();
+    }
+  });
+  toolbarProfileList?.addEventListener('click', (event) => {
+    const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
+    const actionBtn = target?.closest('[data-profile-action]');
+    if (actionBtn instanceof HTMLElement) {
+      event.stopPropagation();
+      const action = actionBtn.getAttribute('data-profile-action');
+      const id = actionBtn.getAttribute('data-profile-id') || undefined;
+      if (action === 'rename' || action === 'delete') {
+        vscode.postMessage({ type: 'profile', action, id });
+        closeProfileMenu();
+      }
+      return;
+    }
+    const row = target?.closest('[data-profile-id]');
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const id = row.getAttribute('data-profile-id');
+    if (!id) {
+      return;
+    }
+    vscode.postMessage({ type: 'profile', action: 'activate', id });
+    closeProfileMenu();
+  });
   const MIME = 'application/vnd.syn3';
   const MAX_DEPTH = 2;
   const PAGE_MIME = 'application/vnd.syn3.page';
@@ -140,6 +197,7 @@
       setToolbar(activePage() || message);
       setPanelToggles(message.open);
       updatePageMenu();
+      renderProfiles(message.profiles, message.activeProfileId);
       applyAppearance(message.appearance);
       renderPager();
       render();
@@ -324,6 +382,82 @@
       toolbarPanelsMenu.hidden = true;
     }
     toolbarPanels?.setAttribute('aria-expanded', 'false');
+    closeProfileMenu();
+  }
+
+  function closeProfileMenu() {
+    if (toolbarProfileMenu) {
+      toolbarProfileMenu.hidden = true;
+    }
+    toolbarProfile?.setAttribute('aria-expanded', 'false');
+  }
+
+  function submitProfileCreate() {
+    const name = (toolbarProfileName?.value || '').trim();
+    if (!name || !isCreatableProfileName(name)) {
+      return;
+    }
+    vscode.postMessage({ type: 'profile', action: 'create', name });
+    if (toolbarProfileName) {
+      toolbarProfileName.value = '';
+    }
+    closeProfileMenu();
+  }
+
+  /** @param {string} name */
+  function isCreatableProfileName(name) {
+    const lower = name.toLocaleLowerCase();
+    if (lower === 'общий') {
+      return false;
+    }
+    const rows = toolbarProfileList?.querySelectorAll('[data-profile-id]') || [];
+    for (const row of rows) {
+      const label = row.querySelector('.profile-name');
+      if (label && label.textContent && label.textContent.toLocaleLowerCase() === lower) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * @param {{ id: string, name: string }[] | undefined} profiles
+   * @param {string | undefined} activeId
+   */
+  function renderProfiles(profiles, activeId) {
+    if (!toolbarProfileList) {
+      return;
+    }
+    toolbarProfileList.replaceChildren();
+    const list = Array.isArray(profiles) ? profiles : [];
+    for (const profile of list) {
+      const row = el('div', 'toolbar-profile-row' + (profile.id === activeId ? ' is-active' : ''));
+      row.setAttribute('role', 'menuitem');
+      row.setAttribute('data-profile-id', profile.id);
+      const name = el('span', 'profile-name');
+      name.textContent = profile.name;
+      row.append(name);
+      if (profile.id !== 'general') {
+        const actions = el('span', 'profile-actions');
+        const renameBtn = el('button', '');
+        renameBtn.type = 'button';
+        renameBtn.title = 'Переименовать';
+        renameBtn.setAttribute('aria-label', 'Переименовать');
+        renameBtn.setAttribute('data-profile-action', 'rename');
+        renameBtn.setAttribute('data-profile-id', profile.id);
+        renameBtn.textContent = '✎';
+        const deleteBtn = el('button', '');
+        deleteBtn.type = 'button';
+        deleteBtn.title = 'Удалить';
+        deleteBtn.setAttribute('aria-label', 'Удалить');
+        deleteBtn.setAttribute('data-profile-action', 'delete');
+        deleteBtn.setAttribute('data-profile-id', profile.id);
+        deleteBtn.textContent = '×';
+        actions.append(renameBtn, deleteBtn);
+        row.append(actions);
+      }
+      toolbarProfileList.append(row);
+    }
   }
 
   /** @param {{ layout?: string, groupsLayout?: string }} message */

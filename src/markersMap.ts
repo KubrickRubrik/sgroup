@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   ColumnsMode,
+  GENERAL_PROFILE_ID,
   GroupsLayout,
   MapLayout,
   MapSurface,
@@ -136,7 +137,8 @@ type IncomingMessage =
   | { type: 'createNote'; markerId: string; text: string }
   | { type: 'updateNote'; noteId: string; text: string }
   | { type: 'deleteNote'; noteId: string }
-  | { type: 'toggleLock'; markerId: string };
+  | { type: 'toggleLock'; markerId: string }
+  | { type: 'profile'; action: 'activate' | 'create' | 'rename' | 'delete'; id?: string; name?: string };
 
 interface DirListingEntry {
   name: string;
@@ -932,6 +934,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    if (message.type === 'profile') {
+      await this.onProfile(message.action, message.id, message.name);
+      return;
+    }
     if (message.type === 'reorderPages') {
       await this.store.reorderPages(message.orderedIds);
       return;
@@ -1203,6 +1209,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       layout: page?.layout ?? 'chips',
       groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
+      profiles: this.store.profiles(),
+      activeProfileId: this.store.activeProfileId,
       active: this.activeRelPath(),
       ...this.tabSnapshot(),
       error: this.store.lastError,
@@ -1433,6 +1441,74 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     );
   }
 
+  private async onProfile(
+    action: 'activate' | 'create' | 'rename' | 'delete',
+    id?: string,
+    name?: string,
+  ): Promise<void> {
+    if (action === 'activate') {
+      if (id) {
+        await this.store.setActiveProfile(id);
+      }
+      return;
+    }
+    if (action === 'create') {
+      const trimmed = (name ?? '').trim();
+      if (!trimmed || !this.store.isValidProfileName(trimmed)) {
+        return;
+      }
+      await this.store.createProfile(trimmed);
+      return;
+    }
+    if (action === 'rename') {
+      if (!id || id === GENERAL_PROFILE_ID) {
+        return;
+      }
+      const current = this.store.profiles().find((p) => p.id === id);
+      if (!current) {
+        return;
+      }
+      const next = await vscode.window.showInputBox({
+        title: 'Переименовать профиль',
+        prompt: 'Имя профиля',
+        value: current.name,
+        validateInput: (v) => {
+          const trimmed = v.trim();
+          if (!trimmed) {
+            return 'Имя не может быть пустым';
+          }
+          if (!this.store.isValidProfileName(trimmed, id)) {
+            return 'Такое имя уже занято';
+          }
+          return undefined;
+        },
+      });
+      if (!next) {
+        return;
+      }
+      await this.store.renameProfile(id, next);
+      return;
+    }
+    if (action === 'delete') {
+      if (!id || id === GENERAL_PROFILE_ID) {
+        return;
+      }
+      const current = this.store.profiles().find((p) => p.id === id);
+      if (!current) {
+        return;
+      }
+      const confirm = await vscode.window.showWarningMessage(
+        `Удалить профиль «${current.name}»? Восстановить будет невозможно.`,
+        { modal: true },
+        'Удалить',
+      );
+      if (confirm !== 'Удалить') {
+        return;
+      }
+      await this.store.deleteProfile(id);
+    }
+  }
+
   private async createPageFlow(webview: vscode.Webview): Promise<void> {
     if (this.store.pages().length >= MAX_PAGES) {
       return;
@@ -1530,6 +1606,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 </head>
 <body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="history-bar">
+    <div class="toolbar-profile">
+      <button id="toolbar-profile" class="history-btn" type="button" aria-label="Профиль" aria-haspopup="menu" aria-expanded="false">
+        ${icon('person')}
+      </button>
+      <div id="toolbar-profile-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Профили">
+        <div id="toolbar-profile-list" class="toolbar-profile-list"></div>
+        <div class="toolbar-profile-create">
+          <input id="toolbar-profile-name" type="text" placeholder="Новый профиль" aria-label="Имя нового профиля" maxlength="64">
+          <button id="toolbar-profile-add" class="history-btn" type="button" title="Создать профиль" aria-label="Создать профиль">
+            ${icon('add')}
+          </button>
+        </div>
+      </div>
+    </div>
     <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
       ${icon('arrow-left')}
     </button>

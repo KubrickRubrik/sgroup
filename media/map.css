@@ -95,6 +95,116 @@ html::-webkit-scrollbar {
   position: relative;
 }
 
+.toolbar-profile {
+  position: relative;
+}
+
+.toolbar-profile-menu {
+  background: var(--vscode-menu-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  left: 0;
+  min-width: 200px;
+  padding: 4px 0;
+  position: absolute;
+  top: 100%;
+  z-index: 40;
+}
+
+.toolbar-profile-menu[hidden] {
+  display: none;
+}
+
+.toolbar-profile-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.toolbar-profile-row {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 13px;
+  gap: 6px;
+  padding: 4px 8px 4px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.toolbar-profile-row:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
+.toolbar-profile-row.is-active {
+  background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)) 55%, transparent);
+}
+
+.toolbar-profile-row .profile-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-profile-row .profile-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  opacity: 0.75;
+}
+
+.toolbar-profile-row .profile-actions button {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.toolbar-profile-row .profile-actions button:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.toolbar-profile-create {
+  align-items: center;
+  border-top: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 6px 8px;
+}
+
+.toolbar-profile-create input {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-input-foreground);
+  flex: 1;
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+  padding: 3px 6px;
+}
+
+.toolbar-profile-create input:focus {
+  outline: 1px solid var(--vscode-focusBorder, #4daafc);
+}
+
 .toolbar-menu {
   background: var(--vscode-menu-background, var(--vscode-sideBar-background));
   border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -105,7 +215,8 @@ html::-webkit-scrollbar {
   right: 0;
   padding: 4px 0;
   position: absolute;
-  top: calc(100% + 2px);
+  /* No gap under the button so mouseleave does not fire on the way into the menu. */
+  top: 100%;
   z-index: 40;
 }
 

@@ -21,6 +21,13 @@ export const MAX_MARKER_DEPTH = 2;
 
 /** Fixed markers file relative to the workspace folder. */
 export const CONFIG_PATH = '.syn3/syn3.json';
+/** Profile list and active id. */
+export const PROFILES_PATH = '.syn3/profiles.json';
+/** Appearance per profile id. */
+export const STYLES_PATH = '.syn3/styles.json';
+/** Built-in profile: always present, cannot be renamed or deleted. */
+export const GENERAL_PROFILE_ID = 'general';
+export const GENERAL_PROFILE_NAME = 'Общий';
 /** Older locations, newest first. */
 const LEGACY_CONFIG_PATHS = [
   '.sgroup/sgroup.json',
@@ -59,7 +66,13 @@ export function normalizeGroupsLayout(value: unknown): GroupsLayout {
   return value === '1' || value === '2' || value === '3' ? value : 'flow';
 }
 
-/** Map font scales, card paint, and Explorer label saturation, stored in the markers file. */
+/** Named style profile. `general` is built-in. */
+export interface StyleProfile {
+  id: string;
+  name: string;
+}
+
+/** Map font scales, card paint, and Explorer label saturation, stored per profile in styles.json. */
 export interface Appearance {
   /** Top-level group title scale vs editor font size. */
   fontGroup: number;
@@ -317,9 +330,39 @@ interface MarkersFile {
   /** classId → markerId → epoch ms */
   classAdded: Record<string, Record<string, number>>;
   notes: Record<string, NoteDef>;
+  /**
+   * Legacy seed only: read from syn3.json once when styles.json is missing.
+   * Never written back into syn3.json.
+   */
   appearance: Appearance;
   /** Active page and open flags per map surface. */
   surfaces: SurfacesState;
+}
+
+interface ProfilesFile {
+  version: 1;
+  active: string;
+  profiles: StyleProfile[];
+}
+
+interface StylesFile {
+  version: 1;
+  styles: Record<string, Appearance>;
+}
+
+function emptyProfiles(): ProfilesFile {
+  return {
+    version: 1,
+    active: GENERAL_PROFILE_ID,
+    profiles: [{ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME }],
+  };
+}
+
+function emptyStyles(seed: Appearance = DEFAULT_APPEARANCE): StylesFile {
+  return {
+    version: 1,
+    styles: { [GENERAL_PROFILE_ID]: normalizeAppearance(seed) },
+  };
 }
 
 /** Page-local undo snapshot: groups, items, notes and view — not folds, page order, or appearance. */
@@ -370,7 +413,9 @@ function isFileNotFound(error: unknown): boolean {
 
 export class MarkerStore implements vscode.Disposable {
   private data: MarkersFile = emptyData();
-  private watcher?: vscode.FileSystemWatcher;
+  private profilesData: ProfilesFile = emptyProfiles();
+  private stylesData: StylesFile = emptyStyles();
+  private watchers: vscode.FileSystemWatcher[] = [];
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   /** When migration fails, read this path for the current session instead of CONFIG_PATH. */
   private sessionConfigPath = CONFIG_PATH;
@@ -389,6 +434,9 @@ export class MarkerStore implements vscode.Disposable {
   /** True when the loaded file had no `surfaces` block — workspace state may hydrate it once. */
   private surfacesNeedLegacyHydration = false;
   private queue: Promise<void> = Promise.resolve();
+  /** Skip self-triggered profile/style reloads after our own writes. */
+  private writingProfiles = false;
+  private writingStyles = false;
 
   readonly onDidChange = this.changeEmitter.event;
   lastError?: string;
@@ -403,8 +451,36 @@ export class MarkerStore implements vscode.Disposable {
     return vscode.Uri.joinPath(this.root, HISTORY_PATH);
   }
 
+  get profilesUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, PROFILES_PATH);
+  }
+
+  get stylesUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, STYLES_PATH);
+  }
+
+  /** Appearance of the active profile. */
   get appearance(): Appearance {
-    return this.data.appearance;
+    const id = this.profilesData.active;
+    return this.stylesData.styles[id] ?? this.stylesData.styles[GENERAL_PROFILE_ID] ?? {
+      ...DEFAULT_APPEARANCE,
+    };
+  }
+
+  /** Profiles in creation order. «Общий» is always first. */
+  profiles(): StyleProfile[] {
+    return this.profilesData.profiles.map((p) => ({ ...p }));
+  }
+
+  get activeProfileId(): string {
+    return this.profilesData.active;
+  }
+
+  get activeProfileName(): string {
+    return (
+      this.profilesData.profiles.find((p) => p.id === this.profilesData.active)?.name ??
+      GENERAL_PROFILE_NAME
+    );
   }
 
   /** True after markers and history have been read. Page ids are meaningful only then. */
@@ -439,6 +515,7 @@ export class MarkerStore implements vscode.Disposable {
     await this.migrateLegacyConfig();
     await this.migrateHistory();
     await this.load();
+    await this.loadProfilesAndStyles();
     await this.loadHistory();
     this.historyReady = true;
     this.watch();
@@ -446,7 +523,10 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   dispose(): void {
-    this.watcher?.dispose();
+    for (const watcher of this.watchers) {
+      watcher.dispose();
+    }
+    this.watchers = [];
     this.changeEmitter.dispose();
   }
 
@@ -477,8 +557,109 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   async setAppearance(partial: Partial<Appearance>): Promise<void> {
-    this.data.appearance = normalizeAppearance({ ...this.data.appearance, ...partial });
-    await this.commit();
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const current = this.stylesData.styles[id] ?? { ...DEFAULT_APPEARANCE };
+      this.stylesData.styles[id] = normalizeAppearance({ ...current, ...partial });
+      await this.persistStyles();
+      this.changeEmitter.fire();
+    });
+  }
+
+  async setActiveProfile(id: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.profilesData.profiles.some((p) => p.id === id)) {
+        return;
+      }
+      if (this.profilesData.active === id) {
+        return;
+      }
+      this.profilesData.active = id;
+      await this.persistProfiles();
+      this.changeEmitter.fire();
+    });
+  }
+
+  /**
+   * Create a profile that copies the active profile's styles and becomes active.
+   * Returns the new id, or undefined when the name is rejected.
+   */
+  async createProfile(name: string): Promise<string | undefined> {
+    return await this.enqueueResult(async () => {
+      const trimmed = name.trim();
+      if (!this.isValidProfileName(trimmed)) {
+        return undefined;
+      }
+      const id = this.uniqueProfileId(trimmed);
+      const activeId = this.ensureActiveProfileId();
+      const source =
+        this.stylesData.styles[activeId] ??
+        this.stylesData.styles[GENERAL_PROFILE_ID] ??
+        normalizeAppearance(DEFAULT_APPEARANCE);
+      this.profilesData.profiles.push({ id, name: trimmed });
+      this.stylesData.styles[id] = normalizeAppearance({ ...source });
+      this.profilesData.active = id;
+      await this.persistProfiles();
+      await this.persistStyles();
+      this.changeEmitter.fire();
+      return id;
+    });
+  }
+
+  async renameProfile(id: string, name: string): Promise<boolean> {
+    return await this.enqueueResult(async () => {
+      if (id === GENERAL_PROFILE_ID) {
+        return false;
+      }
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      const trimmed = name.trim();
+      if (!profile || !this.isValidProfileName(trimmed, id)) {
+        return false;
+      }
+      if (profile.name === trimmed) {
+        return true;
+      }
+      profile.name = trimmed;
+      await this.persistProfiles();
+      this.changeEmitter.fire();
+      return true;
+    });
+  }
+
+  async deleteProfile(id: string): Promise<boolean> {
+    return await this.enqueueResult(async () => {
+      if (id === GENERAL_PROFILE_ID) {
+        return false;
+      }
+      const index = this.profilesData.profiles.findIndex((p) => p.id === id);
+      if (index < 0) {
+        return false;
+      }
+      this.profilesData.profiles.splice(index, 1);
+      delete this.stylesData.styles[id];
+      if (this.profilesData.active === id) {
+        this.profilesData.active = GENERAL_PROFILE_ID;
+      }
+      await this.persistProfiles();
+      await this.persistStyles();
+      this.changeEmitter.fire();
+      return true;
+    });
+  }
+
+  /** Empty, «Общий», and duplicate names (case-insensitive) are rejected. */
+  isValidProfileName(name: string, excludeId?: string): boolean {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (trimmed.toLocaleLowerCase() === GENERAL_PROFILE_NAME.toLocaleLowerCase()) {
+      return false;
+    }
+    const lower = trimmed.toLocaleLowerCase();
+    return !this.profilesData.profiles.some(
+      (p) => p.id !== excludeId && p.name.toLocaleLowerCase() === lower,
+    );
   }
 
   async ensureConfigExists(): Promise<void> {
@@ -1405,16 +1586,34 @@ export class MarkerStore implements vscode.Disposable {
   // ---- internals ----
 
   private watch(): void {
-    this.watcher?.dispose();
-    this.watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(this.root, this.sessionConfigPath),
-    );
-    const reload = () => {
-      void this.enqueue(() => this.reloadFromDisk(false));
+    for (const watcher of this.watchers) {
+      watcher.dispose();
+    }
+    this.watchers = [];
+    const attach = (relPath: string, onChange: () => void) => {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(this.root, relPath),
+      );
+      watcher.onDidChange(onChange);
+      watcher.onDidCreate(onChange);
+      watcher.onDidDelete(onChange);
+      this.watchers.push(watcher);
     };
-    this.watcher.onDidChange(reload);
-    this.watcher.onDidCreate(reload);
-    this.watcher.onDidDelete(reload);
+    attach(this.sessionConfigPath, () => {
+      void this.enqueue(() => this.reloadFromDisk(false));
+    });
+    attach(PROFILES_PATH, () => {
+      if (this.writingProfiles) {
+        return;
+      }
+      void this.enqueue(() => this.reloadProfilesFromDisk());
+    });
+    attach(STYLES_PATH, () => {
+      if (this.writingStyles) {
+        return;
+      }
+      void this.enqueue(() => this.reloadStylesFromDisk());
+    });
   }
 
   /**
@@ -1523,6 +1722,15 @@ export class MarkerStore implements vscode.Disposable {
     return run;
   }
 
+  private enqueueResult<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   private async reloadFromDisk(notify: boolean): Promise<void> {
     let raw: string | undefined;
     let next: MarkersFile | undefined;
@@ -1584,6 +1792,180 @@ export class MarkerStore implements vscode.Disposable {
         console.error('Syn3 history:', error);
       }
       this.history = emptyHistory();
+    }
+  }
+
+  /**
+   * Load profiles.json and styles.json. When styles.json is missing, seed «Общий»
+   * from the legacy appearance block in syn3.json and rewrite markers without it.
+   */
+  private async loadProfilesAndStyles(): Promise<void> {
+    const stylesExist = await fileExists(this.stylesUri);
+    const profilesExist = await fileExists(this.profilesUri);
+    const seed = normalizeAppearance(this.data.appearance);
+
+    if (!stylesExist) {
+      this.stylesData = emptyStyles(seed);
+      this.profilesData = emptyProfiles();
+      await this.persistStyles();
+      await this.persistProfiles();
+      // Drop legacy appearance from syn3.json on the next markers write.
+      await this.writeConfig(this.capture());
+      this.present = this.capture();
+      this.baseline = undefined;
+      return;
+    }
+
+    await this.reloadStylesFromDisk(false);
+    if (!profilesExist) {
+      const ids = Object.keys(this.stylesData.styles);
+      if (!ids.includes(GENERAL_PROFILE_ID)) {
+        this.stylesData.styles[GENERAL_PROFILE_ID] = seed;
+      }
+      this.profilesData = {
+        version: 1,
+        active: GENERAL_PROFILE_ID,
+        profiles: [
+          { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME },
+          ...ids
+            .filter((id) => id !== GENERAL_PROFILE_ID)
+            .map((id) => ({ id, name: id })),
+        ],
+      };
+      await this.persistProfiles();
+      await this.persistStyles();
+    } else {
+      await this.reloadProfilesFromDisk(false);
+    }
+    this.ensureGeneralProfile(seed);
+    // Drop legacy appearance from syn3.json if it is still on disk.
+    try {
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'appearance' in parsed) {
+        await this.writeConfig(this.capture());
+        this.present = this.capture();
+        this.baseline = undefined;
+      }
+    } catch {
+      // Markers file may be missing during a fresh workspace.
+    }
+  }
+
+  private async reloadProfilesFromDisk(notify = true): Promise<void> {
+    try {
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.profilesUri)).toString('utf8');
+      this.profilesData = normalizeProfiles(JSON.parse(raw));
+    } catch (error) {
+      if (!isFileNotFound(error)) {
+        console.error('Syn3 profiles:', error);
+      }
+      this.profilesData = emptyProfiles();
+    }
+    this.ensureGeneralProfile(this.stylesData.styles[GENERAL_PROFILE_ID] ?? DEFAULT_APPEARANCE);
+    if (notify) {
+      this.changeEmitter.fire();
+    }
+  }
+
+  private async reloadStylesFromDisk(notify = true): Promise<void> {
+    try {
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.stylesUri)).toString('utf8');
+      this.stylesData = normalizeStyles(JSON.parse(raw));
+    } catch (error) {
+      if (!isFileNotFound(error)) {
+        console.error('Syn3 styles:', error);
+      }
+      this.stylesData = emptyStyles(this.data.appearance);
+    }
+    this.ensureGeneralProfile(this.stylesData.styles[GENERAL_PROFILE_ID] ?? DEFAULT_APPEARANCE);
+    if (notify) {
+      this.changeEmitter.fire();
+    }
+  }
+
+  private ensureGeneralProfile(seed: Appearance): void {
+    if (!this.profilesData.profiles.some((p) => p.id === GENERAL_PROFILE_ID)) {
+      this.profilesData.profiles.unshift({ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME });
+    } else {
+      const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+      if (general) {
+        general.name = GENERAL_PROFILE_NAME;
+      }
+      this.profilesData.profiles = [
+        { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME },
+        ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
+      ];
+    }
+    if (!this.stylesData.styles[GENERAL_PROFILE_ID]) {
+      this.stylesData.styles[GENERAL_PROFILE_ID] = normalizeAppearance(seed);
+    }
+    if (!this.profilesData.profiles.some((p) => p.id === this.profilesData.active)) {
+      this.profilesData.active = GENERAL_PROFILE_ID;
+    }
+  }
+
+  private ensureActiveProfileId(): string {
+    this.ensureGeneralProfile(DEFAULT_APPEARANCE);
+    return this.profilesData.active;
+  }
+
+  private uniqueProfileId(name: string): string {
+    const base =
+      'profile-' +
+      (name
+        .toLowerCase()
+        .replace(/[^a-z0-9а-яё]+/gi, '-')
+        .replace(/^-+|-+$/g, '') || 'profile');
+    let id = base;
+    let counter = 2;
+    const taken = new Set(this.profilesData.profiles.map((p) => p.id));
+    while (taken.has(id) || id === GENERAL_PROFILE_ID) {
+      id = `${base}-${counter++}`;
+    }
+    return id;
+  }
+
+  private async persistProfiles(): Promise<void> {
+    this.writingProfiles = true;
+    try {
+      const payload: ProfilesFile = {
+        version: 1,
+        active: this.profilesData.active,
+        profiles: this.profilesData.profiles.map((p) => ({ id: p.id, name: p.name })),
+      };
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.profilesUri, '..'));
+      await vscode.workspace.fs.writeFile(
+        this.profilesUri,
+        Buffer.from(JSON.stringify(payload, null, 2) + '\n', 'utf8'),
+      );
+    } finally {
+      // Let the watcher settle before accepting external reloads.
+      setTimeout(() => {
+        this.writingProfiles = false;
+      }, 100);
+    }
+  }
+
+  private async persistStyles(): Promise<void> {
+    this.writingStyles = true;
+    try {
+      const styles: Record<string, Appearance> = {};
+      for (const profile of this.profilesData.profiles) {
+        styles[profile.id] = normalizeAppearance(
+          this.stylesData.styles[profile.id] ?? DEFAULT_APPEARANCE,
+        );
+      }
+      this.stylesData = { version: 1, styles };
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.stylesUri, '..'));
+      await vscode.workspace.fs.writeFile(
+        this.stylesUri,
+        Buffer.from(JSON.stringify(this.stylesData, null, 2) + '\n', 'utf8'),
+      );
+    } finally {
+      setTimeout(() => {
+        this.writingStyles = false;
+      }, 100);
     }
   }
 
@@ -2127,7 +2509,6 @@ export class MarkerStore implements vscode.Disposable {
       items,
       added,
       surfaces,
-      appearance: this.data.appearance,
     };
     if (Object.keys(aliases).length > 0) {
       payload.aliases = aliases;
@@ -2454,6 +2835,61 @@ function normalizeSurfaces(
     }
   }
   return result;
+}
+
+function normalizeProfiles(raw: unknown): ProfilesFile {
+  const result = emptyProfiles();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return result;
+  }
+  const source = raw as { active?: unknown; profiles?: unknown };
+  const profiles: StyleProfile[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(source.profiles)) {
+    for (const entry of source.profiles) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        continue;
+      }
+      const item = entry as { id?: unknown; name?: unknown };
+      if (typeof item.id !== 'string' || !item.id.trim()) {
+        continue;
+      }
+      const id = item.id.trim();
+      if (seen.has(id) || id === GENERAL_PROFILE_ID) {
+        continue;
+      }
+      const name =
+        typeof item.name === 'string' && item.name.trim() ? item.name.trim() : id;
+      if (name.toLocaleLowerCase() === GENERAL_PROFILE_NAME.toLocaleLowerCase()) {
+        continue;
+      }
+      seen.add(id);
+      profiles.push({ id, name });
+    }
+  }
+  result.profiles = [{ id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME }, ...profiles];
+  const active = typeof source.active === 'string' ? source.active : GENERAL_PROFILE_ID;
+  result.active = result.profiles.some((p) => p.id === active) ? active : GENERAL_PROFILE_ID;
+  return result;
+}
+
+function normalizeStyles(raw: unknown): StylesFile {
+  const result = emptyStyles();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return result;
+  }
+  const source = raw as { styles?: unknown };
+  if (!source.styles || typeof source.styles !== 'object' || Array.isArray(source.styles)) {
+    return result;
+  }
+  const styles: Record<string, Appearance> = {};
+  for (const [id, value] of Object.entries(source.styles as Record<string, unknown>)) {
+    styles[id] = normalizeAppearance(value);
+  }
+  if (!styles[GENERAL_PROFILE_ID]) {
+    styles[GENERAL_PROFILE_ID] = normalizeAppearance(DEFAULT_APPEARANCE);
+  }
+  return { version: 1, styles };
 }
 
 function normalize(raw: unknown): MarkersFile {
