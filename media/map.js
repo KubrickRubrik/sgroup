@@ -1817,6 +1817,7 @@
     bar.addEventListener('click', (event) => {
       event.stopPropagation();
       if (locked) {
+        flashLock(group.id, header);
         return;
       }
       openColorPicker(group.id, bar, section);
@@ -1841,10 +1842,17 @@
       (locked ? '\nLocked' : '\nDrag to reorder or nest');
     trackPress(header, (event) => {
       const target = event.target;
-      if (target instanceof Element && target.closest('.lock-btn, .bar')) {
+      if (target instanceof Element && target.closest('.lock-btn')) {
         return;
       }
-      if (isEmpty || locked) {
+      if (locked) {
+        flashLock(group.id, header);
+        return;
+      }
+      if (target instanceof Element && target.closest('.bar')) {
+        return;
+      }
+      if (isEmpty) {
         return;
       }
       toggleCollapsed(group.id);
@@ -1930,6 +1938,41 @@
     }
 
     return section;
+  }
+
+  const LOCK_DENY_MS = 3000;
+  /** @type {Map<string, number>} */
+  const lockDenyUntil = new Map();
+
+  /**
+   * Blink the lock on a closed group for 3s. Repeat clicks on that group
+   * are dropped until the window ends. A redraw drops the class with the node.
+   * @param {string} groupId
+   * @param {HTMLElement} header
+   */
+  function flashLock(groupId, header) {
+    const now = Date.now();
+    const until = lockDenyUntil.get(groupId) ?? 0;
+    if (now < until) {
+      return;
+    }
+    const button = header.querySelector(':scope > .lock-btn');
+    if (!(button instanceof HTMLElement)) {
+      return;
+    }
+    const ends = now + LOCK_DENY_MS;
+    lockDenyUntil.set(groupId, ends);
+    button.dataset.denyToken = String(ends);
+    button.classList.add('is-denied');
+    setTimeout(() => {
+      if (lockDenyUntil.get(groupId) === ends) {
+        lockDenyUntil.delete(groupId);
+      }
+      if (button.dataset.denyToken === String(ends)) {
+        delete button.dataset.denyToken;
+        button.classList.remove('is-denied');
+      }
+    }, LOCK_DENY_MS);
   }
 
   function lockButton(group) {

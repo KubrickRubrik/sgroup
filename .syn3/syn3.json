@@ -17,7 +17,9 @@
           "ttest-6": true,
           "version": true
         },
-        "bottom": {},
+        "bottom": {
+          "version": true
+        },
         "left": {
           "1": true,
           "3": true,
@@ -89,7 +91,7 @@
     },
     "version": {
       "label": "Version",
-      "color": "syn3.tomato",
+      "color": "#de3c1b",
       "icon": "🔥",
       "columns": "2",
       "order": 1,

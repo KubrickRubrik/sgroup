@@ -1047,6 +1047,29 @@ body.vscode-high-contrast-light .tab-mark {
   width: 14px;
 }
 
+.lock-btn.is-denied {
+  animation: lock-denied-blink 0.4s linear 7.5;
+  opacity: 1;
+}
+
+@keyframes lock-denied-blink {
+  0%,
+  49% {
+    color: var(--vscode-errorForeground);
+  }
+  50%,
+  100% {
+    color: var(--vscode-descriptionForeground);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lock-btn.is-denied {
+    animation: none;
+    color: var(--vscode-errorForeground);
+  }
+}
+
 .count {
   color: var(--vscode-descriptionForeground);
   flex: 0 0 auto;
