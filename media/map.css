@@ -511,17 +511,106 @@ html::-webkit-scrollbar {
   border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
   border-radius: 4px;
   color: var(--vscode-input-foreground);
+  cursor: default;
   font: inherit;
   font-size: var(--size-file);
   line-height: 1.4;
+  min-height: calc(1.4 * 1em);
+  outline: none;
+  overflow: hidden;
   padding: 4px 6px;
-  resize: vertical;
+  user-select: text;
+  white-space: pre-wrap;
   width: 100%;
+  word-break: break-word;
 }
 
-.note-input:focus {
+.note-input,
+.note-input * {
+  cursor: default;
+  user-select: text;
+}
+
+.note-input a.note-link,
+.note-input a.note-link * {
+  cursor: pointer;
+}
+
+.note-input:focus,
+.note-input.is-editing {
   border-color: var(--vscode-focusBorder, #4daafc);
-  outline: none;
+}
+
+.note-input.is-editing,
+.note-input.is-editing * {
+  cursor: text;
+}
+
+.note-card.is-note-editing > .note-header,
+.note-card.is-note-editing > .note-header:active {
+  cursor: text;
+}
+
+.note-card.is-note-editing > .note-header > .bar,
+.note-card.is-note-editing > .note-header > .lock-btn,
+.note-card.is-note-editing > .note-header > .chevron,
+.note-card.is-note-editing > .note-header > .count {
+  cursor: pointer;
+  user-select: none;
+}
+
+.note-input.is-empty:before {
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.note-input .note-p {
+  margin: 0;
+  min-height: 1.35em;
+}
+
+.note-input .note-code,
+.note-input .note-code * {
+  font-family: var(--vscode-editor-font-family, ui-monospace), ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-variant-ligatures: none;
+}
+
+.note-input .note-code {
+  /* Transparent wash over the note field (unfocused field is tinted, not solid input bg). */
+  background: color-mix(in srgb, black 10%, transparent);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  display: block;
+  font-size: 0.92em;
+  margin: 4px 0;
+  overflow-x: auto;
+  padding: 6px 8px;
+  transition: background 120ms ease, border-color 120ms ease;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.note-input.is-editing .note-code,
+.note-input:focus .note-code {
+  background: color-mix(in srgb, black 6%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-foreground, #cccccc) 18%, transparent);
+}
+
+.note-input .note-quote {
+  background: color-mix(
+    in srgb,
+    var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.2)) 100%,
+    transparent
+  );
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.note-input b,
+.note-input strong {
+  font-weight: 700;
 }
 
 .note-card > .note-header {
@@ -543,12 +632,12 @@ html::-webkit-scrollbar {
   border-color: transparent;
   font-size: var(--size-subgroup);
   line-height: 1.35;
-  min-height: 0;
+  min-height: calc(1.35 * 1em);
   padding: 2px 6px;
-  resize: none;
 }
 
-.note-card .note-header .note-input:focus {
+.note-card .note-header .note-input:focus,
+.note-card .note-header .note-input.is-editing {
   background: var(--vscode-input-background);
   border-color: var(--vscode-focusBorder, #4daafc);
   color: var(--vscode-input-foreground);
@@ -570,6 +659,188 @@ html::-webkit-scrollbar {
 .note-card.locked .note-input {
   cursor: default;
   opacity: 0.85;
+}
+
+.toolbar-format {
+  position: relative;
+}
+
+.toolbar-format-label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  min-width: 1.2em;
+  text-align: center;
+}
+
+.toolbar-format-menu {
+  background: var(--vscode-menu-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  left: 0;
+  padding: 4px;
+  position: absolute;
+  top: 100%;
+  z-index: 50;
+}
+
+.toolbar-format-menu[hidden] {
+  display: none;
+}
+
+.toolbar-format-menu button {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  min-width: 28px;
+  padding: 0 6px;
+}
+
+.toolbar-format-menu button:hover,
+.toolbar-format-menu button.is-active {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.fmt-icon {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.fmt-bold {
+  font-family: var(--vscode-editor-font-family, sans-serif);
+}
+
+.fmt-color {
+  background: linear-gradient(90deg, #e5484d, #f76b15, #30a46c, #3e63dd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.fmt-code {
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.fmt-quote {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.note-link-preview {
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
+  left: 50%;
+  max-height: 120px;
+  overflow: hidden;
+  pointer-events: auto;
+  position: fixed;
+  transform: translateX(-50%);
+  width: 70%;
+  z-index: 60;
+}
+
+.note-link-preview-scroll {
+  max-height: 120px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.note-link-preview-scroll::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+.note-link-preview-bar {
+  bottom: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 4px;
+  z-index: 1;
+}
+
+.note-link-preview-bar[hidden] {
+  display: none;
+}
+
+.note-link-preview-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.55));
+  border-radius: 2px;
+  position: absolute;
+  right: 0;
+  width: 4px;
+}
+
+.note-link-preview-image {
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  display: block;
+  height: 60px;
+  object-fit: cover;
+  width: 100%;
+}
+
+.note-link-preview.is-narrow .note-link-preview-image {
+  height: 80px;
+}
+
+.note-link-preview-desc {
+  -webkit-box-orient: vertical;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  display: -webkit-box;
+  font-size: 11px;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+  max-height: 40px;
+  overflow: hidden;
+  padding: 4px 8px 6px;
+}
+
+.note-link-preview-skel-image {
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  height: 60px;
+  width: 100%;
+}
+
+.note-link-preview.is-narrow .note-link-preview-skel-image {
+  height: 80px;
+}
+
+.note-link-preview-skel-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.note-link-preview-skel-line {
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  border-radius: 2px;
+  height: 8px;
+}
+
+.note-link-preview-skel-line:last-child {
+  width: 70%;
 }
 
 .dot.note-dot {
@@ -1152,6 +1423,18 @@ body.vscode-high-contrast-light .tab-mark {
 body.is-dragging,
 body.is-dragging * {
   cursor: grabbing;
+}
+
+.note-card.is-note-editing > .note-header:active,
+.note-card.is-note-editing > .note-header:active *,
+body.is-dragging .note-card.is-note-editing > .note-header,
+body.is-dragging .note-card.is-note-editing > .note-header * {
+  cursor: text;
+}
+
+body.is-dragging .note-card.is-note-editing > .note-header > .bar,
+body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
+  cursor: pointer;
 }
 
 .item-text {

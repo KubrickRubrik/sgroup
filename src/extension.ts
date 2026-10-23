@@ -89,6 +89,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('syn3.openSettings', () => settings.open()),
     vscode.commands.registerCommand('syn3.historyBack', () => map.historyBack()),
     vscode.commands.registerCommand('syn3.historyForward', () => map.historyForward()),
+    vscode.commands.registerCommand('syn3.selectAllInMap', () => map.selectAllInMap()),
+    vscode.commands.registerCommand('syn3.undoInMap', () => map.undoInMap()),
+    vscode.commands.registerCommand('syn3.copyInMap', () => map.copyInMap()),
+    vscode.commands.registerCommand('syn3.pasteInMap', () => {
+      void map.pasteInMap();
+    }),
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.viewId, map, {
       webviewOptions: { retainContextWhenHidden: true },

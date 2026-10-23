@@ -132,6 +132,9 @@ type IncomingMessage =
   | { type: 'open'; relPath: string }
   | { type: 'openClass'; classId: string }
   | { type: 'openExternal'; url: string }
+  | { type: 'previewLink'; url: string; requestId: string }
+  | { type: 'clipboardRead'; requestId: string }
+  | { type: 'clipboardWrite'; text: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
   | { type: 'history'; direction: 'back' | 'forward' | 'accept'; pageId?: string }
@@ -198,6 +201,184 @@ function tabUri(tab: vscode.Tab): vscode.Uri | undefined {
   return undefined;
 }
 
+function metaContent(html: string, name: string): string | undefined {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = [
+    new RegExp(
+      `<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']*)["']`,
+      'i',
+    ),
+    new RegExp(
+      `<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${escaped}["']`,
+      'i',
+    ),
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(html);
+    if (match?.[1]) {
+      return decodeHtmlEntities(match[1].trim());
+    }
+  }
+  return undefined;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+    })
+    .replace(/&#(\d+);/g, (_, dec: string) => {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+    })
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
+}
+
+function charsetFromContentType(contentType: string | null): string | undefined {
+  if (!contentType) {
+    return undefined;
+  }
+  const match = /charset\s*=\s*["']?([^"';\s]+)/i.exec(contentType);
+  return match?.[1]?.trim() || undefined;
+}
+
+function charsetFromHtmlMeta(headLatin1: string): string | undefined {
+  const patterns = [
+    /<meta[^>]+charset\s*=\s*["']?\s*([^"'>\s/]+)/i,
+    /<meta[^>]+http-equiv\s*=\s*["']?content-type["']?[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([^"'>\s]+)/i,
+    /<meta[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([^"'>\s]+)[^"']*["'][^>]+http-equiv\s*=\s*["']?content-type["']?/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(headLatin1);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+  return undefined;
+}
+
+function normalizeCharset(raw: string): string {
+  const lower = raw.trim().toLowerCase().replace(/_/g, '-');
+  if (lower === 'utf8' || lower === 'utf-8' || lower === 'unicode') {
+    return 'utf-8';
+  }
+  if (lower === 'win-1251' || lower === 'windows-1251' || lower === 'cp1251') {
+    return 'windows-1251';
+  }
+  if (lower === 'win-1252' || lower === 'windows-1252' || lower === 'cp1252' || lower === 'latin1' || lower === 'iso-8859-1') {
+    return 'windows-1252';
+  }
+  if (lower === 'koi8-r' || lower === 'koi8r') {
+    return 'koi8-r';
+  }
+  return lower;
+}
+
+function replacementCharRatio(text: string): number {
+  if (!text) {
+    return 0;
+  }
+  const bad = (text.match(/\uFFFD/g) || []).length;
+  return bad / text.length;
+}
+
+function decodeWithCharset(buffer: Buffer, charset: string): string {
+  try {
+    return new TextDecoder(charset, { fatal: false }).decode(buffer);
+  } catch {
+    return buffer.toString('utf8');
+  }
+}
+
+function decodeHtmlBuffer(buffer: Buffer, contentType: string | null): string {
+  const head = buffer.subarray(0, Math.min(buffer.byteLength, 8192)).toString('latin1');
+  const charset = normalizeCharset(
+    charsetFromContentType(contentType) || charsetFromHtmlMeta(head) || 'utf-8',
+  );
+  const primary = decodeWithCharset(buffer, charset);
+  if (replacementCharRatio(primary) < 0.02) {
+    return primary;
+  }
+  // Wrong charset (common for RU pages labeled UTF-8 or missing meta) — try Cyrillic encodings.
+  for (const fallback of ['utf-8', 'windows-1251', 'koi8-r']) {
+    if (fallback === charset) {
+      continue;
+    }
+    const alt = decodeWithCharset(buffer, fallback);
+    if (replacementCharRatio(alt) < replacementCharRatio(primary)) {
+      return alt;
+    }
+  }
+  return primary;
+}
+
+async function fetchTextLimited(
+  url: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+        'Accept-Charset': 'utf-8, windows-1251, iso-8859-1;q=0.5',
+      },
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const slice = buffer.byteLength > maxBytes ? buffer.subarray(0, maxBytes) : buffer;
+    return decodeHtmlBuffer(slice, response.headers.get('content-type'));
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchImageDataUrl(
+  url: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const mime = (response.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+    if (!mime.startsWith('image/')) {
+      return undefined;
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength === 0 || buffer.byteLength > maxBytes) {
+      return undefined;
+    }
+    return `data:${mime};base64,${buffer.toString('base64')}`;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
   static readonly viewId = 'syn3Map';
   static readonly bottomViewId = 'syn3MapBottom';
@@ -217,6 +398,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private rightPanel?: vscode.WebviewPanel;
   private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
+  /** In-memory OG preview cache keyed by page URL. */
+  private readonly linkPreviewCache = new Map<
+    string,
+    { image?: string; description?: string; empty?: true }
+  >();
+  private readonly linkPreviewInflight = new Map<string, Promise<void>>();
   /** Workspace file that last had the editor. Kept when focus moves to the map. */
   private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
@@ -766,6 +953,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await this.syncHistoryContext();
   }
 
+  /** Ask the focused map webview to select all text in its active field. */
+  selectAllInMap(): void {
+    this.lastFocusedWebview?.postMessage({ type: 'selectAll' });
+  }
+
+  /** Undo text edit in the focused map field, or map history if none. */
+  undoInMap(): void {
+    this.lastFocusedWebview?.postMessage({ type: 'undoInMap' });
+  }
+
+  /** Ask the focused map to copy the current text selection. */
+  copyInMap(): void {
+    this.lastFocusedWebview?.postMessage({ type: 'copyInMap' });
+  }
+
+  /** Paste clipboard text into the focused map field (linkify when selection + URL). */
+  async pasteInMap(): Promise<void> {
+    const text = await vscode.env.clipboard.readText();
+    this.lastFocusedWebview?.postMessage({ type: 'pasteInMap', text });
+  }
+
   private focusedPageId(): string {
     if (this.lastFocusedWebview) {
       return this.pageIdFor(this.lastFocusedWebview);
@@ -1187,6 +1395,23 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       } catch {
         // ignore bad urls
       }
+      return;
+    }
+    if (message.type === 'previewLink') {
+      await this.replyLinkPreview(webview, message.url, message.requestId);
+      return;
+    }
+    if (message.type === 'clipboardRead') {
+      const text = await vscode.env.clipboard.readText();
+      await webview.postMessage({
+        type: 'clipboardReadResult',
+        requestId: message.requestId,
+        text,
+      });
+      return;
+    }
+    if (message.type === 'clipboardWrite') {
+      await vscode.env.clipboard.writeText(message.text);
       return;
     }
     if (message.type === 'createNote') {
@@ -2003,6 +2228,74 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
+  private async replyLinkPreview(
+    webview: vscode.Webview,
+    url: string,
+    requestId: string,
+  ): Promise<void> {
+    const cached = this.linkPreviewCache.get(url);
+    if (cached) {
+      await webview.postMessage({
+        type: 'previewLinkResult',
+        requestId,
+        url,
+        ...cached,
+      });
+      return;
+    }
+    let inflight = this.linkPreviewInflight.get(url);
+    if (!inflight) {
+      inflight = this.fetchLinkPreview(url).finally(() => {
+        this.linkPreviewInflight.delete(url);
+      });
+      this.linkPreviewInflight.set(url, inflight);
+    }
+    await inflight;
+    const result = this.linkPreviewCache.get(url) ?? { empty: true as const };
+    await webview.postMessage({
+      type: 'previewLinkResult',
+      requestId,
+      url,
+      ...result,
+    });
+  }
+
+  private async fetchLinkPreview(url: string): Promise<void> {
+    try {
+      const parsed = vscode.Uri.parse(url);
+      if (parsed.scheme !== 'http' && parsed.scheme !== 'https') {
+        this.linkPreviewCache.set(url, { empty: true });
+        return;
+      }
+      const html = await fetchTextLimited(url, 400_000, 8_000);
+      if (!html) {
+        this.linkPreviewCache.set(url, { empty: true });
+        return;
+      }
+      const description =
+        metaContent(html, 'og:description') || metaContent(html, 'description') || undefined;
+      let imageUrl = metaContent(html, 'og:image') || undefined;
+      if (imageUrl) {
+        try {
+          imageUrl = new URL(imageUrl, url).toString();
+        } catch {
+          imageUrl = undefined;
+        }
+      }
+      let image: string | undefined;
+      if (imageUrl) {
+        image = await fetchImageDataUrl(imageUrl, 800_000, 8_000);
+      }
+      if (!image && !description) {
+        this.linkPreviewCache.set(url, { empty: true });
+        return;
+      }
+      this.linkPreviewCache.set(url, { image, description });
+    } catch {
+      this.linkPreviewCache.set(url, { empty: true });
+    }
+  }
+
   private toolIcon(webview: vscode.Webview, name: string, mode?: string, hidden = false): string {
     const light = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', `${name}-light.svg`));
     const dark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', `${name}-dark.svg`));
@@ -2021,7 +2314,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${css}">
 </head>
@@ -2051,6 +2344,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       ${icon('arrow-right')}
     </button>
     <div class="toolbar-extra">
+      <div class="toolbar-format" id="toolbar-format-wrap" hidden>
+        <button id="toolbar-format" class="history-btn" type="button" title="Оформление текста" aria-label="Оформление текста" aria-haspopup="menu" aria-expanded="false">
+          <span class="toolbar-format-label" aria-hidden="true">Aa</span>
+        </button>
+        <div id="toolbar-format-menu" class="toolbar-format-menu" hidden role="menu" aria-label="Оформление текста">
+          <button type="button" data-fmt="bold" role="menuitem" title="Жирный" aria-label="Жирный"><span class="fmt-icon fmt-bold">B</span></button>
+          <button type="button" data-fmt="color" role="menuitem" title="Цвет текста" aria-label="Цвет текста"><span class="fmt-icon fmt-color">A</span></button>
+          <button type="button" data-fmt="code" role="menuitem" title="Блок кода" aria-label="Блок кода"><span class="fmt-icon fmt-code">&lt;/&gt;</span></button>
+          <button type="button" data-fmt="quote" role="menuitem" title="Цитата" aria-label="Цитата"><span class="fmt-icon fmt-quote">”</span></button>
+        </div>
+      </div>
       <div class="toolbar-view">
         <button id="toolbar-view" class="history-btn" type="button" title="Вид" aria-label="Вид" aria-haspopup="menu" aria-expanded="false">
           ${icon('chevron-down')}

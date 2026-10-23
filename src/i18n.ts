@@ -141,6 +141,13 @@ const EN = {
   locked: 'Locked',
   pageKindFiles: 'files',
   pageKindNotes: 'notes',
+  toolbarFormat: 'Text formatting',
+  formatBold: 'Bold',
+  formatColor: 'Text color',
+  formatCode: 'Code block',
+  formatQuote: 'Quote',
+  menuCopy: 'Copy',
+  menuPaste: 'Paste',
 } as const;
 
 const RU: Syn3Strings = {
@@ -268,6 +275,13 @@ const RU: Syn3Strings = {
   locked: 'Закрыто',
   pageKindFiles: 'файлы',
   pageKindNotes: 'записи',
+  toolbarFormat: 'Оформление текста',
+  formatBold: 'Жирный',
+  formatColor: 'Цвет текста',
+  formatCode: 'Блок кода',
+  formatQuote: 'Цитата',
+  menuCopy: 'Копировать',
+  menuPaste: 'Вставить',
 };
 
 const TABLES: Record<Syn3Locale, Syn3Strings> = {

@@ -12,7 +12,12 @@
           "1": true
         },
         "bottom": {
-          "1": true
+          "1": true,
+          "3": true,
+          "4": true,
+          "test-dir": true,
+          "ttest-6": true,
+          "version": true
         },
         "left": {
           "1": true,
@@ -263,7 +268,7 @@
     },
     "note-5": {
       "parentNote": "note-3",
-      "text": "Заметка 3",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"[Заметка 3](https://pikabu.ru/)\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"[Заметка 4](https://pikabu.ru/story/makhina_paryashchaya_nad_andami_14452956)\"}]},{\"type\":\"code\",\"text\":\"export type ItemNode = {\\n  kind: 'item';\\n  id: string;\\n  markerId: string;\\n  relPath: string;\\n  isDir: boolean;\\n  exists: boolean;\\n};\"}]}",
       "order": 1,
       "color": "#ff000d"
     },
@@ -285,7 +290,7 @@
     },
     "note-4": {
       "parentNote": "note-3",
-      "text": "Заметка 2",
+      "text": "export type ItemNode = {  kind: 'item';  id: string;  markerId: string;  relPath: string;  isDir: boolean;  exists: boolean;};",
       "order": 2,
       "color": "#676f6e"
     },

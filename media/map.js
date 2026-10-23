@@ -34,6 +34,9 @@
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
   const toolbarMoreWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-more'));
+  const toolbarFormatWrap = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-format-wrap'));
+  const toolbarFormat = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-format'));
+  const toolbarFormatMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-format-menu'));
   const toolbarProfile = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile'));
   const toolbarProfileMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-menu'));
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
@@ -59,6 +62,25 @@
   const MENU_CLOSE_MS = 300;
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const menuCloseTimers = new Map();
+
+  /** @type {{ noteId: string, input: HTMLElement, lastSaved: string, locked: boolean } | null} */
+  let activeNoteEdit = null;
+  /** @type {{ bold: boolean, quote: boolean, color: string | null }} */
+  let pendingNoteMarks = { bold: false, quote: false, color: null };
+  /** @type {Range | null} */
+  let savedNoteSelection = null;
+  let linkPreviewRequest = 0;
+  /** @type {string | null} */
+  let linkPreviewPendingId = null;
+  /** @type {HTMLElement | null} */
+  let linkPreviewEl = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let linkPreviewHideTimer = null;
+  /** @type {string | null} */
+  let linkPreviewUrl = null;
+  let clipboardRequestId = 0;
+  /** @type {{ ctx: Record<string, unknown>, x: number, y: number, requestId: string } | null} */
+  let pendingClipboardMenu = null;
 
   /** @param {string} [id] */
   function cancelMenuClose(id) {
@@ -137,6 +159,53 @@
   });
   toolbarCreateMenu?.addEventListener('click', (event) => {
     handleSyn3MenuClick(event, 'toolbar-create');
+  });
+  toolbarFormatWrap?.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+  });
+  toolbarFormatWrap?.addEventListener('mouseenter', () => {
+    if (!activeNoteEdit) {
+      return;
+    }
+    cancelMenuClose('toolbar-format');
+    openFormatMenu();
+  });
+  toolbarFormatWrap?.addEventListener('mouseleave', () => {
+    if (toolbarFormatMenu && !toolbarFormatMenu.hidden) {
+      scheduleMenuClose('toolbar-format', () => closeFormatMenu());
+    }
+  });
+  toolbarFormat?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!activeNoteEdit || !toolbarFormatMenu) {
+      return;
+    }
+    if (toolbarFormatMenu.hidden) {
+      openFormatMenu();
+    } else {
+      closeFormatMenu();
+    }
+  });
+  toolbarFormatMenu?.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const button = target.closest('[data-fmt]');
+    if (!(button instanceof HTMLElement)) {
+      return;
+    }
+    const fmt = button.dataset.fmt;
+    if (fmt === 'bold') {
+      toggleBoldFormat();
+    } else if (fmt === 'quote') {
+      toggleQuoteFormat();
+    } else if (fmt === 'code') {
+      toggleCodeBlock();
+    } else if (fmt === 'color') {
+      openTextColorPicker();
+    }
+    updateFormatMenuState();
   });
   toolbarCollapse?.addEventListener('click', () => {
     cancelMenuClose();
@@ -306,8 +375,30 @@
     }
     cancelMenuClose();
     closeToolbarMenus();
+    const noteInput = target?.closest('.note-input.is-editing');
+    if (
+      noteInput instanceof HTMLElement &&
+      activeNoteEdit?.input === noteInput &&
+      !lockedContext(ctx)
+    ) {
+      saveNoteSelection();
+      const requestId = String(++clipboardRequestId);
+      pendingClipboardMenu = {
+        ctx: { ...ctx, noteEditing: true },
+        x: event.clientX,
+        y: event.clientY,
+        requestId,
+      };
+      vscode.postMessage({ type: 'clipboardRead', requestId });
+      return;
+    }
     openContextMenu(ctx, event.clientX, event.clientY);
   });
+
+  /** @param {Record<string, unknown>} ctx */
+  function lockedContext(ctx) {
+    return !!ctx.locked;
+  }
   const MIME = 'application/vnd.syn3';
   const MAX_DEPTH = 2;
   const PAGE_MIME = 'application/vnd.syn3.page';
@@ -403,6 +494,36 @@
       applyTabMarks();
     } else if (message.type === 'dirListing') {
       fillDirPopover(message);
+    } else if (message.type === 'selectAll') {
+      selectAllInFocusedField();
+    } else if (message.type === 'undoInMap') {
+      undoInFocusedField();
+    } else if (message.type === 'copyInMap') {
+      copyInFocusedField();
+    } else if (message.type === 'pasteInMap') {
+      applyPasteInFocusedField(typeof message.text === 'string' ? message.text : '');
+    } else if (message.type === 'clipboardReadResult') {
+      if (pendingClipboardMenu && pendingClipboardMenu.requestId === message.requestId) {
+        const pending = pendingClipboardMenu;
+        pendingClipboardMenu = null;
+        openContextMenu(
+          {
+            ...pending.ctx,
+            noteEditing: true,
+            clipboardText: typeof message.text === 'string' ? message.text : '',
+          },
+          pending.x,
+          pending.y,
+        );
+      }
+    } else if (message.type === 'previewLinkResult') {
+      onPreviewLinkResult(message);
+    }
+  });
+
+  document.addEventListener('selectionchange', () => {
+    if (activeNoteEdit) {
+      saveNoteSelection();
     }
   });
 
@@ -589,10 +710,10 @@
   /** @param {string} noteId */
   function focusNoteInput(noteId) {
     requestAnimationFrame(() => {
-      const node = root.querySelector('.note-card[data-note-id="' + noteId + '"] textarea.note-input');
-      if (node instanceof HTMLTextAreaElement) {
-        node.focus();
-        node.setSelectionRange(node.value.length, node.value.length);
+      const node = root.querySelector('.note-card[data-note-id="' + noteId + '"] .note-input');
+      if (node instanceof HTMLElement) {
+        beginNoteEdit(node);
+        placeCaretAtEnd(node);
       }
     });
   }
@@ -649,6 +770,9 @@
     setElLocale(toolbarViewMenu, 'toolbarView', 'aria-label');
     setBtnLocale(toolbarCreate, 'toolbarCreate');
     setElLocale(toolbarCreateMenu, 'toolbarCreate', 'aria-label');
+    setBtnLocale(toolbarFormat, 'toolbarFormat');
+    setElLocale(toolbarFormatMenu, 'toolbarFormat', 'aria-label');
+    setFormatMenuLocale();
     setBtnLocale(toolbarPanels, 'toolbarPanels');
     setElLocale(toolbarPanelsMenu, 'toolbarPanelsGroup', 'aria-label');
     setBtnLocale(panelToggleBottom, 'toolbarPanelBottom');
@@ -661,6 +785,27 @@
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
     setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
     setCollapseButton();
+  }
+
+  function setFormatMenuLocale() {
+    if (!toolbarFormatMenu) {
+      return;
+    }
+    /** @type {Array<[string, string]>} */
+    const items = [
+      ['bold', 'formatBold'],
+      ['color', 'formatColor'],
+      ['code', 'formatCode'],
+      ['quote', 'formatQuote'],
+    ];
+    for (const [fmt, key] of items) {
+      const button = toolbarFormatMenu.querySelector('[data-fmt="' + fmt + '"]');
+      if (button instanceof HTMLElement) {
+        const label = t(key);
+        button.title = label;
+        button.setAttribute('aria-label', label);
+      }
+    }
   }
 
   /**
@@ -738,6 +883,7 @@
     closeToolbarViewMenu();
     closeToolbarCreateMenu();
     closeProfileMenu();
+    closeFormatMenu();
   }
 
   function closeToolbarCreateMenu() {
@@ -1015,6 +1161,21 @@
         scroller.append(row);
         continue;
       }
+      if (item.kind === 'copy') {
+        const row = menuAction(t('menuCopy'));
+        row.dataset.menuAction = 'copy';
+        scroller.append(row);
+        continue;
+      }
+      if (item.kind === 'paste') {
+        const row = menuAction(t('menuPaste'));
+        row.dataset.menuAction = 'paste';
+        if (item.disabled) {
+          row.disabled = true;
+        }
+        scroller.append(row);
+        continue;
+      }
       const row = menuAction(item.label);
       row.dataset.command = item.command;
       scroller.append(row);
@@ -1024,7 +1185,7 @@
 
   /**
    * @param {Record<string, unknown>} ctx
-   * @returns {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'unlock' } | { kind: 'separator' }>}
+   * @returns {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'unlock' } | { kind: 'separator' } | { kind: 'copy' } | { kind: 'paste', disabled?: boolean }>}
    */
   function contextMenuItems(ctx) {
     const section = String(ctx.webviewSection || '');
@@ -1032,8 +1193,18 @@
     const hasAlias = !!ctx.hasAlias;
     const depth = Number(ctx.depth) || 0;
     const isDir = !!ctx.isDir;
-    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'unlock' } | { kind: 'separator' }>} */
+    const noteEditing = !!ctx.noteEditing;
+    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'unlock' } | { kind: 'separator' } | { kind: 'copy' } | { kind: 'paste', disabled?: boolean }>} */
     const items = [];
+
+    if (noteEditing && section === 'note' && !locked) {
+      items.push({ kind: 'copy' });
+      items.push({
+        kind: 'paste',
+        disabled: !String(ctx.clipboardText || '').trim(),
+      });
+      items.push({ kind: 'separator' });
+    }
 
     if (section === 'item') {
       items.push({ kind: 'command', command: 'syn3.reveal', label: t('menuReveal') });
@@ -1368,6 +1539,21 @@
           renderContextMenu();
         }
       }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'copy') {
+      copyInFocusedField();
+      closeContextMenu();
+      activeNoteEdit?.input.focus();
+      return;
+    }
+    if (button.dataset.menuAction === 'paste') {
+      const ctx = openMenuState?.ctx;
+      const text = typeof ctx?.clipboardText === 'string' ? ctx.clipboardText : '';
+      closeContextMenu();
+      applyPasteInFocusedField(text);
+      activeNoteEdit?.input.focus();
       return;
     }
 
@@ -2372,7 +2558,7 @@
           continue;
         }
         const dot = el('span', 'dot note-dot');
-        dot.title = note.text || t('notePlaceholder');
+        dot.title = notePlainLabel(note.text) || t('notePlaceholder');
         dots.append(dot);
       }
       if (!isNotesPage) {
@@ -2490,30 +2676,1099 @@
     return button;
   }
 
-  function linkify(text) {
+  const NOTE_JSON_PREFIX = 'syn3json:';
+  /** Markdown link or bare http(s) URL. Groups: 1=label, 2=md-url, 3=bare-url. */
+  const NOTE_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"']+)/g;
+
+  function saveNoteSelection() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !activeNoteEdit) {
+      savedNoteSelection = null;
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!activeNoteEdit.input.contains(range.commonAncestorContainer)) {
+      savedNoteSelection = null;
+      return;
+    }
+    savedNoteSelection = range.cloneRange();
+  }
+
+  function restoreNoteSelection() {
+    if (!savedNoteSelection || !activeNoteEdit) {
+      return;
+    }
+    activeNoteEdit.input.focus();
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(savedNoteSelection);
+  }
+
+  /**
+   * @typedef {{ text: string, b?: true, color?: string, quote?: true }} NoteRun
+   * @typedef {{ type: 'p', runs: NoteRun[] } | { type: 'code', text: string }} NoteBlock
+   * @typedef {{ v: 1, blocks: NoteBlock[] }} NoteDoc
+   */
+
+  /** @param {string | undefined} raw @returns {NoteDoc} */
+  function parseNoteText(raw) {
+    if (typeof raw === 'string' && raw.startsWith(NOTE_JSON_PREFIX)) {
+      try {
+        const doc = JSON.parse(raw.slice(NOTE_JSON_PREFIX.length));
+        if (doc && doc.v === 1 && Array.isArray(doc.blocks)) {
+          return /** @type {NoteDoc} */ (doc);
+        }
+      } catch {
+        // fall through to plain text
+      }
+    }
+    const text = typeof raw === 'string' ? raw : '';
+    const lines = text.split('\n');
+    return {
+      v: 1,
+      blocks: lines.map((line) => ({ type: 'p', runs: [{ text: line }] })),
+    };
+  }
+
+  /** @param {NoteRun[] | undefined} runs */
+  function runsToText(runs) {
+    return (runs || []).map((run) => run.text || '').join('');
+  }
+
+  /** @param {NoteDoc} doc */
+  function noteDocIsRich(doc) {
+    for (const block of doc.blocks) {
+      if (block.type === 'code') {
+        return true;
+      }
+      for (const run of block.runs || []) {
+        if (run.b || run.color || run.quote) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** @param {NoteBlock[]} blocks */
+  function normalizeNoteBlocks(blocks) {
+    const next = blocks.slice();
+    while (next.length > 1) {
+      const last = next[next.length - 1];
+      if (last.type === 'p' && !runsToText(last.runs).trim()) {
+        next.pop();
+        continue;
+      }
+      break;
+    }
+    if (next.length === 0) {
+      next.push({ type: 'p', runs: [{ text: '' }] });
+    }
+    return next;
+  }
+
+  /** Block-level tags that imply a line break when extracting plain text. */
+  const NOTE_PLAIN_BLOCK_TAGS = new Set([
+    'DIV',
+    'P',
+    'PRE',
+    'LI',
+    'TR',
+    'BLOCKQUOTE',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+  ]);
+
+  /**
+   * DOM → plain text with newlines for BRs / block boundaries.
+   * Keeps spaces and tabs (unlike Range#toString across block elements).
+   * @param {Node | null} node
+   * @returns {string}
+   */
+  function plainTextFromNode(node) {
+    if (!node) {
+      return '';
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent || '';
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return '';
+    }
+    const elNode = /** @type {HTMLElement} */ (node);
+    if (elNode.tagName === 'BR') {
+      return '\n';
+    }
+    /** @type {string[]} */
+    const parts = [];
+    for (const child of elNode.childNodes) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const childEl = /** @type {HTMLElement} */ (child);
+        if (NOTE_PLAIN_BLOCK_TAGS.has(childEl.tagName) && parts.length > 0) {
+          const prev = parts[parts.length - 1];
+          if (prev && !prev.endsWith('\n')) {
+            parts.push('\n');
+          }
+        }
+      }
+      parts.push(plainTextFromNode(child));
+    }
+    return parts.join('');
+  }
+
+  /**
+   * @param {Range} range
+   * @returns {string}
+   */
+  function plainTextFromRange(range) {
+    const wrap = document.createElement('div');
+    wrap.append(range.cloneContents());
+    return plainTextFromNode(wrap).replace(/\n$/, '');
+  }
+
+  /**
+   * Read code-block text from a pre.note-code, preserving newlines if the
+   * browser nested div/br nodes inside it during paste/edit.
+   * @param {HTMLElement} pre
+   * @returns {string}
+   */
+  function codeTextFromPre(pre) {
+    let text = plainTextFromNode(pre);
+    if (text.endsWith('\n')) {
+      text = text.slice(0, -1);
+    }
+    return text;
+  }
+
+  /** @param {NoteDoc} doc */
+  function serializeNoteDoc(doc) {
+    const blocks = normalizeNoteBlocks(doc.blocks);
+    const normalized = { v: 1, blocks };
+    if (!noteDocIsRich(normalized)) {
+      return blocks
+        .map((block) => (block.type === 'code' ? block.text : runsToText(block.runs)))
+        .join('\n');
+    }
+    return NOTE_JSON_PREFIX + JSON.stringify(normalized);
+  }
+
+  /** @param {string | undefined} raw */
+  function notePlainLabel(raw) {
+    const doc = parseNoteText(raw);
+    return (
+      doc.blocks
+        .map((block) => (block.type === 'code' ? block.text : runsToText(block.runs)))
+        .join(' ')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim() || ''
+    );
+  }
+
+  /** @param {string} text @param {boolean} asLinks @returns {DocumentFragment} */
+  function appendTextWithOptionalLinks(text, asLinks) {
     const fragment = document.createDocumentFragment();
-    const pattern = /(https?:\/\/[^\s<>"']+)/g;
+    if (!asLinks) {
+      fragment.append(document.createTextNode(text));
+      return fragment;
+    }
+    const pattern = new RegExp(NOTE_LINK_RE.source, 'g');
     let last = 0;
     let match;
     while ((match = pattern.exec(text))) {
       if (match.index > last) {
         fragment.append(document.createTextNode(text.slice(last, match.index)));
       }
-      const url = match[1];
-      const link = el('a', 'note-link', url);
-      link.href = url;
-      link.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        vscode.postMessage({ type: 'openExternal', url });
-      });
-      fragment.append(link);
-      last = match.index + url.length;
+      const label = match[1];
+      const mdUrl = match[2];
+      const bareUrl = match[3];
+      if (label && mdUrl) {
+        const link = el('a', 'note-link', label);
+        link.href = mdUrl;
+        link.rel = 'noopener noreferrer';
+        fragment.append(link);
+        last = match.index + match[0].length;
+      } else if (bareUrl) {
+        const link = el('a', 'note-link', bareUrl);
+        link.href = bareUrl;
+        link.rel = 'noopener noreferrer';
+        fragment.append(link);
+        last = match.index + bareUrl.length;
+      } else {
+        last = match.index + match[0].length;
+      }
     }
     if (last < text.length) {
       fragment.append(document.createTextNode(text.slice(last)));
     }
+    if (!fragment.childNodes.length) {
+      fragment.append(document.createTextNode(''));
+    }
     return fragment;
+  }
+
+  /**
+   * @param {NoteRun} run
+   * @param {boolean} asLinks
+   */
+  function renderNoteRun(run, asLinks) {
+    let node = /** @type {Node} */ (appendTextWithOptionalLinks(run.text || '', asLinks));
+    if (run.quote) {
+      const wrap = el('span', 'note-quote');
+      wrap.append(node);
+      node = wrap;
+    }
+    if (run.color) {
+      const wrap = el('span');
+      wrap.style.color = run.color;
+      wrap.append(node);
+      node = wrap;
+    }
+    if (run.b) {
+      const wrap = el('b');
+      wrap.append(node);
+      node = wrap;
+    }
+    return node;
+  }
+
+  /**
+   * @param {NoteDoc} doc
+   * @param {{ linkify?: boolean, editing?: boolean }} [opts]
+   */
+  function renderNoteDoc(doc, opts) {
+    const linkifyUrls = !!opts?.linkify;
+    const editing = !!opts?.editing;
+    const fragment = document.createDocumentFragment();
+    const blocks = doc.blocks.length ? doc.blocks : [{ type: 'p', runs: [{ text: '' }] }];
+    for (const block of blocks) {
+      if (block.type === 'code') {
+        const pre = el('pre', 'note-code');
+        pre.textContent = block.text || '';
+        if (!block.text) {
+          pre.append(document.createElement('br'));
+        }
+        fragment.append(pre);
+        continue;
+      }
+      const line = el('div', 'note-p');
+      const runs = block.runs?.length ? block.runs : [{ text: '' }];
+      for (const run of runs) {
+        line.append(renderNoteRun(run, linkifyUrls));
+      }
+      if (!line.textContent) {
+        line.append(document.createElement('br'));
+      }
+      fragment.append(line);
+    }
+    const last = blocks[blocks.length - 1];
+    if (editing && last?.type === 'code') {
+      const tail = el('div', 'note-p');
+      tail.append(document.createElement('br'));
+      fragment.append(tail);
+    }
+    return fragment;
+  }
+
+  /** @param {HTMLElement} input */
+  function noteInputIsEmpty(input) {
+    const text = (input.textContent || '').replace(/\u00a0/g, ' ').trim();
+    return !text;
+  }
+
+  /** @param {HTMLElement} input */
+  function refreshNoteEmptyClass(input) {
+    input.classList.toggle('is-empty', noteInputIsEmpty(input));
+  }
+
+  /**
+   * @param {Node | null} node
+   * @returns {NoteRun[]}
+   */
+  function runsFromNode(node) {
+    if (!node) {
+      return [];
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      return [{ text: node.textContent || '' }];
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return [];
+    }
+    const elNode = /** @type {HTMLElement} */ (node);
+    if (elNode.tagName === 'BR') {
+      return [{ text: '\n' }];
+    }
+    if (elNode.tagName === 'A') {
+      const href = elNode.getAttribute('href') || '';
+      const label = elNode.textContent || '';
+      if (href && label && label !== href) {
+        return [{ text: '[' + label + '](' + href + ')' }];
+      }
+      return [{ text: href || label }];
+    }
+    /** @type {Partial<NoteRun>} */
+    const marks = {};
+    const tag = elNode.tagName;
+    if (tag === 'B' || tag === 'STRONG') {
+      marks.b = true;
+    }
+    if (elNode.classList.contains('note-quote')) {
+      marks.quote = true;
+    }
+    const colorAttr = tag === 'FONT' ? elNode.getAttribute('color') : null;
+    const color = colorAttr || elNode.style?.color;
+    if (color) {
+      const hex = color.startsWith('#')
+        ? color.length === 4
+          ? '#' + color[1] + color[1] + color[2] + color[2] + color[3] + color[3]
+          : color.slice(0, 7)
+        : toHex(color);
+      if (hex) {
+        marks.color = hex.toLowerCase();
+      }
+    }
+    /** @type {NoteRun[]} */
+    const runs = [];
+    for (const child of elNode.childNodes) {
+      for (const run of runsFromNode(child)) {
+        runs.push({
+          text: run.text,
+          b: marks.b || run.b || undefined,
+          quote: marks.quote || run.quote || undefined,
+          color: marks.color || run.color || undefined,
+        });
+      }
+    }
+    return runs.length ? runs : [{ text: '', ...marks }];
+  }
+
+  /** @param {HTMLElement} input @returns {NoteDoc} */
+  function serializeNoteFromDom(input) {
+    /** @type {NoteBlock[]} */
+    const blocks = [];
+    const pushParagraphRuns = (/** @type {NoteRun[]} */ runs) => {
+      /** @type {NoteRun[]} */
+      let current = [];
+      const flush = () => {
+        blocks.push({ type: 'p', runs: current.length ? current : [{ text: '' }] });
+        current = [];
+      };
+      for (const run of runs) {
+        const parts = (run.text || '').split('\n');
+        for (let i = 0; i < parts.length; i++) {
+          if (i > 0) {
+            flush();
+          }
+          current.push({
+            text: parts[i],
+            b: run.b,
+            color: run.color,
+            quote: run.quote,
+          });
+        }
+      }
+      flush();
+    };
+
+    for (const child of Array.from(input.childNodes)) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const elNode = /** @type {HTMLElement} */ (child);
+        if (elNode.classList.contains('note-code') || elNode.tagName === 'PRE') {
+          blocks.push({ type: 'code', text: codeTextFromPre(elNode) });
+          continue;
+        }
+        pushParagraphRuns(runsFromNode(elNode));
+        continue;
+      }
+      if (child.nodeType === Node.TEXT_NODE && child.textContent) {
+        pushParagraphRuns([{ text: child.textContent }]);
+      }
+    }
+    return { v: 1, blocks: normalizeNoteBlocks(blocks) };
+  }
+
+  /** @param {HTMLElement} input */
+  function bindNoteLinks(input) {
+    input.querySelectorAll('a.note-link').forEach((node) => {
+      if (!(node instanceof HTMLAnchorElement)) {
+        return;
+      }
+      node.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({ type: 'openExternal', url: node.href });
+      });
+      node.addEventListener('mouseenter', () => {
+        showLinkPreview(node);
+      });
+      node.addEventListener('mouseleave', () => {
+        scheduleHideLinkPreview();
+      });
+    });
+  }
+
+  /** @param {HTMLElement} input @param {string} raw @param {{ editing?: boolean, locked?: boolean }} opts */
+  function paintNoteInput(input, raw, opts) {
+    const doc = parseNoteText(raw);
+    const editing = !!opts.editing && !opts.locked;
+    input.replaceChildren(renderNoteDoc(doc, { linkify: !editing, editing }));
+    input.contentEditable = editing ? 'true' : 'false';
+    input.classList.toggle('is-editing', editing);
+    input.spellcheck = editing;
+    refreshNoteEmptyClass(input);
+    if (!editing) {
+      bindNoteLinks(input);
+    }
+  }
+
+  /** @param {HTMLElement} node */
+  function placeCaretAtEnd(node) {
+    node.focus();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  /** @param {Node | null} node @returns {HTMLElement | null} */
+  function closestNoteCode(node) {
+    if (!node) {
+      return null;
+    }
+    const elNode = node.nodeType === Node.ELEMENT_NODE ? /** @type {HTMLElement} */ (node) : node.parentElement;
+    return elNode?.closest?.('.note-code') || null;
+  }
+
+  /** @param {HTMLElement} input */
+  function exitCodeBlock(input) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const code = closestNoteCode(sel.anchorNode);
+    if (!code || !input.contains(code)) {
+      return;
+    }
+    let next = code.nextElementSibling;
+    if (!(next instanceof HTMLElement) || !next.classList.contains('note-p')) {
+      next = el('div', 'note-p');
+      next.append(document.createElement('br'));
+      code.after(next);
+    }
+    const range = document.createRange();
+    range.selectNodeContents(next);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  /** @param {HTMLElement} input */
+  function insertNoteLineBreak(input) {
+    const sel = window.getSelection();
+    const code = closestNoteCode(sel?.anchorNode || null);
+    if (code && input.contains(code)) {
+      document.execCommand('insertText', false, '\n');
+      return;
+    }
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const anchor =
+      range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? /** @type {HTMLElement} */ (range.startContainer)
+        : range.startContainer.parentElement;
+    let para = anchor?.closest?.('.note-p') || null;
+    if (!(para instanceof HTMLElement) || !input.contains(para)) {
+      para = el('div', 'note-p');
+      para.append(document.createElement('br'));
+      input.append(para);
+      const caret = document.createRange();
+      caret.setStart(para, 0);
+      caret.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(caret);
+      return;
+    }
+    const after = range.cloneRange();
+    after.selectNodeContents(para);
+    after.setStart(range.endContainer, range.endOffset);
+    const trailing = after.extractContents();
+    const next = el('div', 'note-p');
+    const hasTrailing =
+      !!(trailing.textContent && trailing.textContent.length) ||
+      trailing.querySelector?.('img, br, span, b, strong, a');
+    if (hasTrailing) {
+      next.append(trailing);
+      if (!(next.textContent || '').length && !next.querySelector('br')) {
+        next.append(document.createElement('br'));
+      }
+    } else {
+      next.append(document.createElement('br'));
+    }
+    if (!(para.textContent || '').length && !para.querySelector('br')) {
+      para.append(document.createElement('br'));
+    }
+    para.after(next);
+    const caret = document.createRange();
+    caret.setStart(next, 0);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+
+  /** @param {HTMLElement} input */
+  function beginNoteEdit(input) {
+    if (input.dataset.locked === '1') {
+      return;
+    }
+    const noteId = input.dataset.noteId || '';
+    const raw = input.dataset.raw || '';
+    paintNoteInput(input, raw, { editing: true });
+    activeNoteEdit = {
+      noteId,
+      input,
+      lastSaved: raw,
+      locked: false,
+    };
+    pendingNoteMarks = { bold: false, quote: false, color: null };
+    setNoteEditingChrome(input, true);
+    setFormatToolbarVisible(true);
+    updateFormatMenuState();
+    input.focus();
+  }
+
+  /** @param {HTMLElement} input @param {{ restore?: boolean }} [opts] */
+  function endNoteEdit(input, opts) {
+    if (activeNoteEdit?.input !== input) {
+      return;
+    }
+    const noteId = activeNoteEdit.noteId;
+    let next = activeNoteEdit.lastSaved;
+    if (!opts?.restore) {
+      const doc = serializeNoteFromDom(input);
+      next = serializeNoteDoc(doc);
+      if (next !== activeNoteEdit.lastSaved) {
+        vscode.postMessage({ type: 'updateNote', noteId, text: next });
+      }
+    }
+    input.dataset.raw = next;
+    activeNoteEdit = null;
+    pendingNoteMarks = { bold: false, quote: false, color: null };
+    savedNoteSelection = null;
+    setNoteEditingChrome(input, false);
+    setFormatToolbarVisible(false);
+    closeFormatMenu();
+    paintNoteInput(input, next, { editing: false, locked: input.dataset.locked === '1' });
+  }
+
+  /** @param {HTMLElement} input @param {boolean} editing */
+  function setNoteEditingChrome(input, editing) {
+    const section = input.closest('.note-card');
+    const header = input.closest('.note-header');
+    if (section instanceof HTMLElement) {
+      section.classList.toggle('is-note-editing', editing);
+    }
+    if (header instanceof HTMLElement) {
+      header.draggable = editing ? false : input.dataset.locked !== '1';
+    }
+  }
+
+  function setFormatToolbarVisible(visible) {
+    if (!toolbarFormatWrap) {
+      return;
+    }
+    toolbarFormatWrap.hidden = !visible;
+    if (!visible) {
+      closeFormatMenu();
+    }
+  }
+
+  function closeFormatMenu() {
+    if (toolbarFormatMenu) {
+      toolbarFormatMenu.hidden = true;
+    }
+    if (toolbarFormat) {
+      toolbarFormat.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function openFormatMenu() {
+    if (!toolbarFormatMenu || !toolbarFormat) {
+      return;
+    }
+    toolbarFormatMenu.hidden = false;
+    toolbarFormat.setAttribute('aria-expanded', 'true');
+    updateFormatMenuState();
+  }
+
+  function updateFormatMenuState() {
+    if (!toolbarFormatMenu) {
+      return;
+    }
+    const boldBtn = toolbarFormatMenu.querySelector('[data-fmt="bold"]');
+    const quoteBtn = toolbarFormatMenu.querySelector('[data-fmt="quote"]');
+    if (boldBtn instanceof HTMLElement) {
+      boldBtn.classList.toggle('is-active', pendingNoteMarks.bold || queryInlineMark('bold'));
+    }
+    if (quoteBtn instanceof HTMLElement) {
+      quoteBtn.classList.toggle('is-active', pendingNoteMarks.quote || queryInlineMark('quote'));
+    }
+  }
+
+  /** @param {'bold' | 'quote'} kind */
+  function queryInlineMark(kind) {
+    const sel = window.getSelection();
+    if (!sel || !sel.anchorNode || !activeNoteEdit) {
+      return false;
+    }
+    const elNode =
+      sel.anchorNode.nodeType === Node.ELEMENT_NODE
+        ? /** @type {HTMLElement} */ (sel.anchorNode)
+        : sel.anchorNode.parentElement;
+    if (!elNode || !activeNoteEdit.input.contains(elNode)) {
+      return false;
+    }
+    if (kind === 'bold') {
+      return !!elNode.closest('b, strong');
+    }
+    return !!elNode.closest('.note-quote');
+  }
+
+  function toggleBoldFormat() {
+    if (!activeNoteEdit) {
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) {
+      pendingNoteMarks.bold = !pendingNoteMarks.bold;
+      updateFormatMenuState();
+      return;
+    }
+    document.execCommand('bold');
+    updateFormatMenuState();
+  }
+
+  function toggleQuoteFormat() {
+    if (!activeNoteEdit) {
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    if (sel.isCollapsed) {
+      pendingNoteMarks.quote = !pendingNoteMarks.quote;
+      updateFormatMenuState();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const existing = closestQuote(range.commonAncestorContainer);
+    if (existing && activeNoteEdit.input.contains(existing) && rangeFullyInside(range, existing)) {
+      unwrapElement(existing);
+    } else {
+      const wrap = el('span', 'note-quote');
+      try {
+        range.surroundContents(wrap);
+      } catch {
+        const extracted = range.extractContents();
+        wrap.append(extracted);
+        range.insertNode(wrap);
+      }
+    }
+    updateFormatMenuState();
+  }
+
+  /** @param {Node | null} node */
+  function closestQuote(node) {
+    const elNode = node?.nodeType === Node.ELEMENT_NODE ? /** @type {HTMLElement} */ (node) : node?.parentElement;
+    return elNode?.closest?.('.note-quote') || null;
+  }
+
+  /** @param {Range} range @param {HTMLElement} node */
+  function rangeFullyInside(range, node) {
+    return node.contains(range.startContainer) && node.contains(range.endContainer);
+  }
+
+  /** @param {HTMLElement} node */
+  function unwrapElement(node) {
+    const parent = node.parentNode;
+    if (!parent) {
+      return;
+    }
+    while (node.firstChild) {
+      parent.insertBefore(node.firstChild, node);
+    }
+    parent.removeChild(node);
+  }
+
+  function applyTextColor(color) {
+    if (!activeNoteEdit) {
+      return;
+    }
+    restoreNoteSelection();
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) {
+      pendingNoteMarks.color = color;
+      return;
+    }
+    document.execCommand('styleWithCSS', false, 'true');
+    document.execCommand('foreColor', false, color);
+  }
+
+  function toggleCodeBlock() {
+    if (!activeNoteEdit) {
+      return;
+    }
+    const input = activeNoteEdit.input;
+    const sel = window.getSelection();
+    const code = closestNoteCode(sel?.anchorNode || null);
+    if (code && input.contains(code)) {
+      const text = codeTextFromPre(code);
+      const lines = text.split('\n');
+      const frag = document.createDocumentFragment();
+      for (const line of lines) {
+        const p = el('div', 'note-p');
+        p.textContent = line;
+        if (!line) {
+          p.append(document.createElement('br'));
+        }
+        frag.append(p);
+      }
+      code.replaceWith(frag);
+      return;
+    }
+    const pre = el('pre', 'note-code');
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      const range = sel.getRangeAt(0);
+      // range.toString() drops newlines between block elements; keep formatting.
+      const text = plainTextFromRange(range);
+      pre.textContent = text;
+      if (!text) {
+        pre.append(document.createElement('br'));
+      }
+      range.deleteContents();
+      range.insertNode(pre);
+    } else if (sel && sel.rangeCount) {
+      pre.append(document.createElement('br'));
+      const range = sel.getRangeAt(0);
+      range.insertNode(pre);
+    } else {
+      pre.append(document.createElement('br'));
+      input.append(pre);
+    }
+    const after = el('div', 'note-p');
+    after.append(document.createElement('br'));
+    pre.after(after);
+    const caret = document.createRange();
+    caret.selectNodeContents(pre);
+    caret.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(caret);
+  }
+
+  function openTextColorPicker() {
+    if (!activeNoteEdit) {
+      return;
+    }
+    saveNoteSelection();
+    const rect = (toolbarFormatMenu || toolbarFormat || activeNoteEdit.input).getBoundingClientRect();
+    colorInput.style.left = rect.left + 'px';
+    colorInput.style.top = rect.bottom + 'px';
+    colorInput.value = pendingNoteMarks.color || '#4daafc';
+    colorTarget = { kind: 'text' };
+    if (typeof colorInput.showPicker === 'function') {
+      try {
+        colorInput.showPicker();
+        return;
+      } catch {
+        // fall through
+      }
+    }
+    colorInput.click();
+  }
+
+  /**
+   * @param {HTMLAnchorElement} link
+   */
+  function showLinkPreview(link) {
+    if (linkPreviewHideTimer) {
+      clearTimeout(linkPreviewHideTimer);
+      linkPreviewHideTimer = null;
+    }
+    const url = link.href;
+    linkPreviewUrl = url;
+    ensureLinkPreviewEl();
+    if (!linkPreviewEl) {
+      return;
+    }
+    const narrow = window.innerWidth < 100;
+    linkPreviewEl.classList.toggle('is-narrow', narrow);
+    const rect = link.getBoundingClientRect();
+    linkPreviewEl.style.top = Math.min(window.innerHeight - 128, rect.bottom + 4) + 'px';
+    linkPreviewEl.hidden = false;
+    const scroll = /** @type {HTMLElement} */ (linkPreviewEl.querySelector('.note-link-preview-scroll'));
+    scroll.replaceChildren(buildLinkPreviewSkeleton());
+    updateLinkPreviewScrollbar();
+    const requestId = String(++linkPreviewRequest);
+    linkPreviewPendingId = requestId;
+    vscode.postMessage({ type: 'previewLink', url, requestId });
+  }
+
+  function scheduleHideLinkPreview() {
+    if (linkPreviewHideTimer) {
+      clearTimeout(linkPreviewHideTimer);
+    }
+    linkPreviewHideTimer = setTimeout(() => {
+      hideLinkPreview();
+    }, 180);
+  }
+
+  function hideLinkPreview() {
+    linkPreviewUrl = null;
+    if (linkPreviewEl) {
+      linkPreviewEl.hidden = true;
+    }
+  }
+
+  function ensureLinkPreviewEl() {
+    if (linkPreviewEl) {
+      return;
+    }
+    linkPreviewEl = el('div', 'note-link-preview');
+    linkPreviewEl.hidden = true;
+    const scroll = el('div', 'note-link-preview-scroll');
+    const bar = el('div', 'note-link-preview-bar');
+    bar.hidden = true;
+    const thumb = el('div', 'note-link-preview-thumb');
+    bar.append(thumb);
+    linkPreviewEl.append(scroll, bar);
+    linkPreviewEl.addEventListener('mouseenter', () => {
+      if (linkPreviewHideTimer) {
+        clearTimeout(linkPreviewHideTimer);
+        linkPreviewHideTimer = null;
+      }
+    });
+    linkPreviewEl.addEventListener('mouseleave', () => {
+      scheduleHideLinkPreview();
+    });
+    scroll.addEventListener('scroll', updateLinkPreviewScrollbar, { passive: true });
+    document.body.append(linkPreviewEl);
+  }
+
+  function buildLinkPreviewSkeleton() {
+    const frag = document.createDocumentFragment();
+    frag.append(el('div', 'note-link-preview-skel-image'));
+    const lines = el('div', 'note-link-preview-skel-lines');
+    lines.append(el('div', 'note-link-preview-skel-line'), el('div', 'note-link-preview-skel-line'));
+    frag.append(lines);
+    return frag;
+  }
+
+  /**
+   * @param {{ requestId: string, url: string, image?: string, description?: string, empty?: boolean }} message
+   */
+  function onPreviewLinkResult(message) {
+    if (!linkPreviewEl || linkPreviewUrl !== message.url) {
+      return;
+    }
+    if (linkPreviewPendingId && message.requestId !== linkPreviewPendingId) {
+      return;
+    }
+    if (message.empty || (!message.image && !message.description)) {
+      hideLinkPreview();
+      return;
+    }
+    const scroll = /** @type {HTMLElement} */ (linkPreviewEl.querySelector('.note-link-preview-scroll'));
+    scroll.replaceChildren();
+    if (message.image) {
+      const img = /** @type {HTMLImageElement} */ (el('img', 'note-link-preview-image'));
+      img.src = message.image;
+      img.alt = '';
+      scroll.append(img);
+    }
+    if (message.description) {
+      scroll.append(el('div', 'note-link-preview-desc', message.description));
+    }
+    updateLinkPreviewScrollbar();
+  }
+
+  function updateLinkPreviewScrollbar() {
+    if (!linkPreviewEl) {
+      return;
+    }
+    const scroll = /** @type {HTMLElement | null} */ (linkPreviewEl.querySelector('.note-link-preview-scroll'));
+    const bar = /** @type {HTMLElement | null} */ (linkPreviewEl.querySelector('.note-link-preview-bar'));
+    const thumb = /** @type {HTMLElement | null} */ (linkPreviewEl.querySelector('.note-link-preview-thumb'));
+    if (!scroll || !bar || !thumb) {
+      return;
+    }
+    const max = scroll.scrollHeight - scroll.clientHeight;
+    if (max <= 1) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    const thumbHeight = Math.max(16, (scroll.clientHeight / scroll.scrollHeight) * scroll.clientHeight);
+    const top = (scroll.scrollTop / max) * (scroll.clientHeight - thumbHeight);
+    thumb.style.height = thumbHeight + 'px';
+    thumb.style.transform = 'translateY(' + top + 'px)';
+  }
+
+  function selectAllInFocusedField() {
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      active.select();
+      return;
+    }
+    let editable = active instanceof HTMLElement && active.isContentEditable ? active : null;
+    if (editable?.closest?.('.note-input')) {
+      editable = /** @type {HTMLElement} */ (editable.closest('.note-input'));
+    }
+    if (!editable) {
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  /** Undo in the focused text field; otherwise undo map history for the page. */
+  function undoInFocusedField() {
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      document.execCommand('undo');
+      return;
+    }
+    let editable = active instanceof HTMLElement && active.isContentEditable ? active : null;
+    if (editable?.closest?.('.note-input')) {
+      editable = /** @type {HTMLElement} */ (editable.closest('.note-input'));
+    }
+    if (editable) {
+      editable.focus();
+      document.execCommand('undo');
+      if (editable.classList.contains('note-input')) {
+        refreshNoteEmptyClass(editable);
+      }
+      return;
+    }
+    vscode.postMessage({ type: 'history', direction: 'back', pageId: uiState.activePageId });
+  }
+
+  function copyInFocusedField() {
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      const start = active.selectionStart ?? 0;
+      const end = active.selectionEnd ?? 0;
+      const text =
+        start !== end ? active.value.slice(start, end) : window.getSelection()?.toString() || '';
+      if (text) {
+        vscode.postMessage({ type: 'clipboardWrite', text });
+      }
+      return;
+    }
+    saveNoteSelection();
+    restoreNoteSelection();
+    const text = window.getSelection()?.toString() || '';
+    if (text) {
+      vscode.postMessage({ type: 'clipboardWrite', text });
+    }
+  }
+
+  /**
+   * Insert plain text at the current (or saved) caret in the active note.
+   * Preserves newlines/indentation (important for code). Prefer insertText for undo.
+   * @param {string} text
+   */
+  function insertTextAtNoteCaret(text) {
+    if (!activeNoteEdit) {
+      return;
+    }
+    const input = activeNoteEdit.input;
+    input.focus();
+    restoreNoteSelection();
+    let sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !input.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+      placeCaretAtEnd(input);
+      sel = window.getSelection();
+    }
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    // insertText keeps \n and spaces; works inside paste user-gesture and for undo.
+    if (text && document.execCommand('insertText', false, text)) {
+      refreshNoteEmptyClass(input);
+      saveNoteSelection();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    refreshNoteEmptyClass(input);
+    saveNoteSelection();
+  }
+
+  /** @param {string} text */
+  function applyPasteInFocusedField(text) {
+    const active = document.activeElement;
+    if (
+      (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) &&
+      !active.closest?.('.note-input')
+    ) {
+      const start = active.selectionStart ?? active.value.length;
+      const end = active.selectionEnd ?? start;
+      active.setRangeText(text, start, end, 'end');
+      active.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (!activeNoteEdit) {
+      return;
+    }
+    const input = activeNoteEdit.input;
+    input.focus();
+    restoreNoteSelection();
+    const sel = window.getSelection();
+    const clip = text.trim();
+    const code = sel ? closestNoteCode(sel.anchorNode) : null;
+    const inCode = !!(code && input.contains(code));
+    if (sel && sel.rangeCount && !sel.isCollapsed && !inCode && isPasteableNoteUrl(clip)) {
+      const label = sel.toString();
+      if (label) {
+        insertTextAtNoteCaret('[' + label + '](' + clip + ')');
+        return;
+      }
+    }
+    insertTextAtNoteCaret(text);
+  }
+
+  /** @param {string} text */
+  function isPasteableNoteUrl(text) {
+    const trimmed = text.trim();
+    // Allow surrounding whitespace already trimmed; reject whitespace inside.
+    if (!/^https?:\/\/\S+$/i.test(trimmed)) {
+      return false;
+    }
+    try {
+      const url = new URL(trimmed);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -2563,47 +3818,191 @@
       openColorPicker(note.id, bar, section, 'note');
     });
     header.append(bar);
-    const input = /** @type {HTMLTextAreaElement} */ (el('textarea', 'note-input'));
-    input.rows = Math.min(6, Math.max(1, (note.text || '').split('\n').length || 1));
-    input.value = note.text || '';
-    input.placeholder = t('notePlaceholder');
-    input.readOnly = locked;
+    const input = el('div', 'note-input');
+    input.dataset.noteId = note.id;
+    input.dataset.raw = note.text || '';
+    input.dataset.locked = locked ? '1' : '0';
+    input.dataset.placeholder = t('notePlaceholder');
+    input.setAttribute('role', 'textbox');
+    input.setAttribute('aria-multiline', 'true');
     input.title = locked ? t('noteLocked') : '';
-    let lastSaved = note.text || '';
-    const save = () => {
-      if (locked) {
-        return;
-      }
-      const next = input.value;
-      if (next === lastSaved) {
-        return;
-      }
-      lastSaved = next;
-      vscode.postMessage({ type: 'updateNote', noteId: note.id, text: next });
-    };
+    paintNoteInput(input, note.text || '', { editing: false, locked });
     input.addEventListener('keydown', (event) => {
+      if (locked || activeNoteEdit?.input !== input) {
+        return;
+      }
       if (event.key === 'Escape') {
         event.preventDefault();
-        input.value = lastSaved;
+        endNoteEdit(input, { restore: true });
         input.blur();
+        return;
       }
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        exitCodeBlock(input);
+        return;
+      }
+      if (event.key === 'Enter' && event.shiftKey) {
+        event.preventDefault();
+        insertNoteLineBreak(input);
+        refreshNoteEmptyClass(input);
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        endNoteEdit(input);
         input.blur();
+        return;
+      }
+      if (event.key === 'ArrowDown') {
+        const code = closestNoteCode(window.getSelection()?.anchorNode || null);
+        if (!code || !input.contains(code)) {
+          return;
+        }
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount || !sel.isCollapsed) {
+          return;
+        }
+        const preRange = document.createRange();
+        preRange.selectNodeContents(code);
+        const caret = sel.getRangeAt(0);
+        if (caret.compareBoundaryPoints(Range.END_TO_END, preRange) >= 0) {
+          event.preventDefault();
+          exitCodeBlock(input);
+        }
       }
     });
-    input.addEventListener('blur', save);
+    input.addEventListener('beforeinput', (event) => {
+      if (locked || activeNoteEdit?.input !== input) {
+        return;
+      }
+      if (event.inputType !== 'insertText' || !event.data) {
+        return;
+      }
+      if (!pendingNoteMarks.bold && !pendingNoteMarks.quote && !pendingNoteMarks.color) {
+        return;
+      }
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount || !sel.isCollapsed) {
+        return;
+      }
+      if (closestNoteCode(sel.anchorNode)) {
+        return;
+      }
+      event.preventDefault();
+      let node = /** @type {Node} */ (document.createTextNode(event.data));
+      if (pendingNoteMarks.quote) {
+        const wrap = el('span', 'note-quote');
+        wrap.append(node);
+        node = wrap;
+      }
+      if (pendingNoteMarks.color) {
+        const wrap = el('span');
+        wrap.style.color = pendingNoteMarks.color;
+        wrap.append(node);
+        node = wrap;
+      }
+      if (pendingNoteMarks.bold) {
+        const wrap = el('b');
+        wrap.append(node);
+        node = wrap;
+      }
+      const range = sel.getRangeAt(0);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      refreshNoteEmptyClass(input);
+    });
+    input.addEventListener('input', () => {
+      refreshNoteEmptyClass(input);
+    });
+    input.addEventListener('paste', (event) => {
+      if (locked || activeNoteEdit?.input !== input) {
+        return;
+      }
+      // Always take text/plain: HTML paste collapses whitespace/newlines (kills code formatting).
+      // Still inside the native paste gesture, so insertText works.
+      const raw =
+        event.clipboardData?.getData('text/plain') ||
+        event.clipboardData?.getData('text/uri-list') ||
+        '';
+      const clip = raw.trim();
+      const sel = window.getSelection();
+      const code = sel ? closestNoteCode(sel.anchorNode) : null;
+      const inCode = !!(code && input.contains(code));
+      if (sel && sel.rangeCount && !sel.isCollapsed && !inCode && isPasteableNoteUrl(clip)) {
+        const label = plainTextFromRange(sel.getRangeAt(0)) || sel.toString();
+        if (label) {
+          event.preventDefault();
+          event.stopPropagation();
+          insertTextAtNoteCaret('[' + label + '](' + clip + ')');
+          return;
+        }
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      insertTextAtNoteCaret(raw);
+    });
+    input.addEventListener('focus', () => {
+      if (locked) {
+        return;
+      }
+      if (activeNoteEdit?.input !== input) {
+        beginNoteEdit(input);
+      }
+    });
+    input.addEventListener('blur', () => {
+      window.setTimeout(() => {
+        if (activeNoteEdit?.input !== input) {
+          return;
+        }
+        const next = document.activeElement;
+        if (next instanceof Node && toolbarFormatWrap?.contains(next)) {
+          return;
+        }
+        if (!contextMenu.hidden) {
+          return;
+        }
+        if (pendingClipboardMenu) {
+          return;
+        }
+        if (colorTarget?.kind === 'text') {
+          return;
+        }
+        endNoteEdit(input);
+      }, 0);
+    });
     input.addEventListener('click', (event) => {
       event.stopPropagation();
       if (locked) {
         flashLock(note.id, header);
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest('a.note-link')) {
+        return;
+      }
+      if (activeNoteEdit?.input !== input) {
+        beginNoteEdit(input);
       }
     });
     input.addEventListener('mousedown', (event) => {
       event.stopPropagation();
       if (locked) {
-        // Keep focus off a locked field so the click feels like a group header tap.
         event.preventDefault();
+        return;
+      }
+      // Keep text caret; do not start a header drag from inside the field.
+      if (header.draggable) {
+        header.draggable = false;
+        window.setTimeout(() => {
+          if (activeNoteEdit?.input === input) {
+            header.draggable = false;
+          } else if (input.dataset.locked !== '1') {
+            header.draggable = true;
+          }
+        }, 0);
       }
     });
     const field = el('span', 'group-text note-field');
@@ -2623,7 +4022,7 @@
         flashLock(note.id, header);
         return;
       }
-      if (target instanceof Element && (target.closest('textarea') || target.closest('.bar'))) {
+      if (target instanceof Element && (target.closest('.note-input') || target.closest('.bar'))) {
         return;
       }
       if (!hasChildren) {
@@ -2640,7 +4039,7 @@
         for (const childId of childIds) {
           const child = noteMap[childId];
           const dot = el('span', 'dot note-dot');
-          dot.title = child?.text || t('notePlaceholder');
+          dot.title = notePlainLabel(child?.text) || t('notePlaceholder');
           dots.append(dot);
         }
         section.append(dots);
@@ -2682,7 +4081,7 @@
   function bindNoteSection(section, header, note) {
     header.addEventListener('dragstart', (event) => {
       event.stopPropagation();
-      if (isLocked(note)) {
+      if (isLocked(note) || section.classList.contains('is-note-editing') || activeNoteEdit) {
         event.preventDefault();
         return;
       }
@@ -2693,10 +4092,10 @@
           id: note.id,
           depth: note.depth || 0,
           subtreeHeight: note.subtreeHeight || 0,
-          label: note.text || t('noteFallback'),
+          label: notePlainLabel(note.text) || t('noteFallback'),
         },
         'move',
-        note.text || t('noteFallback'),
+        notePlainLabel(note.text) || t('noteFallback'),
       );
       section.classList.add('dragging');
     });
@@ -3744,21 +5143,38 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note', id: string, section: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text', id?: string, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
-    colorTarget?.section.style.setProperty('--group-color', colorInput.value);
+    if (colorTarget?.kind === 'text') {
+      return;
+    }
+    colorTarget?.section?.style.setProperty('--group-color', colorInput.value);
   });
   colorInput.addEventListener('change', () => {
     if (colorTarget) {
-      if (colorTarget.kind === 'note') {
+      if (colorTarget.kind === 'text') {
+        applyTextColor(colorInput.value);
+      } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
-      } else {
+      } else if (colorTarget.id) {
         vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: colorInput.value });
       }
     }
     colorTarget = null;
+    if (activeNoteEdit) {
+      activeNoteEdit.input.focus();
+    }
+  });
+  colorInput.addEventListener('blur', () => {
+    window.setTimeout(() => {
+      if (colorTarget?.kind !== 'text') {
+        return;
+      }
+      colorTarget = null;
+      activeNoteEdit?.input.focus();
+    }, 0);
   });
 
   /**

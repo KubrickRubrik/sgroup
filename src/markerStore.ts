@@ -1810,7 +1810,7 @@ export class MarkerStore implements vscode.Disposable {
     if (!note) {
       return;
     }
-    note.text = text.trim();
+    note.text = text;
     await this.commit();
   }
 
