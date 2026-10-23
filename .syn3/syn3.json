@@ -12,10 +12,7 @@
           "1": true
         },
         "bottom": {
-          "1": true,
-          "note-3": true,
-          "note-4": true,
-          "version": true
+          "2-2": true
         },
         "left": {
           "1": true,
@@ -264,6 +261,12 @@
       "order": 1,
       "color": "syn3.slate"
     },
+    "note-5": {
+      "parentNote": "note-3",
+      "text": "Заметка 2",
+      "order": 1,
+      "color": "#b81919"
+    },
     "note-6": {
       "markerId": "version",
       "text": "Вот это так заметка",
@@ -282,9 +285,9 @@
     },
     "note-3": {
       "page": "map",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"ываываыва\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"ываыа\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"фыв\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
       "order": 2,
-      "color": "syn3.slate"
+      "color": "#19b849"
     },
     "note-8": {
       "page": "page-page",

@@ -2264,6 +2264,7 @@
     updateActive();
     applyTabMarks();
     playFolds(folds);
+    layoutFoldRails();
     if (pendingEditAfterExpandId && pendingEditAfterExpandPaints > 0) {
       pendingEditAfterExpandPaints -= 1;
       const id = pendingEditAfterExpandId;
@@ -2442,8 +2443,65 @@
           chevron.style.transform = '';
         }
       }
+      layoutFoldRails();
       flushDeferredRender();
     }, FOLD_MS + 80);
+  }
+
+  /**
+   * Invisible column under the chevron → bottom of the card; click toggles fold.
+   * @param {HTMLElement} section
+   * @param {string} foldId
+   * @param {HTMLElement} header
+   * @param {boolean} locked
+   */
+  function attachFoldRail(section, foldId, header, locked) {
+    const rail = el('div', 'fold-rail');
+    rail.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    rail.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (locked) {
+        flashLock(foldId, header);
+        return;
+      }
+      toggleCollapsed(foldId);
+    });
+    section.prepend(rail);
+  }
+
+  /** Place each fold-rail just below the chevron / first line, to the card bottom. */
+  function layoutFoldRails() {
+    requestAnimationFrame(() => {
+      root.querySelectorAll('section.group > .fold-rail').forEach((rail) => {
+        if (!(rail instanceof HTMLElement)) {
+          return;
+        }
+        const section = rail.parentElement;
+        if (!(section instanceof HTMLElement)) {
+          return;
+        }
+        const header = section.querySelector(':scope > .group-header');
+        if (!(header instanceof HTMLElement)) {
+          return;
+        }
+        const sectionBox = section.getBoundingClientRect();
+        const headerBox = header.getBoundingClientRect();
+        const chevron = header.querySelector(':scope > .chevron');
+        // Notes keep body text inside the header — start under the first-line/chevron band.
+        // Groups: under the whole header row.
+        let top;
+        if (section.classList.contains('note-card') && chevron instanceof HTMLElement) {
+          top = Math.max(0, chevron.getBoundingClientRect().bottom - sectionBox.top);
+        } else {
+          top = Math.max(0, headerBox.bottom - sectionBox.top);
+        }
+        rail.style.top = top + 'px';
+        rail.hidden = top >= sectionBox.height - 4;
+      });
+    });
   }
 
   /**
@@ -2636,6 +2694,9 @@
       }
       toggleCollapsed(group.id);
     });
+    if (!isEmpty) {
+      attachFoldRail(section, group.id, header, locked);
+    }
     section.append(header);
     bindGroupSection(section, header, group);
 
@@ -5047,6 +5108,9 @@
       }
       toggleCollapsed(note.id);
     });
+    if (canFold) {
+      attachFoldRail(section, note.id, header, locked);
+    }
     section.append(header);
     bindNoteSection(section, header, note);
 
