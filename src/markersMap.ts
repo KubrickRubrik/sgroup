@@ -116,6 +116,7 @@ type IncomingToolbarAction =
   | 'collapseGroups'
   | 'expandGroups'
   | 'refresh'
+  | 'openSettings'
   | 'createPage'
   | 'renamePage'
   | 'deletePage'
@@ -1850,6 +1851,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (action === 'refresh') {
       await vscode.commands.executeCommand('syn3.refresh');
+      return;
+    }
+    if (action === 'openSettings') {
+      await vscode.commands.executeCommand('syn3.openSettings');
     }
   }
 
@@ -2087,6 +2092,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
           <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>
+          <button type="button" data-action="openSettings" role="menuitem">${icon('gear')}Settings</button>
         </div>
       </div>
     </div>

@@ -88,6 +88,7 @@ const EN = {
   menuRenamePage: 'Rename Page',
   menuDeletePage: 'Delete Page',
   menuRefresh: 'Refresh',
+  menuOpenSettings: 'Settings',
 
   // View / create menus
   viewMap: 'Map view',
@@ -217,6 +218,7 @@ const RU: Syn3Strings = {
   menuRenamePage: 'Переименовать страницу',
   menuDeletePage: 'Удалить страницу',
   menuRefresh: 'Обновить',
+  menuOpenSettings: 'Настройки',
 
   viewMap: 'Вид карты',
   viewCards: 'Карточки',

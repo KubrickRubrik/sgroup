@@ -659,6 +659,7 @@
     setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
+    setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
     setCollapseButton();
   }
 
