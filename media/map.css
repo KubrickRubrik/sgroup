@@ -181,7 +181,7 @@ html::-webkit-scrollbar {
 
 .syn3-menu-item-chevron {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 15px;
   line-height: 1;
   opacity: 0.7;
 }
@@ -681,6 +681,7 @@ html::-webkit-scrollbar {
   font-size: var(--size-group);
 }
 
+.note-card .note-header > .chevron,
 .note-card .note-header > .lock-btn,
 .note-card .note-header > .count {
   align-items: center;
@@ -953,8 +954,8 @@ body {
   --size-folder: calc(var(--vscode-font-size, 13px) * 0.95);
   --size-file: calc(var(--vscode-font-size, 13px) * 0.9);
   --size-meta: calc(var(--vscode-font-size, 13px) * 0.8);
-  /* chevron(10) + gap(6) + bar(5) */
-  --tree-gutter: 21px;
+  /* chevron(14) + gap(6) + bar(5) */
+  --tree-gutter: 25px;
   --branch-gap: 10px;
   --drop-color: var(--vscode-list-focusOutline, var(--vscode-focusBorder, #4daafc));
   /* 0 = default 135°, 100 = +360° (same direction). Set from appearance via map.js. */
@@ -1268,9 +1269,12 @@ body.vscode-high-contrast .drop-edge {
 .chevron {
   color: var(--vscode-descriptionForeground);
   display: inline-block;
-  font-size: var(--size-meta);
+  flex-shrink: 0;
+  font-size: calc(var(--vscode-font-size, 13px) * 1.2);
+  line-height: 1;
+  text-align: center;
   transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
-  width: 10px;
+  width: 14px;
 }
 
 .group.collapsed > .group-header > .chevron {

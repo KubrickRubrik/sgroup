@@ -5289,6 +5289,7 @@
    */
   function trackPress(node, onActivate) {
     let tracking = false;
+    let pressStarted = false;
     let moved = false;
     let dragged = false;
     let activated = false;
@@ -5298,14 +5299,17 @@
     node.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) {
         tracking = false;
+        pressStarted = false;
         return;
       }
       // Presses inside the note field are for editing, not fold/unfold.
       if (event.target instanceof Element && event.target.closest('.note-input')) {
         tracking = false;
+        pressStarted = false;
         return;
       }
       tracking = true;
+      pressStarted = true;
       moved = false;
       dragged = false;
       activated = false;
@@ -5328,14 +5332,17 @@
       }
       tracking = false;
       if (moved || dragged) {
+        pressStarted = false;
         return;
       }
       activated = true;
+      pressStarted = false;
       onActivate(event);
     });
 
     node.addEventListener('pointercancel', () => {
       tracking = false;
+      pressStarted = false;
     });
 
     node.addEventListener(
@@ -5358,6 +5365,13 @@
         event.stopPropagation();
         return;
       }
+      // Selection drag from .note-input often ends with mouseup on the header;
+      // the browser then fires click on the common ancestor. Only treat click as
+      // a fallback when this node actually received the matching press.
+      if (!pressStarted) {
+        return;
+      }
+      pressStarted = false;
       onActivate(event);
     });
   }
