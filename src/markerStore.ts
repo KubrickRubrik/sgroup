@@ -1184,7 +1184,6 @@ export class MarkerStore implements vscode.Disposable {
     const mixed = this.mixedSiblings(
       parent !== undefined ? { markerId: parent } : { pageId: page },
     );
-    const maxOrder = this.maxSiblingOrder(mixed);
     let columns = normalizeColumns(def.columns);
     if (columns === undefined && parent !== undefined) {
       columns = normalizeColumns(this.data.markers[parent].columns);
@@ -1195,8 +1194,10 @@ export class MarkerStore implements vscode.Disposable {
       parent,
       page,
       columns,
-      order: maxOrder + 1,
+      order: 1,
     };
+    // New groups/notes appear at the start of their sibling list (top of the map for roots).
+    this.applySiblingOrder([{ kind: 'marker', id }, ...mixed]);
     await this.commit();
     return id;
   }
@@ -1790,8 +1791,8 @@ export class MarkerStore implements vscode.Disposable {
       : home.markerId
         ? { markerId: home.markerId }
         : { pageId: home.page };
-    const maxOrder = this.maxSiblingOrder(this.mixedSiblings(scope));
-    const entry: NoteDef = { text: text.trim(), order: maxOrder + 1 };
+    const mixed = this.mixedSiblings(scope);
+    const entry: NoteDef = { text: text.trim(), order: 1 };
     if (home.parentNote) {
       entry.parentNote = home.parentNote;
     } else if (home.markerId) {
@@ -1801,6 +1802,8 @@ export class MarkerStore implements vscode.Disposable {
       entry.color = NOTE_ROOT_COLOR;
     }
     this.data.notes[id] = entry;
+    // New groups/notes appear at the start of their sibling list (top of the map for roots).
+    this.applySiblingOrder([{ kind: 'note', id }, ...mixed]);
     await this.commit();
     return id;
   }

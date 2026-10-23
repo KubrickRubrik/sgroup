@@ -102,6 +102,21 @@ export class CodeLanguageService implements vscode.Disposable {
     return this.stamp;
   }
 
+  /**
+   * Stamp that matches pasted text (CR/LF and a single trailing newline ignored).
+   */
+  matchStamp(text: string): CodeStamp | undefined {
+    if (!this.stamp) {
+      return undefined;
+    }
+    const a = this.stamp.text;
+    const b = text.replace(/\r\n/g, '\n');
+    if (a === b || a.replace(/\n$/, '') === b.replace(/\n$/, '')) {
+      return this.stamp;
+    }
+    return undefined;
+  }
+
   onDidChangeStamp(listener: (stamp: CodeStamp | undefined) => void): vscode.Disposable {
     this.stampListeners.add(listener);
     return new vscode.Disposable(() => this.stampListeners.delete(listener));

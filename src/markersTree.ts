@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { themeColorId } from './palette';
 import { MarkerStore } from './markerStore';
+import { themeColorId } from './palette';
 
 export type MarkerNode = { kind: 'marker'; id: string; markerId: string };
 

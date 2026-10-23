@@ -15,14 +15,8 @@
           "1": true,
           "3": true,
           "4": true,
-          "note-10": true,
-          "note-11": true,
-          "note-12": true,
-          "note-15": true,
-          "note-3": true,
           "test-dir": true,
-          "ttest-6": true,
-          "version": true
+          "ttest-6": true
         },
         "left": {
           "1": true,
@@ -64,7 +58,7 @@
       "icon": "🍀",
       "alias": "тестовая группа 1",
       "columns": "1",
-      "order": 17,
+      "order": 4,
       "page": "map"
     },
     "2": {
@@ -77,12 +71,12 @@
       "label": "Тест 3",
       "color": "syn3.sky",
       "icon": "🔥",
-      "order": 19,
+      "order": 6,
       "page": "map"
     },
     "4": {
       "label": "Тест 4",
-      "order": 20,
+      "order": 7,
       "page": "map"
     },
     "5": {
@@ -97,13 +91,13 @@
       "color": "#de3c1b",
       "icon": "🔥",
       "columns": "2",
-      "order": 16,
+      "order": 3,
       "page": "map"
     },
     "ttest-6": {
       "label": "Ttest 6",
       "icon": "⭐",
-      "order": 18,
+      "order": 5,
       "page": "map"
     },
     "2-2": {
@@ -115,7 +109,7 @@
     },
     "test-dir": {
       "label": "Test_dir",
-      "order": 21,
+      "order": 8,
       "page": "map"
     },
     "1-2": {
@@ -265,32 +259,11 @@
       "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA",
       "order": 1
     },
-    "note-10": {
-      "parentNote": "note-5",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\" dispose(): void {\\n    this.subscription.dispose();\\n    this.emitter.dispose();\\n  \",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 1
-    },
-    "note-13": {
-      "parentNote": "note-12",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 1
-    },
-    "note-14": {
-      "parentNote": "note-13",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 1
-    },
-    "note-3": {
+    "note-4": {
       "page": "map",
-      "text": "Моя заметка",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"ыаываы\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"ываыва\"}]},{\"type\":\"code\",\"text\":\"return this.itemNode(markerId, relPath);\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input .note-code-body {\\n  display: block;\\n}\",\"languageId\":\"css\",\"label\":\"css\"}]}",
       "order": 1,
-      "color": "#bfbfbf"
-    },
-    "note-5": {
-      "parentNote": "note-3",
-      "text": "[Заметка 3](https://pikabu.ru/)\n[Заметка 4](https://pikabu.ru/story/makhina_paryashchaya_nad_andami_14452956",
-      "order": 1,
-      "color": "#ff000d"
+      "color": "syn3.slate"
     },
     "note-6": {
       "markerId": "version",
@@ -308,39 +281,17 @@
       "text": "Запись 2\nhttps://www.youtube.com/",
       "order": 2
     },
-    "note-4": {
-      "parentNote": "note-3",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input.is-editing .note-code,.note-input:focus .note-code {\\n  background: color-mix(in srgb, black 6%, transparent);\\n  border-color: color-mix(in srgb, var(--vscode-foreground, #cccccc) 18%, transparent);\\n}\",\"languageId\":\"css\",\"label\":\"css\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n}\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+    "note-3": {
+      "page": "map",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"ываываыва\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"ываыа\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"фыв\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
       "order": 2,
-      "color": "#676f6e"
+      "color": "syn3.slate"
     },
     "note-8": {
       "page": "page-page",
       "text": "Моя заметка",
       "order": 3,
       "color": "#657a9a"
-    },
-    "note-9": {
-      "parentNote": "note-3",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"private readonly nodes = new Map<string, Node>();\\n  private readonly subscription: vscode.Disposable;\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 3
-    },
-    "note-11": {
-      "parentNote": "note-3",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 4
-    },
-    "note-12": {
-      "page": "map",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 8,
-      "color": "syn3.slate"
-    },
-    "note-15": {
-      "page": "map",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"async findItemNode(relPath: string): Promise<ItemNode | undefined> {\\n  const [markerId] = this.store.markersOf(relPath);\\n  if (!markerId) {\\n    return undefined;\\n  }\\n  return this.itemNode(markerId, relPath);\\n}\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 15,
-      "color": "syn3.slate"
     }
   }
 }

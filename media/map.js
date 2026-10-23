@@ -65,6 +65,13 @@
 
   /** @type {{ noteId: string, input: HTMLElement, lastSaved: string, locked: boolean } | null} */
   let activeNoteEdit = null;
+  /** Last note edited — survives blur race with host Cmd/A. */
+  let lastNoteEditId = '';
+  /** Expand-then-edit: note id + how many paints left to re-focus (local + host state). */
+  let pendingEditAfterExpandId = '';
+  let pendingEditAfterExpandPaints = 0;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let noteBlurTimer = null;
   /** @type {{ bold: boolean, quote: boolean, color: string | null }} */
   let pendingNoteMarks = { bold: false, quote: false, color: null };
   /** @type {Range | null} */
@@ -1175,24 +1182,33 @@
       }
       if (item.kind === 'delete') {
         const isNote = section === 'note';
-        appendExpandableMenuBlock(
-          scroller,
-          t('menuDelete'),
-          !!openMenuState.deleteExpanded,
-          'toggleDelete',
-          (nest) => {
-            nest.append(
-              menuActionChoice(isNote ? t('menuDeleteNote') : t('menuDeleteGroup'), {
-                deleteAction: 'one',
-              }),
-            );
-            nest.append(
-              menuActionChoice(t('menuDeleteAll'), {
-                deleteAction: 'all',
-              }),
-            );
-          },
-        );
+        // Expand only when there are nested subgroups / subnotes to choose delete-all.
+        if (ctx.hasChildren) {
+          appendExpandableMenuBlock(
+            scroller,
+            t('menuDelete'),
+            !!openMenuState.deleteExpanded,
+            'toggleDelete',
+            (nest) => {
+              nest.append(
+                menuActionChoice(isNote ? t('menuDeleteNote') : t('menuDeleteGroup'), {
+                  deleteAction: 'one',
+                }),
+              );
+              nest.append(
+                menuActionChoice(t('menuDeleteAll'), {
+                  deleteAction: 'all',
+                }),
+              );
+            },
+          );
+        } else {
+          scroller.append(
+            menuActionChoice(t('menuDelete'), {
+              deleteAction: 'one',
+            }),
+          );
+        }
         continue;
       }
       if (item.kind === 'unlock') {
@@ -2063,6 +2079,32 @@
     }
   });
 
+  // Cmd/A: handle when the key reaches the webview (some hosts); also clamp
+  // VS Code's built-in document execCommand('selectAll') down to the active note.
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'a' || event.altKey) {
+        return;
+      }
+      if (!activeNoteEdit?.input) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      selectAllInFocusedField(activeNoteEdit.input);
+    },
+    true,
+  );
+  document.addEventListener('selectionchange', () => {
+    if (!activeNoteEdit?.input) {
+      return;
+    }
+    // Built-in webview selectAll runs via execCommand without a keydown here;
+    // on the next selectionchange, keep the highlight inside the note.
+    clampSelectAllToActiveNote();
+  });
+
   window.addEventListener('resize', () => {
     if (dirPopoverState) {
       positionDirPopover(dirPopoverState.anchor);
@@ -2222,6 +2264,16 @@
     updateActive();
     applyTabMarks();
     playFolds(folds);
+    if (pendingEditAfterExpandId && pendingEditAfterExpandPaints > 0) {
+      pendingEditAfterExpandPaints -= 1;
+      const id = pendingEditAfterExpandId;
+      if (pendingEditAfterExpandPaints <= 0) {
+        pendingEditAfterExpandId = '';
+      }
+      if (!(activeNoteEdit?.input?.isConnected)) {
+        focusNoteInput(id);
+      }
+    }
   }
 
   function flushDeferredRender() {
@@ -2533,6 +2585,7 @@
       columns,
       hasAlias: !!group.alias,
       locked,
+      hasChildren: childIds.length > 0 || noteChildIds.length > 0,
     });
     const bar = el('span', 'bar');
     bar.title = locked ? t('groupLocked') : t('changeColor');
@@ -3617,12 +3670,29 @@
     sel.addRange(caret);
   }
 
+  /** Cancel a pending blur→save so host Cmd/A can keep the note in edit mode. */
+  function cancelNoteBlurEnd() {
+    if (noteBlurTimer) {
+      clearTimeout(noteBlurTimer);
+      noteBlurTimer = null;
+    }
+  }
+
   /** @param {HTMLElement} input */
   function beginNoteEdit(input) {
     if (input.dataset.locked === '1') {
       return;
     }
+    cancelNoteBlurEnd();
     const noteId = input.dataset.noteId || '';
+    // Editing must expand for real — is-note-editing only hides the clamp while focused.
+    if (noteId && isCollapsed(noteId)) {
+      pendingEditAfterExpandId = noteId;
+      // Local toggle render + follow-up host state push both rebuild the DOM.
+      pendingEditAfterExpandPaints = 2;
+      toggleCollapsed(noteId);
+      return;
+    }
     const raw = input.dataset.raw || '';
     paintNoteInput(input, raw, { editing: true });
     activeNoteEdit = {
@@ -3631,11 +3701,13 @@
       lastSaved: raw,
       locked: false,
     };
+    lastNoteEditId = noteId;
     pendingNoteMarks = { bold: false, quote: false, color: null };
     setNoteEditingChrome(input, true);
     setFormatToolbarVisible(true);
     updateFormatMenuState();
     input.focus();
+    vscode.postMessage({ type: 'mapFocus', pageId: uiState.activePageId });
   }
 
   /** @param {HTMLElement} input @param {{ restore?: boolean }} [opts] */
@@ -3643,6 +3715,7 @@
     if (activeNoteEdit?.input !== input) {
       return;
     }
+    cancelNoteBlurEnd();
     const noteId = activeNoteEdit.noteId;
     let next = activeNoteEdit.lastSaved;
     if (!opts?.restore) {
@@ -3654,12 +3727,34 @@
     }
     input.dataset.raw = next;
     activeNoteEdit = null;
+    pendingEditAfterExpandId = '';
+    pendingEditAfterExpandPaints = 0;
     pendingNoteMarks = { bold: false, quote: false, color: null };
     savedNoteSelection = null;
     setNoteEditingChrome(input, false);
     setFormatToolbarVisible(false);
     closeFormatMenu();
+    // Drop any leftover highlight once the note is no longer focused.
+    clearNoteSelection(input);
     paintNoteInput(input, next, { editing: false, locked: input.dataset.locked === '1' });
+    clearNoteSelection(input);
+  }
+
+  /** Clear window selection if it touches the note field (or clear entirely if empty). */
+  function clearNoteSelection(input) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) {
+      return;
+    }
+    const anchor = sel.anchorNode;
+    const focus = sel.focusNode;
+    if (
+      (anchor && input.contains(anchor)) ||
+      (focus && input.contains(focus)) ||
+      !anchor
+    ) {
+      sel.removeAllRanges();
+    }
   }
 
   /** @param {HTMLElement} input @param {boolean} editing */
@@ -4189,24 +4284,90 @@
     thumb.style.transform = 'translateY(' + top + 'px)';
   }
 
-  function selectAllInFocusedField() {
+  /**
+   * Select the whole note (or focused input). Used for Cmd/A that reaches the
+   * webview, and to clamp a document-wide selectAll down to the active note.
+   * @param {HTMLElement} [preferred]
+   */
+  function selectAllInFocusedField(preferred) {
+    cancelNoteBlurEnd();
     const active = document.activeElement;
-    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    if (
+      !preferred &&
+      (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)
+    ) {
       active.select();
       return;
     }
-    let editable = active instanceof HTMLElement && active.isContentEditable ? active : null;
-    if (editable?.closest?.('.note-input')) {
-      editable = /** @type {HTMLElement} */ (editable.closest('.note-input'));
+    /** @type {HTMLElement | null} */
+    let editable = preferred ?? activeNoteEdit?.input ?? null;
+    if (!editable) {
+      const editing = root.querySelector('.note-input.is-editing');
+      if (editing instanceof HTMLElement) {
+        editable = editing;
+      }
+    }
+    if (!editable && lastNoteEditId) {
+      const node = root.querySelector(
+        '.note-card[data-note-id="' + CSS.escape(lastNoteEditId) + '"] .note-input',
+      );
+      if (node instanceof HTMLElement) {
+        editable = node;
+      }
+    }
+    if (!editable && active instanceof HTMLElement) {
+      const noteInput = active.closest?.('.note-input');
+      if (noteInput instanceof HTMLElement) {
+        editable = noteInput;
+      } else if (active.isContentEditable) {
+        editable = active;
+      }
     }
     if (!editable) {
       return;
     }
+    if (editable.classList.contains('note-input') && editable.contentEditable !== 'true') {
+      if (editable.dataset.locked === '1') {
+        return;
+      }
+      beginNoteEdit(editable);
+      editable = activeNoteEdit?.input ?? editable;
+    }
+    if (!editable) {
+      return;
+    }
+    editable.focus();
     const range = document.createRange();
     range.selectNodeContents(editable);
     const sel = window.getSelection();
     sel?.removeAllRanges();
     sel?.addRange(range);
+    if (sel && (sel.isCollapsed || !editable.contains(sel.anchorNode))) {
+      document.execCommand('selectAll');
+    }
+    if (activeNoteEdit?.input === editable) {
+      saveNoteSelection();
+    }
+  }
+
+  /**
+   * If VS Code's built-in webview selectAll selected past the note,
+   * shrink it to the note being edited.
+   */
+  function clampSelectAllToActiveNote() {
+    if (!activeNoteEdit?.input?.isConnected) {
+      return;
+    }
+    const input = activeNoteEdit.input;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (input.contains(range.startContainer) && input.contains(range.endContainer)) {
+      return;
+    }
+    selectAllInFocusedField(input);
   }
 
   /** Undo in the focused text field; otherwise undo map history for the page. */
@@ -4357,8 +4518,9 @@
       saveNoteSelection();
       return;
     }
+    // Language-bearing paste from editor/note → insert a real code section.
     if (stamp?.languageId && stamp?.label && payload) {
-      insertStampedParagraphText(payload, stamp.languageId, stamp.label);
+      insertStampedCodeBlock(payload, stamp.languageId, stamp.label);
       refreshNoteEmptyClass(input);
       saveNoteSelection();
       return;
@@ -4382,40 +4544,36 @@
   }
 
   /**
+   * Paste language-stamped text as a `pre.note-code` block at the caret.
    * @param {string} text
    * @param {string} languageId
    * @param {string} label
    */
-  function insertStampedParagraphText(text, languageId, label) {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || !activeNoteEdit) {
+  function insertStampedCodeBlock(text, languageId, label) {
+    if (!activeNoteEdit) {
       return;
     }
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    const lines = text.split('\n');
-    const frag = document.createDocumentFragment();
-    /** @type {HTMLElement | null} */
-    let lastSrc = null;
-    for (let i = 0; i < lines.length; i++) {
-      if (i > 0) {
-        frag.append(document.createElement('br'));
-      }
-      if (lines[i]) {
-        const src = el('span', 'note-code-src');
-        src.dataset.codeLang = languageId;
-        src.dataset.codeLabel = label;
-        src.textContent = lines[i];
-        frag.append(src);
-        lastSrc = src;
-      }
+    const input = activeNoteEdit.input;
+    const sel = window.getSelection();
+    const pre = el('pre', 'note-code');
+    if (sel && sel.rangeCount) {
+      insertCodeBlockAtSelection(input, pre, sel, { text, languageId, label });
+    } else {
+      fillCodeBlock(pre, text, { languageId, label, highlight: false });
+      input.append(pre);
     }
-    range.insertNode(frag);
-    if (lastSrc) {
-      range.setStartAfter(lastSrc);
-      range.collapse(true);
+    if (!(pre.nextElementSibling instanceof HTMLElement) || !pre.nextElementSibling.classList.contains('note-p')) {
+      const after = el('div', 'note-p');
+      after.append(document.createElement('br'));
+      pre.after(after);
+    }
+    const after = pre.nextElementSibling;
+    if (after instanceof HTMLElement && sel) {
+      const caret = document.createRange();
+      caret.selectNodeContents(after);
+      caret.collapse(true);
       sel.removeAllRanges();
-      sel.addRange(range);
+      sel.addRange(caret);
     }
   }
 
@@ -4502,6 +4660,24 @@
   }
 
   /**
+   * Compare clipboard/stamp texts: ignore CR and a single trailing newline drift.
+   * @param {string} a
+   * @param {string} b
+   */
+  function stampTextsMatch(a, b) {
+    const na = String(a || '').replace(/\r\n/g, '\n');
+    const nb = String(b || '').replace(/\r\n/g, '\n');
+    if (na === nb) {
+      return true;
+    }
+    if (na.replace(/\n$/, '') === nb.replace(/\n$/, '')) {
+      return true;
+    }
+    // Indent-only drift (stamp kept original columns; paste path may already dedent).
+    return dedentSharedIndent(na) === dedentSharedIndent(nb);
+  }
+
+  /**
    * Resolve stamp for pasted text: explicit args, or matching codeStamp.
    * @param {string} text
    * @param {string | undefined} languageId
@@ -4511,13 +4687,7 @@
     if (languageId && label) {
       return { languageId, label };
     }
-    const normalized = String(text || '').replace(/\r\n/g, '\n');
-    if (
-      codeStamp &&
-      codeStamp.languageId &&
-      codeStamp.label &&
-      codeStamp.text === normalized
-    ) {
+    if (codeStamp?.languageId && codeStamp?.label && stampTextsMatch(codeStamp.text, text)) {
       return { languageId: codeStamp.languageId, label: codeStamp.label };
     }
     return undefined;
@@ -4606,6 +4776,7 @@
       parentNote: note.parentNote,
       depth: note.depth || 0,
       locked,
+      hasChildren,
     });
     header.append(el('span', 'chevron', canFold ? '▾' : ''));
     const bar = el('span', 'bar');
@@ -4790,11 +4961,17 @@
       }
     });
     input.addEventListener('blur', () => {
-      window.setTimeout(() => {
+      cancelNoteBlurEnd();
+      // Delay past host Cmd/A postMessage so select-all can cancel and keep editing.
+      noteBlurTimer = window.setTimeout(() => {
+        noteBlurTimer = null;
         if (activeNoteEdit?.input !== input) {
           return;
         }
         const next = document.activeElement;
+        if (next === input || (next instanceof Node && input.contains(next))) {
+          return;
+        }
         if (next instanceof Node && toolbarFormatWrap?.contains(next)) {
           return;
         }
@@ -4808,7 +4985,7 @@
           return;
         }
         endNoteEdit(input);
-      }, 0);
+      }, 50);
     });
     input.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -4822,6 +4999,10 @@
       if (activeNoteEdit?.input !== input) {
         beginNoteEdit(input);
       }
+    });
+    input.addEventListener('pointerdown', (event) => {
+      // Do not let header trackPress treat field presses as fold toggles.
+      event.stopPropagation();
     });
     input.addEventListener('mousedown', (event) => {
       event.stopPropagation();
@@ -5116,6 +5297,11 @@
 
     node.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) {
+        tracking = false;
+        return;
+      }
+      // Presses inside the note field are for editing, not fold/unfold.
+      if (event.target instanceof Element && event.target.closest('.note-input')) {
         tracking = false;
         return;
       }

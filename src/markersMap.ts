@@ -130,6 +130,7 @@ type ColumnSide = 'left' | 'right';
 type IncomingMessage =
   | { type: 'ready'; pageId?: string }
   | { type: 'activePage'; pageId: string }
+  | { type: 'mapFocus'; pageId?: string }
   | { type: 'open'; relPath: string }
   | { type: 'openClass'; classId: string }
   | { type: 'openExternal'; url: string }
@@ -965,9 +966,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await this.syncHistoryContext();
   }
 
-  /** Ask the focused map webview to select all text in its active field. */
+  /**
+   * Ask map webview(s) to select all text in the active note/field.
+   * Cmd/A itself is left to VS Code's built-in webview selectAll; this remains
+   * for programmatic use / older keybindings.
+   */
   selectAllInMap(): void {
-    this.lastFocusedWebview?.postMessage({ type: 'selectAll' });
+    const message = { type: 'selectAll' as const };
+    for (const webview of this.webviews) {
+      if (this.readyWebviews.has(webview)) {
+        void webview.postMessage(message);
+      }
+    }
   }
 
   /** Undo text edit in the focused map field, or map history if none. */
@@ -983,9 +993,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Paste clipboard text into the focused map field (linkify when selection + URL). */
   async pasteInMap(): Promise<void> {
     const text = await vscode.env.clipboard.readText();
-    const normalized = text.replace(/\r\n/g, '\n');
-    const stamp = this.languages.getStamp();
-    const matched = stamp && stamp.text === normalized ? stamp : undefined;
+    const matched = this.languages.matchStamp(text);
     this.lastFocusedWebview?.postMessage({
       type: 'pasteInMap',
       text,
@@ -1352,6 +1360,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.syncFocusContext();
       return;
     }
+    if (message.type === 'mapFocus') {
+      this.rememberFocus(webview, message.pageId);
+      return;
+    }
     if (message.type === 'history') {
       this.rememberFocus(webview, message.pageId);
       const pageId = this.pageIdFor(webview);
@@ -1442,8 +1454,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'clipboardRead') {
       const text = await vscode.env.clipboard.readText();
-      const stamp = this.languages.getStamp();
-      const matched = stamp && stamp.text === text.replace(/\r\n/g, '\n') ? stamp : undefined;
+      const matched = this.languages.matchStamp(text);
       await webview.postMessage({
         type: 'clipboardReadResult',
         requestId: message.requestId,
