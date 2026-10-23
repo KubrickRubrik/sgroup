@@ -587,15 +587,49 @@ html::-webkit-scrollbar {
   margin: 4px 0;
   overflow-x: auto;
   padding: 6px 8px;
+  position: relative;
   transition: background 120ms ease, border-color 120ms ease;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.note-input .note-code.has-lang {
+  padding-right: 2.6em;
+  padding-top: 1.15em;
+}
+
+/* Label stays out of the DOM text — contenteditable must not merge it into the code. */
+.note-input .note-code.has-lang::before {
+  color: var(--vscode-descriptionForeground, #999);
+  content: attr(data-label);
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: 0.72em;
+  font-variant-ligatures: normal;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  opacity: 0.85;
+  pointer-events: none;
+  position: absolute;
+  right: 6px;
+  text-transform: lowercase;
+  top: 4px;
+  user-select: none;
+}
+
+.note-input .note-code-body {
+  display: block;
 }
 
 .note-input.is-editing .note-code,
 .note-input:focus .note-code {
   background: color-mix(in srgb, black 6%, transparent);
   border-color: color-mix(in srgb, var(--vscode-foreground, #cccccc) 18%, transparent);
+}
+
+.note-input.is-editing .note-code.is-highlighted .note-code-tok,
+.note-input.is-editing .note-code .note-code-tok {
+  color: inherit !important;
 }
 
 .note-input .note-quote {

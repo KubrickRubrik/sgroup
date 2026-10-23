@@ -11,14 +11,7 @@
         "explorer": {
           "1": true
         },
-        "bottom": {
-          "1": true,
-          "3": true,
-          "4": true,
-          "test-dir": true,
-          "ttest-6": true,
-          "version": true
-        },
+        "bottom": {},
         "left": {
           "1": true,
           "3": true,
@@ -268,7 +261,7 @@
     },
     "note-5": {
       "parentNote": "note-3",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"[Заметка 3](https://pikabu.ru/)\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"[Заметка 4](https://pikabu.ru/story/makhina_paryashchaya_nad_andami_14452956)\"}]},{\"type\":\"code\",\"text\":\"export type ItemNode = {\\n  kind: 'item';\\n  id: string;\\n  markerId: string;\\n  relPath: string;\\n  isDir: boolean;\\n  exists: boolean;\\n};\"}]}",
+      "text": "[Заметка 3](https://pikabu.ru/)\n[Заметка 4](https://pikabu.ru/story/makhina_paryashchaya_nad_andami_14452956",
       "order": 1,
       "color": "#ff000d"
     },
@@ -290,7 +283,7 @@
     },
     "note-4": {
       "parentNote": "note-3",
-      "text": "export type ItemNode = {  kind: 'item';  id: string;  markerId: string;  relPath: string;  isDir: boolean;  exists: boolean;};",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input.is-editing .note-code,.note-input:focus .note-code {\\n  background: color-mix(in srgb, black 6%, transparent);\\n  border-color: color-mix(in srgb, var(--vscode-foreground, #cccccc) 18%, transparent);\\n}\",\"languageId\":\"css\",\"label\":\"css\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n}\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
       "order": 2,
       "color": "#676f6e"
     },

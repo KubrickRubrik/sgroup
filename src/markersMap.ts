@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { CodeLanguageService, CodeStamp } from './codeLanguage';
 import {
   ColumnsMode,
   GENERAL_PROFILE_ID,
@@ -134,7 +135,8 @@ type IncomingMessage =
   | { type: 'openExternal'; url: string }
   | { type: 'previewLink'; url: string; requestId: string }
   | { type: 'clipboardRead'; requestId: string }
-  | { type: 'clipboardWrite'; text: string }
+  | { type: 'clipboardWrite'; text: string; languageId?: string; label?: string }
+  | { type: 'highlightCode'; requestId: string; text: string; languageId: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
   | { type: 'history'; direction: 'back' | 'forward' | 'accept'; pageId?: string }
@@ -426,17 +428,25 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastSyncedOpenKey = '';
   /** Note id to focus in the next state push (after create). */
   private focusNoteId?: string;
+  private readonly languages: CodeLanguageService;
+  private readonly ownsLanguages: boolean;
 
   constructor(
     private readonly store: MarkerStore,
     extensionUri: vscode.Uri,
     private readonly memento: vscode.Memento,
     private readonly workspaceState: vscode.Memento,
+    languages?: CodeLanguageService,
   ) {
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
+    this.ownsLanguages = !languages;
+    this.languages = languages ?? new CodeLanguageService(extensionUri.fsPath);
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
     this.subscriptions = [
+      ...(this.ownsLanguages ? [this.languages] : []),
+      this.languages.onDidChangeStamp((stamp) => this.postCodeStamp(stamp)),
+      this.languages.onDidChangeTheme(() => this.postThemeGeneration()),
       store.onDidChange(() => {
         this.refresh();
         this.postOpenFlags();
@@ -455,6 +465,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         this.postTabs();
       }),
     ];
+  }
+
+  /** Cmd/Ctrl+C while a text editor is focused. */
+  copyFromEditor(): Thenable<void> {
+    return this.languages.copyFromEditor();
   }
 
   dispose(): void {
@@ -971,7 +986,34 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Paste clipboard text into the focused map field (linkify when selection + URL). */
   async pasteInMap(): Promise<void> {
     const text = await vscode.env.clipboard.readText();
-    this.lastFocusedWebview?.postMessage({ type: 'pasteInMap', text });
+    const normalized = text.replace(/\r\n/g, '\n');
+    const stamp = this.languages.getStamp();
+    const matched = stamp && stamp.text === normalized ? stamp : undefined;
+    this.lastFocusedWebview?.postMessage({
+      type: 'pasteInMap',
+      text,
+      languageId: matched?.languageId,
+      label: matched?.label,
+    });
+  }
+
+  private postCodeStamp(stamp: CodeStamp | undefined): void {
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      void webview.postMessage({ type: 'codeStamp', stamp: stamp ?? null });
+    }
+  }
+
+  private postThemeGeneration(): void {
+    const themeGeneration = this.languages.getThemeGeneration();
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      void webview.postMessage({ type: 'themeGeneration', themeGeneration });
+    }
   }
 
   private focusedPageId(): string {
@@ -1403,15 +1445,41 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'clipboardRead') {
       const text = await vscode.env.clipboard.readText();
+      const stamp = this.languages.getStamp();
+      const matched = stamp && stamp.text === text.replace(/\r\n/g, '\n') ? stamp : undefined;
       await webview.postMessage({
         type: 'clipboardReadResult',
         requestId: message.requestId,
         text,
+        languageId: matched?.languageId,
+        label: matched?.label,
       });
       return;
     }
     if (message.type === 'clipboardWrite') {
       await vscode.env.clipboard.writeText(message.text);
+      if (message.languageId && message.label && message.text) {
+        this.languages.setStamp({
+          text: message.text,
+          languageId: message.languageId,
+          label: message.label,
+        });
+      } else if (message.text) {
+        const current = this.languages.getStamp();
+        if (current && current.text !== message.text) {
+          this.languages.setStamp(undefined);
+        }
+      }
+      return;
+    }
+    if (message.type === 'highlightCode') {
+      const result = await this.languages.highlight(message.text, message.languageId);
+      await webview.postMessage({
+        type: 'highlightCodeResult',
+        requestId: message.requestId,
+        lines: result?.lines,
+        themeGeneration: result?.themeGeneration ?? this.languages.getThemeGeneration(),
+      });
       return;
     }
     if (message.type === 'createNote') {
@@ -1846,6 +1914,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       history: this.store.historySteps(),
       open: this.store.surfaceOpen(),
       surface: this.surfaceOf(webview),
+      codeStamp: this.languages.getStamp() ?? null,
+      themeGeneration: this.languages.getThemeGeneration(),
     });
   }
 

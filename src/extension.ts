@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { CodeLanguageService } from './codeLanguage';
 import { registerCommands } from './commands';
 import { MarkerDecorationProvider } from './decorations';
 import { clearExplorerLabelColors, syncExplorerLabelColors } from './labelColors';
@@ -51,6 +52,7 @@ const COMMAND_IDS = [
   'syn3.openClass',
   'syn3.openItem',
   'syn3.openFull',
+  'syn3.copyFromEditor',
   'syn3.vsix',
 ];
 
@@ -72,11 +74,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const store = new MarkerStore(folder.uri);
   const tree = new MarkersTreeProvider(store);
   const decorations = new MarkerDecorationProvider(store);
+  const languages = new CodeLanguageService(context.extensionPath);
   const map = new MarkersMapProvider(
     store,
     context.extensionUri,
     context.globalState,
     context.workspaceState,
+    languages,
   );
   const settings = new SettingsPanel(store, context.extensionUri);
 
@@ -84,6 +88,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     store,
     tree,
     decorations,
+    languages,
     map,
     settings,
     vscode.commands.registerCommand('syn3.openSettings', () => settings.open()),
@@ -92,6 +97,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('syn3.selectAllInMap', () => map.selectAllInMap()),
     vscode.commands.registerCommand('syn3.undoInMap', () => map.undoInMap()),
     vscode.commands.registerCommand('syn3.copyInMap', () => map.copyInMap()),
+    vscode.commands.registerCommand('syn3.copyFromEditor', () => {
+      void map.copyFromEditor();
+    }),
     vscode.commands.registerCommand('syn3.pasteInMap', () => {
       void map.pasteInMap();
     }),

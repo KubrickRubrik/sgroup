@@ -81,6 +81,11 @@
   let clipboardRequestId = 0;
   /** @type {{ ctx: Record<string, unknown>, x: number, y: number, requestId: string } | null} */
   let pendingClipboardMenu = null;
+  /** Last language-bearing clipboard stamp from the host. */
+  /** @type {{ text: string, languageId: string, label: string } | null} */
+  let codeStamp = null;
+  let themeGeneration = 0;
+  let highlightRequestId = 0;
 
   /** @param {string} [id] */
   function cancelMenuClose(id) {
@@ -452,6 +457,19 @@
         uiState.activePageId = message.activePageId;
         vscode.setState(uiState);
       }
+      if (
+        message.codeStamp &&
+        typeof message.codeStamp.text === 'string' &&
+        typeof message.codeStamp.languageId === 'string' &&
+        typeof message.codeStamp.label === 'string'
+      ) {
+        codeStamp = message.codeStamp;
+      } else {
+        codeStamp = null;
+      }
+      if (typeof message.themeGeneration === 'number') {
+        themeGeneration = message.themeGeneration;
+      }
       ensureActivePage();
       if (message.i18n && typeof message.i18n === 'object') {
         i18nBag = message.i18n;
@@ -501,7 +519,11 @@
     } else if (message.type === 'copyInMap') {
       copyInFocusedField();
     } else if (message.type === 'pasteInMap') {
-      applyPasteInFocusedField(typeof message.text === 'string' ? message.text : '');
+      applyPasteInFocusedField(
+        typeof message.text === 'string' ? message.text : '',
+        typeof message.languageId === 'string' ? message.languageId : undefined,
+        typeof message.label === 'string' ? message.label : undefined,
+      );
     } else if (message.type === 'clipboardReadResult') {
       if (pendingClipboardMenu && pendingClipboardMenu.requestId === message.requestId) {
         const pending = pendingClipboardMenu;
@@ -511,11 +533,29 @@
             ...pending.ctx,
             noteEditing: true,
             clipboardText: typeof message.text === 'string' ? message.text : '',
+            clipboardLanguageId:
+              typeof message.languageId === 'string' ? message.languageId : undefined,
+            clipboardLabel: typeof message.label === 'string' ? message.label : undefined,
           },
           pending.x,
           pending.y,
         );
       }
+    } else if (message.type === 'codeStamp') {
+      codeStamp =
+        message.stamp &&
+        typeof message.stamp.text === 'string' &&
+        typeof message.stamp.languageId === 'string' &&
+        typeof message.stamp.label === 'string'
+          ? message.stamp
+          : null;
+    } else if (message.type === 'themeGeneration') {
+      if (typeof message.themeGeneration === 'number') {
+        themeGeneration = message.themeGeneration;
+        refreshAllNoteHighlights();
+      }
+    } else if (message.type === 'highlightCodeResult') {
+      onHighlightCodeResult(message);
     } else if (message.type === 'previewLinkResult') {
       onPreviewLinkResult(message);
     }
@@ -1551,8 +1591,11 @@
     if (button.dataset.menuAction === 'paste') {
       const ctx = openMenuState?.ctx;
       const text = typeof ctx?.clipboardText === 'string' ? ctx.clipboardText : '';
+      const languageId =
+        typeof ctx?.clipboardLanguageId === 'string' ? ctx.clipboardLanguageId : undefined;
+      const label = typeof ctx?.clipboardLabel === 'string' ? ctx.clipboardLabel : undefined;
       closeContextMenu();
-      applyPasteInFocusedField(text);
+      applyPasteInFocusedField(text, languageId, label);
       activeNoteEdit?.input.focus();
       return;
     }
@@ -2705,8 +2748,8 @@
   }
 
   /**
-   * @typedef {{ text: string, b?: true, color?: string, quote?: true }} NoteRun
-   * @typedef {{ type: 'p', runs: NoteRun[] } | { type: 'code', text: string }} NoteBlock
+   * @typedef {{ text: string, b?: true, color?: string, quote?: true, lang?: string, langLabel?: string }} NoteRun
+   * @typedef {{ type: 'p', runs: NoteRun[] } | { type: 'code', text: string, languageId?: string, label?: string }} NoteBlock
    * @typedef {{ v: 1, blocks: NoteBlock[] }} NoteDoc
    */
 
@@ -2716,7 +2759,10 @@
       try {
         const doc = JSON.parse(raw.slice(NOTE_JSON_PREFIX.length));
         if (doc && doc.v === 1 && Array.isArray(doc.blocks)) {
-          return /** @type {NoteDoc} */ (doc);
+          return {
+            v: 1,
+            blocks: /** @type {unknown[]} */ (doc.blocks).map((block) => normalizeParsedBlock(block)),
+          };
         }
       } catch {
         // fall through to plain text
@@ -2727,6 +2773,49 @@
     return {
       v: 1,
       blocks: lines.map((line) => ({ type: 'p', runs: [{ text: line }] })),
+    };
+  }
+
+  /** @param {unknown} block @returns {NoteBlock} */
+  function normalizeParsedBlock(block) {
+    if (!block || typeof block !== 'object') {
+      return { type: 'p', runs: [{ text: '' }] };
+    }
+    const b = /** @type {Record<string, unknown>} */ (block);
+    if (b.type === 'code') {
+      /** @type {{ type: 'code', text: string, languageId?: string, label?: string }} */
+      const code = { type: 'code', text: typeof b.text === 'string' ? b.text : '' };
+      if (typeof b.languageId === 'string' && typeof b.label === 'string' && b.languageId && b.label) {
+        code.languageId = b.languageId;
+        code.label = b.label;
+      }
+      return code;
+    }
+    const runs = Array.isArray(b.runs) ? b.runs : [{ text: '' }];
+    return {
+      type: 'p',
+      runs: runs.map((run) => {
+        if (!run || typeof run !== 'object') {
+          return { text: '' };
+        }
+        const r = /** @type {Record<string, unknown>} */ (run);
+        /** @type {NoteRun} */
+        const out = { text: typeof r.text === 'string' ? r.text : '' };
+        if (r.b) {
+          out.b = true;
+        }
+        if (r.quote) {
+          out.quote = true;
+        }
+        if (typeof r.color === 'string') {
+          out.color = r.color;
+        }
+        if (typeof r.lang === 'string' && typeof r.langLabel === 'string' && r.lang && r.langLabel) {
+          out.lang = r.lang;
+          out.langLabel = r.langLabel;
+        }
+        return out;
+      }),
     };
   }
 
@@ -2742,7 +2831,7 @@
         return true;
       }
       for (const run of block.runs || []) {
-        if (run.b || run.color || run.quote) {
+        if (run.b || run.color || run.quote || run.lang) {
           return true;
         }
       }
@@ -2833,13 +2922,30 @@
   /**
    * Read code-block text from a pre.note-code, preserving newlines if the
    * browser nested div/br nodes inside it during paste/edit.
+   * Label is CSS-only (data-label + ::before) so it must never appear in text.
    * @param {HTMLElement} pre
    * @returns {string}
    */
   function codeTextFromPre(pre) {
-    let text = plainTextFromNode(pre);
+    const body = pre.querySelector(':scope > .note-code-body');
+    const source = body instanceof HTMLElement ? body : pre;
+    const clone = source.cloneNode(true);
+    if (clone instanceof HTMLElement) {
+      // Legacy badge nodes from older builds, if any remain in the DOM.
+      clone.querySelectorAll('.note-code-lang').forEach((node) => node.remove());
+    }
+    let text = plainTextFromNode(clone);
+    // Drop the caret-sink <br> at the end of the body (same as paragraphs).
     if (text.endsWith('\n')) {
       text = text.slice(0, -1);
+    }
+    // Contenteditable may have flattened an old badge into a leading label.
+    const label = pre.dataset.label;
+    if (label && text.startsWith(label)) {
+      const after = text.slice(label.length);
+      if (!after || /^[\s]/.test(after)) {
+        text = after.replace(/^[ \t]+/, '');
+      }
     }
     return text;
   }
@@ -2933,7 +3039,71 @@
       wrap.append(node);
       node = wrap;
     }
+    if (run.lang && run.langLabel) {
+      const wrap = el('span', 'note-code-src');
+      wrap.dataset.codeLang = run.lang;
+      wrap.dataset.codeLabel = run.langLabel;
+      wrap.append(node);
+      node = wrap;
+    }
     return node;
+  }
+
+  /**
+   * @param {HTMLElement} pre
+   * @param {string | undefined} languageId
+   * @param {string | undefined} label
+   */
+  function applyCodeBlockLanguage(pre, languageId, label) {
+    // Label is drawn via CSS ::before { content: attr(data-label) } — never a text node
+    // inside contenteditable (that used to leak "ts" into the code on wrap/save).
+    pre.querySelectorAll('.note-code-lang').forEach((node) => node.remove());
+    if (languageId && label) {
+      pre.dataset.languageId = languageId;
+      pre.dataset.label = label;
+      pre.classList.add('has-lang');
+    } else {
+      delete pre.dataset.languageId;
+      delete pre.dataset.label;
+      pre.classList.remove('has-lang');
+      pre.classList.remove('is-highlighted');
+    }
+  }
+
+  /**
+   * @param {HTMLElement} pre
+   * @param {string} text
+   * @param {{ languageId?: string, label?: string, highlight?: boolean }} [opts]
+   */
+  function fillCodeBlock(pre, text, opts) {
+    const languageId = opts?.languageId;
+    const label = opts?.label;
+    applyCodeBlockLanguage(pre, languageId, label);
+    pre.querySelectorAll(':scope > .note-code-body, :scope > br').forEach((node) => node.remove());
+    const body = el('span', 'note-code-body');
+    if (opts?.highlight && languageId && text) {
+      // View mode: host fills tokens; keep a plain placeholder until then.
+      body.textContent = text;
+      pre.append(body);
+      requestCodeHighlight(pre, text, languageId);
+      return;
+    }
+    // Editing: lines as text + <br> only — raw "\n" in textContent + contenteditable
+    // often grows a matching <br> and doubles newlines on save.
+    if (text) {
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0) {
+          body.append(document.createElement('br'));
+        }
+        if (lines[i]) {
+          body.append(document.createTextNode(lines[i]));
+        }
+      }
+    } else {
+      body.append(document.createElement('br'));
+    }
+    pre.append(body);
   }
 
   /**
@@ -2948,10 +3118,11 @@
     for (const block of blocks) {
       if (block.type === 'code') {
         const pre = el('pre', 'note-code');
-        pre.textContent = block.text || '';
-        if (!block.text) {
-          pre.append(document.createElement('br'));
-        }
+        fillCodeBlock(pre, block.text || '', {
+          languageId: block.languageId,
+          label: block.label,
+          highlight: !editing,
+        });
         fragment.append(pre);
         continue;
       }
@@ -3020,6 +3191,14 @@
     if (elNode.classList.contains('note-quote')) {
       marks.quote = true;
     }
+    if (elNode.classList.contains('note-code-src') || elNode.dataset.codeLang) {
+      const lang = elNode.dataset.codeLang;
+      const langLabel = elNode.dataset.codeLabel;
+      if (lang && langLabel) {
+        marks.lang = lang;
+        marks.langLabel = langLabel;
+      }
+    }
     const colorAttr = tag === 'FONT' ? elNode.getAttribute('color') : null;
     const color = colorAttr || elNode.style?.color;
     if (color) {
@@ -3041,10 +3220,46 @@
           b: marks.b || run.b || undefined,
           quote: marks.quote || run.quote || undefined,
           color: marks.color || run.color || undefined,
+          lang: marks.lang || run.lang || undefined,
+          langLabel: marks.langLabel || run.langLabel || undefined,
         });
       }
     }
     return runs.length ? runs : [{ text: '', ...marks }];
+  }
+
+  /**
+   * Contenteditable keeps a trailing <br> in each block for the caret.
+   * Without stripping it, every paragraph serializes with an extra blank line.
+   * @param {NoteRun[]} runs
+   * @returns {NoteRun[]}
+   */
+  function stripTrailingBreakRuns(runs) {
+    const next = runs.slice();
+    while (next.length) {
+      const last = next[next.length - 1];
+      if (!last) {
+        next.pop();
+        continue;
+      }
+      const plain =
+        !last.b && !last.color && !last.quote && !last.lang && !last.langLabel;
+      if (plain && last.text === '\n') {
+        next.pop();
+        continue;
+      }
+      if (plain && typeof last.text === 'string' && /\n$/.test(last.text)) {
+        const trimmed = last.text.replace(/\n+$/, '');
+        if (trimmed) {
+          next[next.length - 1] = { ...last, text: trimmed };
+        } else {
+          next.pop();
+          continue;
+        }
+      }
+      break;
+    }
+    return next.length ? next : [{ text: '' }];
   }
 
   /** @param {HTMLElement} input @returns {NoteDoc} */
@@ -3069,6 +3284,8 @@
             b: run.b,
             color: run.color,
             quote: run.quote,
+            lang: run.lang,
+            langLabel: run.langLabel,
           });
         }
       }
@@ -3079,13 +3296,23 @@
       if (child.nodeType === Node.ELEMENT_NODE) {
         const elNode = /** @type {HTMLElement} */ (child);
         if (elNode.classList.contains('note-code') || elNode.tagName === 'PRE') {
-          blocks.push({ type: 'code', text: codeTextFromPre(elNode) });
+          /** @type {{ type: 'code', text: string, languageId?: string, label?: string }} */
+          const codeBlock = { type: 'code', text: codeTextFromPre(elNode) };
+          if (elNode.dataset.languageId && elNode.dataset.label) {
+            codeBlock.languageId = elNode.dataset.languageId;
+            codeBlock.label = elNode.dataset.label;
+          }
+          blocks.push(codeBlock);
           continue;
         }
-        pushParagraphRuns(runsFromNode(elNode));
+        pushParagraphRuns(stripTrailingBreakRuns(runsFromNode(elNode)));
         continue;
       }
       if (child.nodeType === Node.TEXT_NODE && child.textContent) {
+        // Contenteditable + pre-wrap often inserts "\n" text nodes between blocks.
+        if (/^\s*$/.test(child.textContent)) {
+          continue;
+        }
         pushParagraphRuns([{ text: child.textContent }]);
       }
     }
@@ -3124,6 +3351,78 @@
     if (!editing) {
       bindNoteLinks(input);
     }
+  }
+
+  /** Re-request highlight for every visible code block after a theme change. */
+  function refreshAllNoteHighlights() {
+    root.querySelectorAll('.note-input:not(.is-editing) .note-code[data-language-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const languageId = node.dataset.languageId;
+      if (!languageId) {
+        return;
+      }
+      const text = codeTextFromPre(node);
+      if (text) {
+        requestCodeHighlight(node, text, languageId);
+      }
+    });
+  }
+
+  /**
+   * @param {HTMLElement} pre
+   * @param {string} text
+   * @param {string} languageId
+   */
+  function requestCodeHighlight(pre, text, languageId) {
+    const requestId = String(++highlightRequestId);
+    pre.dataset.highlightRequestId = requestId;
+    vscode.postMessage({ type: 'highlightCode', requestId, text, languageId });
+  }
+
+  /**
+   * @param {{ requestId: string, lines?: Array<Array<{ text: string, color?: string }>>, themeGeneration?: number }} message
+   */
+  function onHighlightCodeResult(message) {
+    if (typeof message.themeGeneration === 'number') {
+      themeGeneration = message.themeGeneration;
+    }
+    if (!Array.isArray(message.lines)) {
+      return;
+    }
+    const pre = root.querySelector(
+      '.note-code[data-highlight-request-id="' + CSS.escape(message.requestId) + '"]',
+    );
+    if (!(pre instanceof HTMLElement) || pre.closest('.note-input.is-editing')) {
+      return;
+    }
+    const body = pre.querySelector(':scope > .note-code-body');
+    if (!(body instanceof HTMLElement)) {
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < message.lines.length; i++) {
+      if (i > 0) {
+        frag.append(document.createTextNode('\n'));
+      }
+      const spans = message.lines[i] || [];
+      for (const span of spans) {
+        if (!span || !span.text) {
+          continue;
+        }
+        if (span.color) {
+          const node = el('span', 'note-code-tok');
+          node.style.color = span.color;
+          node.textContent = span.text;
+          frag.append(node);
+        } else {
+          frag.append(document.createTextNode(span.text));
+        }
+      }
+    }
+    body.replaceChildren(frag);
+    pre.classList.add('is-highlighted');
   }
 
   /** @param {HTMLElement} node */
@@ -3174,7 +3473,10 @@
     const sel = window.getSelection();
     const code = closestNoteCode(sel?.anchorNode || null);
     if (code && input.contains(code)) {
-      document.execCommand('insertText', false, '\n');
+      // Prefer <br> over a raw "\n" so contenteditable does not keep both.
+      if (!document.execCommand('insertLineBreak')) {
+        document.execCommand('insertHTML', false, '<br>');
+      }
       return;
     }
     if (!sel || !sel.rangeCount) {
@@ -3424,6 +3726,150 @@
     document.execCommand('foreColor', false, color);
   }
 
+  /**
+   * Language shared by every stamped run inside a range; mixed → null; none → undefined.
+   * @param {Range} range
+   * @returns {{ languageId: string, label: string } | null | undefined}
+   */
+  function languageFromRange(range) {
+    const wrap = document.createElement('div');
+    wrap.append(range.cloneContents());
+    /** @type {Array<{ languageId: string, label: string }>} */
+    const found = [];
+    wrap.querySelectorAll('.note-code-src[data-code-lang]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const languageId = node.dataset.codeLang;
+      const label = node.dataset.codeLabel;
+      if (languageId && label) {
+        found.push({ languageId, label });
+      }
+    });
+    // Also check if the range sits inside a single source span.
+    const startEl =
+      range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? /** @type {HTMLElement} */ (range.startContainer)
+        : range.startContainer.parentElement;
+    const host = startEl?.closest?.('.note-code-src');
+    if (host instanceof HTMLElement && host.dataset.codeLang && host.dataset.codeLabel) {
+      if (host.contains(range.endContainer) || host === range.endContainer) {
+        found.push({
+          languageId: host.dataset.codeLang,
+          label: host.dataset.codeLabel,
+        });
+      }
+    }
+    if (!found.length) {
+      return undefined;
+    }
+    const first = found[0];
+    for (const item of found) {
+      if (item.languageId !== first.languageId) {
+        return null;
+      }
+    }
+    return first;
+  }
+
+  /**
+   * Direct block children of the note field that intersect a range.
+   * Code blocks must sit here — nested inside .note-p they serialize as a paragraph.
+   * @param {HTMLElement} input
+   * @param {Range} range
+   * @returns {HTMLElement[]}
+   */
+  function noteBlocksIntersecting(input, range) {
+    /** @type {HTMLElement[]} */
+    const out = [];
+    for (const child of Array.from(input.children)) {
+      if (!(child instanceof HTMLElement)) {
+        continue;
+      }
+      if (!child.classList.contains('note-p') && !child.classList.contains('note-code')) {
+        continue;
+      }
+      try {
+        if (range.intersectsNode(child)) {
+          out.push(child);
+        }
+      } catch {
+        // ignores detached nodes
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Place a code block as a direct child of the note field (never inside .note-p).
+   * @param {HTMLElement} input
+   * @param {HTMLElement} pre
+   * @param {Selection} sel
+   * @param {{ text: string, languageId?: string, label?: string }} payload
+   */
+  function insertCodeBlockAtSelection(input, pre, sel, payload) {
+    fillCodeBlock(pre, payload.text, {
+      languageId: payload.languageId,
+      label: payload.label,
+      highlight: false,
+    });
+    if (!sel.rangeCount) {
+      input.append(pre);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const blocks = noteBlocksIntersecting(input, range);
+    if (blocks.length === 1 && blocks[0].classList.contains('note-p') && !sel.isCollapsed) {
+      const p = blocks[0];
+      const beforeRange = document.createRange();
+      beforeRange.selectNodeContents(p);
+      beforeRange.setEnd(range.startContainer, range.startOffset);
+      const afterRange = document.createRange();
+      afterRange.selectNodeContents(p);
+      afterRange.setStart(range.endContainer, range.endOffset);
+      const beforeText = plainTextFromRange(beforeRange);
+      const afterText = plainTextFromRange(afterRange);
+      const frag = document.createDocumentFragment();
+      if (beforeText) {
+        const beforeP = el('div', 'note-p');
+        beforeP.textContent = beforeText;
+        frag.append(beforeP);
+      }
+      frag.append(pre);
+      if (afterText) {
+        const afterP = el('div', 'note-p');
+        afterP.textContent = afterText;
+        frag.append(afterP);
+      }
+      p.replaceWith(frag);
+      return;
+    }
+    if (blocks.length >= 1) {
+      const first = blocks[0];
+      for (let i = 1; i < blocks.length; i++) {
+        blocks[i].remove();
+      }
+      first.replaceWith(pre);
+      return;
+    }
+    const anchor =
+      range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? /** @type {HTMLElement} */ (range.startContainer)
+        : range.startContainer.parentElement;
+    const nestedP = anchor?.closest?.('.note-p');
+    if (nestedP && input.contains(nestedP)) {
+      let top = /** @type {HTMLElement} */ (nestedP);
+      while (top.parentElement && top.parentElement !== input) {
+        top = top.parentElement;
+      }
+      if (top.parentElement === input) {
+        top.after(pre);
+        return;
+      }
+    }
+    input.append(pre);
+  }
+
   function toggleCodeBlock() {
     if (!activeNoteEdit) {
       return;
@@ -3431,13 +3877,23 @@
     const input = activeNoteEdit.input;
     const sel = window.getSelection();
     const code = closestNoteCode(sel?.anchorNode || null);
-    if (code && input.contains(code)) {
+    if (code && input.contains(code) && code.parentElement === input) {
       const text = codeTextFromPre(code);
+      const langId = code.dataset.languageId;
+      const langLabel = code.dataset.label;
       const lines = text.split('\n');
       const frag = document.createDocumentFragment();
       for (const line of lines) {
         const p = el('div', 'note-p');
-        p.textContent = line;
+        if (langId && langLabel && line) {
+          const src = el('span', 'note-code-src');
+          src.dataset.codeLang = langId;
+          src.dataset.codeLabel = langLabel;
+          src.textContent = line;
+          p.append(src);
+        } else {
+          p.textContent = line;
+        }
         if (!line) {
           p.append(document.createElement('br'));
         }
@@ -3446,30 +3902,50 @@
       code.replaceWith(frag);
       return;
     }
+    // Unwrap a nested legacy pre if somehow still inside a paragraph.
+    if (code && input.contains(code)) {
+      const text = codeTextFromPre(code);
+      const langId = code.dataset.languageId;
+      const langLabel = code.dataset.label;
+      const pre = el('pre', 'note-code');
+      fillCodeBlock(pre, text, {
+        languageId: langId,
+        label: langLabel,
+        highlight: false,
+      });
+      const host = code.closest('.note-p');
+      if (host && host.parentElement === input) {
+        host.replaceWith(pre);
+      } else {
+        code.replaceWith(pre);
+      }
+      const after = el('div', 'note-p');
+      after.append(document.createElement('br'));
+      pre.after(after);
+      return;
+    }
     const pre = el('pre', 'note-code');
     if (sel && sel.rangeCount && !sel.isCollapsed) {
       const range = sel.getRangeAt(0);
-      // range.toString() drops newlines between block elements; keep formatting.
       const text = plainTextFromRange(range);
-      pre.textContent = text;
-      if (!text) {
-        pre.append(document.createElement('br'));
-      }
-      range.deleteContents();
-      range.insertNode(pre);
+      const lang = languageFromRange(range);
+      insertCodeBlockAtSelection(input, pre, sel, {
+        text,
+        languageId: lang ? lang.languageId : undefined,
+        label: lang ? lang.label : undefined,
+      });
     } else if (sel && sel.rangeCount) {
-      pre.append(document.createElement('br'));
-      const range = sel.getRangeAt(0);
-      range.insertNode(pre);
+      insertCodeBlockAtSelection(input, pre, sel, { text: '' });
     } else {
-      pre.append(document.createElement('br'));
+      fillCodeBlock(pre, '', { highlight: false });
       input.append(pre);
     }
     const after = el('div', 'note-p');
     after.append(document.createElement('br'));
     pre.after(after);
     const caret = document.createRange();
-    caret.selectNodeContents(pre);
+    const body = pre.querySelector(':scope > .note-code-body') || pre;
+    caret.selectNodeContents(body);
     caret.collapse(true);
     sel?.removeAllRanges();
     sel?.addRange(caret);
@@ -3679,18 +4155,54 @@
     }
     saveNoteSelection();
     restoreNoteSelection();
-    const text = window.getSelection()?.toString() || '';
-    if (text) {
-      vscode.postMessage({ type: 'clipboardWrite', text });
+    const sel = window.getSelection();
+    const text = sel?.toString() || '';
+    if (!text) {
+      return;
     }
+    const codeLang = languageFromCodeSelection(sel);
+    if (codeLang) {
+      vscode.postMessage({
+        type: 'clipboardWrite',
+        text,
+        languageId: codeLang.languageId,
+        label: codeLang.label,
+      });
+      codeStamp = { text, languageId: codeLang.languageId, label: codeLang.label };
+      return;
+    }
+    vscode.postMessage({ type: 'clipboardWrite', text });
+  }
+
+  /**
+   * Language of a selection that lies entirely inside one code block.
+   * @param {Selection | null | undefined} sel
+   * @returns {{ languageId: string, label: string } | undefined}
+   */
+  function languageFromCodeSelection(sel) {
+    if (!sel || !sel.rangeCount || sel.isCollapsed) {
+      return undefined;
+    }
+    const startCode = closestNoteCode(sel.anchorNode);
+    const endCode = closestNoteCode(sel.focusNode);
+    if (!startCode || startCode !== endCode) {
+      return undefined;
+    }
+    const languageId = startCode.dataset.languageId;
+    const label = startCode.dataset.label;
+    if (!languageId || !label) {
+      return undefined;
+    }
+    return { languageId, label };
   }
 
   /**
    * Insert plain text at the current (or saved) caret in the active note.
    * Preserves newlines/indentation (important for code). Prefer insertText for undo.
    * @param {string} text
+   * @param {{ languageId?: string, label?: string }} [stamp]
    */
-  function insertTextAtNoteCaret(text) {
+  function insertTextAtNoteCaret(text, stamp) {
     if (!activeNoteEdit) {
       return;
     }
@@ -3703,6 +4215,19 @@
       sel = window.getSelection();
     }
     if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const code = closestNoteCode(sel.anchorNode);
+    if (code && input.contains(code)) {
+      pasteIntoCodeBlock(code, text, stamp);
+      refreshNoteEmptyClass(input);
+      saveNoteSelection();
+      return;
+    }
+    if (stamp?.languageId && stamp?.label && text) {
+      insertStampedParagraphText(text, stamp.languageId, stamp.label);
+      refreshNoteEmptyClass(input);
+      saveNoteSelection();
       return;
     }
     // insertText keeps \n and spaces; works inside paste user-gesture and for undo.
@@ -3723,8 +4248,150 @@
     saveNoteSelection();
   }
 
-  /** @param {string} text */
-  function applyPasteInFocusedField(text) {
+  /**
+   * @param {string} text
+   * @param {string} languageId
+   * @param {string} label
+   */
+  function insertStampedParagraphText(text, languageId, label) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !activeNoteEdit) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const lines = text.split('\n');
+    const frag = document.createDocumentFragment();
+    /** @type {HTMLElement | null} */
+    let lastSrc = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        frag.append(document.createElement('br'));
+      }
+      if (lines[i]) {
+        const src = el('span', 'note-code-src');
+        src.dataset.codeLang = languageId;
+        src.dataset.codeLabel = label;
+        src.textContent = lines[i];
+        frag.append(src);
+        lastSrc = src;
+      }
+    }
+    range.insertNode(frag);
+    if (lastSrc) {
+      range.setStartAfter(lastSrc);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+
+  /**
+   * @param {HTMLElement} code
+   * @param {string} text
+   * @param {{ languageId?: string, label?: string }} [stamp]
+   */
+  function pasteIntoCodeBlock(code, text, stamp) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const before = codeTextFromPre(code);
+    const fullSelected =
+      !sel.isCollapsed && selectionCoversCodeBlock(sel, code) && plainTextFromRange(range) === before;
+    const empty = !before;
+    // insertText into the body so badge stays out of the text.
+    const body = code.querySelector(':scope > .note-code-body');
+    if (body instanceof HTMLElement && !body.contains(range.commonAncestorContainer)) {
+      // Caret may sit on the pre; place inside body.
+      const caret = document.createRange();
+      caret.selectNodeContents(body);
+      caret.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(caret);
+    }
+    if (text && document.execCommand('insertText', false, text)) {
+      // ok
+    } else {
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      r.insertNode(document.createTextNode(text));
+    }
+    // Language rules after the text is in the DOM.
+    const existingId = code.dataset.languageId;
+    if (stamp?.languageId && stamp?.label) {
+      if (empty || fullSelected) {
+        applyCodeBlockLanguage(code, stamp.languageId, stamp.label);
+      } else if (existingId && existingId !== stamp.languageId) {
+        applyCodeBlockLanguage(code, undefined, undefined);
+      }
+    } else if (fullSelected) {
+      applyCodeBlockLanguage(code, undefined, undefined);
+    }
+    // Keep a single body wrapper if the browser flattened the pre.
+    ensureCodeBlockBody(code);
+  }
+
+  /** @param {HTMLElement} code */
+  function ensureCodeBlockBody(code) {
+    let body = code.querySelector(':scope > .note-code-body');
+    if (!(body instanceof HTMLElement)) {
+      const text = codeTextFromPre(code);
+      const langId = code.dataset.languageId;
+      const langLabel = code.dataset.label;
+      fillCodeBlock(code, text, {
+        languageId: langId,
+        label: langLabel,
+        highlight: false,
+      });
+      return;
+    }
+    body.querySelectorAll('.note-code-lang').forEach((node) => node.remove());
+  }
+
+  /**
+   * @param {Selection} sel
+   * @param {HTMLElement} code
+   */
+  function selectionCoversCodeBlock(sel, code) {
+    if (!sel.rangeCount) {
+      return false;
+    }
+    const range = sel.getRangeAt(0);
+    const body = code.querySelector(':scope > .note-code-body') || code;
+    const full = document.createRange();
+    full.selectNodeContents(body);
+    return (
+      range.compareBoundaryPoints(Range.START_TO_START, full) <= 0 &&
+      range.compareBoundaryPoints(Range.END_TO_END, full) >= 0
+    );
+  }
+
+  /**
+   * Resolve stamp for pasted text: explicit args, or matching codeStamp.
+   * @param {string} text
+   * @param {string | undefined} languageId
+   * @param {string | undefined} label
+   */
+  function stampForPaste(text, languageId, label) {
+    if (languageId && label) {
+      return { languageId, label };
+    }
+    const normalized = String(text || '').replace(/\r\n/g, '\n');
+    if (
+      codeStamp &&
+      codeStamp.languageId &&
+      codeStamp.label &&
+      codeStamp.text === normalized
+    ) {
+      return { languageId: codeStamp.languageId, label: codeStamp.label };
+    }
+    return undefined;
+  }
+
+  /** @param {string} text @param {string} [languageId] @param {string} [label] */
+  function applyPasteInFocusedField(text, languageId, label) {
     const active = document.activeElement;
     if (
       (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) &&
@@ -3747,13 +4414,13 @@
     const code = sel ? closestNoteCode(sel.anchorNode) : null;
     const inCode = !!(code && input.contains(code));
     if (sel && sel.rangeCount && !sel.isCollapsed && !inCode && isPasteableNoteUrl(clip)) {
-      const label = sel.toString();
-      if (label) {
-        insertTextAtNoteCaret('[' + label + '](' + clip + ')');
+      const linkLabel = sel.toString();
+      if (linkLabel) {
+        insertTextAtNoteCaret('[' + linkLabel + '](' + clip + ')');
         return;
       }
     }
-    insertTextAtNoteCaret(text);
+    insertTextAtNoteCaret(text, stampForPaste(text, languageId, label));
   }
 
   /** @param {string} text */
@@ -3933,17 +4600,37 @@
       const code = sel ? closestNoteCode(sel.anchorNode) : null;
       const inCode = !!(code && input.contains(code));
       if (sel && sel.rangeCount && !sel.isCollapsed && !inCode && isPasteableNoteUrl(clip)) {
-        const label = plainTextFromRange(sel.getRangeAt(0)) || sel.toString();
-        if (label) {
+        const linkLabel = plainTextFromRange(sel.getRangeAt(0)) || sel.toString();
+        if (linkLabel) {
           event.preventDefault();
           event.stopPropagation();
-          insertTextAtNoteCaret('[' + label + '](' + clip + ')');
+          insertTextAtNoteCaret('[' + linkLabel + '](' + clip + ')');
           return;
         }
       }
       event.preventDefault();
       event.stopPropagation();
-      insertTextAtNoteCaret(raw);
+      insertTextAtNoteCaret(raw, stampForPaste(raw));
+    });
+    input.addEventListener('copy', () => {
+      // Native copy already filled the clipboard; stamp language if inside one code block.
+      window.setTimeout(() => {
+        const sel = window.getSelection();
+        const text = sel?.toString() || '';
+        if (!text) {
+          return;
+        }
+        const codeLang = languageFromCodeSelection(sel);
+        if (codeLang) {
+          vscode.postMessage({
+            type: 'clipboardWrite',
+            text,
+            languageId: codeLang.languageId,
+            label: codeLang.label,
+          });
+          codeStamp = { text, languageId: codeLang.languageId, label: codeLang.label };
+        }
+      }, 0);
     });
     input.addEventListener('focus', () => {
       if (locked) {
