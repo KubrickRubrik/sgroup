@@ -11,7 +11,19 @@
         "explorer": {
           "1": true
         },
-        "bottom": {},
+        "bottom": {
+          "1": true,
+          "3": true,
+          "4": true,
+          "note-10": true,
+          "note-11": true,
+          "note-12": true,
+          "note-15": true,
+          "note-3": true,
+          "test-dir": true,
+          "ttest-6": true,
+          "version": true
+        },
         "left": {
           "1": true,
           "3": true,
@@ -52,7 +64,7 @@
       "icon": "🍀",
       "alias": "тестовая группа 1",
       "columns": "1",
-      "order": 3,
+      "order": 17,
       "page": "map"
     },
     "2": {
@@ -65,12 +77,12 @@
       "label": "Тест 3",
       "color": "syn3.sky",
       "icon": "🔥",
-      "order": 5,
+      "order": 19,
       "page": "map"
     },
     "4": {
       "label": "Тест 4",
-      "order": 6,
+      "order": 20,
       "page": "map"
     },
     "5": {
@@ -85,13 +97,13 @@
       "color": "#de3c1b",
       "icon": "🔥",
       "columns": "2",
-      "order": 2,
+      "order": 16,
       "page": "map"
     },
     "ttest-6": {
       "label": "Ttest 6",
       "icon": "⭐",
-      "order": 4,
+      "order": 18,
       "page": "map"
     },
     "2-2": {
@@ -103,7 +115,7 @@
     },
     "test-dir": {
       "label": "Test_dir",
-      "order": 7,
+      "order": 21,
       "page": "map"
     },
     "1-2": {
@@ -253,6 +265,21 @@
       "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA",
       "order": 1
     },
+    "note-10": {
+      "parentNote": "note-5",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\" dispose(): void {\\n    this.subscription.dispose();\\n    this.emitter.dispose();\\n  \",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 1
+    },
+    "note-13": {
+      "parentNote": "note-12",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 1
+    },
+    "note-14": {
+      "parentNote": "note-13",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 1
+    },
     "note-3": {
       "page": "map",
       "text": "Моя заметка",
@@ -292,6 +319,28 @@
       "text": "Моя заметка",
       "order": 3,
       "color": "#657a9a"
+    },
+    "note-9": {
+      "parentNote": "note-3",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"private readonly nodes = new Map<string, Node>();\\n  private readonly subscription: vscode.Disposable;\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 3
+    },
+    "note-11": {
+      "parentNote": "note-3",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 4
+    },
+    "note-12": {
+      "page": "map",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"  refresh(): void {\\n    this.nodes.clear();\\n    this.emitter.fire(undefined);\\n  }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 8,
+      "color": "syn3.slate"
+    },
+    "note-15": {
+      "page": "map",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"async findItemNode(relPath: string): Promise<ItemNode | undefined> {\\n  const [markerId] = this.store.markersOf(relPath);\\n  if (!markerId) {\\n    return undefined;\\n  }\\n  return this.itemNode(markerId, relPath);\\n}\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "order": 15,
+      "color": "syn3.slate"
     }
   }
 }

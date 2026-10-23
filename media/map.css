@@ -1277,6 +1277,42 @@ body.vscode-high-contrast .drop-edge {
   transform: rotate(-90deg);
 }
 
+/* Note folded: keep only the first text line visible (full text while editing). */
+.note-card.collapsed:not(.is-note-editing) > .note-header .note-input {
+  max-height: var(--note-first-line, calc(1.35 * 1em + 4px));
+  overflow: hidden;
+  transition: max-height 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.note-card:not(.collapsed) > .note-header .note-input,
+.note-card.is-note-editing > .note-header .note-input {
+  max-height: none;
+}
+
+/* Leading blank paragraphs before a code block — hide so the fold shows code, not emptiness. */
+.note-card.collapsed:not(.is-note-editing) > .note-header .note-input > .note-fold-skip {
+  display: none;
+}
+
+/* Compact code chrome in the one-line fold preview. */
+.note-card.collapsed:not(.is-note-editing) > .note-header .note-input > .note-code {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.note-card.collapsed:not(.is-note-editing) > .note-header .note-input > .note-code.has-lang {
+  padding-top: 0;
+  padding-right: 0;
+}
+
+.note-card.collapsed:not(.is-note-editing) > .note-header .note-input > .note-code.has-lang::before {
+  display: none;
+}
+
 .bar {
   align-self: stretch;
   background: var(--group-color);

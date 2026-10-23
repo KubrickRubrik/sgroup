@@ -859,7 +859,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
     }
     for (const [id] of this.store.rootNotes(pageId)) {
-      if (this.store.isNoteLocked(id) || this.store.noteSubtreeHeight(id) === 0) {
+      if (this.store.isNoteLocked(id)) {
         continue;
       }
       if (collapsed) {
@@ -880,10 +880,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       .filter(([id, def]) => !def.parent && this.store.pageOf(id) === pageId && !this.store.isLocked(id));
     const noteTops = this.store
       .rootNotes(pageId)
-      .filter(
-        ([id]) =>
-          !this.store.isNoteLocked(id) && this.store.noteSubtreeHeight(id) > 0,
-      );
+      .filter(([id]) => !this.store.isNoteLocked(id));
     const all = [...tops.map(([id]) => id), ...noteTops.map(([id]) => id)];
     return all.length > 0 && all.every((id) => !!flags[id]);
   }
@@ -2105,7 +2102,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         }
       }
       for (const [id] of this.store.rootNotes(activePage)) {
-        if (this.store.isNoteLocked(id) || this.store.noteSubtreeHeight(id) === 0) {
+        if (this.store.isNoteLocked(id)) {
           continue;
         }
         if (collapsed) {

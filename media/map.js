@@ -1896,16 +1896,13 @@
     return !!groupOrId?.locked;
   }
 
-  /** Top-level groups and foldable root notes that can actually fold. */
+  /** Top-level groups and root notes (notes always fold to one line). */
   function collapsibleTopGroups() {
     const groups = pageGroups().filter(
       (group) => !group.parent && !isEmptyGroup(group) && !isLocked(group),
     );
     const notes = (data?.notes || []).filter(
-      (note) =>
-        note.page === activePage()?.id &&
-        !isLocked(note) &&
-        (note.children || []).length > 0,
+      (note) => note.page === activePage()?.id && !isLocked(note),
     );
     return [...groups, ...notes];
   }
@@ -3339,6 +3336,49 @@
     });
   }
 
+  /**
+   * Empty paragraph used as a spacer before a code block (or caret sink).
+   * @param {Element} node
+   */
+  function isLeadingEmptyNoteBlock(node) {
+    if (!(node instanceof HTMLElement) || !node.classList.contains('note-p')) {
+      return false;
+    }
+    const text = (node.textContent || '').replace(/\u00a0/g, ' ').trim();
+    if (text) {
+      return false;
+    }
+    // Allow only <br> / empty spans — no code, links, or real content.
+    return !node.querySelector('pre, .note-code, a, img, b, strong, .note-quote');
+  }
+
+  /**
+   * When a nested note is folded, skip leading blank paragraphs so the clamp
+   * shows the first real line (often the first line of a code block).
+   * @param {HTMLElement} input
+   */
+  function applyCollapsedNotePreview(input) {
+    input.querySelectorAll(':scope > .note-fold-skip').forEach((node) => {
+      node.classList.remove('note-fold-skip');
+    });
+    const card = input.closest('.note-card');
+    const folded =
+      card instanceof HTMLElement &&
+      card.classList.contains('collapsed') &&
+      !card.classList.contains('is-note-editing') &&
+      !input.classList.contains('is-editing');
+    if (!folded) {
+      return;
+    }
+    for (const child of Array.from(input.children)) {
+      if (isLeadingEmptyNoteBlock(child)) {
+        child.classList.add('note-fold-skip');
+        continue;
+      }
+      break;
+    }
+  }
+
   /** @param {HTMLElement} input @param {string} raw @param {{ editing?: boolean, locked?: boolean }} opts */
   function paintNoteInput(input, raw, opts) {
     const doc = parseNoteText(raw);
@@ -3351,6 +3391,7 @@
     if (!editing) {
       bindNoteLinks(input);
     }
+    applyCollapsedNotePreview(input);
   }
 
   /** Re-request highlight for every visible code block after a theme change. */
@@ -3466,6 +3507,55 @@
     range.collapse(true);
     sel.removeAllRanges();
     sel.addRange(range);
+  }
+
+  /**
+   * True when the caret sits on the first line of a code block (any column).
+   * @param {HTMLElement} code
+   * @param {Range} caret
+   */
+  function caretOnFirstCodeLine(code, caret) {
+    const body = code.querySelector(':scope > .note-code-body') || code;
+    if (!body.contains(caret.startContainer) && body !== caret.startContainer) {
+      return false;
+    }
+    try {
+      const before = document.createRange();
+      before.selectNodeContents(body);
+      before.setEnd(caret.startContainer, caret.startOffset);
+      const wrap = document.createElement('div');
+      wrap.append(before.cloneContents());
+      return !plainTextFromNode(wrap).includes('\n');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * ArrowUp on the first code line: move into (or create) a paragraph above the block.
+   * @param {HTMLElement} input
+   */
+  function enterBeforeCodeBlock(input) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const code = closestNoteCode(sel.anchorNode);
+    if (!code || !input.contains(code) || code.parentElement !== input) {
+      return;
+    }
+    let prev = code.previousElementSibling;
+    if (!(prev instanceof HTMLElement) || !prev.classList.contains('note-p')) {
+      prev = el('div', 'note-p');
+      prev.append(document.createElement('br'));
+      code.before(prev);
+    }
+    const range = document.createRange();
+    range.selectNodeContents(prev);
+    range.collapse(isLeadingEmptyNoteBlock(prev));
+    sel.removeAllRanges();
+    sel.addRange(range);
+    refreshNoteEmptyClass(input);
   }
 
   /** @param {HTMLElement} input */
@@ -4197,6 +4287,47 @@
   }
 
   /**
+   * Strip the shared leading indent from a pasted code snippet (e.g. a method
+   * copied from inside a class keeps relative indents, drops the outer column).
+   * @param {string} text
+   * @returns {string}
+   */
+  function dedentSharedIndent(text) {
+    const normalized = String(text || '').replace(/\r\n/g, '\n');
+    if (!normalized) {
+      return normalized;
+    }
+    const lines = normalized.split('\n');
+    /** @type {string[]} */
+    const indents = [];
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      const match = /^[ \t]*/.exec(line);
+      indents.push(match ? match[0] : '');
+    }
+    if (!indents.length) {
+      return normalized;
+    }
+    let common = indents[0];
+    for (let i = 1; i < indents.length; i++) {
+      let j = 0;
+      while (j < common.length && j < indents[i].length && common[j] === indents[i][j]) {
+        j += 1;
+      }
+      common = common.slice(0, j);
+      if (!common) {
+        return normalized;
+      }
+    }
+    if (!common) {
+      return normalized;
+    }
+    return lines.map((line) => (line.startsWith(common) ? line.slice(common.length) : line)).join('\n');
+  }
+
+  /**
    * Insert plain text at the current (or saved) caret in the active note.
    * Preserves newlines/indentation (important for code). Prefer insertText for undo.
    * @param {string} text
@@ -4206,6 +4337,8 @@
     if (!activeNoteEdit) {
       return;
     }
+    // Match language stamp against the raw clipboard, then drop shared indent.
+    const payload = dedentSharedIndent(text);
     const input = activeNoteEdit.input;
     input.focus();
     restoreNoteSelection();
@@ -4219,26 +4352,26 @@
     }
     const code = closestNoteCode(sel.anchorNode);
     if (code && input.contains(code)) {
-      pasteIntoCodeBlock(code, text, stamp);
+      pasteIntoCodeBlock(code, payload, stamp);
       refreshNoteEmptyClass(input);
       saveNoteSelection();
       return;
     }
-    if (stamp?.languageId && stamp?.label && text) {
-      insertStampedParagraphText(text, stamp.languageId, stamp.label);
+    if (stamp?.languageId && stamp?.label && payload) {
+      insertStampedParagraphText(payload, stamp.languageId, stamp.label);
       refreshNoteEmptyClass(input);
       saveNoteSelection();
       return;
     }
     // insertText keeps \n and spaces; works inside paste user-gesture and for undo.
-    if (text && document.execCommand('insertText', false, text)) {
+    if (payload && document.execCommand('insertText', false, payload)) {
       refreshNoteEmptyClass(input);
       saveNoteSelection();
       return;
     }
     const range = sel.getRangeAt(0);
     range.deleteContents();
-    const node = document.createTextNode(text);
+    const node = document.createTextNode(payload);
     range.insertNode(node);
     range.setStartAfter(node);
     range.collapse(true);
@@ -4448,14 +4581,15 @@
     const childIds = note.children || [];
     const hasChildren = childIds.length > 0;
     const nested = !!(note.markerId || note.parentNote);
-    const collapsed = hasChildren && isCollapsed(note.id);
+    // Any note can fold to its first line (children hide when folded).
+    const canFold = true;
+    const collapsed = isCollapsed(note.id);
     const section = el(
       'section',
       'group note-card' +
         (collapsed ? ' collapsed' : '') +
         (locked ? ' locked' : '') +
-        (nested ? ' nested node' : '') +
-        (!hasChildren ? ' empty-group' : ''),
+        (nested ? ' nested node' : ''),
     );
     section.dataset.noteId = note.id;
     section.dataset.depth = String(note.depth || 0);
@@ -4473,7 +4607,7 @@
       depth: note.depth || 0,
       locked,
     });
-    header.append(el('span', 'chevron', hasChildren ? '▾' : ''));
+    header.append(el('span', 'chevron', canFold ? '▾' : ''));
     const bar = el('span', 'bar');
     bar.title = locked ? t('noteLocked') : t('changeColor');
     bar.addEventListener('click', (event) => {
@@ -4536,6 +4670,21 @@
         if (caret.compareBoundaryPoints(Range.END_TO_END, preRange) >= 0) {
           event.preventDefault();
           exitCodeBlock(input);
+        }
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        const code = closestNoteCode(window.getSelection()?.anchorNode || null);
+        if (!code || !input.contains(code)) {
+          return;
+        }
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount || !sel.isCollapsed) {
+          return;
+        }
+        if (caretOnFirstCodeLine(code, sel.getRangeAt(0))) {
+          event.preventDefault();
+          enterBeforeCodeBlock(input);
         }
       }
     });
@@ -4712,7 +4861,7 @@
       if (target instanceof Element && (target.closest('.note-input') || target.closest('.bar'))) {
         return;
       }
-      if (!hasChildren) {
+      if (!canFold) {
         return;
       }
       toggleCollapsed(note.id);
