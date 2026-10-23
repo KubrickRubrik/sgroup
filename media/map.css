@@ -879,7 +879,7 @@ body {
   opacity: 0.4;
 }
 
-body.is-dragging .group:not(.drop-target):not(.dragging) {
+body.is-dragging .group:not(.drop-target):not(.dragging):not(.drop-edge-target) {
   opacity: 0.6;
 }
 
@@ -894,7 +894,12 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
 }
 
 .group.drop-into {
-  outline-style: dashed;
+  outline: 2px dashed rgba(255, 255, 255, 0.55);
+}
+
+body.vscode-light .group.drop-into,
+body.vscode-high-contrast-light .group.drop-into {
+  outline-color: rgba(0, 0, 0, 0.45);
 }
 
 .group.drop-blocked {
@@ -907,28 +912,31 @@ body.is-dragging .group:not(.drop-target):not(.dragging) {
   background: color-mix(in srgb, var(--drop-color) 28%, transparent);
 }
 
-/* Insert line with circular end caps (before / after). */
-.group-header.drop-before::before,
-.group-header.drop-after::after {
-  background:
-    radial-gradient(circle 4px at 4px 50%, var(--drop-color) 95%, transparent 96%),
-    radial-gradient(circle 4px at calc(100% - 4px) 50%, var(--drop-color) 95%, transparent 96%),
-    linear-gradient(var(--drop-color), var(--drop-color)) center / calc(100% - 8px) 4px no-repeat;
-  content: '';
-  height: 8px;
-  left: 0;
+/* Reorder band: up to 16px on the card edge, full column or parent-group width.
+   Short cards shrink it in map.js so the middle stays free for nesting. */
+.drop-edge {
+  background: rgba(255, 255, 255, 0.2);
+  height: 16px;
   pointer-events: none;
-  position: absolute;
-  right: 0;
-  z-index: 4;
+  position: fixed;
+  z-index: 6;
 }
 
-.group-header.drop-before::before {
-  top: -8px;
+.drop-edge.at-top {
+  border-radius: 8px 8px 0 0;
 }
 
-.group-header.drop-after::after {
-  bottom: -8px;
+.drop-edge.at-bottom {
+  border-radius: 0 0 8px 8px;
+}
+
+body.vscode-light .drop-edge,
+body.vscode-high-contrast-light .drop-edge {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+body.vscode-high-contrast .drop-edge {
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .drop-hint {

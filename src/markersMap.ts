@@ -30,6 +30,8 @@ const LEGACY_ACTIVE_PAGE_KEYS = {
 const GROUPS_LAYOUT_CONTEXT = 'syn3.map.groupsLayout';
 /** True when every top-level group on the map is collapsed. */
 const TOP_COLLAPSED_CONTEXT = 'syn3.map.topCollapsed';
+/** `when` on the bottom view. False removes only that tab; Terminal stays. */
+const BOTTOM_OPEN_CONTEXT = 'syn3.bottom.open';
 
 interface MapItem {
   relPath: string;
@@ -114,8 +116,6 @@ type IncomingToolbarAction =
   | 'collapseGroups'
   | 'expandGroups'
   | 'refresh'
-  | 'openConfig'
-  | 'openSettings'
   | 'createPage'
   | 'renamePage'
   | 'deletePage'
@@ -222,8 +222,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastFocusedWebview?: vscode.Webview;
   /** Skip writing open=false while we close a column ourselves. */
   private closingColumn?: ColumnSide;
-  /** Skip writing open=false while we remove the bottom view ourselves. */
-  private closingBottom = false;
+  /** Profile sync or the toolbar is opening/closing the bottom tab. */
+  private applyingBottom = false;
+  /** Latest show/hide. An older call must not overwrite it. */
+  private bottomOp = 0;
+  /** Show and hide run one at a time, so a late `setContext` cannot undo a newer one. */
+  private bottomChain: Promise<unknown> = Promise.resolve();
+  /** Bumped for every profile sync. A stale sync must not hide the tab afterwards. */
+  private surfaceSyncEpoch = 0;
+  private surfaceSyncChain: Promise<void> = Promise.resolve();
+  /** Bumped only when a new reveal starts or the tab must close. Store saves do not bump it. */
+  private bottomRevealToken = 0;
   private surfacesBootstrapped = false;
   /** Last applied profile panel flags — skip sync when only appearance changed. */
   private lastSyncedOpenKey = '';
@@ -274,21 +283,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const webview = view.webview;
     this.attach(webview, 'view', surface);
     view.onDidChangeVisibility(() => {
-      if (view.visible) {
-        void this.postState(webview);
-        // Syn3 tab is selected — panel still holds the view. Terminal switch leaves this false.
-        if (surface === 'bottom' && this.store.ready && !this.closingBottom) {
-          void this.store.setSurfaceOpen('bottom', true);
-        }
+      if (!view.visible) {
+        return;
+      }
+      void this.postState(webview);
+      // User selected the Syn3 tab. Switching to Terminal leaves this false.
+      if (surface === 'bottom' && this.store.ready && !this.applyingBottom) {
+        void this.store.setSurfaceOpen('bottom', true);
       }
     });
     view.onDidDispose(() => {
       this.webviews.delete(webview);
       if (this.bottomView === view) {
         this.bottomView = undefined;
-        if (this.store.ready) {
-          void this.store.setSurfaceOpen('bottom', false);
-        }
       }
     });
   }
@@ -320,59 +327,137 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.postOpenFlags();
   }
 
-  /** Show the Syn3 bottom view, or hide only that view (Terminal / Console stay). */
+  /**
+   * Toolbar button follows the tab on screen.
+   * The profile flag can stay true after the tab was removed; flipping it then
+   * hides an already hidden tab, and only the next click opens it.
+   */
   async toggleBottom(): Promise<boolean> {
-    const markedOpen = this.store.ready ? this.store.isSurfaceOpen('bottom') : !!this.bottomView;
-    if (markedOpen) {
-      this.closingBottom = true;
-      try {
-        await this.hideBottomView();
-      } finally {
-        this.closingBottom = false;
-      }
-      if (this.store.ready) {
-        await this.store.setSurfaceOpen('bottom', false);
-      }
+    if (!this.store.ready) {
+      return false;
+    }
+    const available = await vscode.commands.getCommands(true);
+    if (!available.includes(`${MarkersMapProvider.bottomViewId}.focus`)) {
+      return false;
+    }
+    if (this.bottomView?.visible) {
+      await this.store.setSurfaceOpen('bottom', false);
       return true;
     }
-    if (!(await this.focusBottomView())) {
-      return false;
+    if (this.store.isSurfaceOpen('bottom')) {
+      await this.showBottomTab();
+      return true;
     }
-    if (this.store.ready) {
-      await this.store.setSurfaceOpen('bottom', true);
-    }
+    await this.store.setSurfaceOpen('bottom', true);
     return true;
   }
 
-  private async focusBottomView(): Promise<boolean> {
-    const available = await vscode.commands.getCommands(true);
-    const command = [`${MarkersMapProvider.bottomViewId}.focus`, 'workbench.view.extension.syn3Panel'].find((id) =>
-      available.includes(id),
-    );
-    if (!command) {
-      return false;
-    }
-    await vscode.commands.executeCommand(command);
-    return true;
+  /** Puts the Syn3 tab back and selects it. The container command toggles the whole strip, so it is not used. */
+  private showBottomTab(): Promise<boolean> {
+    return this.enqueueBottom(() => this.showBottomNow());
   }
 
-  /** Hides the Syn3 panel tab only — does not close the whole bottom strip. */
-  private async hideBottomView(): Promise<void> {
-    const available = await vscode.commands.getCommands(true);
-    const command = [
-      `${MarkersMapProvider.bottomViewId}.removeView`,
-      `${MarkersMapProvider.bottomViewId}.toggleVisibility`,
-    ].find((id) => available.includes(id));
-    if (command) {
-      if (this.bottomView && !this.bottomView.visible) {
-        await this.focusBottomView();
+  /**
+   * The view command appears only after `syn3.bottom.open` flips, and a profile
+   * switch is still moving editor groups. One early focus used to fail and never
+   * retry, so the tab stayed gone until the toolbar button ran the same focus later.
+   */
+  private async showBottomNow(): Promise<boolean> {
+    const op = ++this.bottomOp;
+    const focusId = `${MarkersMapProvider.bottomViewId}.focus`;
+    this.applyingBottom = true;
+    try {
+      await vscode.commands.executeCommand('setContext', BOTTOM_OPEN_CONTEXT, true);
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (op !== this.bottomOp) {
+          return false;
+        }
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (op !== this.bottomOp) {
+          return false;
+        }
+        if (this.bottomView?.visible) {
+          return true;
+        }
+        try {
+          await vscode.commands.executeCommand(focusId);
+        } catch {
+          // The focus command is registered a moment after the when-clause flips.
+        }
       }
-      await vscode.commands.executeCommand(command);
-      return;
+      return op === this.bottomOp && !!this.bottomView?.visible;
+    } finally {
+      setTimeout(() => {
+        if (op === this.bottomOp) {
+          this.applyingBottom = false;
+        }
+      }, 400);
     }
-    // Last resort: hide the panel chrome only if we cannot target the view.
-    if (this.bottomView?.visible) {
-      await vscode.commands.executeCommand('workbench.action.closePanel');
+  }
+
+  /** Hides the Syn3 tab only. Terminal stays. */
+  private hideBottomTab(): Promise<void> {
+    this.stopBottomReveal();
+    return this.enqueueBottom(() => this.hideBottomNow());
+  }
+
+  private async hideBottomNow(): Promise<void> {
+    const op = ++this.bottomOp;
+    this.applyingBottom = true;
+    try {
+      if (op !== this.bottomOp) {
+        return;
+      }
+      await vscode.commands.executeCommand('setContext', BOTTOM_OPEN_CONTEXT, false);
+    } finally {
+      setTimeout(() => {
+        if (op === this.bottomOp) {
+          this.applyingBottom = false;
+        }
+      }, 400);
+    }
+  }
+
+  private enqueueBottom<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.bottomChain.then(task, task);
+    this.bottomChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private stopBottomReveal(): void {
+    this.bottomRevealToken++;
+  }
+
+  /**
+   * Same focus the toolbar uses, repeated until the tab is on screen.
+   * A profile save fires another store event; that must not cancel this loop.
+   */
+  private kickBottomReveal(): void {
+    const token = ++this.bottomRevealToken;
+    void this.revealBottomUntilVisible(token);
+  }
+
+  private async revealBottomUntilVisible(token: number): Promise<void> {
+    for (let attempt = 0; attempt < 16; attempt++) {
+      if (token !== this.bottomRevealToken || !this.store.ready || !this.store.isSurfaceOpen('bottom')) {
+        return;
+      }
+      if (this.bottomView?.visible) {
+        return;
+      }
+      await this.showBottomTab();
+      if (token !== this.bottomRevealToken || !this.store.isSurfaceOpen('bottom')) {
+        return;
+      }
+      if (this.bottomView?.visible) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 
@@ -819,32 +904,46 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   /** Open/close left, right, and bottom to match the active profile. */
-  private async syncOpenSurfacesIfNeeded(force = false): Promise<void> {
-    if (!this.store.ready) {
+  private syncOpenSurfacesIfNeeded(force = false): Promise<void> {
+    const epoch = ++this.surfaceSyncEpoch;
+    const run = this.surfaceSyncChain.then(
+      () => this.applyOpenSurfaces(epoch, force),
+      () => this.applyOpenSurfaces(epoch, force),
+    );
+    this.surfaceSyncChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async applyOpenSurfaces(epoch: number, force: boolean): Promise<void> {
+    if (!this.store.ready || epoch !== this.surfaceSyncEpoch) {
       return;
     }
     const open = this.store.surfaceOpen();
     const key = `${open.bottom ? 1 : 0}${open.left ? 1 : 0}${open.right ? 1 : 0}`;
-    if (!force && key === this.lastSyncedOpenKey) {
+    const previousKey = this.lastSyncedOpenKey;
+    if (!force && key === previousKey) {
       return;
     }
-    this.lastSyncedOpenKey = key;
-    await this.syncOpenSurfaces();
-  }
-
-  private async syncOpenSurfaces(): Promise<void> {
-    if (!this.store.ready) {
-      return;
-    }
-    const open = this.store.surfaceOpen();
     if (open.left && !this.leftPanel) {
+      if (epoch !== this.surfaceSyncEpoch) {
+        return;
+      }
       try {
         await this.openColumn();
       } catch (error) {
         this.reportColumnError(error);
       }
     } else if (!open.left && this.leftPanel) {
+      if (epoch !== this.surfaceSyncEpoch) {
+        return;
+      }
       await this.closeColumn('left');
+    }
+    if (epoch !== this.surfaceSyncEpoch) {
+      return;
     }
     if (open.right && !this.rightPanel) {
       try {
@@ -855,15 +954,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     } else if (!open.right && this.rightPanel) {
       await this.closeColumn('right');
     }
-    if (open.bottom && !this.bottomView) {
-      await this.focusBottomView();
-    } else if (!open.bottom && this.bottomView) {
-      this.closingBottom = true;
-      try {
-        await this.hideBottomView();
-      } finally {
-        this.closingBottom = false;
+    if (epoch !== this.surfaceSyncEpoch) {
+      return;
+    }
+    const bottomWasOpen = previousKey.startsWith('1');
+    if (force || bottomWasOpen !== open.bottom) {
+      if (open.bottom) {
+        this.kickBottomReveal();
+      } else {
+        await this.hideBottomTab();
       }
+    }
+    if (epoch === this.surfaceSyncEpoch) {
+      this.lastSyncedOpenKey = key;
     }
   }
 
@@ -1745,13 +1848,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.deletePageFlow(webview, activePage);
       return;
     }
-    await vscode.commands.executeCommand(
-      action === 'refresh'
-        ? 'syn3.refresh'
-        : action === 'openConfig'
-          ? 'syn3.openConfig'
-          : 'syn3.openSettings',
-    );
+    if (action === 'refresh') {
+      await vscode.commands.executeCommand('syn3.refresh');
+    }
   }
 
   private async onProfile(
@@ -1762,6 +1861,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (action === 'activate') {
       if (id) {
         await this.store.setActiveProfile(id);
+        await this.syncOpenSurfacesIfNeeded(true);
       }
       return;
     }
@@ -1987,8 +2087,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
           <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>
-          <button type="button" data-action="openConfig" role="menuitem">${icon('json')}Open Markers File</button>
-          <button type="button" data-action="openSettings" role="menuitem">${icon('gear')}Open Settings</button>
         </div>
       </div>
     </div>

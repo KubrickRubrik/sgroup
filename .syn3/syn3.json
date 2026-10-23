@@ -11,7 +11,9 @@
         "explorer": {
           "1": true
         },
-        "bottom": {},
+        "bottom": {
+          "1": true
+        },
         "left": {
           "1": true,
           "3": true,
@@ -52,8 +54,7 @@
       "icon": "🍀",
       "alias": "тестовая группа 1",
       "columns": "1",
-      "locked": true,
-      "order": 10,
+      "order": 3,
       "page": "map"
     },
     "2": {
@@ -66,27 +67,33 @@
       "label": "Тест 3",
       "color": "syn3.sky",
       "icon": "🔥",
-      "order": 11,
+      "order": 5,
       "page": "map"
     },
     "4": {
       "label": "Тест 4",
-      "order": 12,
+      "order": 6,
       "page": "map"
     },
     "5": {
       "label": "Тест 5",
       "color": "syn3.blue",
       "icon": "📌",
-      "order": 13,
-      "page": "map"
+      "order": 1,
+      "parent": "4"
     },
     "version": {
       "label": "Version",
       "color": "#de3c1b",
       "icon": "🔥",
       "columns": "2",
-      "order": 9,
+      "order": 2,
+      "page": "map"
+    },
+    "ttest-6": {
+      "label": "Ttest 6",
+      "icon": "⭐",
+      "order": 4,
       "page": "map"
     },
     "2-2": {
@@ -96,15 +103,9 @@
       "order": 1,
       "parent": "3"
     },
-    "ttest-6": {
-      "label": "Ttest 6",
-      "icon": "⭐",
-      "order": 14,
-      "page": "map"
-    },
     "test-dir": {
       "label": "Test_dir",
-      "order": 15,
+      "order": 7,
       "page": "map"
     },
     "1-2": {
@@ -191,7 +192,7 @@
     "open": {
       "bottom": true,
       "left": false,
-      "right": true
+      "right": false
     }
   },
   "aliases": {
@@ -254,19 +255,17 @@
       "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA",
       "order": 1
     },
-    "note-4": {
-      "parentNote": "note-3",
-      "text": "Заметка 2",
+    "note-3": {
+      "page": "map",
+      "text": "Моя заметка",
       "order": 1,
-      "color": "#676f6e",
-      "locked": true
+      "color": "#bfbfbf"
     },
     "note-5": {
-      "parentNote": "note-4",
+      "parentNote": "note-3",
       "text": "Заметка 3",
       "order": 1,
-      "color": "#ff000d",
-      "locked": true
+      "color": "#ff000d"
     },
     "note-6": {
       "markerId": "version",
@@ -284,18 +283,17 @@
       "text": "Запись 2\nhttps://www.youtube.com/",
       "order": 2
     },
+    "note-4": {
+      "parentNote": "note-3",
+      "text": "Заметка 2",
+      "order": 2,
+      "color": "#676f6e"
+    },
     "note-8": {
       "page": "page-page",
       "text": "Моя заметка",
       "order": 3,
       "color": "#657a9a"
-    },
-    "note-3": {
-      "page": "map",
-      "text": "Моя заметка",
-      "order": 8,
-      "color": "#bfbfbf",
-      "locked": true
     }
   }
 }

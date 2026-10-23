@@ -2,7 +2,7 @@
   "name": "syn3",
   "displayName": "Syn3",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "5.0.10",
+  "version": "5.0.19",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -40,6 +40,7 @@
           "id": "syn3MapBottom",
           "name": "Syn3",
           "contextualTitle": "Explorer",
+          "when": "syn3.bottom.open",
           "icon": "media/map-icon.svg"
         }
       ],

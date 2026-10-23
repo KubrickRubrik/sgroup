@@ -311,6 +311,8 @@
   const MIME = 'application/vnd.syn3';
   const MAX_DEPTH = 2;
   const PAGE_MIME = 'application/vnd.syn3.page';
+  /** Top and bottom of a card that mean reorder, not nest. */
+  const DROP_EDGE = 16;
 
   /** @type {{ activePageId?: string, side?: 'left' | 'right' }} */
   const uiState = vscode.getState() || {};
@@ -333,6 +335,10 @@
   const dropHint = el('div', 'drop-hint');
   dropHint.hidden = true;
   document.body.append(dropHint);
+
+  const dropEdge = el('div', 'drop-edge');
+  dropEdge.hidden = true;
+  document.body.append(dropEdge);
 
   const dirPopover = el('div', 'dir-popover');
   dirPopover.hidden = true;
@@ -653,8 +659,6 @@
     setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
-    setMenuItemLocaleByAction('openConfig', 'menuOpenMarkers');
-    setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
     setCollapseButton();
   }
 
@@ -2704,7 +2708,7 @@
       event.preventDefault();
       event.stopPropagation();
       const payload = readPayload(event);
-      const decision = decideNoteDrop(event, header, note, payload);
+      const decision = decideNoteDrop(event, section, note, payload);
       applyNoteDecision(event, section, header, note, decision);
     });
 
@@ -2712,7 +2716,7 @@
       event.preventDefault();
       event.stopPropagation();
       const payload = readPayload(event);
-      const decision = decideNoteDrop(event, header, note, payload);
+      const decision = decideNoteDrop(event, section, note, payload);
       clearDropHighlights();
       hideDropHint();
       document.body.classList.remove('is-dragging');
@@ -2746,11 +2750,11 @@
 
   /**
    * @param {DragEvent} event
-   * @param {HTMLElement} header
+   * @param {HTMLElement} section
    * @param {*} note
    * @param {*} payload
    */
-  function decideNoteDrop(event, header, note, payload) {
+  function decideNoteDrop(event, section, note, payload) {
     if (!payload) {
       return null;
     }
@@ -2758,14 +2762,9 @@
       if (payload.id === note.id || isLocked(note)) {
         return { blocked: true };
       }
-      const rect = header.getBoundingClientRect();
-      const y = event.clientY - rect.top;
-      const band = rect.height / 3;
-      if (y < band) {
-        return { action: 'place', id: payload.id, position: 'before', dragKind: 'note' };
-      }
-      if (y > rect.height - band) {
-        return { action: 'place', id: payload.id, position: 'after', dragKind: 'note' };
+      const edge = dropEdgePosition(event, section);
+      if (edge) {
+        return { action: 'place', id: payload.id, position: edge, dragKind: 'note' };
       }
       const nextDepth = (note.depth || 0) + 1 + (payload.subtreeHeight || 0);
       if (nextDepth > MAX_DEPTH) {
@@ -2778,12 +2777,13 @@
       if (note.parentNote || isLocked(note)) {
         return { blocked: true };
       }
-      const rect = header.getBoundingClientRect();
-      const before = event.clientY < rect.top + rect.height / 2;
+      const rect = section.getBoundingClientRect();
+      const edge = dropEdgePosition(event, section);
+      const position = edge || (event.clientY < rect.top + rect.height / 2 ? 'before' : 'after');
       return {
         action: 'place',
         id: payload.id,
-        position: before ? 'before' : 'after',
+        position,
         dragKind: 'marker',
       };
     }
@@ -2803,8 +2803,7 @@
       return;
     }
     if (decision.action === 'place') {
-      header.classList.add(decision.position === 'before' ? 'drop-before' : 'drop-after');
-      section.classList.add('drop-target');
+      showDropEdge(section, decision.position === 'before' ? 'before' : 'after');
     } else if (decision.action === 'nest') {
       section.classList.add('drop-into');
       header.classList.add('drop-into');
@@ -3154,7 +3153,7 @@
       event.preventDefault();
       event.stopPropagation();
       const payload = readPayload(event);
-      const decision = decideDrop(event, header, group, payload);
+      const decision = decideDrop(event, section, group, payload);
       applyDecision(event, section, header, group, decision);
     });
 
@@ -3162,7 +3161,7 @@
       event.preventDefault();
       event.stopPropagation();
       const payload = readPayload(event);
-      const decision = decideDrop(event, header, group, payload);
+      const decision = decideDrop(event, section, group, payload);
       clearDropHighlights();
       hideDropHint();
       document.body.classList.remove('is-dragging');
@@ -3206,7 +3205,7 @@
   /**
    * @returns {{ action: string, mode: string, hint: string, blocked?: boolean, id?: string, position?: string, dragKind?: string } | null}
    */
-  function decideDrop(event, header, group, payload) {
+  function decideDrop(event, section, group, payload) {
     const notesPage = activePage()?.kind === 'notes';
     if (payload && payload.kind === 'note') {
       if (isLocked(group)) {
@@ -3219,30 +3218,16 @@
           dragKind: 'note',
         };
       }
-      const overHeader = header.contains(/** @type {Node} */ (event.target)) || event.target === header;
-      if (overHeader) {
-        const rect = header.getBoundingClientRect();
-        const y = (event.clientY - rect.top) / Math.max(rect.height, 1);
-        if (y < 0.25) {
-          return {
-            action: 'place',
-            mode: 'before',
-            hint: 'Place before "' + group.label + '"',
-            id: payload.id,
-            position: 'before',
-            dragKind: 'note',
-          };
-        }
-        if (y > 0.75) {
-          return {
-            action: 'place',
-            mode: 'after',
-            hint: 'Place after "' + group.label + '"',
-            id: payload.id,
-            position: 'after',
-            dragKind: 'note',
-          };
-        }
+      const edge = dropEdgePosition(event, section);
+      if (edge) {
+        return {
+          action: 'place',
+          mode: edge,
+          hint: (edge === 'before' ? 'Place before "' : 'Place after "') + group.label + '"',
+          id: payload.id,
+          position: edge,
+          dragKind: 'note',
+        };
       }
       return {
         action: 'nest',
@@ -3265,28 +3250,15 @@
           id: payload.id,
         };
       }
-      const overHeader = header.contains(/** @type {Node} */ (event.target)) || event.target === header;
-      if (overHeader) {
-        const rect = header.getBoundingClientRect();
-        const y = (event.clientY - rect.top) / Math.max(rect.height, 1);
-        if (y < 0.25) {
-          return {
-            action: 'place',
-            mode: 'before',
-            hint: 'Place before "' + group.label + '"',
-            id: payload.id,
-            position: 'before',
-          };
-        }
-        if (y > 0.75) {
-          return {
-            action: 'place',
-            mode: 'after',
-            hint: 'Place after "' + group.label + '"',
-            id: payload.id,
-            position: 'after',
-          };
-        }
+      const edge = dropEdgePosition(event, section);
+      if (edge) {
+        return {
+          action: 'place',
+          mode: edge,
+          hint: (edge === 'before' ? 'Place before "' : 'Place after "') + group.label + '"',
+          id: payload.id,
+          position: edge,
+        };
       }
       if (isLocked(group)) {
         return {
@@ -3414,12 +3386,20 @@
    * @param {HTMLElement} [header]
    */
   function setDropHighlight(section, mode, header) {
-    if (
+    const same =
       dropHighlight &&
       dropHighlight.section === section &&
       dropHighlight.mode === mode &&
-      dropHighlight.header === header
-    ) {
+      dropHighlight.header === header;
+    if (mode === 'before' || mode === 'after') {
+      if (!same) {
+        clearDropHighlights();
+        dropHighlight = { section, header, mode };
+      }
+      showDropEdge(section, mode);
+      return;
+    }
+    if (same) {
       return;
     }
     clearDropHighlights();
@@ -3431,8 +3411,89 @@
     if (mode === 'blocked') {
       section.classList.add('drop-blocked');
     }
-    if (header && (mode === 'before' || mode === 'after' || mode === 'into')) {
-      header.classList.add('drop-' + mode);
+    if (header && mode === 'into') {
+      header.classList.add('drop-into');
+    }
+  }
+
+  /**
+   * Band thickness. Full 16px on a tall card. On a short card each band is at
+   * most a third of the height, so the middle stays a nest target.
+   * @param {number} height
+   */
+  function dropEdgeSize(height) {
+    if (!(height > 0)) {
+      return 0;
+    }
+    return Math.min(DROP_EDGE, height / 3);
+  }
+
+  /**
+   * Reorder band: top or bottom edge of the card. A nested child that
+   * stops the event keeps the pointer; only the free edge reaches here.
+   * @param {DragEvent} event
+   * @param {HTMLElement} section
+   * @returns {'before' | 'after' | null}
+   */
+  function dropEdgePosition(event, section) {
+    const rect = section.getBoundingClientRect();
+    const edge = dropEdgeSize(rect.height);
+    if (edge <= 0) {
+      return null;
+    }
+    const y = event.clientY - rect.top;
+    const fromBottom = rect.height - y;
+    if (y <= edge && fromBottom <= edge) {
+      return y <= fromBottom ? 'before' : 'after';
+    }
+    if (y <= edge) {
+      return 'before';
+    }
+    if (fromBottom <= edge) {
+      return 'after';
+    }
+    return null;
+  }
+
+  /**
+   * Root card fills its column. Inside a group the band uses that group's width.
+   * @param {HTMLElement} section
+   */
+  function dropEdgeContainer(section) {
+    if (section.classList.contains('nested')) {
+      const parent = section.parentElement?.closest('section.group');
+      if (parent instanceof HTMLElement) {
+        return parent;
+      }
+    }
+    return section;
+  }
+
+  /**
+   * @param {HTMLElement} section
+   * @param {'before' | 'after'} position
+   */
+  function showDropEdge(section, position) {
+    const rect = section.getBoundingClientRect();
+    const box = dropEdgeContainer(section).getBoundingClientRect();
+    const edge = dropEdgeSize(rect.height);
+    const top = position === 'before' ? rect.top : Math.max(rect.top, rect.bottom - edge);
+    dropEdge.hidden = false;
+    dropEdge.style.top = top + 'px';
+    dropEdge.style.height = edge + 'px';
+    dropEdge.style.left = box.left + 'px';
+    dropEdge.style.width = Math.max(0, box.width) + 'px';
+    dropEdge.classList.toggle('at-top', Math.abs(top - box.top) < 1);
+    dropEdge.classList.toggle('at-bottom', edge > 0 && Math.abs(top + edge - box.bottom) < 1);
+    section.classList.add('drop-edge-target');
+  }
+
+  function hideDropEdge() {
+    dropEdge.hidden = true;
+    dropEdge.style.width = '';
+    dropEdge.classList.remove('at-top', 'at-bottom');
+    for (const node of root.querySelectorAll('.drop-edge-target')) {
+      node.classList.remove('drop-edge-target');
     }
   }
 
@@ -3520,13 +3581,14 @@
   }
 
   function clearDropHighlights() {
+    hideDropEdge();
     if (dropHighlight) {
-      dropHighlight.section.classList.remove('drop-target', 'drop-into', 'drop-blocked');
+      dropHighlight.section.classList.remove('drop-target', 'drop-into', 'drop-blocked', 'drop-edge-target');
       dropHighlight.header?.classList.remove('drop-before', 'drop-after', 'drop-into');
       dropHighlight = null;
     }
-    for (const node of root.querySelectorAll('.drop-before, .drop-after, .drop-into, .drop-target, .drop-blocked')) {
-      node.classList.remove('drop-before', 'drop-after', 'drop-into', 'drop-target', 'drop-blocked');
+    for (const node of root.querySelectorAll('.drop-before, .drop-after, .drop-into, .drop-target, .drop-blocked, .drop-edge-target')) {
+      node.classList.remove('drop-before', 'drop-after', 'drop-into', 'drop-target', 'drop-blocked', 'drop-edge-target');
     }
   }
 
