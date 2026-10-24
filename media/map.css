@@ -513,6 +513,7 @@ html::-webkit-scrollbar {
   color: var(--vscode-input-foreground);
   cursor: default;
   font: inherit;
+  font-weight: 400;
   font-size: var(--size-file);
   line-height: 1.4;
   min-height: calc(1.4 * 1em);
@@ -635,17 +636,19 @@ html::-webkit-scrollbar {
 }
 
 .note-input .note-quote {
-  background: color-mix(
-    in srgb,
-    var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.2)) 100%,
-    transparent
-  );
+  background: color-mix(in srgb, white 34%, transparent);
   border-radius: 4px;
   padding: 0 4px;
 }
 
+body.vscode-light .note-input .note-quote,
+body.vscode-high-contrast-light .note-input .note-quote {
+  background: color-mix(in srgb, black 16%, transparent);
+}
+
 .note-input b,
 .note-input strong {
+  font-synthesis: weight;
   font-weight: 700;
 }
 

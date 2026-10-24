@@ -82,8 +82,20 @@
   let notePointer = null;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let noteBlurTimer = null;
-  /** @type {{ bold: boolean, quote: boolean, color: string | null }} */
-  let pendingNoteMarks = { bold: false, quote: false, color: null };
+  /**
+   * bold: null follows the caret, true/false forces the next insert.
+   * color: null follows the caret, a hex forces the next insert.
+   * @type {{ bold: boolean | null, quote: boolean, color: string | null }}
+   */
+  let pendingNoteMarks = { bold: null, quote: false, color: null };
+  /** Spans painted by the open text-color picker, so later picker events recolor them. */
+  let liveTextColorSpans = /** @type {HTMLElement[] | null} */ (null);
+  /** Skip caret-follow resets while we move the selection ourselves. */
+  let markSyncDepth = 0;
+  /** Re-entrancy guard for link chips, which move the caret. */
+  let linkifyBusy = false;
+  /** Double-space at the end of bold, color, or quote: following inserts stay plain until the caret moves. */
+  let formattingReleased = false;
   /** @type {Range | null} */
   let savedNoteSelection = null;
   let linkPreviewRequest = 0;
@@ -2895,15 +2907,63 @@
     savedNoteSelection = range.cloneRange();
   }
 
-  function restoreNoteSelection() {
+  /**
+   * @param {{ silent?: boolean }} [opts]
+   */
+  function restoreNoteSelection(opts) {
     if (!savedNoteSelection || !activeNoteEdit) {
       return;
     }
-    activeNoteEdit.input.focus();
+    if (!opts?.silent) {
+      activeNoteEdit.input.focus();
+    }
     const sel = window.getSelection();
     sel?.removeAllRanges();
-    sel?.addRange(savedNoteSelection);
+    try {
+      sel?.addRange(savedNoteSelection);
+    } catch {
+      savedNoteSelection = null;
+    }
   }
+
+  /** @type {Node | null} */
+  let markCaretNode = null;
+  let markCaretOffset = -1;
+
+  function rememberMarkCaret() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      markCaretNode = null;
+      markCaretOffset = -1;
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    markCaretNode = range.startContainer;
+    markCaretOffset = range.startOffset;
+  }
+
+  document.addEventListener('selectionchange', () => {
+    if (markSyncDepth || linkifyBusy || !activeNoteEdit) {
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !activeNoteEdit.input.contains(sel.anchorNode)) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!range.collapsed) {
+      rememberMarkCaret();
+      return;
+    }
+    if (range.startContainer === markCaretNode && range.startOffset === markCaretOffset) {
+      return;
+    }
+    rememberMarkCaret();
+    pendingNoteMarks.bold = null;
+    pendingNoteMarks.color = null;
+    formattingReleased = false;
+    updateFormatMenuState();
+  });
 
   /**
    * @typedef {{ text: string, b?: true, color?: string, quote?: true, lang?: string, langLabel?: string }} NoteRun
@@ -3187,8 +3247,8 @@
       node = wrap;
     }
     if (run.color) {
-      const wrap = el('span');
-      wrap.style.color = run.color;
+      const wrap = el('span', 'note-color');
+      setNoteColor(wrap, run.color);
       wrap.append(node);
       node = wrap;
     }
@@ -3323,7 +3383,7 @@
       return [];
     }
     if (node.nodeType === Node.TEXT_NODE) {
-      return [{ text: node.textContent || '' }];
+      return [{ text: (node.textContent || '').replace(/\u200B/g, '') }];
     }
     if (node.nodeType !== Node.ELEMENT_NODE) {
       return [];
@@ -3334,11 +3394,23 @@
     }
     if (elNode.tagName === 'A') {
       const href = elNode.getAttribute('href') || '';
-      const label = elNode.textContent || '';
-      if (href && label && label !== href) {
-        return [{ text: '[' + label + '](' + href + ')' }];
+      const label = (elNode.textContent || '').replace(/\u200B/g, '');
+      if (!href || !label) {
+        return [];
       }
-      return [{ text: href || label }];
+      /** @type {NoteRun} */
+      const run = { text: label !== href ? '[' + label + '](' + href + ')' : href };
+      const inner = uniformMarksWithin(elNode);
+      if (inner.b) {
+        run.b = true;
+      }
+      if (inner.color) {
+        run.color = inner.color;
+      }
+      if (inner.quote) {
+        run.quote = true;
+      }
+      return [run];
     }
     /** @type {Partial<NoteRun>} */
     const marks = {};
@@ -3358,7 +3430,7 @@
       }
     }
     const colorAttr = tag === 'FONT' ? elNode.getAttribute('color') : null;
-    const color = colorAttr || elNode.style?.color;
+    const color = elNode.dataset.color || colorAttr || elNode.style?.color;
     if (color) {
       const hex = color.startsWith('#')
         ? color.length === 4
@@ -3477,23 +3549,31 @@
     return { v: 1, blocks: normalizeNoteBlocks(blocks) };
   }
 
-  /** @param {HTMLElement} input */
-  function bindNoteLinks(input) {
+  /**
+   * @param {HTMLElement} input
+   * @param {boolean} editing
+   */
+  function bindNoteLinks(input, editing) {
     input.querySelectorAll('a.note-link').forEach((node) => {
       if (!(node instanceof HTMLAnchorElement)) {
         return;
       }
       node.addEventListener('click', (event) => {
         event.preventDefault();
+        if (editing || input.classList.contains('is-editing')) {
+          return;
+        }
         event.stopPropagation();
-        vscode.postMessage({ type: 'openExternal', url: node.href });
+        vscode.postMessage({ type: 'openExternal', url: node.getAttribute('href') || node.href });
       });
-      node.addEventListener('mouseenter', () => {
-        showLinkPreview(node);
-      });
-      node.addEventListener('mouseleave', () => {
-        scheduleHideLinkPreview();
-      });
+      if (!editing) {
+        node.addEventListener('mouseenter', () => {
+          showLinkPreview(node);
+        });
+        node.addEventListener('mouseleave', () => {
+          scheduleHideLinkPreview();
+        });
+      }
     });
   }
 
@@ -3544,14 +3624,12 @@
   function paintNoteInput(input, raw, opts) {
     const doc = parseNoteText(raw);
     const editing = !!opts.editing && !opts.locked;
-    input.replaceChildren(renderNoteDoc(doc, { linkify: !editing, editing }));
+    input.replaceChildren(renderNoteDoc(doc, { linkify: true, editing }));
     input.contentEditable = editing ? 'true' : 'false';
     input.classList.toggle('is-editing', editing);
     input.spellcheck = editing;
     refreshNoteEmptyClass(input);
-    if (!editing) {
-      bindNoteLinks(input);
-    }
+    bindNoteLinks(input, editing);
     applyCollapsedNotePreview(input);
   }
 
@@ -4242,7 +4320,9 @@
       locked: false,
     };
     lastNoteEditId = noteId;
-    pendingNoteMarks = { bold: false, quote: false, color: null };
+    pendingNoteMarks = { bold: null, quote: false, color: null };
+    formattingReleased = false;
+    liveTextColorSpans = null;
     setNoteEditingChrome(input, true);
     setFormatToolbarVisible(true);
     updateFormatMenuState();
@@ -4276,7 +4356,9 @@
     pendingEditAfterExpandPaints = 0;
     pendingNoteCaret = null;
     notePointer = null;
-    pendingNoteMarks = { bold: false, quote: false, color: null };
+    pendingNoteMarks = { bold: null, quote: false, color: null };
+    formattingReleased = false;
+    liveTextColorSpans = null;
     savedNoteSelection = null;
     setNoteEditingChrome(input, false);
     setFormatToolbarVisible(false);
@@ -4351,10 +4433,16 @@
     const boldBtn = toolbarFormatMenu.querySelector('[data-fmt="bold"]');
     const quoteBtn = toolbarFormatMenu.querySelector('[data-fmt="quote"]');
     if (boldBtn instanceof HTMLElement) {
-      boldBtn.classList.toggle('is-active', pendingNoteMarks.bold || queryInlineMark('bold'));
+      const boldOn = formattingReleased
+        ? false
+        : pendingNoteMarks.bold === null
+          ? queryInlineMark('bold')
+          : pendingNoteMarks.bold;
+      boldBtn.classList.toggle('is-active', boldOn);
     }
     if (quoteBtn instanceof HTMLElement) {
-      quoteBtn.classList.toggle('is-active', pendingNoteMarks.quote || queryInlineMark('quote'));
+      const quoteOn = formattingReleased ? false : pendingNoteMarks.quote || queryInlineMark('quote');
+      quoteBtn.classList.toggle('is-active', quoteOn);
     }
   }
 
@@ -4381,20 +4469,31 @@
     if (!activeNoteEdit) {
       return;
     }
+    formattingReleased = false;
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount || sel.isCollapsed) {
-      pendingNoteMarks.bold = !pendingNoteMarks.bold;
+      const on = pendingNoteMarks.bold === null ? queryInlineMark('bold') : pendingNoteMarks.bold;
+      pendingNoteMarks.bold = !on;
       updateFormatMenuState();
+      rememberMarkCaret();
       return;
     }
-    document.execCommand('bold');
+    markSyncDepth += 1;
+    try {
+      applyBoldToRange(sel.getRangeAt(0));
+    } finally {
+      markSyncDepth -= 1;
+    }
+    pendingNoteMarks.bold = null;
     updateFormatMenuState();
+    rememberMarkCaret();
   }
 
   function toggleQuoteFormat() {
     if (!activeNoteEdit) {
       return;
     }
+    formattingReleased = false;
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) {
       return;
@@ -4417,8 +4516,23 @@
         wrap.append(extracted);
         range.insertNode(wrap);
       }
+      ejectTrailingBreaks(wrap);
     }
     updateFormatMenuState();
+  }
+
+  /** A caret <br> wrapped into a quote must not keep the caret from the quote's end. */
+  function ejectTrailingBreaks(mark) {
+    if (!mark.isConnected) {
+      return;
+    }
+    while (mark.lastChild && mark.lastChild.nodeName === 'BR') {
+      const br = mark.lastChild;
+      mark.after(br);
+    }
+    if (!(mark.textContent || '').replace(/\u200B/g, '') && !mark.querySelector('img, a')) {
+      unwrapElement(mark);
+    }
   }
 
   /** @param {Node | null} node */
@@ -4444,18 +4558,1228 @@
     parent.removeChild(node);
   }
 
+  /**
+   * @param {Node | null | undefined} node
+   * @returns {HTMLElement | null}
+   */
+  function elementFromNode(node) {
+    if (!node) {
+      return null;
+    }
+    return node.nodeType === Node.ELEMENT_NODE ? /** @type {HTMLElement} */ (node) : node.parentElement;
+  }
+
+  /**
+   * @param {Node | null | undefined} node
+   * @param {(el: HTMLElement) => boolean} pred
+   * @returns {HTMLElement | null}
+   */
+  function closestMark(node, pred) {
+    let el = elementFromNode(node);
+    const root = activeNoteEdit?.input;
+    while (el) {
+      if (el.classList.contains('note-code')) {
+        return null;
+      }
+      if (pred(el)) {
+        return el;
+      }
+      if (el.classList.contains('note-input') || (root && el === root)) {
+        return null;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /** @param {HTMLElement} el */
+  function isQuoteEl(el) {
+    return el.classList.contains('note-quote');
+  }
+
+  /** @param {HTMLElement} el */
+  function isBoldEl(el) {
+    return el.tagName === 'B' || el.tagName === 'STRONG';
+  }
+
+  /** @param {HTMLElement} el */
+  function isColorEl(el) {
+    if (el.classList.contains('note-input') || el.classList.contains('note-p') || el.classList.contains('note-code')) {
+      return false;
+    }
+    return el.classList.contains('note-color') || el.tagName === 'FONT' || !!el.style.color;
+  }
+
+  /**
+   * @param {string | null | undefined} color
+   * @returns {string | null}
+   */
+  function normalizeHex(color) {
+    if (!color || typeof color !== 'string') {
+      return null;
+    }
+    const c = color.trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(c)) {
+      return c;
+    }
+    if (/^#[0-9a-f]{3}$/.test(c)) {
+      return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
+    }
+    const hex = toHex(c);
+    return hex ? hex.toLowerCase() : null;
+  }
+
+  /**
+   * @param {HTMLElement} span
+   * @param {string} color
+   */
+  function setNoteColor(span, color) {
+    const hex = normalizeHex(color) || color;
+    span.classList.add('note-color');
+    if (hex) {
+      span.dataset.color = hex;
+    }
+    span.style.color = hex;
+  }
+
+  /**
+   * Marks shared by every text node inside `root` (link labels).
+   * @param {HTMLElement} root
+   * @returns {{ b?: true, color?: string, quote?: true }}
+   */
+  function uniformMarksWithin(root) {
+    /** @type {Text[]} */
+    const texts = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    /** @type {Node | null} */
+    let current = walker.nextNode();
+    while (current) {
+      if ((current.textContent || '').replace(/\u200B/g, '')) {
+        texts.push(/** @type {Text} */ (current));
+      }
+      current = walker.nextNode();
+    }
+    /** @type {{ b?: true, color?: string, quote?: true }} */
+    const out = {};
+    if (!texts.length) {
+      return out;
+    }
+    if (texts.every((text) => closestMark(text, isBoldEl))) {
+      out.b = true;
+    }
+    if (texts.every((text) => closestMark(text, (el) => el.classList.contains('note-quote')))) {
+      out.quote = true;
+    }
+    const colors = texts.map((text) => {
+      const mark = closestMark(text, isColorEl);
+      if (!mark) {
+        return '';
+      }
+      return mark.dataset.color || normalizeHex(mark.getAttribute('color') || mark.style.color) || '';
+    });
+    if (colors[0] && colors.every((item) => item === colors[0])) {
+      out.color = colors[0];
+    }
+    return out;
+  }
+
+  /**
+   * @param {Range} range
+   * @returns {Array<{ text: Text, start: number, end: number }>}
+   */
+  function selectedTextSlices(range) {
+    const root =
+      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentNode;
+    /** @type {Array<{ text: Text, start: number, end: number }>} */
+    const slices = [];
+    if (!root) {
+      return slices;
+    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    /** @type {Node | null} */
+    let current = walker.nextNode();
+    while (current) {
+      const text = /** @type {Text} */ (current);
+      current = walker.nextNode();
+      if (!text.length || closestNoteCode(text)) {
+        continue;
+      }
+      let hit = false;
+      try {
+        hit = range.intersectsNode(text);
+      } catch {
+        hit = false;
+      }
+      if (!hit) {
+        continue;
+      }
+      let start = 0;
+      let end = text.length;
+      if (text === range.startContainer) {
+        start = range.startOffset;
+      }
+      if (text === range.endContainer) {
+        end = range.endOffset;
+      }
+      if (start < end) {
+        slices.push({ text, start, end });
+      }
+    }
+    return slices;
+  }
+
+  /**
+   * @param {Text} text
+   * @param {number} start
+   * @param {number} end
+   * @returns {Text}
+   */
+  function isolateSlice(text, start, end) {
+    let node = text;
+    if (end < node.length) {
+      node.splitText(end);
+    }
+    if (start > 0) {
+      node = node.splitText(start);
+    }
+    return node;
+  }
+
+  /**
+   * Split `element` so `child` (a direct child) sits in its own clone of `element`.
+   * @param {HTMLElement} element
+   * @param {Node} child
+   * @returns {HTMLElement}
+   */
+  function splitElementAroundChild(element, child) {
+    const left = /** @type {HTMLElement} */ (element.cloneNode(false));
+    const right = /** @type {HTMLElement} */ (element.cloneNode(false));
+    const kids = Array.from(element.childNodes);
+    const index = kids.indexOf(child);
+    for (let i = 0; i < index; i++) {
+      left.append(kids[i]);
+    }
+    for (let i = index + 1; i < kids.length; i++) {
+      right.append(kids[i]);
+    }
+    if (left.childNodes.length) {
+      element.before(left);
+    }
+    if (right.childNodes.length) {
+      element.after(right);
+    }
+    return element;
+  }
+
+  /**
+   * Pull `textNode` out of `mark`, keeping intermediate wrappers (color, quote).
+   * @param {Text} textNode
+   * @param {HTMLElement} mark
+   */
+  function peelTextFromMark(textNode, mark) {
+    let node = /** @type {Node} */ (textNode);
+    while (node.parentElement && node.parentElement !== mark) {
+      splitElementAroundChild(node.parentElement, node);
+      const parent = node.parentElement;
+      if (!parent) {
+        return;
+      }
+      node = parent;
+    }
+    if (node.parentElement === mark) {
+      const middle = splitElementAroundChild(mark, node);
+      unwrapElement(middle);
+    }
+  }
+
+  /**
+   * @param {Range} range
+   */
+  function applyBoldToRange(range) {
+    const slices = selectedTextSlices(range);
+    if (!slices.length) {
+      return;
+    }
+    const turnOff = slices.every(({ text }) => closestMark(text, isBoldEl));
+    /** @type {Text[]} */
+    const mids = [];
+    for (let i = slices.length - 1; i >= 0; i--) {
+      const slice = slices[i];
+      const mid = isolateSlice(slice.text, slice.start, slice.end);
+      if (turnOff) {
+        const bold = closestMark(mid, isBoldEl);
+        if (bold) {
+          peelTextFromMark(mid, bold);
+        }
+      } else if (!closestMark(mid, isBoldEl)) {
+        const wrap = document.createElement('b');
+        mid.replaceWith(wrap);
+        wrap.append(mid);
+      }
+      mids.push(mid);
+    }
+    mids.reverse();
+    const first = mids[0];
+    const last = mids[mids.length - 1];
+    if (!first || !last || !first.isConnected || !last.isConnected) {
+      return;
+    }
+    const next = document.createRange();
+    next.setStart(first, 0);
+    next.setEnd(last, last.length);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(next);
+  }
+
+  /**
+   * @param {Range} range
+   * @param {string} color
+   * @returns {HTMLElement[]}
+   */
+  function applyColorToRange(range, color) {
+    const hex = normalizeHex(color) || color;
+    const slices = selectedTextSlices(range);
+    /** @type {HTMLElement[]} */
+    const spans = [];
+    /** @type {Text[]} */
+    const mids = [];
+    for (let i = slices.length - 1; i >= 0; i--) {
+      const slice = slices[i];
+      const mid = isolateSlice(slice.text, slice.start, slice.end);
+      const existing = closestMark(mid, isColorEl);
+      /** @type {HTMLElement} */
+      let span;
+      if (
+        existing &&
+        (existing.dataset.color || normalizeHex(existing.style.color) || '') === hex &&
+        existing.textContent === mid.textContent
+      ) {
+        setNoteColor(existing, hex);
+        span = existing;
+      } else {
+        if (existing) {
+          peelTextFromMark(mid, existing);
+        }
+        span = document.createElement('span');
+        setNoteColor(span, hex);
+        mid.replaceWith(span);
+        span.append(mid);
+      }
+      spans.push(span);
+      mids.push(mid);
+    }
+    spans.reverse();
+    mids.reverse();
+    const first = mids[0];
+    const last = mids[mids.length - 1];
+    if (first && last && first.isConnected && last.isConnected) {
+      const next = document.createRange();
+      next.setStart(first, 0);
+      next.setEnd(last, last.length);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(next);
+      savedNoteSelection = next.cloneRange();
+    }
+    return spans;
+  }
+
+  /**
+   * @returns {{ bold: boolean, color: string | null, quote: boolean }}
+   */
+  function marksAtCaret() {
+    const sel = window.getSelection();
+    const node = sel?.anchorNode || null;
+    const colorEl = closestMark(node, isColorEl);
+    const color = colorEl
+      ? colorEl.dataset.color || normalizeHex(colorEl.getAttribute('color') || colorEl.style.color)
+      : null;
+    return {
+      bold: !!closestMark(node, isBoldEl),
+      color,
+      quote: !!closestMark(node, (el) => el.classList.contains('note-quote')),
+    };
+  }
+
+  /**
+   * @returns {{ bold: boolean, color: string | null, quote: boolean }}
+   */
+  function wantedMarks() {
+    const have = marksAtCaret();
+    if (formattingReleased) {
+      return {
+        bold: false,
+        color: null,
+        quote: false,
+      };
+    }
+    return {
+      bold: pendingNoteMarks.bold === null ? have.bold : pendingNoteMarks.bold,
+      color: pendingNoteMarks.color ? pendingNoteMarks.color : have.color,
+      quote: pendingNoteMarks.quote || have.quote,
+    };
+  }
+
+  /**
+   * @param {(el: HTMLElement) => boolean} pred
+   */
+  function peelCollapsedMark(pred) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const mark = closestMark(range.startContainer, pred);
+    if (!mark) {
+      return;
+    }
+    const after = document.createRange();
+    after.selectNodeContents(mark);
+    try {
+      after.setStart(range.startContainer, range.startOffset);
+    } catch {
+      return;
+    }
+    const frag = after.extractContents();
+    const fragText = (frag.textContent || '').replace(/\u200B/g, '');
+    const hasAtom = !!frag.querySelector?.('img, a');
+    if (fragText || hasAtom) {
+      const right = /** @type {HTMLElement} */ (mark.cloneNode(false));
+      right.append(frag);
+      mark.after(right);
+    } else if (frag.childNodes.length) {
+      mark.after(frag);
+    }
+    const caret = document.createRange();
+    const parent = mark.parentNode;
+    const markText = (mark.textContent || '').replace(/\u200B/g, '');
+    if (!markText && !mark.querySelector('br, img, a')) {
+      const next = mark.nextSibling;
+      mark.remove();
+      if (next && next.parentNode) {
+        caret.setStartBefore(next);
+      } else if (parent) {
+        caret.setStart(parent, parent.childNodes.length);
+      } else {
+        return;
+      }
+    } else {
+      caret.setStartAfter(mark);
+    }
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+
+  /**
+   * @param {string} data
+   * @param {{ bold: boolean, color: string | null, quote: boolean }} want
+   */
+  function insertMarkedText(data, want) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    let have = marksAtCaret();
+    if (have.bold && !want.bold) {
+      peelCollapsedMark(isBoldEl);
+    }
+    have = marksAtCaret();
+    if (have.color && have.color !== want.color) {
+      peelCollapsedMark(isColorEl);
+    }
+    have = marksAtCaret();
+    if (have.quote && !want.quote) {
+      peelCollapsedMark((el) => el.classList.contains('note-quote'));
+    }
+    have = marksAtCaret();
+    const textNode = document.createTextNode(data);
+    let node = /** @type {Node} */ (textNode);
+    if (want.quote && !have.quote) {
+      const wrap = el('span', 'note-quote');
+      wrap.append(node);
+      node = wrap;
+    }
+    if (want.color && have.color !== want.color) {
+      const wrap = document.createElement('span');
+      setNoteColor(wrap, want.color);
+      wrap.append(node);
+      node = wrap;
+    }
+    if (want.bold && !have.bold) {
+      const wrap = document.createElement('b');
+      wrap.append(node);
+      node = wrap;
+    }
+    const live = sel.getRangeAt(0);
+    live.insertNode(node);
+    const caret = document.createRange();
+    caret.setStart(textNode, textNode.length);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+
+  /**
+   * @param {Range} range
+   * @param {'start' | 'end'} side
+   * @param {(el: HTMLElement) => boolean} pred
+   * @returns {HTMLElement | null}
+   */
+  function markAtEdge(range, side, pred) {
+    const mark = closestMark(range.startContainer, pred);
+    if (!mark || !mark.contains(range.startContainer)) {
+      return null;
+    }
+    const probe = document.createRange();
+    probe.selectNodeContents(mark);
+    try {
+      if (side === 'end') {
+        probe.setStart(range.startContainer, range.startOffset);
+      } else {
+        probe.setEnd(range.startContainer, range.startOffset);
+      }
+    } catch {
+      return null;
+    }
+    const holder = document.createElement('div');
+    holder.append(probe.cloneContents());
+    // A trailing caret <br> is not more quote text. The caret is still at the end.
+    const leftover = plainTextFromNode(holder).replace(/\u200B/g, '').replace(/\n+$/g, '');
+    if (leftover !== '') {
+      return null;
+    }
+    return mark;
+  }
+
+  /**
+   * @param {Range} range
+   * @returns {string}
+   */
+  function charBeforeCaret(range) {
+    const node = range.startContainer;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || '';
+      let index = range.startOffset;
+      while (index > 0 && text[index - 1] === '\u200B') {
+        index -= 1;
+      }
+      if (index > 0) {
+        return text[index - 1];
+      }
+    }
+    let current =
+      node.nodeType === Node.TEXT_NODE
+        ? node.previousSibling
+        : node.nodeType === Node.ELEMENT_NODE
+          ? /** @type {HTMLElement} */ (node).childNodes[range.startOffset - 1] || null
+          : null;
+    while (current) {
+      if (current.nodeType === Node.TEXT_NODE) {
+        const text = (current.textContent || '').replace(/\u200B/g, '');
+        if (text) {
+          return text[text.length - 1];
+        }
+      } else if (current instanceof HTMLElement) {
+        if (current.tagName === 'BR') {
+          return '\n';
+        }
+        const text = (current.textContent || '').replace(/\u200B/g, '');
+        if (text) {
+          return text[text.length - 1];
+        }
+      }
+      current = current.previousSibling;
+    }
+    return '';
+  }
+
+  /** @param {string} ch */
+  function isPlainSpace(ch) {
+    return ch === ' ' || ch === '\u00a0';
+  }
+
+  /**
+   * Trailing double-space leaves the mark. For a quote, the signaling space is removed too.
+   * @returns {boolean}
+   */
+  function secondSpaceLeavesFormatting() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) {
+      return false;
+    }
+    const range = sel.getRangeAt(0);
+    if (closestNoteCode(range.startContainer)) {
+      return false;
+    }
+    const have = marksAtCaret();
+    if (!have.bold && !have.color && !have.quote) {
+      return !!markSwallowedAfter(range);
+    }
+    if (!isPlainSpace(charBeforeCaret(range))) {
+      return false;
+    }
+    if (have.bold && !markAtEdge(range, 'end', isBoldEl)) {
+      return false;
+    }
+    if (have.color && !markAtEdge(range, 'end', isColorEl)) {
+      return false;
+    }
+    if (have.quote && !markAtEdge(range, 'end', isQuoteEl)) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Caret sitting in the padding just after an inline mark. Typing there still lands inside it.
+   * @param {Range} range
+   * @returns {HTMLElement | null}
+   */
+  function markSwallowedAfter(range) {
+    if (range.startContainer.nodeType === Node.TEXT_NODE) {
+      return null;
+    }
+    const prev = elementImmediatelyBefore(range);
+    if (!prev || !isFormattingHost(prev)) {
+      return null;
+    }
+    const text = plainTextFromNode(prev).replace(/\u200B/g, '').replace(/\n+$/g, '');
+    return isPlainSpace(text[text.length - 1] || '') ? prev : null;
+  }
+
+  /**
+   * @param {Range} range
+   * @returns {HTMLElement | null}
+   */
+  function elementImmediatelyBefore(range) {
+    const node = range.startContainer;
+    if (node.nodeType !== Node.ELEMENT_NODE || range.startOffset <= 0) {
+      return null;
+    }
+    let prev = node.childNodes[range.startOffset - 1] || null;
+    while (prev && prev.nodeType === Node.TEXT_NODE && !(prev.textContent || '').replace(/\u200B/g, '')) {
+      prev = prev.previousSibling;
+    }
+    return prev instanceof HTMLElement && prev.tagName !== 'BR' ? prev : null;
+  }
+
+  /** @param {HTMLElement} el */
+  function isFormattingHost(el) {
+    return isQuoteEl(el) || isBoldEl(el) || isColorEl(el);
+  }
+
+  /**
+   * Pad so the next typed character stays outside a padded inline mark.
+   * A caret placed with setStartAfter is still "inside" for Chromium when the span has padding.
+   * @param {HTMLElement} mark
+   */
+  function parkCaretAfter(mark) {
+    const sel = window.getSelection();
+    if (!sel || !mark.isConnected) {
+      return;
+    }
+    let next = mark.nextSibling;
+    if (!(next && next.nodeType === Node.TEXT_NODE && (next.textContent || '').startsWith('\u200B'))) {
+      const holder = document.createTextNode('\u200B');
+      mark.after(holder);
+      next = holder;
+    }
+    const caret = document.createRange();
+    caret.setStart(next, 1);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+
+  /**
+   * Quote involved in this exit, if the trailing space belongs to one.
+   * @param {Range} range
+   * @param {HTMLElement | null} outer
+   * @returns {HTMLElement | null}
+   */
+  function quoteMarkForExit(range, outer) {
+    const inside = closestMark(range.startContainer, isQuoteEl);
+    if (inside) {
+      return inside;
+    }
+    if (!outer) {
+      return null;
+    }
+    if (isQuoteEl(outer)) {
+      return outer;
+    }
+    const nested = outer.querySelector('.note-quote');
+    return nested instanceof HTMLElement ? nested : null;
+  }
+
+  /**
+   * The first space only signaled "leave the quote". Drop that one character.
+   * @param {HTMLElement} root
+   */
+  function stripOneTrailingSpace(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    /** @type {Text[]} */
+    const texts = [];
+    /** @type {Node | null} */
+    let current = walker.nextNode();
+    while (current) {
+      texts.push(/** @type {Text} */ (current));
+      current = walker.nextNode();
+    }
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const text = texts[i];
+      const value = text.textContent || '';
+      let end = value.length;
+      while (end > 0 && value[end - 1] === '\u200B') {
+        end -= 1;
+      }
+      if (end === 0) {
+        continue;
+      }
+      if (!isPlainSpace(value[end - 1] || '')) {
+        return;
+      }
+      const caretInside = !!root.contains(window.getSelection()?.anchorNode || null);
+      text.textContent = value.slice(0, end - 1) + value.slice(end);
+      if (caretInside) {
+        const sel = window.getSelection();
+        const caret = document.createRange();
+        caret.setStart(text, Math.min(end - 1, text.length));
+        caret.collapse(true);
+        sel?.removeAllRanges();
+        sel?.addRange(caret);
+      }
+      return;
+    }
+  }
+
+  /** @param {HTMLElement} mark */
+  function removeMarkIfNoText(mark) {
+    if (!mark.isConnected) {
+      return;
+    }
+    if ((mark.textContent || '').replace(/\u200B/g, '') || mark.querySelector('img, a')) {
+      return;
+    }
+    const parent = mark.parentNode;
+    if (!parent) {
+      return;
+    }
+    const next = mark.nextSibling;
+    while (mark.firstChild) {
+      parent.insertBefore(mark.firstChild, mark);
+    }
+    mark.remove();
+    const sel = window.getSelection();
+    const caret = document.createRange();
+    if (next && next.parentNode) {
+      caret.setStartBefore(next);
+    } else {
+      caret.setStart(parent, parent.childNodes.length);
+    }
+    caret.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(caret);
+  }
+
+  /** Drop bold, color, and quote around the caret. A quote exit also drops the signaling space. */
+  function leaveBoldAndColor() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    /** @type {HTMLElement | null} */
+    let outer = markSwallowedAfter(range);
+    if (!outer) {
+      const quote = closestMark(range.startContainer, isQuoteEl);
+      const color = closestMark(range.startContainer, isColorEl);
+      const bold = closestMark(range.startContainer, isBoldEl);
+      /** @type {HTMLElement[]} */
+      const found = [];
+      if (quote) {
+        found.push(quote);
+      }
+      if (color) {
+        found.push(color);
+      }
+      if (bold) {
+        found.push(bold);
+      }
+      if (found.length) {
+        outer = found[0];
+        for (const mark of found) {
+          if (mark.contains(outer)) {
+            outer = mark;
+          }
+        }
+      }
+    }
+    if (!outer) {
+      return;
+    }
+    const quote = quoteMarkForExit(range, outer);
+    if (quote) {
+      stripOneTrailingSpace(quote);
+      removeMarkIfNoText(quote);
+    }
+    const live = window.getSelection()?.getRangeAt(0) || range;
+    if (outer.isConnected && outer.contains(live.startContainer)) {
+      for (let step = 0; step < 4; step++) {
+        const node = window.getSelection()?.anchorNode || null;
+        if (!node || !outer.contains(node)) {
+          break;
+        }
+        const quote = closestMark(node, isQuoteEl);
+        const color = closestMark(node, isColorEl);
+        const bold = closestMark(node, isBoldEl);
+        /** @type {HTMLElement[]} */
+        const marks = [];
+        if (quote) {
+          marks.push(quote);
+        }
+        if (color) {
+          marks.push(color);
+        }
+        if (bold) {
+          marks.push(bold);
+        }
+        if (!marks.length) {
+          break;
+        }
+        let inner = marks[0];
+        for (const mark of marks) {
+          if (inner.contains(mark)) {
+            inner = mark;
+          }
+        }
+        if (isQuoteEl(inner)) {
+          peelCollapsedMark(isQuoteEl);
+        } else if (isColorEl(inner)) {
+          peelCollapsedMark(isColorEl);
+        } else {
+          peelCollapsedMark(isBoldEl);
+        }
+      }
+    }
+    parkCaretAfter(outer);
+  }
+
+  /**
+   * Arrow at a bold/color edge inserts one plain space and leaves that mark.
+   * @param {'left' | 'right'} direction
+   * @returns {boolean}
+   */
+  function exitMarkEdge(direction) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) {
+      return false;
+    }
+    const range = sel.getRangeAt(0);
+    if (closestMark(range.startContainer, (el) => el.classList.contains('note-code'))) {
+      return false;
+    }
+    const side = direction === 'right' ? 'end' : 'start';
+    const bold = markAtEdge(range, side, isBoldEl);
+    const color = markAtEdge(range, side, isColorEl);
+    /** @type {HTMLElement[]} */
+    const exits = [];
+    if (bold) {
+      exits.push(bold);
+    }
+    if (color) {
+      exits.push(color);
+    }
+    if (!exits.length) {
+      return false;
+    }
+    let outer = exits[0];
+    for (const mark of exits) {
+      if (mark.contains(outer)) {
+        outer = mark;
+      }
+    }
+    const space = document.createTextNode(' ');
+    if (direction === 'right') {
+      outer.after(space);
+    } else {
+      outer.before(space);
+    }
+    const caret = document.createRange();
+    if (direction === 'right') {
+      caret.setStartAfter(space);
+    } else {
+      caret.setStartBefore(space);
+    }
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+    pendingNoteMarks.bold = null;
+    pendingNoteMarks.color = null;
+    return true;
+  }
+
+  /** @param {HTMLElement} link */
+  function visibleLinkLabel(link) {
+    return (link.textContent || '').replace(/\u200B/g, '');
+  }
+
+  /**
+   * @param {HTMLAnchorElement} link
+   */
+  function setEmptyLinkCaret(link) {
+    link.textContent = '\u200B';
+    const caret = document.createRange();
+    caret.selectNodeContents(link);
+    caret.collapse(true);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(caret);
+  }
+
+  /**
+   * @param {HTMLAnchorElement} link
+   */
+  function removeLinkKeepCaret(link) {
+    const parent = link.parentNode;
+    if (!parent) {
+      return;
+    }
+    const index = Array.from(parent.childNodes).indexOf(link);
+    link.remove();
+    const caret = document.createRange();
+    caret.setStart(parent, Math.max(0, index));
+    caret.collapse(true);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(caret);
+  }
+
+  /**
+   * @param {Node} node
+   * @param {number} offset
+   * @returns {Node | null}
+   */
+  function nodeBeforeCaret(node, offset) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || '';
+      if (text.slice(0, offset).replace(/\u200B/g, '').length > 0) {
+        return null;
+      }
+      return node.previousSibling || elementBefore(node);
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = /** @type {HTMLElement} */ (node);
+      if (offset > 0) {
+        return el.childNodes[offset - 1] || null;
+      }
+      return elementBefore(el);
+    }
+    return null;
+  }
+
+  /**
+   * @param {Node} node
+   * @returns {Node | null}
+   */
+  function elementBefore(node) {
+    if (node.previousSibling) {
+      return node.previousSibling;
+    }
+    const parent = node.parentElement;
+    if (!parent || parent.classList.contains('note-input') || parent.classList.contains('note-p') || parent.classList.contains('note-code')) {
+      return null;
+    }
+    return parent.previousSibling;
+  }
+
+  /**
+   * @param {Node | null} node
+   * @returns {HTMLAnchorElement | null}
+   */
+  function linkWalkingBack(node) {
+    let current = node;
+    while (current) {
+      if (current.nodeType === Node.TEXT_NODE) {
+        if ((current.textContent || '').replace(/\u200B/g, '').length > 0) {
+          return null;
+        }
+      } else if (current instanceof HTMLAnchorElement && current.classList.contains('note-link')) {
+        return current;
+      } else if (current instanceof HTMLElement) {
+        if (current.classList.contains('note-p') || current.classList.contains('note-code') || current.classList.contains('note-input')) {
+          return null;
+        }
+        if (current.lastChild) {
+          const inner = linkWalkingBack(current.lastChild);
+          if (inner || (current.textContent || '').replace(/\u200B/g, '').length > 0) {
+            return inner;
+          }
+        }
+      }
+      current = current.previousSibling;
+    }
+    return null;
+  }
+
+  /**
+   * @param {Range} range
+   * @returns {HTMLAnchorElement | null}
+   */
+  function linkImmediatelyBeforeCaret(range) {
+    if (!range.collapsed) {
+      return null;
+    }
+    return linkWalkingBack(nodeBeforeCaret(range.startContainer, range.startOffset));
+  }
+
+  /**
+   * @param {HTMLAnchorElement} link
+   * @param {Range} range
+   */
+  function caretDeletesLastLinkChar(link, range) {
+    const label = visibleLinkLabel(link);
+    if (label.length !== 1 || !range.collapsed || !link.contains(range.startContainer)) {
+      return false;
+    }
+    const before = document.createRange();
+    before.selectNodeContents(link);
+    try {
+      before.setEnd(range.startContainer, range.startOffset);
+    } catch {
+      return false;
+    }
+    return before.toString().replace(/\u200B/g, '').length === 1;
+  }
+
+  /**
+   * @param {string} label
+   * @param {string} href
+   * @returns {HTMLAnchorElement}
+   */
+  function makeNoteLink(label, href) {
+    const link = document.createElement('a');
+    link.className = 'note-link';
+    link.setAttribute('href', href);
+    link.rel = 'noopener noreferrer';
+    link.textContent = label;
+    return link;
+  }
+
+  /**
+   * Turn finished markdown / delimited bare URLs in the editing field into chips.
+   * A bare URL the caret is still sitting on stays plain so the address can be typed.
+   * @param {HTMLElement} input
+   */
+  function linkifyNoteField(input) {
+    if (linkifyBusy || !input.classList.contains('is-editing')) {
+      return;
+    }
+    linkifyBusy = true;
+    /** @type {HTMLElement | null} */
+    let marker = null;
+    try {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount && sel.isCollapsed && input.contains(sel.anchorNode)) {
+        marker = document.createElement('span');
+        marker.dataset.caret = '1';
+        sel.getRangeAt(0).insertNode(marker);
+      }
+      /** @type {Text[]} */
+      const nodes = [];
+      const walker = document.createTreeWalker(input, NodeFilter.SHOW_TEXT);
+      /** @type {Node | null} */
+      let current = walker.nextNode();
+      while (current) {
+        const text = /** @type {Text} */ (current);
+        current = walker.nextNode();
+        if (text.parentElement?.closest('a, .note-code, [data-caret]')) {
+          continue;
+        }
+        nodes.push(text);
+      }
+      for (const textNode of nodes) {
+        linkifyTextNode(textNode);
+      }
+    } finally {
+      if (marker && marker.isConnected) {
+        const caret = document.createRange();
+        caret.setStartAfter(marker);
+        caret.collapse(true);
+        const live = window.getSelection();
+        live?.removeAllRanges();
+        live?.addRange(caret);
+        marker.remove();
+        rememberMarkCaret();
+      }
+      linkifyBusy = false;
+    }
+  }
+
+  /**
+   * @param {Text} textNode
+   */
+  function linkifyTextNode(textNode) {
+    if (!textNode.isConnected) {
+      return;
+    }
+    const text = textNode.textContent || '';
+    const pattern = new RegExp(NOTE_LINK_RE.source, 'g');
+    /** @type {RegExpExecArray[]} */
+    const matches = [];
+    let match;
+    while ((match = pattern.exec(text))) {
+      const isMarkdown = !!(match[1] && match[2]);
+      const end = match.index + match[0].length;
+      if (!isMarkdown) {
+        const next = text[end];
+        if (next && /\s/.test(next)) {
+          matches.push(match);
+        } else if (end < text.length) {
+          matches.push(match);
+        } else if (!(textNode.nextSibling instanceof HTMLElement && textNode.nextSibling.dataset.caret === '1')) {
+          matches.push(match);
+        }
+      } else {
+        matches.push(match);
+      }
+    }
+    if (!matches.length) {
+      return;
+    }
+    let node = textNode;
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const item = matches[i];
+      if (!node.isConnected) {
+        return;
+      }
+      const start = item.index;
+      const end = item.index + item[0].length;
+      if (end > (node.textContent || '').length) {
+        return;
+      }
+      const label = item[1] || item[3] || '';
+      const href = item[2] || item[3] || '';
+      if (!label || !href) {
+        continue;
+      }
+      const tail = node.splitText(end);
+      const head = node;
+      const matched = head.splitText(start);
+      matched.replaceWith(makeNoteLink(label, href));
+      node = head;
+      void tail;
+    }
+  }
+
+  /**
+   * @param {KeyboardEvent} event
+   * @param {HTMLElement} input
+   * @returns {boolean}
+   */
+  function handleNoteMarkKey(event, input) {
+    if (event.isComposing || event.altKey || event.metaKey || event.ctrlKey) {
+      return false;
+    }
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !input.contains(sel.anchorNode)) {
+      return false;
+    }
+    const range = sel.getRangeAt(0);
+    if (event.key === 'Backspace') {
+      if (!range.collapsed) {
+        const host =
+          range.startContainer.nodeType === Node.ELEMENT_NODE
+            ? /** @type {HTMLElement} */ (range.startContainer)
+            : range.startContainer.parentElement;
+        const link = host?.closest('a.note-link');
+        if (
+          link instanceof HTMLAnchorElement &&
+          input.contains(link) &&
+          link.contains(range.endContainer) &&
+          plainTextFromRange(range).replace(/\u200B/g, '') === visibleLinkLabel(link) &&
+          visibleLinkLabel(link)
+        ) {
+          event.preventDefault();
+          setEmptyLinkCaret(link);
+          return true;
+        }
+        return false;
+      }
+      const inside = elementFromNode(range.startContainer)?.closest('a.note-link');
+      if (inside instanceof HTMLAnchorElement && input.contains(inside)) {
+        const label = visibleLinkLabel(inside);
+        if (!label) {
+          event.preventDefault();
+          removeLinkKeepCaret(inside);
+          return true;
+        }
+        if (caretDeletesLastLinkChar(inside, range)) {
+          event.preventDefault();
+          setEmptyLinkCaret(inside);
+          return true;
+        }
+        return false;
+      }
+      const before = linkImmediatelyBeforeCaret(range);
+      if (before && input.contains(before)) {
+        event.preventDefault();
+        removeLinkKeepCaret(before);
+        return true;
+      }
+      return false;
+    }
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+      return false;
+    }
+    if (!range.collapsed || event.shiftKey) {
+      return false;
+    }
+    const exited = exitMarkEdge(event.key === 'ArrowRight' ? 'right' : 'left');
+    if (!exited) {
+      return false;
+    }
+    event.preventDefault();
+    rememberMarkCaret();
+    updateFormatMenuState();
+    return true;
+  }
+
   function applyTextColor(color) {
     if (!activeNoteEdit) {
       return;
     }
-    restoreNoteSelection();
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || sel.isCollapsed) {
-      pendingNoteMarks.color = color;
+    formattingReleased = false;
+    const hex = normalizeHex(color) || color;
+    if (liveTextColorSpans && liveTextColorSpans.length) {
+      for (const span of liveTextColorSpans) {
+        if (span.isConnected) {
+          setNoteColor(span, hex);
+        }
+      }
       return;
     }
-    document.execCommand('styleWithCSS', false, 'true');
-    document.execCommand('foreColor', false, color);
+    restoreNoteSelection({ silent: true });
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) {
+      pendingNoteMarks.color = hex;
+      rememberMarkCaret();
+      return;
+    }
+    markSyncDepth += 1;
+    try {
+      liveTextColorSpans = applyColorToRange(sel.getRangeAt(0), hex);
+    } finally {
+      markSyncDepth -= 1;
+    }
+    pendingNoteMarks.color = null;
+    rememberMarkCaret();
   }
 
   /**
@@ -4688,10 +6012,12 @@
       return;
     }
     saveNoteSelection();
+    liveTextColorSpans = null;
     const rect = (toolbarFormatMenu || toolbarFormat || activeNoteEdit.input).getBoundingClientRect();
     colorInput.style.left = rect.left + 'px';
     colorInput.style.top = rect.bottom + 'px';
-    colorInput.value = pendingNoteMarks.color || '#4daafc';
+    const at = marksAtCaret();
+    colorInput.value = pendingNoteMarks.color || at.color || '#4daafc';
     colorTarget = { kind: 'text' };
     if (typeof colorInput.showPicker === 'function') {
       try {
@@ -5368,6 +6694,10 @@
       if (locked || activeNoteEdit?.input !== input) {
         return;
       }
+      if (handleNoteMarkKey(event, input)) {
+        refreshNoteEmptyClass(input);
+        return;
+      }
       if (event.key === 'Escape') {
         event.preventDefault();
         endNoteEdit(input, { restore: true });
@@ -5431,9 +6761,6 @@
       if (event.inputType !== 'insertText' || !event.data) {
         return;
       }
-      if (!pendingNoteMarks.bold && !pendingNoteMarks.quote && !pendingNoteMarks.color) {
-        return;
-      }
       const sel = window.getSelection();
       if (!sel || !sel.rangeCount || !sel.isCollapsed) {
         return;
@@ -5441,33 +6768,42 @@
       if (closestNoteCode(sel.anchorNode)) {
         return;
       }
+      if (event.data === ' ' && secondSpaceLeavesFormatting()) {
+        event.preventDefault();
+        markSyncDepth += 1;
+        try {
+          leaveBoldAndColor();
+          formattingReleased = true;
+          pendingNoteMarks.bold = null;
+          pendingNoteMarks.color = null;
+          pendingNoteMarks.quote = false;
+        } finally {
+          markSyncDepth -= 1;
+        }
+        rememberMarkCaret();
+        updateFormatMenuState();
+        return;
+      }
+      const have = marksAtCaret();
+      const want = wantedMarks();
+      if (want.bold === have.bold && (want.color || null) === (have.color || null) && want.quote === have.quote) {
+        return;
+      }
       event.preventDefault();
-      let node = /** @type {Node} */ (document.createTextNode(event.data));
-      if (pendingNoteMarks.quote) {
-        const wrap = el('span', 'note-quote');
-        wrap.append(node);
-        node = wrap;
+      markSyncDepth += 1;
+      try {
+        insertMarkedText(event.data, want);
+      } finally {
+        markSyncDepth -= 1;
       }
-      if (pendingNoteMarks.color) {
-        const wrap = el('span');
-        wrap.style.color = pendingNoteMarks.color;
-        wrap.append(node);
-        node = wrap;
-      }
-      if (pendingNoteMarks.bold) {
-        const wrap = el('b');
-        wrap.append(node);
-        node = wrap;
-      }
-      const range = sel.getRangeAt(0);
-      range.insertNode(node);
-      range.setStartAfter(node);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
+      linkifyNoteField(input);
       refreshNoteEmptyClass(input);
+      rememberMarkCaret();
     });
     input.addEventListener('input', () => {
+      if (activeNoteEdit?.input === input) {
+        linkifyNoteField(input);
+      }
       refreshNoteEmptyClass(input);
     });
     input.addEventListener('paste', (event) => {
@@ -5559,6 +6895,9 @@
         return;
       }
       if (event.target instanceof Element && event.target.closest('a.note-link')) {
+        if (activeNoteEdit?.input === input) {
+          event.preventDefault();
+        }
         return;
       }
       if (activeNoteEdit?.input !== input) {
@@ -6792,6 +8131,7 @@
     if (colorTarget) {
       if (colorTarget.kind === 'text') {
         applyTextColor(colorInput.value);
+        liveTextColorSpans = null;
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
       } else if (colorTarget.id) {
@@ -6800,11 +8140,26 @@
     }
     colorTarget = null;
     if (activeNoteEdit) {
-      activeNoteEdit.input.focus();
+      const keep = savedNoteSelection ? savedNoteSelection.cloneRange() : null;
+      markSyncDepth += 1;
+      try {
+        activeNoteEdit.input.focus();
+        if (keep && activeNoteEdit.input.contains(keep.commonAncestorContainer)) {
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(keep);
+          rememberMarkCaret();
+        }
+      } catch {
+        savedNoteSelection = null;
+      } finally {
+        markSyncDepth -= 1;
+      }
     }
   });
   colorInput.addEventListener('blur', () => {
     window.setTimeout(() => {
+      liveTextColorSpans = null;
       if (colorTarget?.kind !== 'text') {
         return;
       }
