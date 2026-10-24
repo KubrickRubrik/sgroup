@@ -17,6 +17,21 @@ import {
 } from './history';
 import { normalizeLocale, Syn3Locale } from './i18n';
 import { normalizeHex } from './palette';
+import {
+  cloneProfileLayout,
+  emptyPositions,
+  emptyProfileLayout,
+  normalizePositions,
+  packProfileLayout,
+  POS_LOCAL_PATH,
+  POS_REMOTE_PATH,
+  positionSyncState,
+  positionsIsEmpty,
+  prunePositionsFile,
+  type PositionSyncState,
+  type PositionsFile,
+  type ProfileLayout,
+} from './positions';
 
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
 export const MAX_MARKER_DEPTH = 2;
@@ -27,6 +42,8 @@ export const CONFIG_PATH = '.syn3/syn3.json';
 export const PROFILES_PATH = '.syn3/profiles.json';
 /** Appearance per profile id. */
 export const STYLES_PATH = '.syn3/styles.json';
+/** Live per-profile card layout (gitignored). */
+export { POS_LOCAL_PATH, POS_REMOTE_PATH };
 /** Built-in profile: always present, cannot be renamed or deleted. */
 export const GENERAL_PROFILE_ID = 'general';
 export const GENERAL_PROFILE_NAME = 'Общий';
@@ -488,15 +505,18 @@ function cloneProfileStyle(style: ProfileStyle): ProfileStyle {
   };
 }
 
-/** Page-local undo snapshot: groups, items, notes and view — not folds, page order, or appearance. */
+/** Page-local undo snapshot: groups, items, notes and view — not folds or appearance. */
 interface PageSnapshot {
   version: 1;
   page: {
     name: string;
     kind: PageKind;
+    order: number;
     layout: MapLayout;
     groupsLayout: GroupsLayout;
   };
+  /** Full page order map so undo after reorderPages restores every slide. */
+  pageOrders?: Record<string, number>;
   markers: Record<string, MarkerDef>;
   items: Record<string, string[]>;
   added: Record<string, Record<string, number>>;
@@ -562,6 +582,12 @@ export class MarkerStore implements vscode.Disposable {
   /** Skip self-triggered profile/style reloads after our own writes. */
   private writingProfiles = false;
   private writingStyles = false;
+  private writingPosLocal = false;
+  private writingPosRemote = false;
+  private posLocal: PositionsFile = emptyPositions();
+  private posRemote: PositionsFile = emptyPositions();
+  /** False until pos_local / pos_remote have been read and applied. */
+  private positionsReady = false;
 
   readonly onDidChange = this.changeEmitter.event;
   lastError?: string;
@@ -582,6 +608,14 @@ export class MarkerStore implements vscode.Disposable {
 
   get stylesUri(): vscode.Uri {
     return vscode.Uri.joinPath(this.root, STYLES_PATH);
+  }
+
+  get posLocalUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, POS_LOCAL_PATH);
+  }
+
+  get posRemoteUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, POS_REMOTE_PATH);
   }
 
   /** Appearance of the active profile. */
@@ -653,10 +687,57 @@ export class MarkerStore implements vscode.Disposable {
     await this.migrateHistory();
     await this.load();
     await this.loadProfilesAndStyles();
+    await this.loadPositions();
     await this.loadHistory();
     this.historyReady = true;
     this.watch();
     this.changeEmitter.fire();
+  }
+
+  /** Whether local → remote / remote → local sync buttons should be enabled. */
+  positionSync(): PositionSyncState {
+    const id = this.activeId;
+    return positionSyncState(this.posLocal.profiles[id], this.posRemote.profiles[id]);
+  }
+
+  /** Copy active profile layout from local into remote (backup). */
+  async syncPositionsLocalToRemote(): Promise<boolean> {
+    return await this.enqueueResult(async () => {
+      const id = this.ensureActiveProfileId();
+      const local = this.posLocal.profiles[id];
+      if (!local) {
+        return false;
+      }
+      const sync = positionSyncState(local, this.posRemote.profiles[id]);
+      if (!sync.canPush) {
+        return false;
+      }
+      this.posRemote.profiles[id] = cloneProfileLayout(local);
+      await this.persistPosRemote();
+      this.changeEmitter.fire();
+      return true;
+    });
+  }
+
+  /** Restore active profile layout from remote into local. */
+  async syncPositionsRemoteToLocal(): Promise<boolean> {
+    return await this.enqueueResult(async () => {
+      const id = this.ensureActiveProfileId();
+      const remote = this.posRemote.profiles[id];
+      if (!remote) {
+        return false;
+      }
+      const sync = positionSyncState(this.posLocal.profiles[id], remote);
+      if (!sync.canPull) {
+        return false;
+      }
+      this.posLocal.profiles[id] = cloneProfileLayout(remote);
+      this.applyProfileLayout(this.posLocal.profiles[id]);
+      await this.persistPosLocal();
+      this.pagePresent = this.captureAllPageSnapshots();
+      this.changeEmitter.fire();
+      return true;
+    });
   }
 
   dispose(): void {
@@ -718,6 +799,12 @@ export class MarkerStore implements vscode.Disposable {
       }
       this.moveMachineToProfile(id);
       this.mirrorActiveOpenToSurfaces();
+      const layoutAdded = this.ensureActiveLayoutInLocal();
+      if (this.borrowMissingIntoActiveLocal() || layoutAdded) {
+        await this.persistPosLocal();
+      }
+      this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+      this.pagePresent = this.captureAllPageSnapshots();
       await this.persistProfiles();
       this.changeEmitter.fire();
     });
@@ -736,12 +823,20 @@ export class MarkerStore implements vscode.Disposable {
       const id = this.uniqueProfileId(trimmed);
       this.ensureActiveProfileId();
       const source = this.activeProfileStyle();
+      const sourceLayout =
+        this.posLocal.profiles[this.activeId] ??
+        this.extractLayoutFromData() ??
+        emptyProfileLayout();
       this.profilesData.profiles.push({ id, name: trimmed, sProfileIds: [] });
       this.stylesData.styles[id] = cloneProfileStyle(source);
+      this.posLocal.profiles[id] = cloneProfileLayout(sourceLayout);
       this.moveMachineToProfile(id);
       this.mirrorActiveOpenToSurfaces();
+      this.applyProfileLayout(this.posLocal.profiles[id]);
+      this.pagePresent = this.captureAllPageSnapshots();
       await this.persistProfiles();
       await this.persistStyles();
+      await this.persistPosLocal();
       this.changeEmitter.fire();
       return id;
     });
@@ -779,12 +874,28 @@ export class MarkerStore implements vscode.Disposable {
       const wasActive = this.activeId === id;
       this.profilesData.profiles.splice(index, 1);
       delete this.stylesData.styles[id];
+      const hadLocal = !!this.posLocal.profiles[id];
+      const hadRemote = !!this.posRemote.profiles[id];
+      delete this.posLocal.profiles[id];
+      delete this.posRemote.profiles[id];
+      let localNeedsWrite = hadLocal;
       if (wasActive) {
         this.moveMachineToProfile(GENERAL_PROFILE_ID);
         this.mirrorActiveOpenToSurfaces();
+        if (this.ensureActiveLayoutInLocal() || this.borrowMissingIntoActiveLocal()) {
+          localNeedsWrite = true;
+        }
+        this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+        this.pagePresent = this.captureAllPageSnapshots();
       }
       await this.persistProfiles();
       await this.persistStyles();
+      if (localNeedsWrite) {
+        await this.persistPosLocal();
+      }
+      if (hadRemote) {
+        await this.persistPosRemote();
+      }
       this.changeEmitter.fire();
       return true;
     });
@@ -2326,6 +2437,12 @@ export class MarkerStore implements vscode.Disposable {
       }
       void this.enqueue(() => this.reloadStylesFromDisk());
     });
+    attach(POS_REMOTE_PATH, () => {
+      if (this.writingPosRemote) {
+        return;
+      }
+      void this.enqueue(() => this.reloadPosRemoteFromDisk());
+    });
   }
 
   /**
@@ -2468,6 +2585,9 @@ export class MarkerStore implements vscode.Disposable {
     const baseline = raw !== undefined && raw !== canonical ? raw : undefined;
     if (!this.historyReady) {
       this.data = next;
+      if (this.positionsReady) {
+        this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+      }
       this.present = canonical;
       this.baseline = baseline;
       this.pagePresent = this.captureAllPageSnapshots();
@@ -2481,6 +2601,12 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     this.data = next;
+    if (this.positionsReady) {
+      if (this.borrowMissingIntoActiveLocal()) {
+        await this.persistPosLocal();
+      }
+      this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+    }
     this.present = canonical;
     this.baseline = baseline;
     this.pagePresent = this.captureAllPageSnapshots();
@@ -2764,16 +2890,391 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private async commitNow(): Promise<void> {
-    const next = this.capture();
-    if (next === this.present) {
-      this.changeEmitter.fire();
+  /**
+   * Load pos_local / pos_remote, migrate layout out of syn3.json once,
+   * hydrate a missing local copy, and apply the active profile layout.
+   */
+  private async loadPositions(): Promise<void> {
+    const localExists = await fileExists(this.posLocalUri);
+    const remoteExists = await fileExists(this.posRemoteUri);
+    this.posLocal = localExists ? await this.readPositionsFile(this.posLocalUri) : emptyPositions();
+    this.posRemote = remoteExists ? await this.readPositionsFile(this.posRemoteUri) : emptyPositions();
+
+    let localDirty = false;
+    let remoteDirty = false;
+    let rewriteMarkers = false;
+
+    if (!localExists && !remoteExists) {
+      const migrated = this.extractLayoutFromData();
+      this.posLocal.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
+      this.posRemote.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
+      localDirty = true;
+      remoteDirty = true;
+      rewriteMarkers = true;
+    } else if (positionsIsEmpty(this.posLocal) && !positionsIsEmpty(this.posRemote)) {
+      for (const [id, layout] of Object.entries(this.posRemote.profiles)) {
+        this.posLocal.profiles[id] = cloneProfileLayout(layout);
+      }
+      localDirty = true;
+    } else if (positionsIsEmpty(this.posLocal) && positionsIsEmpty(this.posRemote)) {
+      const migrated = this.extractLayoutFromData();
+      this.posLocal.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
+      this.posRemote.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
+      localDirty = true;
+      remoteDirty = true;
+      rewriteMarkers = true;
+    }
+
+    const ids = this.entityIdSets();
+    if (prunePositionsFile(this.posLocal, ids.pages, ids.markers, ids.notes)) {
+      localDirty = true;
+    }
+    if (prunePositionsFile(this.posRemote, ids.pages, ids.markers, ids.notes)) {
+      remoteDirty = true;
+    }
+
+    if (this.ensureActiveLayoutInLocal()) {
+      localDirty = true;
+    }
+    if (this.borrowMissingIntoActiveLocal()) {
+      localDirty = true;
+    }
+
+    this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+    this.positionsReady = true;
+
+    if (localDirty) {
+      await this.persistPosLocal();
+    }
+    if (remoteDirty) {
+      await this.persistPosRemote();
+    }
+    if (rewriteMarkers || (await this.markersFileHasLayoutFields())) {
+      await this.writeConfig(this.capture());
+      this.present = this.capture();
+      this.baseline = undefined;
+    }
+  }
+
+  private async readPositionsFile(uri: vscode.Uri): Promise<PositionsFile> {
+    try {
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+      return normalizePositions(JSON.parse(raw));
+    } catch (error) {
+      if (!isFileNotFound(error)) {
+        console.error('Syn3 positions:', error);
+      }
+      return emptyPositions();
+    }
+  }
+
+  private async reloadPosRemoteFromDisk(): Promise<void> {
+    this.posRemote = await this.readPositionsFile(this.posRemoteUri);
+    const ids = this.entityIdSets();
+    if (prunePositionsFile(this.posRemote, ids.pages, ids.markers, ids.notes)) {
+      await this.persistPosRemote();
+    }
+    // Pull into local only when local is empty or lacks the active profile.
+    let localDirty = false;
+    if (positionsIsEmpty(this.posLocal) && !positionsIsEmpty(this.posRemote)) {
+      for (const [id, layout] of Object.entries(this.posRemote.profiles)) {
+        this.posLocal.profiles[id] = cloneProfileLayout(layout);
+      }
+      localDirty = true;
+    }
+    if (this.ensureActiveLayoutInLocal()) {
+      localDirty = true;
+    }
+    if (localDirty) {
+      this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+      this.pagePresent = this.captureAllPageSnapshots();
+      await this.persistPosLocal();
+    }
+    this.changeEmitter.fire();
+  }
+
+  private async persistPosLocal(): Promise<void> {
+    this.writingPosLocal = true;
+    try {
+      const payload: PositionsFile = {
+        version: 1,
+        profiles: {},
+      };
+      for (const id of Object.keys(this.posLocal.profiles).sort()) {
+        payload.profiles[id] = packProfileLayout(this.posLocal.profiles[id]);
+      }
+      this.posLocal = payload;
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.posLocalUri, '..'));
+      await vscode.workspace.fs.writeFile(
+        this.posLocalUri,
+        Buffer.from(JSON.stringify(payload, null, 2) + '\n', 'utf8'),
+      );
+    } finally {
+      setTimeout(() => {
+        this.writingPosLocal = false;
+      }, 100);
+    }
+  }
+
+  private async persistPosRemote(): Promise<void> {
+    this.writingPosRemote = true;
+    try {
+      const payload: PositionsFile = {
+        version: 1,
+        profiles: {},
+      };
+      for (const id of Object.keys(this.posRemote.profiles).sort()) {
+        payload.profiles[id] = packProfileLayout(this.posRemote.profiles[id]);
+      }
+      this.posRemote = payload;
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.posRemoteUri, '..'));
+      await vscode.workspace.fs.writeFile(
+        this.posRemoteUri,
+        Buffer.from(JSON.stringify(payload, null, 2) + '\n', 'utf8'),
+      );
+    } finally {
+      setTimeout(() => {
+        this.writingPosRemote = false;
+      }, 100);
+    }
+  }
+
+  private entityIdSets(): { pages: Set<string>; markers: Set<string>; notes: Set<string> } {
+    return {
+      pages: new Set(Object.keys(this.data.pages)),
+      markers: new Set(Object.keys(this.data.markers)),
+      notes: new Set(Object.keys(this.data.notes)),
+    };
+  }
+
+  /** Snapshot current in-memory layout (used for migration and syncing to pos_local). */
+  private extractLayoutFromData(): ProfileLayout {
+    const layout = emptyProfileLayout();
+    for (const [id, page] of Object.entries(this.data.pages)) {
+      layout.pages[id] = {
+        order: page.order,
+        layout: page.layout,
+        groupsLayout: page.groupsLayout,
+        collapsed: packCollapsed(page.collapsed),
+      };
+    }
+    for (const [id, marker] of Object.entries(this.data.markers)) {
+      const entry: ProfileLayout['markers'][string] = { order: marker.order };
+      if (marker.columns) {
+        entry.columns = marker.columns;
+      }
+      layout.markers[id] = entry;
+    }
+    for (const [id, note] of Object.entries(this.data.notes)) {
+      layout.notes[id] = { order: note.order };
+    }
+    return packProfileLayout(layout);
+  }
+
+  private applyProfileLayout(layout: ProfileLayout): void {
+    const packed = packProfileLayout(layout);
+    for (const [id, page] of Object.entries(this.data.pages)) {
+      const pos = packed.pages[id];
+      if (pos) {
+        page.order = pos.order;
+        page.layout = pos.layout;
+        page.groupsLayout = pos.groupsLayout;
+        page.collapsed = packCollapsed(pos.collapsed);
+      } else {
+        page.layout = page.layout || 'chips';
+        page.groupsLayout = page.groupsLayout || 'flow';
+        page.collapsed = page.collapsed ?? emptyCollapsed();
+      }
+    }
+    for (const [id, marker] of Object.entries(this.data.markers)) {
+      const pos = packed.markers[id];
+      if (pos) {
+        marker.order = pos.order;
+        marker.columns = pos.columns;
+      }
+    }
+    for (const [id, note] of Object.entries(this.data.notes)) {
+      const pos = packed.notes[id];
+      if (pos) {
+        note.order = pos.order;
+      }
+    }
+  }
+
+  /** Write current memory layout into the active profile slot of pos_local. */
+  private async syncActiveLayoutToLocal(): Promise<void> {
+    if (!this.positionsReady) {
       return;
     }
+    const id = this.ensureActiveProfileId();
+    const next = this.extractLayoutFromData();
+    const prev = this.posLocal.profiles[id];
+    if (prev && JSON.stringify(packProfileLayout(prev)) === JSON.stringify(next)) {
+      return;
+    }
+    this.posLocal.profiles[id] = next;
+    await this.persistPosLocal();
+  }
+
+  /**
+   * Ensure active profile has a layout in pos_local.
+   * Copies from remote, or from the first profile in profiles.json that has one.
+   * Returns true when local was modified.
+   */
+  private ensureActiveLayoutInLocal(): boolean {
+    const id = this.ensureActiveProfileId();
+    if (this.posLocal.profiles[id]) {
+      return false;
+    }
+    if (this.posRemote.profiles[id]) {
+      this.posLocal.profiles[id] = cloneProfileLayout(this.posRemote.profiles[id]);
+      return true;
+    }
+    for (const profile of this.profilesData.profiles) {
+      const remote = this.posRemote.profiles[profile.id];
+      if (remote) {
+        this.posLocal.profiles[id] = cloneProfileLayout(remote);
+        return true;
+      }
+      const local = this.posLocal.profiles[profile.id];
+      if (local) {
+        this.posLocal.profiles[id] = cloneProfileLayout(local);
+        return true;
+      }
+    }
+    this.posLocal.profiles[id] = this.extractLayoutFromData();
+    return true;
+  }
+
+  /**
+   * For entities missing from the active local layout, borrow order from the first
+   * remote profile (profiles.json order) that has it; otherwise append at the end.
+   */
+  private borrowMissingIntoActiveLocal(): boolean {
+    const id = this.ensureActiveProfileId();
+    const layout = this.posLocal.profiles[id] ?? emptyProfileLayout();
+    let changed = false;
+
+    const remoteOrder = (): string[] => this.profilesData.profiles.map((p) => p.id);
+
+    const nextPageOrder = () =>
+      Math.max(0, ...Object.values(layout.pages).map((p) => p.order), 0) + 1;
+    const nextMarkerOrder = () =>
+      Math.max(0, ...Object.values(layout.markers).map((m) => m.order), 0) + 1;
+    const nextNoteOrder = () =>
+      Math.max(0, ...Object.values(layout.notes).map((n) => n.order), 0) + 1;
+
+    for (const pageId of Object.keys(this.data.pages)) {
+      if (layout.pages[pageId]) {
+        continue;
+      }
+      let order: number | undefined;
+      for (const profileId of remoteOrder()) {
+        const remotePage = this.posRemote.profiles[profileId]?.pages[pageId];
+        if (remotePage) {
+          order = remotePage.order;
+          layout.pages[pageId] = {
+            order: remotePage.order,
+            layout: remotePage.layout,
+            groupsLayout: remotePage.groupsLayout,
+            collapsed: packCollapsed(remotePage.collapsed),
+          };
+          break;
+        }
+      }
+      if (order === undefined) {
+        layout.pages[pageId] = {
+          order: nextPageOrder(),
+          layout: 'chips',
+          groupsLayout: 'flow',
+          collapsed: emptyCollapsed(),
+        };
+      }
+      changed = true;
+    }
+
+    for (const markerId of Object.keys(this.data.markers)) {
+      if (layout.markers[markerId]) {
+        continue;
+      }
+      let found = false;
+      for (const profileId of remoteOrder()) {
+        const remoteMarker = this.posRemote.profiles[profileId]?.markers[markerId];
+        if (remoteMarker) {
+          layout.markers[markerId] = { ...remoteMarker };
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        layout.markers[markerId] = { order: nextMarkerOrder() };
+      }
+      changed = true;
+    }
+
+    for (const noteId of Object.keys(this.data.notes)) {
+      if (layout.notes[noteId]) {
+        continue;
+      }
+      let found = false;
+      for (const profileId of remoteOrder()) {
+        const remoteNote = this.posRemote.profiles[profileId]?.notes[noteId];
+        if (remoteNote) {
+          layout.notes[noteId] = { ...remoteNote };
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        layout.notes[noteId] = { order: nextNoteOrder() };
+      }
+      changed = true;
+    }
+
+    if (changed) {
+      this.posLocal.profiles[id] = packProfileLayout(layout);
+    }
+    return changed;
+  }
+
+  private async markersFileHasLayoutFields(): Promise<boolean> {
+    try {
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
+      const parsed = JSON.parse(raw) as {
+        pages?: Record<string, Record<string, unknown>>;
+        markers?: Record<string, Record<string, unknown>>;
+        notes?: Record<string, Record<string, unknown>>;
+      };
+      for (const page of Object.values(parsed.pages ?? {})) {
+        if ('order' in page || 'layout' in page || 'groupsLayout' in page || 'collapsed' in page) {
+          return true;
+        }
+      }
+      for (const marker of Object.values(parsed.markers ?? {})) {
+        if ('order' in marker || 'columns' in marker) {
+          return true;
+        }
+      }
+      for (const note of Object.values(parsed.notes ?? {})) {
+        if ('order' in note) {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async commitNow(): Promise<void> {
+    const next = this.capture();
+    const contentChanged = next !== this.present;
     const previousPages = { ...this.pagePresent };
-    await this.writeConfig(next);
-    this.baseline = undefined;
-    this.present = next;
+    if (contentChanged) {
+      await this.writeConfig(next);
+      this.baseline = undefined;
+      this.present = next;
+    }
     const nextPages = this.captureAllPageSnapshots();
     if (this.historyReady) {
       for (const [pageId, curr] of Object.entries(nextPages)) {
@@ -2783,10 +3284,13 @@ export class MarkerStore implements vscode.Disposable {
         }
       }
       this.pagePresent = nextPages;
-      await this.persistHistory();
+      if (contentChanged || Object.keys(nextPages).some((id) => previousPages[id] !== nextPages[id])) {
+        await this.persistHistory();
+      }
     } else {
       this.pagePresent = nextPages;
     }
+    await this.syncActiveLayoutToLocal();
     this.changeEmitter.fire();
   }
 
@@ -2806,6 +3310,7 @@ export class MarkerStore implements vscode.Disposable {
       const backup = JSON.parse(JSON.stringify(this.data)) as MarkersFile;
       const backupPresent = this.present;
       const backupPages = { ...this.pagePresent };
+      const backupLocal = JSON.parse(JSON.stringify(this.posLocal)) as PositionsFile;
       const leaving = this.pagePresent[pageId] ?? this.capturePageSnapshot(pageId);
       try {
         this.applyPageSnapshot(pageId, snapshot);
@@ -2815,12 +3320,14 @@ export class MarkerStore implements vscode.Disposable {
         this.present = next;
         this.baseline = undefined;
         this.pagePresent = this.captureAllPageSnapshots();
+        await this.syncActiveLayoutToLocal();
         await this.persistHistory();
         this.changeEmitter.fire();
       } catch (error) {
         this.data = backup;
         this.present = backupPresent;
         this.pagePresent = backupPages;
+        this.posLocal = backupLocal;
         throw error;
       }
     });
@@ -2964,15 +3471,21 @@ export class MarkerStore implements vscode.Disposable {
         notes[noteId] = packed;
       }
     }
+    const pageOrders: Record<string, number> = {};
+    for (const [id, page] of Object.entries(this.data.pages)) {
+      pageOrders[id] = page.order;
+    }
     const payload: PageSnapshot = {
       version: 1,
       page: {
         name: def.name,
         kind: def.kind,
+        order: def.order,
         layout: def.layout,
         groupsLayout: def.groupsLayout,
         ...(legacyCollapsed ? { collapsed: this.legacyCollapsed(def, markerSet) } : {}),
       },
+      pageOrders,
       markers,
       items,
       added,
@@ -3098,6 +3611,15 @@ export class MarkerStore implements vscode.Disposable {
 
     page.name = snap.page.name;
     page.kind = normalizePageKind(snap.page.kind) ?? page.kind;
+    if (snap.pageOrders && typeof snap.pageOrders === 'object') {
+      for (const [id, order] of Object.entries(snap.pageOrders)) {
+        if (this.data.pages[id] && typeof order === 'number') {
+          this.data.pages[id].order = order;
+        }
+      }
+    } else if (typeof snap.page.order === 'number') {
+      page.order = snap.page.order;
+    }
     page.layout = normalizeMapLayout(snap.page.layout);
     page.groupsLayout = normalizeGroupsLayout(snap.page.groupsLayout);
 
@@ -3250,23 +3772,22 @@ export class MarkerStore implements vscode.Disposable {
     return result;
   }
 
-  /** Stable JSON of the markers file. Same text after a reload means the same map. */
+  /**
+   * Stable JSON of the markers file (content only).
+   * Layout fields live in pos_local / pos_remote.
+   */
   private capture(): string {
-    const pages: Record<string, PageDef> = {};
+    const pages: Record<string, { name: string; kind: PageKind }> = {};
     for (const [id, def] of this.pages()) {
       pages[id] = {
         name: def.name,
         kind: def.kind,
-        order: def.order,
-        layout: def.layout,
-        groupsLayout: def.groupsLayout,
-        collapsed: packCollapsed(def.collapsed),
       };
     }
     const surfaces = packSurfaces(this.data.surfaces, this.data.pages, this.defaultFilesPageId());
-    const markers: Record<string, MarkerDef> = {};
+    const markers: Record<string, Record<string, unknown>> = {};
     for (const [id, def] of this.markers()) {
-      const entry = { label: def.label } as MarkerDef;
+      const entry: Record<string, unknown> = { label: def.label };
       if (def.color) {
         entry.color = def.color;
       }
@@ -3276,13 +3797,9 @@ export class MarkerStore implements vscode.Disposable {
       if (def.alias) {
         entry.alias = def.alias;
       }
-      if (def.columns) {
-        entry.columns = def.columns;
-      }
       if (def.locked) {
         entry.locked = true;
       }
-      entry.order = def.order;
       if (def.parent) {
         entry.parent = def.parent;
       } else if (def.page) {
@@ -3340,9 +3857,9 @@ export class MarkerStore implements vscode.Disposable {
         classAdded[classId] = dates;
       }
     }
-    const notes: Record<string, NoteDef> = {};
+    const notes: Record<string, Record<string, unknown>> = {};
     for (const [id, def] of this.notes()) {
-      const packed = this.packNoteForPersist(id, def);
+      const packed = this.packNoteContent(id, def);
       if (packed) {
         notes[id] = packed;
       }
@@ -3615,6 +4132,16 @@ export class MarkerStore implements vscode.Disposable {
     return undefined;
   }
 
+  /** Content-only note for syn3.json — order lives in pos files. */
+  private packNoteContent(_id: string, def: NoteDef): Record<string, unknown> | undefined {
+    const packed = this.packNoteForPersist(_id, def);
+    if (!packed) {
+      return undefined;
+    }
+    const { order: _order, ...rest } = packed;
+    return rest;
+  }
+
   private orderSnapshotNotes(notes: Record<string, NoteDef>): string[] {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -3749,7 +4276,7 @@ function packFlags(flags: Record<string, boolean> | undefined): Record<string, b
   return result;
 }
 
-function packCollapsed(collapsed: SurfaceCollapsed): SurfaceCollapsed {
+export function packCollapsed(collapsed: SurfaceCollapsed): SurfaceCollapsed {
   return {
     explorer: packFlags(collapsed.explorer),
     bottom: packFlags(collapsed.bottom),

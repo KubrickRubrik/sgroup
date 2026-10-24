@@ -333,6 +333,11 @@ html::-webkit-scrollbar {
   background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 }
 
+.toolbar-profile-row .profile-actions button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
 .toolbar-profile-create {
   align-items: center;
   border-top: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));

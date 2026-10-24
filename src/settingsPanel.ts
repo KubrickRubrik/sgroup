@@ -12,7 +12,12 @@ import {
 type IncomingMessage =
   | { type: 'ready' }
   | { type: 'setAppearance'; appearance: Partial<Appearance> }
-  | { type: 'profile'; action: 'activate' | 'create' | 'rename' | 'delete'; id?: string; name?: string };
+  | {
+      type: 'profile';
+      action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull';
+      id?: string;
+      name?: string;
+    };
 
 export class SettingsPanel implements vscode.Disposable {
   static readonly viewType = 'syn3Settings';
@@ -78,7 +83,7 @@ export class SettingsPanel implements vscode.Disposable {
   }
 
   private async onProfile(
-    action: 'activate' | 'create' | 'rename' | 'delete',
+    action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull',
     id?: string,
     name?: string,
   ): Promise<void> {
@@ -145,6 +150,14 @@ export class SettingsPanel implements vscode.Disposable {
         return;
       }
       await this.store.deleteProfile(id);
+      return;
+    }
+    if (action === 'syncPush') {
+      await this.store.syncPositionsLocalToRemote();
+      return;
+    }
+    if (action === 'syncPull') {
+      await this.store.syncPositionsRemoteToLocal();
     }
   }
 
@@ -165,6 +178,7 @@ export class SettingsPanel implements vscode.Disposable {
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       activeProfileName: this.store.activeProfileName,
+      positionSync: this.store.positionSync(),
       locale,
       i18n: stringsFor(locale),
       stylesPath: STYLES_PATH,
@@ -357,6 +371,41 @@ export class SettingsPanel implements vscode.Disposable {
     .profile-row .profile-actions button:hover {
       background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
     }
+    .profile-row .profile-actions button:disabled {
+      cursor: default;
+      opacity: 0.35;
+    }
+    .sync-row {
+      align-items: center;
+    }
+    .sync-actions {
+      display: flex;
+      gap: 6px;
+      grid-column: 2 / span 2;
+    }
+    .sync-actions button {
+      align-items: center;
+      background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+      border: none;
+      border-radius: 4px;
+      color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+      cursor: pointer;
+      display: flex;
+      font: inherit;
+      font-size: 16px;
+      height: 28px;
+      justify-content: center;
+      line-height: 1;
+      padding: 0;
+      width: 36px;
+    }
+    .sync-actions button:hover:not(:disabled) {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+    }
+    .sync-actions button:disabled {
+      cursor: default;
+      opacity: 0.4;
+    }
     .profile-create {
       align-items: center;
       border-top: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -491,6 +540,18 @@ export class SettingsPanel implements vscode.Disposable {
           <option value="ru" data-i18n="languageRu">Russian</option>
         </select>
       </div>
+    </section>
+
+    <section>
+      <h2 data-i18n="sectionPositions">Card positions</h2>
+      <div class="row sync-row">
+        <span></span>
+        <div class="sync-actions">
+          <button type="button" id="pos-sync-push" data-i18n-title="profileSyncPush" data-i18n-aria="profileSyncPush">↑</button>
+          <button type="button" id="pos-sync-pull" data-i18n-title="profileSyncPull" data-i18n-aria="profileSyncPull">↓</button>
+        </div>
+      </div>
+      <p class="note" data-i18n="notePositions"></p>
     </section>
 
     <section>
@@ -649,9 +710,19 @@ export class SettingsPanel implements vscode.Disposable {
     const profileAdd = document.getElementById('profile-add');
     const languageSelect = document.getElementById('language');
     const settingsHint = document.getElementById('settings-hint');
+    const posSyncPush = document.getElementById('pos-sync-push');
+    const posSyncPull = document.getElementById('pos-sync-pull');
+    /** @type {{ canPush?: boolean, canPull?: boolean }} */
+    let positionSync = { canPush: false, canPull: false };
 
     function tr(key) {
       return i18n[key] || key;
+    }
+
+    function applyPositionSync(sync) {
+      positionSync = sync && typeof sync === 'object' ? sync : { canPush: false, canPull: false };
+      if (posSyncPush) posSyncPush.disabled = !positionSync.canPush;
+      if (posSyncPull) posSyncPull.disabled = !positionSync.canPull;
     }
 
     function format(key, value) {
@@ -744,9 +815,28 @@ export class SettingsPanel implements vscode.Disposable {
           count.title = tr('profileBound').replace('{n}', String(bound));
           row.append(count);
         }
+        const actions = document.createElement('span');
+        actions.className = 'profile-actions';
+        if (profile.id === activeId) {
+          const pushBtn = document.createElement('button');
+          pushBtn.type = 'button';
+          pushBtn.title = tr('profileSyncPush');
+          pushBtn.setAttribute('aria-label', tr('profileSyncPush'));
+          pushBtn.setAttribute('data-profile-action', 'syncPush');
+          pushBtn.setAttribute('data-profile-id', profile.id);
+          pushBtn.textContent = '↑';
+          pushBtn.disabled = !positionSync.canPush;
+          const pullBtn = document.createElement('button');
+          pullBtn.type = 'button';
+          pullBtn.title = tr('profileSyncPull');
+          pullBtn.setAttribute('aria-label', tr('profileSyncPull'));
+          pullBtn.setAttribute('data-profile-action', 'syncPull');
+          pullBtn.setAttribute('data-profile-id', profile.id);
+          pullBtn.textContent = '↓';
+          pullBtn.disabled = !positionSync.canPull;
+          actions.append(pushBtn, pullBtn);
+        }
         if (profile.id !== GENERAL_ID) {
-          const actions = document.createElement('span');
-          actions.className = 'profile-actions';
           const renameBtn = document.createElement('button');
           renameBtn.type = 'button';
           renameBtn.title = tr('profileRename');
@@ -762,6 +852,8 @@ export class SettingsPanel implements vscode.Disposable {
           deleteBtn.setAttribute('data-profile-id', profile.id);
           deleteBtn.textContent = '×';
           actions.append(renameBtn, deleteBtn);
+        }
+        if (actions.childNodes.length > 0) {
           row.append(actions);
         }
         profileList.append(row);
@@ -843,9 +935,11 @@ export class SettingsPanel implements vscode.Disposable {
         event.stopPropagation();
         const action = actionBtn.getAttribute('data-profile-action');
         const id = actionBtn.getAttribute('data-profile-id') || undefined;
-        if (action === 'rename' || action === 'delete') {
+        if (action === 'rename' || action === 'delete' || action === 'syncPush' || action === 'syncPull') {
           vscode.postMessage({ type: 'profile', action, id });
-          closeProfileMenu();
+          if (action === 'rename' || action === 'delete') {
+            closeProfileMenu();
+          }
         }
         return;
       }
@@ -862,6 +956,13 @@ export class SettingsPanel implements vscode.Disposable {
       closeProfileMenu();
     });
 
+    posSyncPush?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'profile', action: 'syncPush' });
+    });
+    posSyncPull?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'profile', action: 'syncPull' });
+    });
+
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'state') {
         if (event.data.i18n && typeof event.data.i18n === 'object') {
@@ -872,6 +973,7 @@ export class SettingsPanel implements vscode.Disposable {
         }
         applyLocale();
         apply(event.data.appearance);
+        applyPositionSync(event.data.positionSync);
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);
       }
     });

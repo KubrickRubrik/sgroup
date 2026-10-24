@@ -351,9 +351,11 @@
       event.stopPropagation();
       const action = actionBtn.getAttribute('data-profile-action');
       const id = actionBtn.getAttribute('data-profile-id') || undefined;
-      if (action === 'rename' || action === 'delete') {
+      if (action === 'rename' || action === 'delete' || action === 'syncPush' || action === 'syncPull') {
         vscode.postMessage({ type: 'profile', action, id });
-        closeProfileMenu();
+        if (action === 'rename' || action === 'delete') {
+          closeProfileMenu();
+        }
       }
       return;
     }
@@ -508,7 +510,7 @@
       setToolbar(activePage() || message);
       setPanelToggles(message.open);
       updatePageMenu();
-      renderProfiles(message.profiles, message.activeProfileId);
+      renderProfiles(message.profiles, message.activeProfileId, message.positionSync);
       applyAppearance(message.appearance);
       renderPager();
       render();
@@ -1846,11 +1848,14 @@
   /**
    * @param {{ id: string, name: string, boundCount?: number }[] | undefined} profiles
    * @param {string | undefined} activeId
+   * @param {{ canPush?: boolean, canPull?: boolean } | undefined} sync
    */
-  function renderProfiles(profiles, activeId) {
+  function renderProfiles(profiles, activeId, sync) {
     if (!toolbarProfileList) {
       return;
     }
+    const canPush = !!(sync && sync.canPush);
+    const canPull = !!(sync && sync.canPull);
     toolbarProfileList.replaceChildren();
     const list = Array.isArray(profiles) ? profiles : [];
     for (const profile of list) {
@@ -1867,8 +1872,27 @@
         count.title = t('profileBound').replace('{n}', String(bound));
         row.append(count);
       }
+      const actions = el('span', 'profile-actions');
+      if (profile.id === activeId) {
+        const pushBtn = el('button', '');
+        pushBtn.type = 'button';
+        pushBtn.title = t('profileSyncPush');
+        pushBtn.setAttribute('aria-label', t('profileSyncPush'));
+        pushBtn.setAttribute('data-profile-action', 'syncPush');
+        pushBtn.setAttribute('data-profile-id', profile.id);
+        pushBtn.textContent = '↑';
+        pushBtn.disabled = !canPush;
+        const pullBtn = el('button', '');
+        pullBtn.type = 'button';
+        pullBtn.title = t('profileSyncPull');
+        pullBtn.setAttribute('aria-label', t('profileSyncPull'));
+        pullBtn.setAttribute('data-profile-action', 'syncPull');
+        pullBtn.setAttribute('data-profile-id', profile.id);
+        pullBtn.textContent = '↓';
+        pullBtn.disabled = !canPull;
+        actions.append(pushBtn, pullBtn);
+      }
       if (profile.id !== 'general') {
-        const actions = el('span', 'profile-actions');
         const renameBtn = el('button', '');
         renameBtn.type = 'button';
         renameBtn.title = t('profileRename');
@@ -1884,6 +1908,8 @@
         deleteBtn.setAttribute('data-profile-id', profile.id);
         deleteBtn.textContent = '×';
         actions.append(renameBtn, deleteBtn);
+      }
+      if (actions.childNodes.length > 0) {
         row.append(actions);
       }
       toolbarProfileList.append(row);

@@ -31,6 +31,11 @@ const EN = {
   profileNameTaken: 'That name is already taken',
   profileDeleteConfirm: 'Delete profile “{name}”? This cannot be undone.',
   profileDeleteAction: 'Delete',
+  profileSyncPush: 'Backup positions to remote',
+  profileSyncPull: 'Restore positions from remote',
+  sectionPositions: 'Card positions',
+  notePositions:
+    'Positions, folds, and page order of the active profile live in pos_local.json. Push copies them into pos_remote.json for the repo; pull restores the backup.',
 
   // Settings sections
   sectionFont: 'Map font',
@@ -171,6 +176,11 @@ const RU: Syn3Strings = {
   profileNameTaken: 'Такое имя уже занято',
   profileDeleteConfirm: 'Удалить профиль «{name}»? Восстановить будет невозможно.',
   profileDeleteAction: 'Удалить',
+  profileSyncPush: 'Сохранить позиции в remote',
+  profileSyncPull: 'Восстановить позиции из remote',
+  sectionPositions: 'Позиции карточек',
+  notePositions:
+    'Позиции, сворачивание и порядок страниц активного профиля живут в pos_local.json. Стрелка вверх копирует их в pos_remote.json для репозитория; стрелка вниз восстанавливает бэкап.',
 
   sectionFont: 'Шрифт карты',
   sectionGroup: 'Группа',

@@ -3,54 +3,11 @@
   "pages": {
     "map": {
       "name": "Карта",
-      "kind": "files",
-      "order": 1,
-      "layout": "chips",
-      "groupsLayout": "1",
-      "collapsed": {
-        "explorer": {
-          "1": true
-        },
-        "bottom": {
-          "1": true,
-          "3": true,
-          "2-2": true,
-          "note-3": true,
-          "note-4": true,
-          "test-dir": true,
-          "version": true
-        },
-        "left": {
-          "1": true,
-          "3": true,
-          "4": true,
-          "5": true,
-          "test-dir": true,
-          "ttest-6": true,
-          "version": true
-        },
-        "right": {
-          "3": true,
-          "4": true,
-          "5": true,
-          "test-dir": true,
-          "ttest-6": true,
-          "version": true
-        }
-      }
+      "kind": "files"
     },
     "page-page": {
       "name": "Заметки",
-      "kind": "notes",
-      "order": 2,
-      "layout": "chips",
-      "groupsLayout": "1",
-      "collapsed": {
-        "explorer": {},
-        "bottom": {},
-        "left": {},
-        "right": {}
-      }
+      "kind": "notes"
     }
   },
   "markers": {
@@ -58,14 +15,11 @@
       "label": "Тест 1",
       "color": "#0084ff",
       "alias": "тестовая группа 1",
-      "columns": "1",
-      "order": 4,
       "page": "map"
     },
     "2": {
       "label": "Тест 2",
       "color": "charts.purple",
-      "order": 2,
       "parent": "3"
     },
     "3": {
@@ -76,12 +30,10 @@
         "🗑️",
         "♻️"
       ],
-      "order": 6,
       "page": "map"
     },
     "4": {
       "label": "Тест 4",
-      "order": 7,
       "page": "map"
     },
     "5": {
@@ -90,7 +42,6 @@
       "icons": [
         "📌"
       ],
-      "order": 1,
       "parent": "4"
     },
     "version": {
@@ -100,8 +51,6 @@
         "🔥",
         "🐞"
       ],
-      "columns": "2",
-      "order": 3,
       "page": "map"
     },
     "ttest-6": {
@@ -111,7 +60,6 @@
         "⚠️"
       ],
       "locked": true,
-      "order": 5,
       "page": "map"
     },
     "2-2": {
@@ -120,12 +68,10 @@
       "icons": [
         "🔥"
       ],
-      "order": 1,
       "parent": "3"
     },
     "test-dir": {
       "label": "Test_dir",
-      "order": 8,
       "page": "map"
     },
     "1-2": {
@@ -134,8 +80,6 @@
       "icons": [
         "⭐"
       ],
-      "columns": "flow",
-      "order": 4,
       "page": "page-page"
     },
     "group-2": {
@@ -144,7 +88,6 @@
       "icons": [
         "🔥"
       ],
-      "order": 5,
       "page": "page-page"
     }
   },
@@ -276,47 +219,39 @@
   "notes": {
     "note-1": {
       "markerId": "1-2",
-      "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA",
-      "order": 1
+      "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA"
     },
     "note-4": {
       "page": "map",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"[посв](https://pikabu.ru/story/yelektromashina_razrabotala_asinkhronnyiy_tyagovyiy_dvigatel_dlya_tramvaev_s_nizkim_polom_14452670)\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"   \"},{\"text\":\" \"},{\"text\":\" \"},{\"text\":\"  \"},{\"text\":\" \"},{\"text\":\" \"}]},{\"type\":\"code\",\"text\":\"цитата цитата\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"Выделеный текстываыа ыапер перколывва\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\" авыаыаыаыава\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"Цветной текст почему то\",\"color\":\"#ed072a\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"Вот \"},{\"text\":\"поэтому\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\" и стоит считать \"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"return this.itemNode(markerId, relPath);\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input .note-code-body {\\n  display: block;\\n}\",\"languageId\":\"css\",\"label\":\"css\"}]}",
-      "order": 1,
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"[посв](https://pikabu.ru/story/yelektromashina_razrabotala_asinkhronnyiy_tyagovyiy_dvigatel_dlya_tramvaev_s_nizkim_polom_14452670)\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"   \"},{\"text\":\" \"},{\"text\":\" \"},{\"text\":\"  \"},{\"text\":\" \"},{\"text\":\" \"}]},{\"type\":\"code\",\"text\":\"цитата цитата\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"Выделеный текстываыа ыапер перколывва\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\" авыаыаыаыава\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"Цветной текст почему то\",\"color\":\"#ed072a\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\",\"color\":\"#ed072a\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"Вот \"},{\"text\":\"поэтому\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\"\",\"b\":true},{\"text\":\" и стоит считать \"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"return this.itemNode(markerId, relPath);\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input .note-code-body {\\n  display: block;\\n}\",\"languageId\":\"css\",\"label\":\"css\"}]}",
       "color": "#27d0d3"
     },
     "note-5": {
       "parentNote": "note-4",
       "text": "Заметка 2",
-      "order": 1,
       "color": "#b81919"
     },
     "note-6": {
       "markerId": "version",
       "text": "Вот это так заметка",
-      "order": 1,
       "color": "#e2dbda"
     },
     "note-7": {
       "markerId": "group-2",
-      "text": "Моя заметка заметка",
-      "order": 1
+      "text": "Моя заметка заметка"
     },
     "note-2": {
       "markerId": "1-2",
-      "text": "Запись 2\nhttps://www.youtube.com/",
-      "order": 2
+      "text": "Запись 2\nhttps://www.youtube.com/"
     },
     "note-3": {
       "page": "map",
       "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "order": 2,
       "color": "#19b849"
     },
     "note-8": {
       "page": "page-page",
       "text": "Моя заметка",
-      "order": 3,
       "color": "#657a9a"
     }
   }

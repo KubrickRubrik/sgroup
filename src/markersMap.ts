@@ -188,7 +188,12 @@ type IncomingMessage =
   | { type: 'moveNote'; id: string; delta: -1 | 1 }
   | { type: 'toggleLock'; markerId: string }
   | { type: 'toggleNoteLock'; noteId: string }
-  | { type: 'profile'; action: 'activate' | 'create' | 'rename' | 'delete'; id?: string; name?: string };
+  | {
+      type: 'profile';
+      action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull';
+      id?: string;
+      name?: string;
+    };
 
 interface DirListingEntry {
   name: string;
@@ -1920,6 +1925,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       i18n: stringsFor(locale),
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
+      positionSync: this.store.positionSync(),
       active: this.activeRelPath(),
       ...this.tabSnapshot(),
       error: this.store.lastError,
@@ -2166,7 +2172,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async onProfile(
-    action: 'activate' | 'create' | 'rename' | 'delete',
+    action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull',
     id?: string,
     name?: string,
   ): Promise<void> {
@@ -2234,6 +2240,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       await this.store.deleteProfile(id);
+      return;
+    }
+    if (action === 'syncPush') {
+      await this.store.syncPositionsLocalToRemote();
+      return;
+    }
+    if (action === 'syncPull') {
+      await this.store.syncPositionsRemoteToLocal();
     }
   }
 
