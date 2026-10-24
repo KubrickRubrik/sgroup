@@ -2703,7 +2703,7 @@
     header.append(
       badgeIconsEl(group.icons, {
         locked,
-        onRemove: (index) => {
+        onChange: (index) => {
           vscode.postMessage({
             type: 'runCommand',
             command: 'syn3.removeIcon',
@@ -6942,7 +6942,7 @@
       field.append(
         badgeIconsEl(noteIcons, {
           locked,
-          onRemove: (index) => {
+          onChange: (index) => {
             vscode.postMessage({
               type: 'runCommand',
               command: 'syn3.removeIcon',
@@ -8403,9 +8403,9 @@
   }
 
   /**
-   * Badge emoji row to the right of the type icon. Click a badge to remove it.
+   * Badge emoji row to the right of the type icon. Click a badge to replace it or clear it.
    * @param {string[] | undefined} icons
-   * @param {{ locked: boolean, onRemove: (index: number) => void, onLocked: () => void }} opts
+   * @param {{ locked: boolean, onChange: (index: number) => void, onLocked: () => void }} opts
    */
   function badgeIconsEl(icons, opts) {
     const wrap = el('span', 'badge-icons');
@@ -8414,14 +8414,14 @@
       const badge = el('span', 'badge-icon', emoji);
       badge.title = opts.locked
         ? t('locked')
-        : t('removeIcon');
+        : t('changeIcon');
       badge.addEventListener('click', (event) => {
         event.stopPropagation();
         if (opts.locked) {
           opts.onLocked();
           return;
         }
-        opts.onRemove(index);
+        opts.onChange(index);
       });
       wrap.append(badge);
     });

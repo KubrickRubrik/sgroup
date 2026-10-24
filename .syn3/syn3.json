@@ -12,9 +12,13 @@
           "1": true
         },
         "bottom": {
+          "1": true,
           "3": true,
           "2-2": true,
-          "note-3": true
+          "note-3": true,
+          "note-4": true,
+          "test-dir": true,
+          "version": true
         },
         "left": {
           "1": true,
@@ -53,9 +57,6 @@
     "1": {
       "label": "Тест 1",
       "color": "#0084ff",
-      "icons": [
-        "🐞"
-      ],
       "alias": "тестовая группа 1",
       "columns": "1",
       "order": 4,
@@ -71,7 +72,9 @@
       "label": "Тест 3",
       "color": "syn3.sky",
       "icons": [
-        "🔥"
+        "🔒",
+        "🗑️",
+        "♻️"
       ],
       "order": 6,
       "page": "map"
@@ -104,8 +107,10 @@
     "ttest-6": {
       "label": "Ttest 6",
       "icons": [
-        "❌"
+        "❗",
+        "⚠️"
       ],
+      "locked": true,
       "order": 5,
       "page": "map"
     },

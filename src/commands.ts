@@ -78,37 +78,57 @@ export function registerCommands(
     return hex === undefined ? null : normalizeHex(hex);
   }
 
-  /** Returns the chosen emoji, or `null` if cancelled. */
-  async function pickIcon(): Promise<string | null> {
+  /**
+   * Returns the chosen emoji, `undefined` for "none", or `null` if cancelled.
+   * "None" is offered only when replacing an existing badge.
+   */
+  async function pickIcon(options?: { allowNone?: boolean; current?: string }): Promise<string | undefined | null> {
+    const NONE = '__none__';
     const OTHER = '__other__';
+    const title = options?.allowNone ? 'Change icon' : 'Add icon';
     type IconItem = vscode.QuickPickItem & { id: string };
-    const items: IconItem[] = [
-      {
-        label: 'Other emoji…',
-        description: 'type or paste any emoji (Ctrl+Cmd+Space opens the macOS emoji picker)',
-        id: OTHER,
-        iconPath: new vscode.ThemeIcon('smiley'),
-      },
-    ];
+    const items: IconItem[] = [];
+    if (options?.allowNone) {
+      items.push({
+        label: 'None',
+        description: 'remove this icon',
+        id: NONE,
+        iconPath: new vscode.ThemeIcon('circle-outline'),
+      });
+    }
+    items.push({
+      label: 'Other emoji…',
+      description: 'type or paste any emoji (Ctrl+Cmd+Space opens the macOS emoji picker)',
+      id: OTHER,
+      iconPath: new vscode.ThemeIcon('smiley'),
+    });
     for (const { category, items: emoji } of EMOJI) {
       items.push({ label: category, id: '', kind: vscode.QuickPickItemKind.Separator });
       for (const [char, name] of emoji) {
-        items.push({ label: `${char}  ${name}`, id: char });
+        items.push({
+          label: `${char}  ${name}`,
+          description: char === options?.current ? 'current' : undefined,
+          id: char,
+        });
       }
     }
     const picked = await vscode.window.showQuickPick(items, {
-      title: 'Add icon',
+      title,
       placeHolder: 'Search by name, e.g. rocket',
     });
     if (!picked) {
       return null;
     }
+    if (picked.id === NONE) {
+      return undefined;
+    }
     if (picked.id !== OTHER) {
       return picked.id;
     }
     const custom = await vscode.window.showInputBox({
-      title: 'Add icon',
+      title,
       prompt: 'Any emoji or up to 2 characters',
+      value: options?.current,
       validateInput: (v) => (Array.from(v.trim()).length <= 4 ? undefined : 'Too long for an icon'),
     });
     if (custom === undefined) {
@@ -563,7 +583,8 @@ export function registerCommands(
     }
   }
 
-  async function removeIcon(arg?: unknown): Promise<void> {
+  /** Replace the badge at `index`, or clear it when the picker returns none. */
+  async function changeIcon(arg?: unknown): Promise<void> {
     const target = arg as IconTarget & { index?: unknown };
     const index = typeof target?.index === 'number' ? target.index : -1;
     if (index < 0) {
@@ -579,8 +600,16 @@ export function registerCommands(
       if (!def?.icons || index >= def.icons.length) {
         return;
       }
+      const emoji = await pickIcon({ allowNone: true, current: def.icons[index] });
+      if (emoji === null || emoji === def.icons[index]) {
+        return;
+      }
       const next = def.icons.slice();
-      next.splice(index, 1);
+      if (emoji) {
+        next[index] = emoji;
+      } else {
+        next.splice(index, 1);
+      }
       await store.setMarkerIcons(markerId, next);
       return;
     }
@@ -593,8 +622,16 @@ export function registerCommands(
       if (!def?.icons || index >= def.icons.length) {
         return;
       }
+      const emoji = await pickIcon({ allowNone: true, current: def.icons[index] });
+      if (emoji === null || emoji === def.icons[index]) {
+        return;
+      }
       const next = def.icons.slice();
-      next.splice(index, 1);
+      if (emoji) {
+        next[index] = emoji;
+      } else {
+        next.splice(index, 1);
+      }
       await store.setNoteIcons(noteId, next);
     }
   }
@@ -723,7 +760,7 @@ export function registerCommands(
     vscode.commands.registerCommand('syn3.deleteMarker', withNode(deleteMarker)),
     vscode.commands.registerCommand('syn3.changeColor', withNode(editMarkerField('color', pickColor))),
     vscode.commands.registerCommand('syn3.addIcon', (arg?: unknown) => addIcon(arg)),
-    vscode.commands.registerCommand('syn3.removeIcon', (arg?: unknown) => removeIcon(arg)),
+    vscode.commands.registerCommand('syn3.removeIcon', (arg?: unknown) => changeIcon(arg)),
     ...COLUMNS_MODES.map((columns) =>
       vscode.commands.registerCommand(
         `syn3.setColumns.${columns}`,
