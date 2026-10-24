@@ -12,7 +12,10 @@
           "1": true
         },
         "bottom": {
-          "2-2": true
+          "3": true,
+          "2-2": true,
+          "note-3": true,
+          "note-6": true
         },
         "left": {
           "1": true,
@@ -51,7 +54,9 @@
     "1": {
       "label": "Тест 1",
       "color": "#0084ff",
-      "icon": "🍀",
+      "icons": [
+        "🐞"
+      ],
       "alias": "тестовая группа 1",
       "columns": "1",
       "order": 4,
@@ -66,7 +71,9 @@
     "3": {
       "label": "Тест 3",
       "color": "syn3.sky",
-      "icon": "🔥",
+      "icons": [
+        "🔥"
+      ],
       "order": 6,
       "page": "map"
     },
@@ -78,28 +85,37 @@
     "5": {
       "label": "Тест 5",
       "color": "syn3.blue",
-      "icon": "📌",
+      "icons": [
+        "📌"
+      ],
       "order": 1,
       "parent": "4"
     },
     "version": {
       "label": "Version",
       "color": "#de3c1b",
-      "icon": "🔥",
+      "icons": [
+        "🔥",
+        "🐞"
+      ],
       "columns": "2",
       "order": 3,
       "page": "map"
     },
     "ttest-6": {
       "label": "Ttest 6",
-      "icon": "⭐",
+      "icons": [
+        "❌"
+      ],
       "order": 5,
       "page": "map"
     },
     "2-2": {
       "label": "Тест 2",
       "color": "#e5ea99",
-      "icon": "🔥",
+      "icons": [
+        "🔥"
+      ],
       "order": 1,
       "parent": "3"
     },
@@ -111,7 +127,9 @@
     "1-2": {
       "label": "Группа т 1",
       "color": "syn3.red",
-      "icon": "⭐",
+      "icons": [
+        "⭐"
+      ],
       "columns": "flow",
       "order": 4,
       "page": "page-page"
@@ -119,7 +137,9 @@
     "group-2": {
       "label": "Group 2",
       "color": "syn3.lime",
-      "icon": "🔥",
+      "icons": [
+        "🔥"
+      ],
       "order": 5,
       "page": "page-page"
     }
@@ -262,7 +282,7 @@
       "color": "syn3.slate"
     },
     "note-5": {
-      "parentNote": "note-3",
+      "parentNote": "note-4",
       "text": "Заметка 2",
       "order": 1,
       "color": "#b81919"
@@ -271,7 +291,7 @@
       "markerId": "version",
       "text": "Вот это так заметка",
       "order": 1,
-      "color": "#401d17"
+      "color": "#e2dbda"
     },
     "note-7": {
       "markerId": "group-2",

@@ -56,7 +56,8 @@ interface MapClass {
 interface MapGroup {
   id: string;
   label: string;
-  icon?: string;
+  /** Badge emoji to the right of the fixed type icon (max 3). */
+  icons?: string[];
   color?: string;
   alias?: string;
   parent?: string;
@@ -82,6 +83,8 @@ interface MapNote {
   markerId?: string;
   parentNote?: string;
   locked?: true;
+  /** Badge emoji to the right of the fixed type icon (max 3). */
+  icons?: string[];
   depth: number;
   subtreeHeight: number;
   children: string[];
@@ -1861,7 +1864,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       this.store.markers().map(async ([id, def]) => ({
         id,
         label: def.label,
-        icon: def.icon,
+        icons: def.icons?.length ? def.icons.slice() : undefined,
         color: def.color ? cssColor(def.color) : undefined,
         alias: def.alias,
         parent: def.parent,
@@ -1886,6 +1889,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       markerId: def.markerId,
       parentNote: def.parentNote,
       locked: def.locked === true ? true : undefined,
+      icons: def.icons?.length ? def.icons.slice() : undefined,
       depth: this.store.noteDepthOf(id),
       subtreeHeight: this.store.noteSubtreeHeight(id),
       children: this.store.noteChildren(id).map(([childId]) => childId),
@@ -2386,6 +2390,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const nonce = crypto.randomBytes(16).toString('base64');
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.css'));
     const js = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.js'));
+    // Themed copies of assets/bill.svg / box-3-line.svg for fixed type icons.
+    const noteIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-light.svg'));
+    const noteIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-dark.svg'));
+    const groupIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-light.svg'));
+    const groupIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-dark.svg'));
     const icon = (name: string, mode?: string, hidden = false) => this.toolIcon(webview, name, mode, hidden);
     const sideAttr = surface === 'left' || surface === 'right' ? ` data-side="${surface}"` : '';
     return `<!DOCTYPE html>
@@ -2396,7 +2405,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${css}">
 </head>
-<body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+<body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="history-bar">
     <div class="toolbar-profile">
       <button id="toolbar-profile" class="history-btn" type="button" aria-label="Профиль" aria-haspopup="menu" aria-expanded="false">

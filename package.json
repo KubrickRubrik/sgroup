@@ -2,7 +2,7 @@
   "name": "syn3",
   "displayName": "Syn3",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "6.2.9",
+  "version": "6.2.13",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -315,10 +315,15 @@
         "icon": "$(symbol-color)"
       },
       {
-        "command": "syn3.changeIcon",
-        "title": "Change Icon…",
+        "command": "syn3.addIcon",
+        "title": "Add Icon…",
         "category": "Syn3",
         "icon": "$(smiley)"
+      },
+      {
+        "command": "syn3.removeIcon",
+        "title": "Remove Icon",
+        "category": "Syn3"
       },
       {
         "command": "syn3.map.groups.flow",
@@ -508,11 +513,6 @@
           "group": "1_marker@3"
         },
         {
-          "command": "syn3.changeIcon",
-          "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && !locked",
-          "group": "1_marker@4"
-        },
-        {
           "command": "syn3.createSubgroup",
           "when": "webviewId =~ /^syn3Map(Panel|Bottom)?$/ && webviewSection == 'marker' && depth < 2 && !locked",
           "group": "1_marker@2"
@@ -565,7 +565,11 @@
           "when": "false"
         },
         {
-          "command": "syn3.changeIcon",
+          "command": "syn3.addIcon",
+          "when": "false"
+        },
+        {
+          "command": "syn3.removeIcon",
           "when": "false"
         },
         {

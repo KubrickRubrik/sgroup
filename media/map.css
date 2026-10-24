@@ -554,6 +554,8 @@ html::-webkit-scrollbar {
 .note-card.is-note-editing > .note-header > .bar,
 .note-card.is-note-editing > .note-header > .lock-btn,
 .note-card.is-note-editing > .note-header > .chevron,
+.note-card.is-note-editing > .note-header > .type-icon,
+.note-card.is-note-editing > .note-header > .badge-icons,
 .note-card.is-note-editing > .note-header > .count {
   cursor: pointer;
   user-select: none;
@@ -657,8 +659,21 @@ html::-webkit-scrollbar {
 }
 
 .note-card .note-field {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
+}
+
+/* Badge emoji on their own row; note text sits below. */
+.note-card .note-field > .badge-icons {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  min-height: var(--note-first-line);
+  width: 100%;
 }
 
 .note-card .note-header .note-input {
@@ -683,6 +698,7 @@ html::-webkit-scrollbar {
 
 .note-card .note-header > .chevron,
 .note-card .note-header > .bar,
+.note-card .note-header > .type-icon,
 .note-card .note-header > .lock-btn,
 .note-card .note-header > .count {
   align-items: center;
@@ -693,13 +709,22 @@ html::-webkit-scrollbar {
   margin-top: 0;
 }
 
+/* When badges are present, first-line chrome aligns with the badge row. */
+.note-card > .note-header.has-note-badges > .chevron,
+.note-card > .note-header.has-note-badges > .bar,
+.note-card > .note-header.has-note-badges > .type-icon,
+.note-card > .note-header.has-note-badges > .lock-btn,
+.note-card > .note-header.has-note-badges > .count {
+  height: var(--note-first-line);
+}
+
 /* Stem from the color bar down through the note body when there are sub-notes. */
 .note-card:has(> .children) > .note-header::before {
   background: color-mix(in srgb, var(--group-color) 50%, transparent);
   bottom: 0;
   content: '';
-  /* header pad 3 + chevron 14 + gap 6 + bar center (~2px) */
-  left: calc(3px + 14px + 6px + 2px);
+  /* header pad 3 + chevron 16 + gap 6 + bar center (~2px) */
+  left: calc(3px + 16px + 6px + 2px);
   pointer-events: none;
   position: absolute;
   top: var(--note-first-line);
@@ -970,8 +995,8 @@ body {
   --size-folder: calc(var(--vscode-font-size, 13px) * 0.95);
   --size-file: calc(var(--vscode-font-size, 13px) * 0.9);
   --size-meta: calc(var(--vscode-font-size, 13px) * 0.8);
-  /* chevron(14) + gap(6) + bar(5) */
-  --tree-gutter: 25px;
+  /* chevron(16) + gap(6) + bar(5) */
+  --tree-gutter: 27px;
   --branch-gap: 10px;
   --drop-color: var(--vscode-list-focusOutline, var(--vscode-focusBorder, #4daafc));
   /* 0 = default 135°, 100 = +360° (same direction). Set from appearance via map.js. */
@@ -1283,22 +1308,44 @@ body.vscode-high-contrast .drop-edge {
 }
 
 .chevron {
-  color: var(--vscode-descriptionForeground);
+  color: transparent;
   cursor: pointer;
   display: inline-block;
   flex-shrink: 0;
-  font-size: calc(var(--vscode-font-size, 13px) * 1.2);
+  font-size: calc(var(--vscode-font-size, 13px) * 1.4);
   line-height: 1;
   position: relative;
   text-align: center;
   transform-origin: center;
-  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
-  width: 14px;
+  transition:
+    color 120ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  width: 16px;
   z-index: 3;
 }
 
+/* Match fold-rail dim/lit: invisible at rest, dark on card hover, light on self-hover.
+   Glyph uses a stronger mix than the 2px strip so the triangle stays readable. */
+.group:hover > .group-header > .chevron {
+  color: color-mix(in srgb, #000 55%, transparent);
+}
+
+body.vscode-light .group:hover > .group-header > .chevron,
+body.vscode-high-contrast-light .group:hover > .group-header > .chevron {
+  color: color-mix(in srgb, #000 40%, transparent);
+}
+
+.group:hover > .group-header > .chevron:hover,
 .chevron:hover {
+  color: color-mix(in srgb, #fff 70%, transparent);
   transform: scale(1.28);
+}
+
+body.vscode-light .group:hover > .group-header > .chevron:hover,
+body.vscode-light .chevron:hover,
+body.vscode-high-contrast-light .group:hover > .group-header > .chevron:hover,
+body.vscode-high-contrast-light .chevron:hover {
+  color: color-mix(in srgb, #000 18%, transparent);
 }
 
 .group.collapsed > .group-header > .chevron {
@@ -1309,15 +1356,15 @@ body.vscode-high-contrast .drop-edge {
   transform: rotate(-90deg) scale(1.28);
 }
 
-/* Fold hit-zone under the chevron (6px hit area, centered on 14px ▾).
+/* Fold hit-zone under the chevron (6px hit area, centered on 16px ▾).
    Visual bar is 2px while the card is hovered; expands to 6px on rail hover. */
 .fold-rail {
   background: transparent;
   border-radius: 3px;
   bottom: 0;
   cursor: pointer;
-  /* nested: header pad 3 + (14−6)/2 */
-  left: 7px;
+  /* nested: header pad 3 + (16−6)/2 */
+  left: 8px;
   pointer-events: auto;
   position: absolute;
   top: 0;
@@ -1341,8 +1388,8 @@ body.vscode-high-contrast .drop-edge {
 
 .group:not(.nested) > .fold-rail {
   bottom: 6px;
-  /* root pad 6 + header pad 3 + (14−6)/2 */
-  left: 13px;
+  /* root pad 6 + header pad 3 + (16−6)/2 */
+  left: 14px;
 }
 
 /* Card hover → thin dark strip; rail hover → full 6px and lighter. */
@@ -1418,10 +1465,59 @@ body.vscode-high-contrast-light .fold-rail:hover::before {
   transform: scaleX(1.6);
 }
 
-.group-icon {
+.type-icon {
+  align-items: center;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  padding: 1px 2px;
+  transition: background 120ms ease, transform 120ms ease;
+  user-select: none;
+}
+
+.type-icon:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+  transform: scale(1.08);
+}
+
+.type-glyph {
+  height: 1em;
+  pointer-events: none;
+  width: 1em;
+}
+
+.type-glyph.tone-light {
+  display: block;
+}
+
+.badge-icons {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  min-width: 0;
+}
+
+.badge-icon {
+  border-radius: 3px;
+  cursor: pointer;
   flex: none;
   font-size: var(--size-group);
   line-height: 1;
+  padding: 1px 2px;
+  transition: background 120ms ease, transform 120ms ease;
+  user-select: none;
+}
+
+.badge-icon:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+  transform: scale(1.08);
+}
+
+.group.nested .badge-icon {
+  font-size: var(--size-subgroup);
 }
 
 .color-input {
@@ -1461,8 +1557,7 @@ body.vscode-high-contrast-light .fold-rail:hover::before {
   white-space: nowrap;
 }
 
-.group.nested .label,
-.group.nested .group-icon {
+.group.nested .label {
   font-size: var(--size-subgroup);
 }
 

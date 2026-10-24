@@ -237,12 +237,37 @@ function boolOr(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+/** Max badge emoji shown to the right of the fixed type icon on the map. */
+export const MAX_BADGE_ICONS = 3;
+
+/**
+ * Normalize badge emoji list (max {@link MAX_BADGE_ICONS}).
+ * Migrates legacy single `icon` string into a one-element list.
+ */
+export function normalizeIcons(icons?: unknown, legacyIcon?: unknown): string[] | undefined {
+  const out: string[] = [];
+  if (Array.isArray(icons)) {
+    for (const item of icons) {
+      if (typeof item === 'string' && item.trim()) {
+        out.push(item.trim());
+        if (out.length >= MAX_BADGE_ICONS) {
+          break;
+        }
+      }
+    }
+  }
+  if (out.length === 0 && typeof legacyIcon === 'string' && legacyIcon.trim()) {
+    out.push(legacyIcon.trim());
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 export interface MarkerDef {
   label: string;
   /** Theme color id (`syn3.red`, `charts.red`) or `#rrggbb`. */
   color?: string;
-  /** Emoji shown before the group name. */
-  icon?: string;
+  /** Optional badge emoji (up to {@link MAX_BADGE_ICONS}) shown right of the type icon. */
+  icons?: string[];
   /** Display alias shown above the group label. */
   alias?: string;
   /** Parent marker id; omitted for top-level groups. */
@@ -325,6 +350,8 @@ export interface NoteDef {
   order: number;
   /** Theme color id (`syn3.slate`, …) or `#rrggbb`. Absent → inherit from parent/group. */
   color?: string;
+  /** Optional badge emoji (up to {@link MAX_BADGE_ICONS}) shown right of the type icon. */
+  icons?: string[];
   /** When true, map edits to this note are blocked. Absent means open. */
   locked?: true;
 }
@@ -1214,7 +1241,36 @@ export class MarkerStore implements vscode.Disposable {
     if ('columns' in patch) {
       next.columns = normalizeColumns(patch.columns);
     }
+    if ('icons' in patch) {
+      const icons = normalizeIcons(patch.icons);
+      if (icons) {
+        next.icons = icons;
+      } else {
+        delete next.icons;
+      }
+    }
     this.data.markers[id] = next;
+    await this.commit();
+  }
+
+  async setMarkerIcons(id: string, icons: string[]): Promise<void> {
+    if (!this.data.markers[id]) {
+      return;
+    }
+    await this.updateMarker(id, { icons });
+  }
+
+  async setNoteIcons(id: string, icons: string[]): Promise<void> {
+    const current = this.data.notes[id];
+    if (!current) {
+      return;
+    }
+    const next = normalizeIcons(icons);
+    if (next) {
+      current.icons = next;
+    } else {
+      delete current.icons;
+    }
     await this.commit();
   }
 
@@ -2824,8 +2880,8 @@ export class MarkerStore implements vscode.Disposable {
       if (src.color) {
         entry.color = src.color;
       }
-      if (src.icon) {
-        entry.icon = src.icon;
+      if (src.icons?.length) {
+        entry.icons = src.icons.slice(0, MAX_BADGE_ICONS);
       }
       if (src.alias) {
         entry.alias = src.alias;
@@ -3020,8 +3076,8 @@ export class MarkerStore implements vscode.Disposable {
       if (src.color) {
         entry.color = src.color;
       }
-      if (src.icon) {
-        entry.icon = src.icon;
+      if (src.icons?.length) {
+        entry.icons = src.icons.slice(0, MAX_BADGE_ICONS);
       }
       if (src.alias) {
         entry.alias = src.alias;
@@ -3135,6 +3191,10 @@ export class MarkerStore implements vscode.Disposable {
       if (typeof note.color === 'string' && note.color) {
         entry.color = migrateColorId(normalizeHex(note.color) ?? note.color);
       }
+      const icons = normalizeIcons(note.icons);
+      if (icons) {
+        entry.icons = icons;
+      }
       if (note.locked === true) {
         entry.locked = true;
       }
@@ -3210,8 +3270,8 @@ export class MarkerStore implements vscode.Disposable {
       if (def.color) {
         entry.color = def.color;
       }
-      if (def.icon) {
-        entry.icon = def.icon;
+      if (def.icons?.length) {
+        entry.icons = def.icons.slice(0, MAX_BADGE_ICONS);
       }
       if (def.alias) {
         entry.alias = def.alias;
@@ -3510,6 +3570,12 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private packNoteForPersist(_id: string, def: NoteDef): NoteDef | undefined {
+    const withIcons = (entry: NoteDef): NoteDef => {
+      if (def.icons?.length) {
+        entry.icons = def.icons.slice(0, MAX_BADGE_ICONS);
+      }
+      return entry;
+    };
     if (def.parentNote) {
       if (!this.data.notes[def.parentNote]) {
         return undefined;
@@ -3521,7 +3587,7 @@ export class MarkerStore implements vscode.Disposable {
       if (def.locked) {
         entry.locked = true;
       }
-      return entry;
+      return withIcons(entry);
     }
     if (def.markerId) {
       if (!this.data.markers[def.markerId]) {
@@ -3534,7 +3600,7 @@ export class MarkerStore implements vscode.Disposable {
       if (def.locked) {
         entry.locked = true;
       }
-      return entry;
+      return withIcons(entry);
     }
     if (def.page && this.data.pages[def.page]) {
       const entry: NoteDef = { page: def.page, text: def.text, order: def.order };
@@ -3544,7 +3610,7 @@ export class MarkerStore implements vscode.Disposable {
       if (def.locked) {
         entry.locked = true;
       }
-      return entry;
+      return withIcons(entry);
     }
     return undefined;
   }
@@ -3949,10 +4015,14 @@ function normalize(raw: unknown): MarkersFile {
       const parent = typeof def.parent === 'string' && def.parent ? def.parent : undefined;
       const page =
         !parent && typeof def.page === 'string' && def.page in result.pages ? def.page : undefined;
+      const icons = normalizeIcons(
+        (def as { icons?: unknown }).icons,
+        (def as { icon?: unknown }).icon,
+      );
       result.markers[id] = {
         label: capitalize(typeof def.label === 'string' && def.label.trim() ? def.label : id),
         color: typeof def.color === 'string' && def.color ? migrateColorId(normalizeHex(def.color) ?? def.color) : undefined,
-        icon: typeof def.icon === 'string' && def.icon.trim() ? def.icon.trim() : undefined,
+        ...(icons ? { icons } : {}),
         alias: typeof def.alias === 'string' && def.alias.trim() ? def.alias.trim() : undefined,
         parent,
         page,
@@ -4097,12 +4167,17 @@ function normalize(raw: unknown): MarkersFile {
           : undefined;
       const page = typeof def.page === 'string' ? def.page : undefined;
       const markerId = typeof def.markerId === 'string' ? def.markerId : undefined;
+      const icons = normalizeIcons(
+        (def as { icons?: unknown }).icons,
+        (def as { icon?: unknown }).icon,
+      );
       if (page && page in result.pages && !markerId) {
         result.notes[id] = {
           page,
           text,
           order,
           ...(color ? { color } : { color: NOTE_ROOT_COLOR }),
+          ...(icons ? { icons } : {}),
           ...(locked ? { locked: true as const } : {}),
         };
         continue;
@@ -4113,6 +4188,7 @@ function normalize(raw: unknown): MarkersFile {
           text,
           order,
           ...(color ? { color } : {}),
+          ...(icons ? { icons } : {}),
           ...(locked ? { locked: true as const } : {}),
         };
       }
@@ -4136,11 +4212,16 @@ function normalize(raw: unknown): MarkersFile {
           typeof def.color === 'string' && def.color
             ? migrateColorId(normalizeHex(def.color) ?? def.color)
             : undefined;
+        const icons = normalizeIcons(
+          (def as { icons?: unknown }).icons,
+          (def as { icon?: unknown }).icon,
+        );
         result.notes[id] = {
           parentNote,
           text,
           order,
           ...(color ? { color } : {}),
+          ...(icons ? { icons } : {}),
           ...(def.locked === true ? { locked: true as const } : {}),
         };
         changed = true;

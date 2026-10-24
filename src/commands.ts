@@ -1,7 +1,13 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { EMOJI } from './emoji';
-import { COLUMNS_MODES, MAX_MARKER_DEPTH, MarkerDef, MarkerStore } from './markerStore';
+import {
+  COLUMNS_MODES,
+  MAX_BADGE_ICONS,
+  MAX_MARKER_DEPTH,
+  MarkerDef,
+  MarkerStore,
+} from './markerStore';
 import { openTargets, targetsForDirectory, targetsForMarker } from './openBatch';
 import { openClassAt, symbolAtCursor } from './openClass';
 import { PALETTE, normalizeHex, themeColorId } from './palette';
@@ -72,13 +78,11 @@ export function registerCommands(
     return hex === undefined ? null : normalizeHex(hex);
   }
 
-  /** Returns the emoji, `undefined` for "no icon", or `null` if cancelled. */
-  async function pickIcon(current?: string): Promise<string | undefined | null> {
-    const NONE = '__none__';
+  /** Returns the chosen emoji, or `null` if cancelled. */
+  async function pickIcon(): Promise<string | null> {
     const OTHER = '__other__';
     type IconItem = vscode.QuickPickItem & { id: string };
     const items: IconItem[] = [
-      { label: 'No icon', id: NONE, iconPath: new vscode.ThemeIcon('circle-slash') },
       {
         label: 'Other emoji…',
         description: 'type or paste any emoji (Ctrl+Cmd+Space opens the macOS emoji picker)',
@@ -89,29 +93,29 @@ export function registerCommands(
     for (const { category, items: emoji } of EMOJI) {
       items.push({ label: category, id: '', kind: vscode.QuickPickItemKind.Separator });
       for (const [char, name] of emoji) {
-        items.push({ label: `${char}  ${name}`, description: char === current ? 'current' : undefined, id: char });
+        items.push({ label: `${char}  ${name}`, id: char });
       }
     }
-    const picked = await vscode.window.showQuickPick(items, { title: 'Marker icon', placeHolder: 'Search by name, e.g. rocket' });
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'Add icon',
+      placeHolder: 'Search by name, e.g. rocket',
+    });
     if (!picked) {
       return null;
-    }
-    if (picked.id === NONE) {
-      return undefined;
     }
     if (picked.id !== OTHER) {
       return picked.id;
     }
     const custom = await vscode.window.showInputBox({
-      title: 'Marker icon',
+      title: 'Add icon',
       prompt: 'Any emoji or up to 2 characters',
-      value: current ?? '',
       validateInput: (v) => (Array.from(v.trim()).length <= 4 ? undefined : 'Too long for an icon'),
     });
     if (custom === undefined) {
       return null;
     }
-    return custom.trim() || undefined;
+    const trimmed = custom.trim();
+    return trimmed || null;
   }
 
   async function createMarkerFlow(parentId?: string, pageId?: string): Promise<string | undefined> {
@@ -135,17 +139,13 @@ export function registerCommands(
     if (color === null) {
       return undefined;
     }
-    const icon = await pickIcon();
-    if (icon === null) {
-      return undefined;
-    }
     const page =
       parentId === undefined
         ? pageId && store.page(pageId)
           ? pageId
           : store.defaultFilesPageId()
         : undefined;
-    return store.createMarker({ label: label.trim(), color, icon, parent: parentId, page });
+    return store.createMarker({ label: label.trim(), color, parent: parentId, page });
   }
 
   /** Markers on files pages only; page name when more than one files page exists. */
@@ -167,7 +167,7 @@ export function registerCommands(
         const pageId = store.pageOf(id);
         const pageName = pageId ? store.page(pageId)?.name : undefined;
         return {
-          label: `${indent}${def.icon ? `${def.icon} ` : ''}${def.label}`,
+          label: `${indent}${def.label}`,
           description: showPage && pageName ? pageName : undefined,
           id,
           iconPath: new vscode.ThemeIcon('tag', def.color ? new vscode.ThemeColor(themeColorId(def.color)) : undefined),
@@ -491,15 +491,11 @@ export function registerCommands(
     if (color === null) {
       return;
     }
-    const icon = await pickIcon(def.icon);
-    if (icon === null) {
-      return;
-    }
-    const patch: Partial<Omit<MarkerDef, 'order'>> = { label: label.trim(), color, icon };
+    const patch: Partial<Omit<MarkerDef, 'order'>> = { label: label.trim(), color };
     await store.updateMarker(target.markerId, patch);
   }
 
-  function editMarkerField<K extends 'color' | 'icon'>(
+  function editMarkerField<K extends 'color'>(
     field: K,
     ask: (current: string | undefined) => Promise<string | undefined | null>,
   ) {
@@ -519,6 +515,88 @@ export function registerCommands(
         await store.updateMarker(node.markerId, { [field]: value });
       }
     };
+  }
+
+  type IconTarget = { markerId?: string; noteId?: string };
+
+  async function addIcon(arg?: unknown): Promise<void> {
+    const target = arg as IconTarget | undefined;
+    const markerId = typeof target?.markerId === 'string' ? target.markerId : undefined;
+    const noteId = typeof target?.noteId === 'string' ? target.noteId : undefined;
+    if (markerId) {
+      if (refuseLocked(markerId)) {
+        return;
+      }
+      const def = store.marker(markerId);
+      if (!def) {
+        return;
+      }
+      const current = def.icons ?? [];
+      if (current.length >= MAX_BADGE_ICONS) {
+        return;
+      }
+      const emoji = await pickIcon();
+      if (!emoji) {
+        return;
+      }
+      await store.setMarkerIcons(markerId, [...current, emoji]);
+      return;
+    }
+    if (noteId) {
+      if (store.isNoteLocked(noteId)) {
+        void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+        return;
+      }
+      const def = store.note(noteId);
+      if (!def) {
+        return;
+      }
+      const current = def.icons ?? [];
+      if (current.length >= MAX_BADGE_ICONS) {
+        return;
+      }
+      const emoji = await pickIcon();
+      if (!emoji) {
+        return;
+      }
+      await store.setNoteIcons(noteId, [...current, emoji]);
+    }
+  }
+
+  async function removeIcon(arg?: unknown): Promise<void> {
+    const target = arg as IconTarget & { index?: unknown };
+    const index = typeof target?.index === 'number' ? target.index : -1;
+    if (index < 0) {
+      return;
+    }
+    const markerId = typeof target?.markerId === 'string' ? target.markerId : undefined;
+    const noteId = typeof target?.noteId === 'string' ? target.noteId : undefined;
+    if (markerId) {
+      if (refuseLocked(markerId)) {
+        return;
+      }
+      const def = store.marker(markerId);
+      if (!def?.icons || index >= def.icons.length) {
+        return;
+      }
+      const next = def.icons.slice();
+      next.splice(index, 1);
+      await store.setMarkerIcons(markerId, next);
+      return;
+    }
+    if (noteId) {
+      if (store.isNoteLocked(noteId)) {
+        void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+        return;
+      }
+      const def = store.note(noteId);
+      if (!def?.icons || index >= def.icons.length) {
+        return;
+      }
+      const next = def.icons.slice();
+      next.splice(index, 1);
+      await store.setNoteIcons(noteId, next);
+    }
   }
 
   async function createSubgroup(node?: Node): Promise<void> {
@@ -644,7 +722,8 @@ export function registerCommands(
     vscode.commands.registerCommand('syn3.editMarker', withNode(editMarker)),
     vscode.commands.registerCommand('syn3.deleteMarker', withNode(deleteMarker)),
     vscode.commands.registerCommand('syn3.changeColor', withNode(editMarkerField('color', pickColor))),
-    vscode.commands.registerCommand('syn3.changeIcon', withNode(editMarkerField('icon', pickIcon))),
+    vscode.commands.registerCommand('syn3.addIcon', (arg?: unknown) => addIcon(arg)),
+    vscode.commands.registerCommand('syn3.removeIcon', (arg?: unknown) => removeIcon(arg)),
     ...COLUMNS_MODES.map((columns) =>
       vscode.commands.registerCommand(
         `syn3.setColumns.${columns}`,

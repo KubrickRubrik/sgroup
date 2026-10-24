@@ -1317,7 +1317,6 @@
       }
       items.push({ kind: 'create' });
       items.push({ kind: 'command', command: 'syn3.changeColor', label: t('menuChangeColor') });
-      items.push({ kind: 'command', command: 'syn3.changeIcon', label: t('menuChangeIcon') });
       items.push({ kind: 'command', command: 'syn3.moveMarkerUp', label: t('menuMoveUp') });
       items.push({ kind: 'command', command: 'syn3.moveMarkerDown', label: t('menuMoveDown') });
       if (depth > 0) {
@@ -2656,9 +2655,33 @@
       openColorPicker(group.id, bar, section);
     });
     header.append(el('span', 'chevron', isEmpty ? '' : '▾'), bar);
-    if (group.icon) {
-      header.append(el('span', 'group-icon', group.icon));
-    }
+    header.append(
+      typeIconEl('group', {
+        locked,
+        badgeCount: Array.isArray(group.icons) ? group.icons.length : 0,
+        onAdd: () => {
+          vscode.postMessage({
+            type: 'runCommand',
+            command: 'syn3.addIcon',
+            arg: { markerId: group.id },
+          });
+        },
+        onLocked: () => flashLock(group.id, header),
+      }),
+    );
+    header.append(
+      badgeIconsEl(group.icons, {
+        locked,
+        onRemove: (index) => {
+          vscode.postMessage({
+            type: 'runCommand',
+            command: 'syn3.removeIcon',
+            arg: { markerId: group.id, index },
+          });
+        },
+        onLocked: () => flashLock(group.id, header),
+      }),
+    );
     const labelWrap = el('span', 'group-text' + (group.alias ? ' has-alias' : ''));
     if (group.alias) {
       labelWrap.append(el('span', 'alias', group.alias));
@@ -2686,7 +2709,12 @@
         flashLock(group.id, header);
         return;
       }
-      if (target instanceof Element && target.closest('.bar')) {
+      if (
+        target instanceof Element &&
+        (target.closest('.bar') ||
+          target.closest('.type-icon') ||
+          target.closest('.badge-icons'))
+      ) {
         return;
       }
       if (isEmpty) {
@@ -4851,6 +4879,24 @@
       openColorPicker(note.id, bar, section, 'note');
     });
     header.append(bar);
+    const noteIcons = Array.isArray(note.icons) ? note.icons : [];
+    header.append(
+      typeIconEl('note', {
+        locked,
+        badgeCount: noteIcons.length,
+        onAdd: () => {
+          vscode.postMessage({
+            type: 'runCommand',
+            command: 'syn3.addIcon',
+            arg: { noteId: note.id },
+          });
+        },
+        onLocked: () => flashLock(note.id, header),
+      }),
+    );
+    if (noteIcons.length > 0) {
+      header.classList.add('has-note-badges');
+    }
     const input = el('div', 'note-input');
     input.dataset.noteId = note.id;
     input.dataset.raw = note.text || '';
@@ -5084,6 +5130,21 @@
       }
     });
     const field = el('span', 'group-text note-field');
+    if (noteIcons.length > 0) {
+      field.append(
+        badgeIconsEl(noteIcons, {
+          locked,
+          onRemove: (index) => {
+            vscode.postMessage({
+              type: 'runCommand',
+              command: 'syn3.removeIcon',
+              arg: { noteId: note.id, index },
+            });
+          },
+          onLocked: () => flashLock(note.id, header),
+        }),
+      );
+    }
     field.append(input);
     header.append(field);
     header.append(noteLockButton(note));
@@ -5100,7 +5161,13 @@
         flashLock(note.id, header);
         return;
       }
-      if (target instanceof Element && (target.closest('.note-input') || target.closest('.bar'))) {
+      if (
+        target instanceof Element &&
+        (target.closest('.note-input') ||
+          target.closest('.bar') ||
+          target.closest('.type-icon') ||
+          target.closest('.badge-icons'))
+      ) {
         return;
       }
       if (!canFold) {
@@ -6460,6 +6527,81 @@
   function stripExtension(name) {
     const index = name.lastIndexOf('.');
     return index > 0 ? name.slice(0, index) : name;
+  }
+
+  const MAX_BADGE_ICONS = 3;
+
+  /**
+   * Fixed type glyph (group box / note bill). Click adds a badge when under the cap.
+   * @param {'group' | 'note'} kind
+   * @param {{ locked: boolean, badgeCount: number, onAdd: () => void, onLocked: () => void }} opts
+   */
+  function typeIconEl(kind, opts) {
+    const wrap = el('span', 'type-icon' + (kind === 'note' ? ' type-icon-note' : ' type-icon-group'));
+    const lightKey = kind === 'note' ? 'noteIconLight' : 'groupIconLight';
+    const darkKey = kind === 'note' ? 'noteIconDark' : 'groupIconDark';
+    const lightSrc = document.body.dataset[lightKey] || '';
+    const darkSrc = document.body.dataset[darkKey] || '';
+    if (lightSrc) {
+      const light = document.createElement('img');
+      light.className = 'type-glyph tone-light';
+      light.src = lightSrc;
+      light.alt = '';
+      wrap.append(light);
+    }
+    if (darkSrc) {
+      const dark = document.createElement('img');
+      dark.className = 'type-glyph tone-dark';
+      dark.src = darkSrc;
+      dark.alt = '';
+      wrap.append(dark);
+    }
+    const canAdd = !opts.locked && opts.badgeCount < MAX_BADGE_ICONS;
+    wrap.title = opts.locked
+      ? kind === 'note'
+        ? t('noteLocked')
+        : t('groupLocked')
+      : canAdd
+        ? t('addIcon')
+        : '';
+    wrap.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (opts.locked) {
+        opts.onLocked();
+        return;
+      }
+      if (opts.badgeCount >= MAX_BADGE_ICONS) {
+        return;
+      }
+      opts.onAdd();
+    });
+    return wrap;
+  }
+
+  /**
+   * Badge emoji row to the right of the type icon. Click a badge to remove it.
+   * @param {string[] | undefined} icons
+   * @param {{ locked: boolean, onRemove: (index: number) => void, onLocked: () => void }} opts
+   */
+  function badgeIconsEl(icons, opts) {
+    const wrap = el('span', 'badge-icons');
+    const list = Array.isArray(icons) ? icons.slice(0, MAX_BADGE_ICONS) : [];
+    list.forEach((emoji, index) => {
+      const badge = el('span', 'badge-icon', emoji);
+      badge.title = opts.locked
+        ? t('locked')
+        : t('removeIcon');
+      badge.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (opts.locked) {
+          opts.onLocked();
+          return;
+        }
+        opts.onRemove(index);
+      });
+      wrap.append(badge);
+    });
+    return wrap;
   }
 
   /** @returns {HTMLElement} */

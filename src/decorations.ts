@@ -40,7 +40,7 @@ export class MarkerDecorationProvider implements vscode.FileDecorationProvider, 
       return undefined;
     }
     const defs = markerIds.map((id) => this.store.marker(id)).filter((def) => def !== undefined);
-    const labels = defs.map((def) => (def.icon ? `${def.icon} ${def.label}` : def.label)).join(', ');
+    const labels = defs.map((def) => def.label).join(', ');
     return new vscode.FileDecoration(
       undefined,
       `Syn3: ${labels}`,
