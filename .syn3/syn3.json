@@ -14,8 +14,7 @@
         "bottom": {
           "3": true,
           "2-2": true,
-          "note-3": true,
-          "note-6": true
+          "note-3": true
         },
         "left": {
           "1": true,
@@ -277,7 +276,7 @@
     },
     "note-4": {
       "page": "map",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"[пост](https://pikabu.ru/story/yelektromashina_razrabotala_asinkhronnyiy_tyagovyiy_dvigatel_dlya_tramvaev_s_nizkim_polom_14452670)\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\" \"}]},{\"type\":\"code\",\"text\":\"return this.itemNode(markerId, relPath);\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input .note-code-body {\\n  display: block;\\n}\",\"languageId\":\"css\",\"label\":\"css\"}]}",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"[пост](https://pikabu.ru/story/yelektromashina_razrabotala_asinkhronnyiy_tyagovyiy_dvigatel_dlya_tramvaev_s_nizkim_polom_14452670)\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\" Цитата цитата цитата\",\"quote\":true},{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"Выделеный текст\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"Цветной текст\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"return this.itemNode(markerId, relPath);\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\".note-input .note-code-body {\\n  display: block;\\n}\",\"languageId\":\"css\",\"label\":\"css\"}]}",
       "order": 1,
       "color": "syn3.slate"
     },

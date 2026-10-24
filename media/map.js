@@ -70,6 +70,16 @@
   /** Expand-then-edit: note id + how many paints left to re-focus (local + host state). */
   let pendingEditAfterExpandId = '';
   let pendingEditAfterExpandPaints = 0;
+  /**
+   * Caret captured from a click on a folded note, applied after the expand paints.
+   * @type {{ noteId: string, blockIndex: number, offset: number } | null}
+   */
+  let pendingNoteCaret = null;
+  /**
+   * Click point from pointerdown, in case focus starts editing before the click event.
+   * @type {{ input: HTMLElement, x: number, y: number, at: number } | null}
+   */
+  let notePointer = null;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let noteBlurTimer = null;
   /** @type {{ bold: boolean, quote: boolean, color: string | null }} */
@@ -758,10 +768,19 @@
   function focusNoteInput(noteId) {
     requestAnimationFrame(() => {
       const node = root.querySelector('.note-card[data-note-id="' + noteId + '"] .note-input');
-      if (node instanceof HTMLElement) {
-        beginNoteEdit(node);
-        placeCaretAtEnd(node);
+      if (!(node instanceof HTMLElement)) {
+        return;
       }
+      const caret = pendingNoteCaret?.noteId === noteId ? pendingNoteCaret : null;
+      beginNoteEdit(node);
+      if (activeNoteEdit?.input !== node) {
+        return;
+      }
+      if (caret) {
+        placeNoteCaretLater(node, caret);
+        return;
+      }
+      placeCaretAtEnd(node);
     });
   }
 
@@ -3619,6 +3638,425 @@
     sel?.addRange(range);
   }
 
+  /** @param {Range} range */
+  function selectRange(range) {
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  /**
+   * @param {HTMLElement} input
+   * @param {{ x: number, y: number } | null | undefined} point
+   * @returns {{ x: number, y: number } | null}
+   */
+  function pointerForNoteEdit(input, point) {
+    const saved = notePointer;
+    notePointer = null;
+    if (point) {
+      return point;
+    }
+    if (saved && saved.input === input && Date.now() - saved.at < 800) {
+      return saved;
+    }
+    return null;
+  }
+
+  /** @param {HTMLElement} input @returns {HTMLElement[]} */
+  function noteContentBlocks(input) {
+    /** @type {HTMLElement[]} */
+    const blocks = [];
+    for (const node of input.children) {
+      if (
+        node instanceof HTMLElement &&
+        (node.classList.contains('note-p') || node.classList.contains('note-code'))
+      ) {
+        blocks.push(node);
+      }
+    }
+    return blocks;
+  }
+
+  /**
+   * @param {HTMLElement} input
+   * @param {number} y
+   * @returns {HTMLElement | null}
+   */
+  function noteBlockAtClientY(input, y) {
+    const blocks = noteContentBlocks(input);
+    /** @type {HTMLElement | null} */
+    let closest = null;
+    let closestDy = Infinity;
+    for (const block of blocks) {
+      const rect = block.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) {
+        continue;
+      }
+      if (y >= rect.top && y <= rect.bottom) {
+        return block;
+      }
+      const dy = y < rect.top ? rect.top - y : y - rect.bottom;
+      if (dy < closestDy) {
+        closestDy = dy;
+        closest = block;
+      }
+    }
+    return closest;
+  }
+
+  /** @param {HTMLElement} block @returns {HTMLElement} */
+  function noteCodeBody(block) {
+    const body = block.querySelector(':scope > .note-code-body');
+    return body instanceof HTMLElement ? body : block;
+  }
+
+  /**
+   * @param {HTMLElement} root
+   * @param {number} x
+   * @param {number} y
+   * @returns {Range | null}
+   */
+  function caretRangeFromClientPoint(root, x, y) {
+    const doc = root.ownerDocument;
+    if (typeof doc.caretRangeFromPoint === 'function') {
+      const range = doc.caretRangeFromPoint(x, y);
+      if (range && root.contains(range.startContainer)) {
+        const collapsed = range.cloneRange();
+        collapsed.collapse(true);
+        return collapsed;
+      }
+    }
+    if (typeof doc.caretPositionFromPoint === 'function') {
+      const pos = doc.caretPositionFromPoint(x, y);
+      if (pos?.offsetNode && root.contains(pos.offsetNode)) {
+        const range = doc.createRange();
+        try {
+          range.setStart(pos.offsetNode, pos.offset);
+          range.collapse(true);
+          return range;
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** @param {Range} range @param {number} y */
+  function caretHitsClientY(range, y) {
+    for (const rect of range.getClientRects()) {
+      if (rect.height > 0 && y >= rect.top - 2 && y <= rect.bottom + 2) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Caret in `block` at the click. Preview tokens and edit `<br>` lines share
+   * the same raw characters, so a hit on the preview maps onto the edit DOM.
+   * @param {HTMLElement} block
+   * @param {number} x
+   * @param {number} y
+   * @returns {Range | null}
+   */
+  function caretRangeOnBlock(block, x, y) {
+    const direct = caretRangeFromClientPoint(block, x, y);
+    if (direct && caretHitsClientY(direct, y)) {
+      return direct;
+    }
+    const probe = block.ownerDocument.createRange();
+    probe.selectNodeContents(noteCodeBody(block));
+    /** @type {DOMRect | null} */
+    let best = null;
+    let bestDy = Infinity;
+    let bestDx = Infinity;
+    for (const rect of probe.getClientRects()) {
+      if (rect.height <= 0) {
+        continue;
+      }
+      const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+      const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+      if (dy < bestDy - 0.5 || (Math.abs(dy - bestDy) <= 0.5 && dx < bestDx)) {
+        bestDy = dy;
+        bestDx = dx;
+        best = rect;
+      }
+    }
+    if (!best) {
+      return direct;
+    }
+    const midY = (best.top + best.bottom) / 2;
+    const cx = Math.min(Math.max(x, best.left + 0.5), Math.max(best.left + 0.5, best.right - 0.5));
+    const snapped = caretRangeFromClientPoint(block, cx, midY);
+    if (snapped && caretHitsClientY(snapped, midY)) {
+      return snapped;
+    }
+    return snapped || direct;
+  }
+
+  /**
+   * @param {Node} node
+   * @returns {number}
+   */
+  function visibleTextLength(node) {
+    if (!node) {
+      return 0;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      return (node.textContent || '').length;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE && /** @type {HTMLElement} */ (node).tagName === 'BR') {
+      return 0;
+    }
+    let total = 0;
+    for (const child of node.childNodes) {
+      total += visibleTextLength(child);
+    }
+    return total;
+  }
+
+  /**
+   * Raw character offset of `caret` inside `container`.
+   * Code blocks count newlines; paragraph caret-sink `<br>`s do not.
+   * @param {HTMLElement} container
+   * @param {Range} caret
+   * @param {boolean} countBreaks
+   */
+  function rawOffsetBefore(container, caret, countBreaks) {
+    if (!container.contains(caret.startContainer)) {
+      return 0;
+    }
+    const probe = container.ownerDocument.createRange();
+    try {
+      probe.selectNodeContents(container);
+      probe.setEnd(caret.startContainer, caret.startOffset);
+    } catch {
+      return 0;
+    }
+    const wrap = container.ownerDocument.createElement('div');
+    wrap.append(probe.cloneContents());
+    if (countBreaks) {
+      return plainTextFromNode(wrap).length;
+    }
+    return visibleTextLength(wrap);
+  }
+
+  /**
+   * Same markdown `runsFromNode` writes for a link.
+   * @param {HTMLAnchorElement} anchor
+   * @returns {{ markdown: boolean, len: number, label: string }}
+   */
+  function anchorMarkdown(anchor) {
+    const href = anchor.getAttribute('href') || '';
+    const label = anchor.textContent || '';
+    if (href && label && label !== href) {
+      return { markdown: true, len: ('[' + label + '](' + href + ')').length, label };
+    }
+    const text = href || label;
+    return { markdown: false, len: text.length, label: text };
+  }
+
+  /**
+   * Offset in the paragraph's raw text (links expanded to markdown).
+   * @param {HTMLElement} para
+   * @param {Range} caret
+   */
+  function rawOffsetInParagraph(para, caret) {
+    /** @type {{ done: boolean, offset: number }} */
+    const state = { done: false, offset: 0 };
+    /** @param {Node} node */
+    const walk = (node) => {
+      if (state.done) {
+        return;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent || '';
+        if (caret.startContainer === node) {
+          state.offset += Math.max(0, Math.min(caret.startOffset, text.length));
+          state.done = true;
+          return;
+        }
+        state.offset += text.length;
+        return;
+      }
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      if (node.tagName === 'BR') {
+        if (caret.startContainer === node) {
+          state.done = true;
+        }
+        return;
+      }
+      if (node instanceof HTMLAnchorElement) {
+        const info = anchorMarkdown(node);
+        if (caret.startContainer === node) {
+          if (caret.startOffset <= 0) {
+            state.offset += info.markdown ? 1 : 0;
+          } else {
+            state.offset += info.len;
+          }
+          state.done = true;
+          return;
+        }
+        if (node.contains(caret.startContainer)) {
+          const local = rawOffsetBefore(node, caret, false);
+          if (info.markdown) {
+            state.offset += local >= info.label.length ? info.len : 1 + local;
+          } else {
+            state.offset += local;
+          }
+          state.done = true;
+          return;
+        }
+        state.offset += info.len;
+        return;
+      }
+      if (caret.startContainer === node) {
+        const children = node.childNodes;
+        const index = Math.min(caret.startOffset, children.length);
+        for (let i = 0; i < index; i++) {
+          const child = children[i];
+          if (child) {
+            walk(child);
+          }
+        }
+        state.done = true;
+        return;
+      }
+      for (const child of node.childNodes) {
+        walk(child);
+      }
+    };
+    walk(para);
+    return state.offset;
+  }
+
+  /**
+   * Where the click landed in the preview, as an edit-mode raw offset.
+   * Preview links and highlight tokens are not the editing DOM.
+   * @param {HTMLElement} input
+   * @param {number} x
+   * @param {number} y
+   * @returns {{ blockIndex: number, offset: number } | null}
+   */
+  function resolveNoteCaret(input, x, y) {
+    const block = noteBlockAtClientY(input, y);
+    if (!(block instanceof HTMLElement)) {
+      return null;
+    }
+    const range = caretRangeOnBlock(block, x, y);
+    if (!range || !block.contains(range.startContainer)) {
+      return null;
+    }
+    const blockIndex = noteContentBlocks(input).indexOf(block);
+    if (blockIndex < 0) {
+      return null;
+    }
+    const offset = block.classList.contains('note-code')
+      ? rawOffsetBefore(noteCodeBody(block), range, true)
+      : rawOffsetInParagraph(block, range);
+    return { blockIndex, offset };
+  }
+
+  /**
+   * @param {HTMLElement} root
+   * @param {number} offset
+   * @param {boolean} countBreaks
+   */
+  function placeCaretByRawOffset(root, offset, countBreaks) {
+    let remaining = Math.max(0, offset);
+    const doc = root.ownerDocument;
+    const range = doc.createRange();
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+      acceptNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+        if (node instanceof HTMLElement && node.tagName === 'BR') {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+        return NodeFilter.FILTER_SKIP;
+      },
+    });
+    /** @type {Text | null} */
+    let lastText = null;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const textNode = /** @type {Text} */ (node);
+        const len = textNode.textContent?.length || 0;
+        lastText = textNode;
+        if (remaining <= len) {
+          range.setStart(textNode, remaining);
+          range.collapse(true);
+          selectRange(range);
+          return true;
+        }
+        remaining -= len;
+        continue;
+      }
+      if (!countBreaks) {
+        continue;
+      }
+      if (remaining <= 0) {
+        range.setStartBefore(node);
+        range.collapse(true);
+        selectRange(range);
+        return true;
+      }
+      remaining -= 1;
+    }
+    if (lastText) {
+      range.setStart(lastText, lastText.textContent?.length || 0);
+      range.collapse(true);
+      selectRange(range);
+      return true;
+    }
+    range.selectNodeContents(root);
+    range.collapse(true);
+    selectRange(range);
+    return true;
+  }
+
+  /**
+   * @param {HTMLElement} input
+   * @param {number} blockIndex
+   * @param {number} offset
+   */
+  function placeCaretAtNoteOffset(input, blockIndex, offset) {
+    const block = noteContentBlocks(input)[blockIndex];
+    if (!(block instanceof HTMLElement)) {
+      return false;
+    }
+    if (block.classList.contains('note-code')) {
+      return placeCaretByRawOffset(noteCodeBody(block), offset, true);
+    }
+    return placeCaretByRawOffset(block, offset, false);
+  }
+
+  /**
+   * Focus can park the caret at offset 0 after we set it. Re-apply next frame.
+   * @param {HTMLElement} input
+   * @param {{ blockIndex: number, offset: number }} caret
+   */
+  function placeNoteCaretLater(input, caret) {
+    placeCaretAtNoteOffset(input, caret.blockIndex, caret.offset);
+    const blockIndex = caret.blockIndex;
+    const offset = caret.offset;
+    requestAnimationFrame(() => {
+      if (activeNoteEdit?.input !== input || !input.isConnected) {
+        return;
+      }
+      const sel = window.getSelection();
+      if (!sel || !sel.isCollapsed) {
+        return;
+      }
+      placeCaretAtNoteOffset(input, blockIndex, offset);
+    });
+  }
+
   /** @param {Node | null} node @returns {HTMLElement | null} */
   function closestNoteCode(node) {
     if (!node) {
@@ -3767,20 +4205,33 @@
     }
   }
 
-  /** @param {HTMLElement} input */
-  function beginNoteEdit(input) {
+  /**
+   * @param {HTMLElement} input
+   * @param {{ x: number, y: number } | null} [point]
+   */
+  function beginNoteEdit(input, point) {
     if (input.dataset.locked === '1') {
       return;
     }
     cancelNoteBlurEnd();
     const noteId = input.dataset.noteId || '';
+    const at = pointerForNoteEdit(input, point);
     // Editing must expand for real — is-note-editing only hides the clamp while focused.
     if (noteId && isCollapsed(noteId)) {
+      if (at) {
+        const caret = resolveNoteCaret(input, at.x, at.y);
+        pendingNoteCaret = caret ? { noteId, blockIndex: caret.blockIndex, offset: caret.offset } : null;
+      }
       pendingEditAfterExpandId = noteId;
       // Local toggle render + follow-up host state push both rebuild the DOM.
       pendingEditAfterExpandPaints = 2;
       toggleCollapsed(noteId);
       return;
+    }
+    // Resolve against the preview first: painting replaces it with raw text.
+    const caret = at ? resolveNoteCaret(input, at.x, at.y) : null;
+    if (at) {
+      pendingNoteCaret = null;
     }
     const raw = input.dataset.raw || '';
     paintNoteInput(input, raw, { editing: true });
@@ -3795,7 +4246,12 @@
     setNoteEditingChrome(input, true);
     setFormatToolbarVisible(true);
     updateFormatMenuState();
-    input.focus();
+    if (caret) {
+      input.focus({ preventScroll: true });
+      placeNoteCaretLater(input, caret);
+    } else {
+      input.focus();
+    }
     vscode.postMessage({ type: 'mapFocus', pageId: uiState.activePageId });
   }
 
@@ -3818,6 +4274,8 @@
     activeNoteEdit = null;
     pendingEditAfterExpandId = '';
     pendingEditAfterExpandPaints = 0;
+    pendingNoteCaret = null;
+    notePointer = null;
     pendingNoteMarks = { bold: false, quote: false, color: null };
     savedNoteSelection = null;
     setNoteEditingChrome(input, false);
@@ -5104,12 +5562,23 @@
         return;
       }
       if (activeNoteEdit?.input !== input) {
-        beginNoteEdit(input);
+        beginNoteEdit(input, { x: event.clientX, y: event.clientY });
       }
     });
     input.addEventListener('pointerdown', (event) => {
       // Do not let header trackPress treat field presses as fold toggles.
       event.stopPropagation();
+      if (event.button !== 0 || locked) {
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest('a.note-link')) {
+        return;
+      }
+      if (activeNoteEdit?.input === input) {
+        notePointer = null;
+        return;
+      }
+      notePointer = { input, x: event.clientX, y: event.clientY, at: Date.now() };
     });
     input.addEventListener('mousedown', (event) => {
       event.stopPropagation();
