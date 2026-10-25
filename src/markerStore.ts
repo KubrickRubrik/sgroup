@@ -22,16 +22,21 @@ import {
   emptyPositions,
   emptyProfileLayout,
   normalizePositions,
+  packFocus,
   packProfileLayout,
   POS_LOCAL_PATH,
   POS_REMOTE_PATH,
   positionSyncState,
   positionsIsEmpty,
+  pruneFocusMap,
   prunePositionsFile,
   type PositionSyncState,
   type PositionsFile,
   type ProfileLayout,
+  type WorkingFocus,
 } from './positions';
+
+export type { WorkingFocus };
 
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
 export const MAX_MARKER_DEPTH = 2;
@@ -654,6 +659,37 @@ export class MarkerStore implements vscode.Disposable {
     );
   }
 
+  /** Working card of the active profile (local-only, not undoable). */
+  get workingFocus(): WorkingFocus | undefined {
+    return this.posLocal.focus?.[this.activeId];
+  }
+
+  /**
+   * Mark a group or note as the working card for the active profile.
+   * Persists to pos_local only; does not enter undo history.
+   */
+  async setWorkingFocus(kind: 'marker' | 'note', id: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (kind === 'marker' && !this.data.markers[id]) {
+        return;
+      }
+      if (kind === 'note' && !this.data.notes[id]) {
+        return;
+      }
+      const profileId = this.ensureActiveProfileId();
+      const current = this.posLocal.focus?.[profileId];
+      if (current?.kind === kind && current.id === id) {
+        return;
+      }
+      if (!this.posLocal.focus) {
+        this.posLocal.focus = {};
+      }
+      this.posLocal.focus[profileId] = { kind, id };
+      await this.persistPosLocal();
+      this.changeEmitter.fire();
+    });
+  }
+
   /** True after markers and history have been read. Page ids are meaningful only then. */
   get ready(): boolean {
     return this.historyReady;
@@ -879,6 +915,13 @@ export class MarkerStore implements vscode.Disposable {
       delete this.posLocal.profiles[id];
       delete this.posRemote.profiles[id];
       let localNeedsWrite = hadLocal;
+      if (this.posLocal.focus?.[id]) {
+        delete this.posLocal.focus[id];
+        if (this.posLocal.focus && Object.keys(this.posLocal.focus).length === 0) {
+          delete this.posLocal.focus;
+        }
+        localNeedsWrite = true;
+      }
       if (wasActive) {
         this.moveMachineToProfile(GENERAL_PROFILE_ID);
         this.mirrorActiveOpenToSurfaces();
@@ -2897,8 +2940,12 @@ export class MarkerStore implements vscode.Disposable {
   private async loadPositions(): Promise<void> {
     const localExists = await fileExists(this.posLocalUri);
     const remoteExists = await fileExists(this.posRemoteUri);
-    this.posLocal = localExists ? await this.readPositionsFile(this.posLocalUri) : emptyPositions();
-    this.posRemote = remoteExists ? await this.readPositionsFile(this.posRemoteUri) : emptyPositions();
+    this.posLocal = localExists
+      ? await this.readPositionsFile(this.posLocalUri, true)
+      : emptyPositions();
+    this.posRemote = remoteExists
+      ? await this.readPositionsFile(this.posRemoteUri, false)
+      : emptyPositions();
 
     let localDirty = false;
     let remoteDirty = false;
@@ -2956,10 +3003,10 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private async readPositionsFile(uri: vscode.Uri): Promise<PositionsFile> {
+  private async readPositionsFile(uri: vscode.Uri, withFocus = false): Promise<PositionsFile> {
     try {
       const raw = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-      return normalizePositions(JSON.parse(raw));
+      return normalizePositions(JSON.parse(raw), { focus: withFocus });
     } catch (error) {
       if (!isFileNotFound(error)) {
         console.error('Syn3 positions:', error);
@@ -2996,9 +3043,11 @@ export class MarkerStore implements vscode.Disposable {
   private async persistPosLocal(): Promise<void> {
     this.writingPosLocal = true;
     try {
+      const focus = packFocus(this.posLocal.focus);
       const payload: PositionsFile = {
         version: 1,
         profiles: {},
+        ...(focus ? { focus } : {}),
       };
       for (const id of Object.keys(this.posLocal.profiles).sort()) {
         payload.profiles[id] = packProfileLayout(this.posLocal.profiles[id]);
@@ -3290,7 +3339,15 @@ export class MarkerStore implements vscode.Disposable {
     } else {
       this.pagePresent = nextPages;
     }
+    const focusDirty = pruneFocusMap(
+      this.posLocal,
+      new Set(Object.keys(this.data.markers)),
+      new Set(Object.keys(this.data.notes)),
+    );
     await this.syncActiveLayoutToLocal();
+    if (focusDirty) {
+      await this.persistPosLocal();
+    }
     this.changeEmitter.fire();
   }
 

@@ -1493,11 +1493,17 @@ body.vscode-high-contrast-light .fold-rail:hover::before {
 .type-glyph {
   height: 1em;
   pointer-events: none;
+  transition: filter 120ms ease, transform 120ms ease;
   width: 1em;
 }
 
 .type-glyph.tone-light {
   display: block;
+}
+
+.group.is-working > .group-header > .type-icon .type-glyph {
+  filter: brightness(1.45);
+  transform: scale(1.18);
 }
 
 .badge-icons {

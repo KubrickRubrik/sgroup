@@ -188,6 +188,7 @@ type IncomingMessage =
   | { type: 'moveNote'; id: string; delta: -1 | 1 }
   | { type: 'toggleLock'; markerId: string }
   | { type: 'toggleNoteLock'; noteId: string }
+  | { type: 'setFocus'; kind: 'marker' | 'note'; id: string }
   | {
       type: 'profile';
       action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull';
@@ -1642,6 +1643,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.store.toggleNoteLock(message.noteId);
       return;
     }
+    if (message.type === 'setFocus') {
+      if (message.kind !== 'marker' && message.kind !== 'note') {
+        return;
+      }
+      if (typeof message.id !== 'string' || !message.id) {
+        return;
+      }
+      await this.store.setWorkingFocus(message.kind, message.id);
+      return;
+    }
     if (message.type === 'setColor') {
       const color = normalizeHex(message.color);
       if (!color) {
@@ -1926,6 +1937,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       positionSync: this.store.positionSync(),
+      focus: this.store.workingFocus ?? null,
       active: this.activeRelPath(),
       ...this.tabSnapshot(),
       error: this.store.lastError,

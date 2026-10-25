@@ -2125,6 +2125,45 @@
     closeDirPopover();
   });
 
+  /**
+   * Working card on press-release (capture). Header fold runs on the same
+   * pointerup and re-renders before a click would fire, so click is too late.
+   * Local data.focus is updated first so the fold re-paint already shows is-working.
+   */
+  document.addEventListener(
+    'pointerup',
+    (event) => {
+      if (event.button !== 0 || document.body.classList.contains('is-dragging')) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (target.closest('.item') || target.closest('.dot')) {
+        return;
+      }
+      const section = target.closest('section.group');
+      if (!(section instanceof HTMLElement)) {
+        return;
+      }
+      const noteId = section.dataset.noteId;
+      const markerId = section.dataset.markerId;
+      if (noteId) {
+        if (data) {
+          data.focus = { kind: 'note', id: noteId };
+        }
+        vscode.postMessage({ type: 'setFocus', kind: 'note', id: noteId });
+      } else if (markerId) {
+        if (data) {
+          data.focus = { kind: 'marker', id: markerId };
+        }
+        vscode.postMessage({ type: 'setFocus', kind: 'marker', id: markerId });
+      }
+    },
+    true,
+  );
+
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') {
       return;
@@ -2672,6 +2711,8 @@
     const collapsed = !isEmpty && isCollapsed(group.id);
     const locked = isLocked(group);
     const columns = group.columns || 'flow';
+    const isWorking =
+      data?.focus?.kind === 'marker' && data?.focus?.id === group.id;
     const section = el(
       'section',
       'group columns-' +
@@ -2680,7 +2721,8 @@
         (locked ? ' locked' : '') +
         (group.depth ? ' nested node' : '') +
         (isEmpty ? ' empty-group' : '') +
-        (isNotesPage ? ' notes-page' : ''),
+        (isNotesPage ? ' notes-page' : '') +
+        (isWorking ? ' is-working' : ''),
     );
     section.dataset.markerId = group.id;
     section.dataset.depth = String(group.depth || 0);
@@ -6653,12 +6695,14 @@
     // Any note can fold to its first line (children hide when folded).
     const canFold = true;
     const collapsed = isCollapsed(note.id);
+    const isWorking = data?.focus?.kind === 'note' && data?.focus?.id === note.id;
     const section = el(
       'section',
       'group note-card' +
         (collapsed ? ' collapsed' : '') +
         (locked ? ' locked' : '') +
-        (nested ? ' nested node' : ''),
+        (nested ? ' nested node' : '') +
+        (isWorking ? ' is-working' : ''),
     );
     section.dataset.noteId = note.id;
     section.dataset.depth = String(note.depth || 0);

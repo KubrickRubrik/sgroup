@@ -74,6 +74,11 @@
       "label": "Test_dir",
       "page": "map"
     },
+    "marker": {
+      "label": "Новый групп",
+      "color": "syn3.red",
+      "page": "map"
+    },
     "1-2": {
       "label": "Группа т 1",
       "color": "syn3.red",
@@ -157,9 +162,9 @@
       "page": "map"
     },
     "open": {
-      "bottom": true,
+      "bottom": false,
       "left": false,
-      "right": false
+      "right": true
     }
   },
   "aliases": {

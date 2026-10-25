@@ -34,9 +34,20 @@ export interface ProfileLayout {
   notes: Record<string, NoteLayoutPos>;
 }
 
+/** Working card (group or note) for one profile — local-only. */
+export interface WorkingFocus {
+  kind: 'marker' | 'note';
+  id: string;
+}
+
 export interface PositionsFile {
   version: 1;
   profiles: Record<string, ProfileLayout>;
+  /**
+   * Working card per profile id. Lives only in pos_local; never packed into
+   * ProfileLayout / pos_remote fingerprints.
+   */
+  focus?: Record<string, WorkingFocus>;
 }
 
 function emptyCollapsedLocal(): SurfaceCollapsed {
@@ -143,7 +154,77 @@ export function prunePositionsFile(
       changed = true;
     }
   }
+  if (pruneFocusMap(file, markerIds, noteIds)) {
+    changed = true;
+  }
   return changed;
+}
+
+/** Drop focus entries whose marker/note no longer exists. */
+export function pruneFocusMap(
+  file: PositionsFile,
+  markerIds: Set<string>,
+  noteIds: Set<string>,
+): boolean {
+  if (!file.focus) {
+    return false;
+  }
+  let changed = false;
+  for (const [profileId, entry] of Object.entries(file.focus)) {
+    const ok =
+      entry.kind === 'marker' ? markerIds.has(entry.id) : entry.kind === 'note' ? noteIds.has(entry.id) : false;
+    if (!ok) {
+      delete file.focus[profileId];
+      changed = true;
+    }
+  }
+  if (Object.keys(file.focus).length === 0) {
+    delete file.focus;
+    changed = true;
+  }
+  return changed;
+}
+
+export function normalizeFocus(raw: unknown): Record<string, WorkingFocus> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const result: Record<string, WorkingFocus> = {};
+  for (const [profileId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const entry = value as { kind?: unknown; id?: unknown };
+    if (
+      (entry.kind === 'marker' || entry.kind === 'note') &&
+      typeof entry.id === 'string' &&
+      entry.id.length > 0
+    ) {
+      result[profileId] = { kind: entry.kind, id: entry.id };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/** Stable sorted focus map for writing pos_local. */
+export function packFocus(
+  focus: Record<string, WorkingFocus> | undefined,
+): Record<string, WorkingFocus> | undefined {
+  if (!focus) {
+    return undefined;
+  }
+  const result: Record<string, WorkingFocus> = {};
+  for (const profileId of Object.keys(focus).sort()) {
+    const entry = focus[profileId];
+    if (
+      (entry.kind === 'marker' || entry.kind === 'note') &&
+      typeof entry.id === 'string' &&
+      entry.id.length > 0
+    ) {
+      result[profileId] = { kind: entry.kind, id: entry.id };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 export function positionsIsEmpty(file: PositionsFile): boolean {
@@ -250,17 +331,29 @@ export function normalizeProfileLayout(raw: unknown): ProfileLayout {
   return packProfileLayout(result);
 }
 
-export function normalizePositions(raw: unknown): PositionsFile {
+/**
+ * @param options.focus — keep the local-only working-card map (pos_local only).
+ */
+export function normalizePositions(
+  raw: unknown,
+  options?: { focus?: boolean },
+): PositionsFile {
   const result = emptyPositions();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return result;
   }
-  const source = raw as { profiles?: unknown };
+  const source = raw as { profiles?: unknown; focus?: unknown };
   if (!source.profiles || typeof source.profiles !== 'object' || Array.isArray(source.profiles)) {
     return result;
   }
   for (const [id, value] of Object.entries(source.profiles as Record<string, unknown>)) {
     result.profiles[id] = normalizeProfileLayout(value);
+  }
+  if (options?.focus) {
+    const focus = normalizeFocus(source.focus);
+    if (focus) {
+      result.focus = focus;
+    }
   }
   return result;
 }
