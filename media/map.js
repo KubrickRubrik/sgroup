@@ -80,6 +80,39 @@
    * @type {{ input: HTMLElement, x: number, y: number, at: number } | null}
    */
   let notePointer = null;
+  /**
+   * Single click on note text waits this long so a double-click can edit
+   * before focus/expand repaints the card and drops the second click.
+   */
+  const NOTE_CLICK_MS = 220;
+  /** Movement past this many pixels is a text selection, not a click. */
+  const NOTE_DRAG_PX = 8;
+  /**
+   * @typedef {Object} NoteClickGesture
+   * @property {string} noteId
+   * @property {HTMLElement} input
+   * @property {number} x
+   * @property {number} y
+   * @property {string} linkUrl
+   * @property {boolean} moved
+   * @property {boolean} locked
+   * @property {'down' | 'waiting' | 'second'} phase
+   * @property {number} upAt
+   * @property {number} timer
+   * @property {number} pointerId
+   */
+  /** @type {NoteClickGesture | null} */
+  let noteClickGesture = null;
+  /**
+   * A note click already counted, waiting until the press that interrupted it
+   * finishes. Applying it mid-pointerdown repaints and drops that press.
+   * @type {NoteClickGesture | null}
+   */
+  let queuedNoteClick = null;
+  /** Press-drag on note text; the click that follows must not activate the note. */
+  let notePressWasDrag = false;
+  /** Double-click just opened the editor; swallow the word-select that dblclick would apply. */
+  let noteDoubleEditAt = 0;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let noteBlurTimer = null;
   /**
@@ -2129,6 +2162,7 @@
    * Working card on press-release (capture). Header fold runs on the same
    * pointerup and re-renders before a click would fire, so click is too late.
    * Local data.focus is updated first so the fold re-paint already shows is-working.
+   * Note text waits out the double-click window instead — see noteClickGesture.
    */
   document.addEventListener(
     'pointerup',
@@ -2138,6 +2172,9 @@
       }
       const target = event.target;
       if (!(target instanceof Element)) {
+        return;
+      }
+      if (deferNoteTextFocus(event)) {
         return;
       }
       if (target.closest('.item') || target.closest('.dot')) {
@@ -3631,8 +3668,8 @@
         if (editing || input.classList.contains('is-editing')) {
           return;
         }
-        event.stopPropagation();
-        vscode.postMessage({ type: 'openExternal', url: node.getAttribute('href') || node.href });
+        // Preview open is deferred with the note click: double-click edits
+        // at this point, a drag selects text, a single click opens the URL.
       });
       if (!editing) {
         node.addEventListener('mouseenter', () => {
@@ -4351,6 +4388,355 @@
     }
   }
 
+  /** @param {EventTarget | null} target */
+  function noteInputFromTarget(target) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+    const input = target.closest('.note-input');
+    return input instanceof HTMLElement ? input : null;
+  }
+
+  /** @param {EventTarget | null} target */
+  function noteFieldLinkUrl(target) {
+    if (!(target instanceof Element)) {
+      return '';
+    }
+    const link = target.closest('a.note-link');
+    if (!(link instanceof HTMLAnchorElement)) {
+      return '';
+    }
+    return link.getAttribute('href') || link.href || '';
+  }
+
+  /** @param {string} noteId */
+  function noteInputById(noteId) {
+    if (!noteId) {
+      return null;
+    }
+    const node = root.querySelector(
+      '.note-card[data-note-id="' + CSS.escape(noteId) + '"] .note-input',
+    );
+    return node instanceof HTMLElement ? node : null;
+  }
+
+  function clearNoteClickTimer() {
+    if (noteClickGesture?.timer) {
+      window.clearTimeout(noteClickGesture.timer);
+      noteClickGesture.timer = 0;
+    }
+  }
+
+  /**
+   * Distance from the press that started this gesture.
+   * @param {PointerEvent} event
+   */
+  function notePressTravel(event) {
+    const gesture = noteClickGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return 0;
+    }
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    return dx * dx + dy * dy;
+  }
+
+  /**
+   * A press that travelled past the slop is a drag. A short slip stays a click,
+   * otherwise a shaky click never folds the card.
+   * @param {PointerEvent} event
+   */
+  function notePressIsDrag(event) {
+    const gesture = noteClickGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return false;
+    }
+    if (gesture.phase !== 'down' && gesture.phase !== 'second') {
+      return gesture.moved;
+    }
+    if (notePressTravel(event) >= NOTE_DRAG_PX * NOTE_DRAG_PX) {
+      gesture.moved = true;
+    }
+    return gesture.moved;
+  }
+
+  /**
+   * Skip the immediate working-focus on note text. A drag must not focus,
+   * and a click waits so the double-click is not lost to a re-render.
+   * Locked text still focuses on a real click; a drag on it does not.
+   * @param {PointerEvent} event
+   */
+  function deferNoteTextFocus(event) {
+    if (notePressIsDrag(event)) {
+      return true;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return false;
+    }
+    const field = target.closest('.note-input');
+    if (!(field instanceof HTMLElement) || field.dataset.locked === '1') {
+      return false;
+    }
+    return true;
+  }
+
+  /** @param {string} noteId */
+  function markNoteWorking(noteId) {
+    if (!noteId) {
+      return;
+    }
+    if (data) {
+      data.focus = { kind: 'note', id: noteId };
+    }
+    vscode.postMessage({ type: 'setFocus', kind: 'note', id: noteId });
+  }
+
+  /** @param {NoteClickGesture} gesture */
+  function applyNoteSingleClick(gesture) {
+    if (gesture.moved || gesture.locked) {
+      return;
+    }
+    if (activeNoteEdit?.noteId === gesture.noteId) {
+      return;
+    }
+    markNoteWorking(gesture.noteId);
+    if (gesture.linkUrl) {
+      if (isCollapsed(gesture.noteId)) {
+        toggleCollapsed(gesture.noteId);
+      }
+      vscode.postMessage({ type: 'openExternal', url: gesture.linkUrl });
+      return;
+    }
+    toggleCollapsed(gesture.noteId);
+  }
+
+  /**
+   * @param {HTMLElement} input
+   * @param {{ x: number, y: number }} point
+   */
+  function openNoteAtClick(input, point) {
+    noteDoubleEditAt = Date.now();
+    const noteId = input.dataset.noteId || '';
+    const alreadyWorking = !!(data?.focus?.kind === 'note' && data.focus.id === noteId);
+    const wasCollapsed = !!(noteId && isCollapsed(noteId));
+    markNoteWorking(noteId);
+    beginNoteEdit(input, point);
+    if (!noteId || alreadyWorking) {
+      return;
+    }
+    // setFocus repaints. Keep this edit across that paint, then drop the hold
+    // so a later repaint does not reopen a stale editor.
+    if (wasCollapsed) {
+      if (pendingEditAfterExpandId === noteId) {
+        pendingEditAfterExpandPaints += 1;
+      }
+    } else if (activeNoteEdit?.noteId === noteId) {
+      pendingEditAfterExpandId = noteId;
+      pendingEditAfterExpandPaints = 1;
+    }
+    const armedAt = noteDoubleEditAt;
+    window.setTimeout(() => {
+      if (noteDoubleEditAt !== armedAt || pendingEditAfterExpandId !== noteId) {
+        return;
+      }
+      if (activeNoteEdit?.input?.isConnected) {
+        pendingEditAfterExpandId = '';
+        pendingEditAfterExpandPaints = 0;
+      }
+    }, 1500);
+  }
+
+  /**
+   * Park a note click that already landed. The caller is inside another
+   * pointerdown; folding now would destroy that press's target.
+   */
+  function queueWaitingNoteClick() {
+    const pending = noteClickGesture;
+    if (!pending || pending.phase !== 'waiting') {
+      return;
+    }
+    clearNoteClickTimer();
+    noteClickGesture = null;
+    if (pending.moved || pending.locked) {
+      return;
+    }
+    queuedNoteClick = pending;
+  }
+
+  /** Run a parked note click after the interrupting press has toggled. */
+  function flushQueuedNoteClick() {
+    const pending = queuedNoteClick;
+    if (!pending) {
+      return;
+    }
+    queuedNoteClick = null;
+    applyNoteSingleClick(pending);
+  }
+
+  /** @param {PointerEvent} event */
+  function onNoteFieldPointerDown(event) {
+    if (event.button !== 0 || document.body.classList.contains('is-dragging')) {
+      return;
+    }
+    const input = noteInputFromTarget(event.target);
+    if (!input) {
+      queueWaitingNoteClick();
+      return;
+    }
+    notePressWasDrag = false;
+    const locked = input.dataset.locked === '1';
+    if (activeNoteEdit?.input === input) {
+      if (noteClickGesture?.noteId === (input.dataset.noteId || '')) {
+        clearNoteClickTimer();
+        noteClickGesture = null;
+      }
+      notePointer = null;
+      return;
+    }
+    const now = Date.now();
+    const linkUrl = noteFieldLinkUrl(event.target);
+    const pending = noteClickGesture;
+    if (
+      pending &&
+      !locked &&
+      pending.noteId === (input.dataset.noteId || '') &&
+      pending.phase === 'waiting' &&
+      !pending.moved &&
+      now - pending.upAt < NOTE_CLICK_MS
+    ) {
+      clearNoteClickTimer();
+      pending.phase = 'second';
+      pending.input = input;
+      pending.x = event.clientX;
+      pending.y = event.clientY;
+      pending.linkUrl = linkUrl;
+      pending.pointerId = event.pointerId;
+      pending.moved = false;
+      notePointer = { input, x: event.clientX, y: event.clientY, at: now };
+      return;
+    }
+    if (pending?.phase === 'waiting') {
+      clearNoteClickTimer();
+      noteClickGesture = null;
+      if (!pending.moved && !pending.locked) {
+        queuedNoteClick = pending;
+      }
+    } else if (pending) {
+      clearNoteClickTimer();
+      noteClickGesture = null;
+    }
+    const live = input.isConnected ? input : noteInputById(input.dataset.noteId || '');
+    const field = live && live.isConnected ? live : input;
+    noteClickGesture = {
+      noteId: field.dataset.noteId || '',
+      input: field,
+      x: event.clientX,
+      y: event.clientY,
+      linkUrl,
+      moved: false,
+      locked: field.dataset.locked === '1',
+      phase: 'down',
+      upAt: 0,
+      timer: 0,
+      pointerId: event.pointerId,
+    };
+    if (!noteClickGesture.locked) {
+      notePointer = { input: field, x: event.clientX, y: event.clientY, at: now };
+    }
+  }
+
+  /** @param {PointerEvent} event */
+  function onNoteFieldPointerMove(event) {
+    const gesture = noteClickGesture;
+    if (!gesture || gesture.phase === 'waiting' || event.pointerId !== gesture.pointerId) {
+      return;
+    }
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    if (dx * dx + dy * dy >= NOTE_DRAG_PX * NOTE_DRAG_PX) {
+      gesture.moved = true;
+    }
+  }
+
+  /** @param {PointerEvent} event */
+  function finishNoteFieldPress(event) {
+    if (event.button !== 0) {
+      return;
+    }
+    const gesture = noteClickGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+    if (gesture.phase === 'waiting') {
+      return;
+    }
+    if (notePressIsDrag(event)) {
+      notePressWasDrag = true;
+      clearNoteClickTimer();
+      noteClickGesture = null;
+      notePointer = null;
+      return;
+    }
+    if (gesture.locked) {
+      noteClickGesture = null;
+      return;
+    }
+    const input = gesture.input.isConnected ? gesture.input : noteInputById(gesture.noteId);
+    if (gesture.phase === 'second') {
+      noteClickGesture = null;
+      if (input) {
+        openNoteAtClick(input, { x: event.clientX, y: event.clientY });
+      }
+      return;
+    }
+    gesture.phase = 'waiting';
+    gesture.upAt = Date.now();
+    const linkUrl = noteFieldLinkUrl(event.target);
+    if (linkUrl) {
+      gesture.linkUrl = linkUrl;
+    }
+    gesture.timer = window.setTimeout(() => {
+      if (noteClickGesture !== gesture) {
+        return;
+      }
+      noteClickGesture = null;
+      applyNoteSingleClick(gesture);
+    }, NOTE_CLICK_MS);
+  }
+
+  /** @param {PointerEvent} event */
+  function onNoteFieldPointerCancel(event) {
+    const gesture = noteClickGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId || gesture.phase === 'waiting') {
+      return;
+    }
+    clearNoteClickTimer();
+    noteClickGesture = null;
+  }
+
+  document.addEventListener('pointerdown', onNoteFieldPointerDown, true);
+  document.addEventListener('pointermove', onNoteFieldPointerMove, true);
+  document.addEventListener('pointerup', finishNoteFieldPress, true);
+  document.addEventListener('pointerup', () => {
+    flushQueuedNoteClick();
+  });
+  document.addEventListener('pointercancel', onNoteFieldPointerCancel, true);
+  document.addEventListener(
+    'dblclick',
+    (event) => {
+      if (Date.now() - noteDoubleEditAt > 400) {
+        return;
+      }
+      const input = noteInputFromTarget(event.target);
+      if (!input || input.dataset.locked === '1') {
+        return;
+      }
+      event.preventDefault();
+    },
+    true,
+  );
+
   /**
    * @param {HTMLElement} input
    * @param {{ x: number, y: number } | null} [point]
@@ -4376,7 +4762,9 @@
     }
     // Resolve against the preview first: painting replaces it with raw text.
     const caret = at ? resolveNoteCaret(input, at.x, at.y) : null;
-    if (at) {
+    if (caret && noteId) {
+      pendingNoteCaret = { noteId, blockIndex: caret.blockIndex, offset: caret.offset };
+    } else if (at) {
       pendingNoteCaret = null;
     }
     const raw = input.dataset.raw || '';
@@ -6923,14 +7311,6 @@
         }
       }, 0);
     });
-    input.addEventListener('focus', () => {
-      if (locked) {
-        return;
-      }
-      if (activeNoteEdit?.input !== input) {
-        beginNoteEdit(input);
-      }
-    });
     input.addEventListener('blur', () => {
       cancelNoteBlurEnd();
       // Delay past host Cmd/A postMessage so select-all can cancel and keep editing.
@@ -6960,34 +7340,24 @@
     });
     input.addEventListener('click', (event) => {
       event.stopPropagation();
+      if (notePressWasDrag) {
+        return;
+      }
       if (locked) {
         flashLock(note.id, header);
         return;
       }
-      if (event.target instanceof Element && event.target.closest('a.note-link')) {
-        if (activeNoteEdit?.input === input) {
-          event.preventDefault();
-        }
-        return;
-      }
-      if (activeNoteEdit?.input !== input) {
-        beginNoteEdit(input, { x: event.clientX, y: event.clientY });
+      if (
+        activeNoteEdit?.input === input &&
+        event.target instanceof Element &&
+        event.target.closest('a.note-link')
+      ) {
+        event.preventDefault();
       }
     });
     input.addEventListener('pointerdown', (event) => {
       // Do not let header trackPress treat field presses as fold toggles.
       event.stopPropagation();
-      if (event.button !== 0 || locked) {
-        return;
-      }
-      if (event.target instanceof Element && event.target.closest('a.note-link')) {
-        return;
-      }
-      if (activeNoteEdit?.input === input) {
-        notePointer = null;
-        return;
-      }
-      notePointer = { input, x: event.clientX, y: event.clientY, at: Date.now() };
     });
     input.addEventListener('mousedown', (event) => {
       event.stopPropagation();
@@ -7330,7 +7700,10 @@
       if (!tracking || moved || event.buttons === 0) {
         return;
       }
-      if (event.clientX !== x || event.clientY !== y) {
+      const dx = event.clientX - x;
+      const dy = event.clientY - y;
+      // A 1px slip on a draggable header used to cancel the fold.
+      if (dx * dx + dy * dy >= 36) {
         moved = true;
       }
     });
