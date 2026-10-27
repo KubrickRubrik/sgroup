@@ -113,6 +113,120 @@
           "order": 3
         }
       }
+    },
+    "profile-профиль-1": {
+      "pages": {
+        "map": {
+          "order": 1,
+          "layout": "chips",
+          "groupsLayout": "1",
+          "collapsed": {
+            "explorer": {
+              "1": true
+            },
+            "bottom": {
+              "1": true,
+              "3": true,
+              "2-2": true,
+              "note-4": true
+            },
+            "left": {
+              "1": true,
+              "3": true,
+              "4": true,
+              "5": true,
+              "test-dir": true,
+              "ttest-6": true,
+              "version": true
+            },
+            "right": {
+              "3": true,
+              "4": true,
+              "5": true,
+              "test-dir": true,
+              "ttest-6": true,
+              "version": true
+            }
+          }
+        },
+        "page-page": {
+          "order": 2,
+          "layout": "chips",
+          "groupsLayout": "1",
+          "collapsed": {
+            "explorer": {},
+            "bottom": {},
+            "left": {},
+            "right": {}
+          }
+        }
+      },
+      "markers": {
+        "1": {
+          "order": 5,
+          "columns": "1"
+        },
+        "2": {
+          "order": 2
+        },
+        "3": {
+          "order": 7
+        },
+        "4": {
+          "order": 8
+        },
+        "5": {
+          "order": 1
+        },
+        "1-2": {
+          "order": 4
+        },
+        "2-2": {
+          "order": 1
+        },
+        "group-2": {
+          "order": 5
+        },
+        "marker": {
+          "order": 2
+        },
+        "test-dir": {
+          "order": 9
+        },
+        "ttest-6": {
+          "order": 6
+        },
+        "version": {
+          "order": 4,
+          "columns": "2"
+        }
+      },
+      "notes": {
+        "note-1": {
+          "order": 1
+        },
+        "note-2": {
+          "order": 2
+        },
+        "note-3": {
+          "order": 1
+        },
+        "note-4": {
+          "order": 3
+        },
+        "note-5": {
+          "order": 1
+        },
+        "note-6": {
+          "order": 1
+        },
+        "note-7": {
+          "order": 1
+        },
+        "note-8": {
+          "order": 3
+        }
+      }
     }
   }
 }

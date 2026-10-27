@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CodeLanguageService, CodeStamp } from './codeLanguage';
+import { DirtyPathWatcher } from './gitDirty';
 import {
   ColumnsMode,
   GENERAL_PROFILE_ID,
@@ -440,6 +441,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private focusNoteId?: string;
   private readonly languages: CodeLanguageService;
   private readonly ownsLanguages: boolean;
+  /** On-disk uncommitted paths from the built-in Git extension. */
+  private dirtyPaths: string[] = [];
+  private readonly dirtyWatcher: DirtyPathWatcher;
 
   constructor(
     private readonly store: MarkerStore,
@@ -453,8 +457,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.languages = languages ?? new CodeLanguageService(extensionUri.fsPath);
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
+    this.dirtyWatcher = new DirtyPathWatcher(store, (paths) => {
+      this.dirtyPaths = paths;
+      this.postChanges();
+    });
+    this.dirtyPaths = this.dirtyWatcher.snapshot();
     this.subscriptions = [
       ...(this.ownsLanguages ? [this.languages] : []),
+      this.dirtyWatcher,
       this.languages.onDidChangeStamp((stamp) => this.postCodeStamp(stamp)),
       this.languages.onDidChangeTheme(() => this.postThemeGeneration()),
       store.onDidChange(() => {
@@ -1940,6 +1950,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       focus: this.store.workingFocus ?? null,
       active: this.activeRelPath(),
       ...this.tabSnapshot(),
+      dirtyPaths: this.dirtyPaths,
       error: this.store.lastError,
       history: this.store.historySteps(),
       open: this.store.surfaceOpen(),
@@ -2023,6 +2034,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         continue;
       }
       void webview.postMessage({ type: 'tabs', ...tabs });
+    }
+  }
+
+  /** Push on-disk uncommitted paths without a full map re-render. */
+  private postChanges(): void {
+    if (!this.store.ready) {
+      return;
+    }
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      void webview.postMessage({ type: 'changes', dirtyPaths: this.dirtyPaths });
     }
   }
 

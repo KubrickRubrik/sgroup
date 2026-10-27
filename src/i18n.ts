@@ -31,11 +31,13 @@ const EN = {
   profileNameTaken: 'That name is already taken',
   profileDeleteConfirm: 'Delete profile “{name}”? This cannot be undone.',
   profileDeleteAction: 'Delete',
-  profileSyncPush: 'Backup positions to remote',
-  profileSyncPull: 'Restore positions from remote',
+  profileSyncPush: 'Save local card layout to pos_remote.json (for the repo)',
+  profileSyncPull: 'Restore card layout from pos_remote.json into this profile',
   sectionPositions: 'Card positions',
+  labelPositionsPush: 'To remote',
+  labelPositionsPull: 'From remote',
   notePositions:
-    'Positions, folds, and page order of the active profile live in pos_local.json. Push copies them into pos_remote.json for the repo; pull restores the backup.',
+    'Order, folds, and which card is active live only on this machine (pos_local.json). ↑ copies them into the repo backup (pos_remote.json). ↓ brings that backup back.',
 
   // Settings sections
   sectionFont: 'Map font',
@@ -154,6 +156,8 @@ const EN = {
   formatQuote: 'Quote',
   menuCopy: 'Copy',
   menuPaste: 'Paste',
+  markOpen: 'Open',
+  markInProgress: 'In progress',
 } as const;
 
 const RU: Syn3Strings = {
@@ -176,11 +180,13 @@ const RU: Syn3Strings = {
   profileNameTaken: 'Такое имя уже занято',
   profileDeleteConfirm: 'Удалить профиль «{name}»? Восстановить будет невозможно.',
   profileDeleteAction: 'Удалить',
-  profileSyncPush: 'Сохранить позиции в remote',
-  profileSyncPull: 'Восстановить позиции из remote',
+  profileSyncPush: 'Сохранить локальную раскладку карточек в pos_remote.json (для репозитория)',
+  profileSyncPull: 'Восстановить раскладку карточек из pos_remote.json в этот профиль',
   sectionPositions: 'Позиции карточек',
+  labelPositionsPush: 'В remote',
+  labelPositionsPull: 'Из remote',
   notePositions:
-    'Позиции, сворачивание и порядок страниц активного профиля живут в pos_local.json. Стрелка вверх копирует их в pos_remote.json для репозитория; стрелка вниз восстанавливает бэкап.',
+    'Порядок, свёрнутость и рабочая карточка живут только на этой машине (pos_local.json). ↑ копирует их в бэкап репозитория (pos_remote.json). ↓ возвращает этот бэкап.',
 
   sectionFont: 'Шрифт карты',
   sectionGroup: 'Группа',
@@ -294,6 +300,8 @@ const RU: Syn3Strings = {
   formatQuote: 'Цитата',
   menuCopy: 'Копировать',
   menuPaste: 'Вставить',
+  markOpen: 'Открыт',
+  markInProgress: 'В процессе',
 };
 
 const TABLES: Record<Syn3Locale, Syn3Strings> = {

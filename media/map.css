@@ -1575,26 +1575,80 @@ body.vscode-high-contrast-light .fold-rail:hover::before {
   font-size: var(--size-subgroup);
 }
 
-/* Open editor tab: corner on the badge, inset past its border radius. Focused chain blinks. */
-.tab-mark {
-  background: #fff;
-  clip-path: polygon(0 0, 100% 0, 0 100%);
-  height: 6px;
+/* Open editor tab: large hit box; glyph is ::after so clip-path does not shrink hover. */
+.tab-mark,
+.change-mark {
+  --mark-size: 6px;
+  --mark-hit: 14px;
+  background: transparent;
+  cursor: default;
+  height: var(--mark-hit);
   left: calc(var(--badge-radius, 4px) * 0.3 + 0.5px);
-  pointer-events: none;
+  pointer-events: auto;
   position: absolute;
-  top: calc(var(--badge-radius, 4px) * 0.3 + 0.5px);
-  width: 6px;
+  width: var(--mark-hit);
   z-index: 2;
 }
 
-body.vscode-light .tab-mark,
-body.vscode-high-contrast-light .tab-mark {
+.tab-mark {
+  top: calc(var(--badge-radius, 4px) * 0.3 + 0.5px);
+}
+
+.change-mark {
+  bottom: calc(var(--badge-radius, 4px) * 0.3 + 0.5px);
+}
+
+.tab-mark::after,
+.change-mark::after {
+  content: '';
+  height: var(--mark-size);
+  pointer-events: none;
+  position: absolute;
+  width: var(--mark-size);
+}
+
+.tab-mark::after {
+  background: #fff;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  left: 0;
+  top: 0;
+}
+
+body.vscode-light .tab-mark::after,
+body.vscode-high-contrast-light .tab-mark::after {
   background: #000;
 }
 
-.tab-mark-live {
+.tab-mark-live::after {
   animation: tab-corner-pulse var(--tab-mark-duration, 1s) ease-in-out infinite;
+}
+
+.change-mark::after {
+  background: #e51400;
+  bottom: 0;
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+  left: 0;
+}
+
+/* Group title keeps a slightly larger mark so it stays readable on the card. */
+.group-header > .change-mark {
+  --mark-size: 8px;
+  --mark-hit: 16px;
+}
+
+.mark-tip {
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, #454545));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  font-size: var(--size-meta);
+  max-width: 220px;
+  padding: 3px 8px;
+  pointer-events: none;
+  position: fixed;
+  white-space: nowrap;
+  z-index: 1100;
 }
 
 @keyframes tab-corner-pulse {
@@ -1608,7 +1662,7 @@ body.vscode-high-contrast-light .tab-mark {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tab-mark-live {
+  .tab-mark-live::after {
     animation: none;
   }
 }
@@ -1977,8 +2031,9 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .dir-popover-item {
+  --badge-radius: 3px;
   align-items: center;
-  border-radius: 3px;
+  border-radius: var(--badge-radius);
   cursor: default;
   display: flex;
   font-size: var(--size-file);
@@ -1986,6 +2041,7 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   height: var(--dir-row);
   overflow: hidden;
   padding: 0 6px;
+  position: relative;
   white-space: nowrap;
 }
 

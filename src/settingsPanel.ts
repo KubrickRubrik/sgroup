@@ -375,13 +375,11 @@ export class SettingsPanel implements vscode.Disposable {
       cursor: default;
       opacity: 0.35;
     }
-    .sync-row {
-      align-items: center;
-    }
     .sync-actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
-      grid-column: 2 / span 2;
+      margin: 10px 0 0;
     }
     .sync-actions button {
       align-items: center;
@@ -390,14 +388,20 @@ export class SettingsPanel implements vscode.Disposable {
       border-radius: 4px;
       color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
       cursor: pointer;
-      display: flex;
+      display: inline-flex;
       font: inherit;
-      font-size: 16px;
+      font-size: 12px;
+      gap: 6px;
       height: 28px;
       justify-content: center;
       line-height: 1;
-      padding: 0;
-      width: 36px;
+      min-width: 36px;
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+    .sync-actions button .sync-arrow {
+      font-size: 14px;
+      line-height: 1;
     }
     .sync-actions button:hover:not(:disabled) {
       background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
@@ -544,14 +548,17 @@ export class SettingsPanel implements vscode.Disposable {
 
     <section>
       <h2 data-i18n="sectionPositions">Card positions</h2>
-      <div class="row sync-row">
-        <span></span>
-        <div class="sync-actions">
-          <button type="button" id="pos-sync-push" data-i18n-title="profileSyncPush" data-i18n-aria="profileSyncPush">↑</button>
-          <button type="button" id="pos-sync-pull" data-i18n-title="profileSyncPull" data-i18n-aria="profileSyncPull">↓</button>
-        </div>
-      </div>
       <p class="note" data-i18n="notePositions"></p>
+      <div class="sync-actions">
+        <button type="button" id="pos-sync-push" data-i18n-title="profileSyncPush" data-i18n-aria="profileSyncPush">
+          <span class="sync-arrow" aria-hidden="true">↑</span>
+          <span data-i18n="labelPositionsPush">To remote</span>
+        </button>
+        <button type="button" id="pos-sync-pull" data-i18n-title="profileSyncPull" data-i18n-aria="profileSyncPull">
+          <span class="sync-arrow" aria-hidden="true">↓</span>
+          <span data-i18n="labelPositionsPull">From remote</span>
+        </button>
+      </div>
     </section>
 
     <section>

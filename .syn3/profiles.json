@@ -4,14 +4,14 @@
     {
       "id": "general",
       "name": "Общий",
-      "sProfileIds": [
-        "006048e5b595917b50ffc76109a305faf4dabcbc279c90cabc75664736adfde8"
-      ]
+      "sProfileIds": []
     },
     {
       "id": "profile-профиль-1",
       "name": "Профиль один",
-      "sProfileIds": []
+      "sProfileIds": [
+        "006048e5b595917b50ffc76109a305faf4dabcbc279c90cabc75664736adfde8"
+      ]
     }
   ]
 }

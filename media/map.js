@@ -500,6 +500,16 @@
   dropEdge.hidden = true;
   document.body.append(dropEdge);
 
+  const markTip = el('div', 'mark-tip');
+  markTip.hidden = true;
+  markTip.setAttribute('role', 'tooltip');
+  document.body.append(markTip);
+  /** @type {ReturnType<typeof setTimeout> | 0} */
+  let markTipTimer = 0;
+  /** @type {HTMLElement | null} */
+  let markTipTarget = null;
+  const MARK_TIP_MS = 350;
+
   const dirPopover = el('div', 'dir-popover');
   dirPopover.hidden = true;
   dirPopover.setAttribute('role', 'menu');
@@ -574,6 +584,9 @@
       data.openPaths = Array.isArray(message.openPaths) ? message.openPaths : [];
       data.focusedPath = typeof message.focusedPath === 'string' ? message.focusedPath : '';
       applyTabMarks();
+    } else if (message.type === 'changes' && data) {
+      data.dirtyPaths = Array.isArray(message.dirtyPaths) ? message.dirtyPaths : [];
+      applyChangeMarks();
     } else if (message.type === 'dirListing') {
       fillDirPopover(message);
     } else if (message.type === 'selectAll') {
@@ -2395,6 +2408,7 @@
     }
     updateActive();
     applyTabMarks();
+    applyChangeMarks();
     playFolds(folds);
     layoutFoldRails();
     if (pendingEditAfterExpandId && pendingEditAfterExpandPaints > 0) {
@@ -4508,7 +4522,36 @@
       vscode.postMessage({ type: 'openExternal', url: gesture.linkUrl });
       return;
     }
+    const input = gesture.input.isConnected ? gesture.input : noteInputById(gesture.noteId);
+    if (input && !isNoteFirstLineClick(input, gesture.y)) {
+      return;
+    }
     toggleCollapsed(gesture.noteId);
+  }
+
+  /**
+   * Fold only from a click on the first visible line of note text.
+   * @param {HTMLElement} input
+   * @param {number} clientY
+   */
+  function isNoteFirstLineClick(input, clientY) {
+    const card = input.closest('.note-card');
+    if (card instanceof HTMLElement && card.classList.contains('collapsed')) {
+      return true;
+    }
+    const rect = input.getBoundingClientRect();
+    if (clientY < rect.top || clientY > rect.bottom) {
+      return false;
+    }
+    const header = input.closest('.note-header');
+    let firstLine = 0;
+    if (header instanceof HTMLElement) {
+      firstLine = parseFloat(getComputedStyle(header).getPropertyValue('--note-first-line')) || 0;
+    }
+    if (!firstLine) {
+      firstLine = parseFloat(getComputedStyle(input).lineHeight) || rect.height;
+    }
+    return clientY <= rect.top + firstLine;
   }
 
   /**
@@ -7853,6 +7896,7 @@
     for (const entry of entries) {
       const row = el('div', 'dir-popover-item' + (entry.isDir ? ' dir' : ''));
       row.setAttribute('role', 'menuitem');
+      row.dataset.rel = entry.relPath || '';
       row.append(entry.isDir ? folderIcon() : fileIcon(entry.name), el('span', 'name', entry.name));
       row.title = entry.relPath;
       row.addEventListener('click', (event) => {
@@ -7866,6 +7910,7 @@
       list.append(row);
     }
     dirPopover.replaceChildren(list);
+    applyDirPopoverChangeMarks();
     positionDirPopover(dirPopoverState.anchor);
   }
 
@@ -8444,10 +8489,11 @@
 
     for (const node of root.querySelectorAll('section.group')) {
       const section = /** @type {HTMLElement} */ (node);
-      const badge = section.classList.contains('nested')
-        ? section.querySelector(':scope > .group-header')
-        : section;
+      // Same title row as .change-mark so both corners share one left edge.
+      const badge = section.querySelector(':scope > .group-header');
       const group = byId[section.dataset.markerId || ''];
+      // Drop legacy marks that sat on the card shell (wrong inset vs header).
+      section.querySelector(':scope > .tab-mark')?.remove();
       if (!(badge instanceof HTMLElement)) {
         continue;
       }
@@ -8474,6 +8520,62 @@
         live = marks.animate && relPath !== '' && relPath === focusedPath;
       }
       setTabCorner(item, opened, live);
+    }
+  }
+
+  /**
+   * Bottom-left corner when the entity has on-disk uncommitted changes.
+   * Same nodes as applyTabMarks for chips; groups always use the title row.
+   */
+  function applyChangeMarks() {
+    const dirtyPaths = Array.isArray(data?.dirtyPaths) ? data.dirtyPaths : [];
+    const groups = activePage()?.kind === 'notes' ? [] : pageGroups();
+    const byId = Object.fromEntries(groups.map((group) => [group.id, group]));
+
+    for (const node of root.querySelectorAll('section.group')) {
+      const section = /** @type {HTMLElement} */ (node);
+      // Title row — not the whole card — so the mark sits under the group name.
+      const badge = section.querySelector(':scope > .group-header');
+      const group = byId[section.dataset.markerId || ''];
+      section.querySelector(':scope > .change-mark')?.remove();
+      if (!(badge instanceof HTMLElement)) {
+        continue;
+      }
+      const dirty = !!group && dirtyPaths.some((relPath) => chainHits(group, byId, relPath));
+      setChangeCorner(badge, dirty);
+    }
+
+    for (const node of root.querySelectorAll('.item')) {
+      const item = /** @type {HTMLElement} */ (node);
+      let dirty = false;
+      if (item.classList.contains('class-item')) {
+        const file = item.dataset.file || '';
+        dirty = file !== '' && dirtyPaths.includes(file);
+      } else if (item.classList.contains('dir')) {
+        const folder = item.dataset.rel || '';
+        dirty = dirtyPaths.some((relPath) => pathCovers(folder, relPath));
+      } else {
+        const relPath = item.dataset.rel || '';
+        dirty = relPath !== '' && dirtyPaths.includes(relPath);
+      }
+      setChangeCorner(item, dirty);
+    }
+    applyDirPopoverChangeMarks();
+  }
+
+  /** Red corner on folder peek rows (files and nested folders). */
+  function applyDirPopoverChangeMarks() {
+    if (!dirPopoverState || dirPopover.hidden) {
+      return;
+    }
+    const dirtyPaths = Array.isArray(data?.dirtyPaths) ? data.dirtyPaths : [];
+    for (const node of dirPopover.querySelectorAll('.dir-popover-item')) {
+      const row = /** @type {HTMLElement} */ (node);
+      const relPath = row.dataset.rel || '';
+      const dirty = row.classList.contains('dir')
+        ? dirtyPaths.some((path) => pathCovers(relPath, path))
+        : relPath !== '' && dirtyPaths.includes(relPath);
+      setChangeCorner(row, dirty);
     }
   }
 
@@ -8519,17 +8621,148 @@
   function setTabCorner(node, open, live) {
     const mark = node.querySelector(':scope > .tab-mark');
     if (!open) {
+      if (markTipTarget === mark) {
+        hideMarkTip();
+      }
       mark?.remove();
       return;
     }
     const corner = mark instanceof HTMLElement ? mark : document.createElement('span');
     if (!mark) {
       corner.className = 'tab-mark';
-      corner.setAttribute('aria-hidden', 'true');
       node.prepend(corner);
     }
+    corner.setAttribute('aria-label', t('markOpen'));
+    corner.removeAttribute('title');
     corner.classList.toggle('tab-mark-live', live);
   }
+
+  /** @param {HTMLElement} node @param {boolean} dirty */
+  function setChangeCorner(node, dirty) {
+    const mark = node.querySelector(':scope > .change-mark');
+    if (!dirty) {
+      if (markTipTarget === mark) {
+        hideMarkTip();
+      }
+      mark?.remove();
+      return;
+    }
+    if (mark instanceof HTMLElement) {
+      mark.setAttribute('aria-label', t('markInProgress'));
+      mark.removeAttribute('title');
+      return;
+    }
+    const corner = document.createElement('span');
+    corner.className = 'change-mark';
+    corner.setAttribute('aria-label', t('markInProgress'));
+    node.prepend(corner);
+  }
+
+  /** @param {EventTarget | null} target */
+  function markFromTarget(target) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+    const mark = target.closest('.tab-mark, .change-mark');
+    return mark instanceof HTMLElement ? mark : null;
+  }
+
+  /** @param {HTMLElement} mark */
+  function markTipText(mark) {
+    if (mark.classList.contains('change-mark')) {
+      return t('markInProgress');
+    }
+    return t('markOpen');
+  }
+
+  /** @param {HTMLElement} mark @param {number} x @param {number} y */
+  function scheduleMarkTip(mark, x, y) {
+    if (markTipTarget === mark && !markTip.hidden) {
+      placeMarkTip(x, y);
+      return;
+    }
+    clearTimeout(markTipTimer);
+    markTipTarget = mark;
+    markTipTimer = setTimeout(() => {
+      if (markTipTarget !== mark || !mark.isConnected) {
+        return;
+      }
+      markTip.textContent = markTipText(mark);
+      markTip.hidden = false;
+      placeMarkTip(x, y);
+    }, MARK_TIP_MS);
+  }
+
+  function hideMarkTip() {
+    clearTimeout(markTipTimer);
+    markTipTimer = 0;
+    markTipTarget = null;
+    markTip.hidden = true;
+    markTip.textContent = '';
+  }
+
+  /** @param {number} x @param {number} y */
+  function placeMarkTip(x, y) {
+    const pad = 8;
+    markTip.style.left = '0px';
+    markTip.style.top = '0px';
+    const tipW = markTip.offsetWidth || 80;
+    const tipH = markTip.offsetHeight || 24;
+    let left = x + 12;
+    let top = y + 14;
+    if (left + tipW > window.innerWidth - pad) {
+      left = Math.max(pad, x - tipW - 12);
+    }
+    if (top + tipH > window.innerHeight - pad) {
+      top = Math.max(pad, y - tipH - 8);
+    }
+    markTip.style.left = left + 'px';
+    markTip.style.top = top + 'px';
+  }
+
+  document.addEventListener(
+    'pointerover',
+    (event) => {
+      const mark = markFromTarget(event.target);
+      if (!mark) {
+        return;
+      }
+      if (event.relatedTarget instanceof Node && mark.contains(event.relatedTarget)) {
+        return;
+      }
+      scheduleMarkTip(mark, event.clientX, event.clientY);
+    },
+    true,
+  );
+  document.addEventListener(
+    'pointerout',
+    (event) => {
+      const mark = markFromTarget(event.target);
+      if (!mark) {
+        return;
+      }
+      if (event.relatedTarget instanceof Node && mark.contains(event.relatedTarget)) {
+        return;
+      }
+      if (markTipTarget === mark) {
+        hideMarkTip();
+      }
+    },
+    true,
+  );
+  document.addEventListener(
+    'pointermove',
+    (event) => {
+      if (!markTipTarget || markTip.hidden) {
+        return;
+      }
+      if (markFromTarget(event.target) !== markTipTarget) {
+        return;
+      }
+      placeMarkTip(event.clientX, event.clientY);
+    },
+    true,
+  );
 
   /** @param {boolean} [scroll] */
   function updateActive(scroll) {
