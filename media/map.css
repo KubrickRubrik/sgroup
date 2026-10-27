@@ -1315,6 +1315,87 @@ body.vscode-high-contrast .drop-edge {
   color: var(--vscode-errorForeground);
 }
 
+.item.drop-slot {
+  background: color-mix(in srgb, var(--drop-color, #4fc1ff) 18%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--drop-color, #4fc1ff) 70%, transparent);
+  box-shadow: none;
+  min-height: 1.4em;
+  min-width: 3.5em;
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+body.vscode-light .item.drop-slot,
+body.vscode-high-contrast-light .item.drop-slot {
+  background: color-mix(in srgb, var(--drop-color, #0078d4) 14%, transparent);
+  border-color: color-mix(in srgb, var(--drop-color, #0078d4) 55%, transparent);
+}
+
+.drop-dialog {
+  align-items: center;
+  background: color-mix(in srgb, #000 45%, transparent);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 2000;
+}
+
+.drop-dialog[hidden] {
+  display: none;
+}
+
+.drop-dialog-panel {
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-editorWidget-border, var(--drop-color, #4fc1ff));
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: min(360px, calc(100vw - 32px));
+  min-width: 220px;
+  padding: 14px 16px;
+}
+
+.drop-dialog-message {
+  font-size: var(--size-meta, 12px);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.drop-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.drop-dialog-btn {
+  background: var(--vscode-button-background, #0e639c);
+  border: 0;
+  border-radius: 4px;
+  color: var(--vscode-button-foreground, #fff);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--size-meta, 12px);
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+.drop-dialog-btn:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.drop-dialog-btn:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 2px;
+}
+
 .chevron {
   color: transparent;
   cursor: pointer;
@@ -2058,6 +2139,68 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.problem-mark {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--vscode-errorForeground);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  line-height: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.item.missing .problem-mark .icon {
+  opacity: 1;
+}
+
+.syn3-menu.problem-panel {
+  max-width: none;
+  min-width: 0;
+  position: fixed;
+  width: auto;
+  z-index: 1100;
+}
+
+.problem-file + .problem-file {
+  border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.problem-message,
+.problem-file-link {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  max-width: none;
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: pre-wrap;
+  width: 100%;
+}
+
+.problem-message {
+  color: var(--vscode-errorForeground);
+  padding: 4px 16px 2px 12px;
+}
+
+.problem-file-link {
+  color: var(--vscode-textLink-foreground);
+  padding: 2px 16px 6px 12px;
+  text-decoration: underline;
+}
+
+.problem-message:hover,
+.problem-file-link:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

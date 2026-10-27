@@ -158,6 +158,10 @@ const EN = {
   menuPaste: 'Paste',
   markOpen: 'Open',
   markInProgress: 'In progress',
+  dropMove: 'Move',
+  dropCopy: 'Copy',
+  dropAlreadyExists: 'This entity is already in the group',
+  dropOk: 'OK',
 } as const;
 
 const RU: Syn3Strings = {
@@ -302,6 +306,10 @@ const RU: Syn3Strings = {
   menuPaste: 'Вставить',
   markOpen: 'Открыт',
   markInProgress: 'В процессе',
+  dropMove: 'Перенести',
+  dropCopy: 'Скопировать',
+  dropAlreadyExists: 'Эта сущность уже есть в группе',
+  dropOk: 'OK',
 };
 
 const TABLES: Record<Syn3Locale, Syn3Strings> = {

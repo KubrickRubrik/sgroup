@@ -136,6 +136,14 @@ type IncomingMessage =
   | { type: 'activePage'; pageId: string }
   | { type: 'mapFocus'; pageId?: string }
   | { type: 'open'; relPath: string }
+  | {
+      type: 'openAt';
+      relPath: string;
+      line: number;
+      character: number;
+      endLine: number;
+      endCharacter: number;
+    }
   | { type: 'openClass'; classId: string }
   | { type: 'openExternal'; url: string }
   | { type: 'previewLink'; url: string; requestId: string }
@@ -155,8 +163,22 @@ type IncomingMessage =
   | { type: 'runCommand'; command: string; arg?: Record<string, unknown> }
   | { type: 'reorderPages'; orderedIds: string[] }
   | { type: 'setColor'; markerId?: string; noteId?: string; color: string }
-  | { type: 'moveItem'; relPath: string; from: string; to: string; copy?: boolean }
-  | { type: 'moveClass'; classId: string; from: string; to: string; copy?: boolean }
+  | {
+      type: 'moveItem';
+      relPath: string;
+      from: string;
+      to: string;
+      copy?: boolean;
+      blockOrder?: string[];
+    }
+  | {
+      type: 'moveClass';
+      classId: string;
+      from: string;
+      to: string;
+      copy?: boolean;
+      blockOrder?: string[];
+    }
   | { type: 'placeMarker'; id: string; target: string; position: 'before' | 'after' }
   | {
       type: 'placeMarkerAtNote';
@@ -201,6 +223,16 @@ interface DirListingEntry {
   name: string;
   relPath: string;
   isDir: boolean;
+}
+
+/** One Error diagnostic from the Problems panel. Positions are 0-based. */
+interface ProblemDiag {
+  relPath: string;
+  message: string;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
 }
 
 function tabUri(tab: vscode.Tab): vscode.Uri | undefined {
@@ -444,6 +476,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** On-disk uncommitted paths from the built-in Git extension. */
   private dirtyPaths: string[] = [];
   private readonly dirtyWatcher: DirtyPathWatcher;
+  /** Workspace Error diagnostics, pushed like dirty paths. */
+  private problems: ProblemDiag[] = [];
+  private problemsTimer: ReturnType<typeof setTimeout> | undefined;
+  private problemsKey = '';
 
   constructor(
     private readonly store: MarkerStore,
@@ -462,11 +498,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       this.postChanges();
     });
     this.dirtyPaths = this.dirtyWatcher.snapshot();
+    this.problems = this.collectProblems();
+    this.problemsKey = this.problemSignature(this.problems);
     this.subscriptions = [
       ...(this.ownsLanguages ? [this.languages] : []),
       this.dirtyWatcher,
       this.languages.onDidChangeStamp((stamp) => this.postCodeStamp(stamp)),
       this.languages.onDidChangeTheme(() => this.postThemeGeneration()),
+      vscode.languages.onDidChangeDiagnostics(() => this.scheduleProblems()),
       store.onDidChange(() => {
         this.refresh();
         this.postOpenFlags();
@@ -493,6 +532,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   dispose(): void {
+    if (this.problemsTimer) {
+      clearTimeout(this.problemsTimer);
+    }
     this.subscriptions.forEach((s) => s.dispose());
   }
 
@@ -1695,14 +1737,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (this.pageKindOfMarker(message.to) === 'notes') {
         return;
       }
-      if (this.refuseLocked(message.to) || (message.from && this.refuseLocked(message.from))) {
+      // Locked target still accepts drops; locked source must not start a drag (webview).
+      if (message.from && message.from !== message.to && this.refuseLocked(message.from)) {
         return;
       }
-      if (message.copy) {
-        await this.store.assign([message.relPath], message.to);
-      } else if (message.from && message.from !== message.to) {
-        await this.store.moveItem(message.relPath, message.from, message.to);
-      }
+      const blockOrder = Array.isArray(message.blockOrder) ? message.blockOrder : undefined;
+      await this.store.moveItem(message.relPath, message.from, message.to, {
+        copy: !!message.copy,
+        blockOrder,
+      });
       return;
     }
     if (message.type === 'moveClass') {
@@ -1712,17 +1755,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (this.pageKindOfMarker(message.to) === 'notes') {
         return;
       }
-      if (this.refuseLocked(message.to) || (message.from && this.refuseLocked(message.from))) {
+      if (message.from && message.from !== message.to && this.refuseLocked(message.from)) {
         return;
       }
-      if (message.copy) {
-        const def = this.store.classDef(message.classId);
-        if (def) {
-          await this.store.assignClass(def, message.to);
-        }
-      } else if (message.from && message.from !== message.to) {
-        await this.store.moveClass(message.classId, message.from, message.to);
-      }
+      const blockOrder = Array.isArray(message.blockOrder) ? message.blockOrder : undefined;
+      await this.store.moveClass(message.classId, message.from, message.to, {
+        copy: !!message.copy,
+        blockOrder,
+      });
       return;
     }
     if (message.type === 'openClass') {
@@ -1784,9 +1824,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!this.store.marker(message.to) || this.pageKindOfMarker(message.to) === 'notes') {
         return;
       }
-      if (this.refuseLocked(message.to)) {
-        return;
-      }
       const relPaths = message.uris
         .map((raw) => {
           try {
@@ -1802,11 +1839,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         );
         return;
       }
-      await this.store.assign(relPaths, message.to);
+      const added = await this.store.assign(relPaths, message.to);
+      if (added === 0) {
+        webview.postMessage({ type: 'dropAlreadyExists' });
+      }
       return;
     }
     if (message.type === 'listDir') {
       await this.postDirListing(webview, message.relPath);
+      return;
+    }
+    if (message.type === 'openAt') {
+      await this.openDiagnostic(message);
       return;
     }
     if (message.type !== 'open' && message.type !== 'reveal') {
@@ -1957,6 +2001,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       surface: this.surfaceOf(webview),
       codeStamp: this.languages.getStamp() ?? null,
       themeGeneration: this.languages.getThemeGeneration(),
+      problems: this.problems,
     });
   }
 
@@ -2035,6 +2080,115 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       void webview.postMessage({ type: 'tabs', ...tabs });
     }
+  }
+
+  /** Push Error diagnostics without a full map re-render. */
+  private postProblems(): void {
+    if (!this.store.ready) {
+      return;
+    }
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      void webview.postMessage({ type: 'problems', problems: this.problems });
+    }
+  }
+
+  private scheduleProblems(): void {
+    if (this.problemsTimer) {
+      clearTimeout(this.problemsTimer);
+    }
+    this.problemsTimer = setTimeout(() => {
+      this.problemsTimer = undefined;
+      const next = this.collectProblems();
+      const key = this.problemSignature(next);
+      if (key === this.problemsKey) {
+        return;
+      }
+      this.problems = next;
+      this.problemsKey = key;
+      this.postProblems();
+    }, 200);
+  }
+
+  private collectProblems(): ProblemDiag[] {
+    const out: ProblemDiag[] = [];
+    for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
+      const relPath = this.store.toRelative(uri);
+      if (!relPath) {
+        continue;
+      }
+      for (const diagnostic of diagnostics) {
+        if (diagnostic.severity !== vscode.DiagnosticSeverity.Error) {
+          continue;
+        }
+        const message = diagnostic.message.trim();
+        if (!message) {
+          continue;
+        }
+        out.push({
+          relPath,
+          message,
+          line: diagnostic.range.start.line,
+          character: diagnostic.range.start.character,
+          endLine: diagnostic.range.end.line,
+          endCharacter: diagnostic.range.end.character,
+        });
+      }
+    }
+    out.sort(
+      (a, b) =>
+        a.relPath.localeCompare(b.relPath) ||
+        a.line - b.line ||
+        a.character - b.character ||
+        a.message.localeCompare(b.message),
+    );
+    return out;
+  }
+
+  private problemSignature(list: ProblemDiag[]): string {
+    return list
+      .map((item) =>
+        [item.relPath, item.line, item.character, item.endLine, item.endCharacter, item.message].join('\n'),
+      )
+      .join('\n\0');
+  }
+
+  private async openDiagnostic(
+    message: Extract<IncomingMessage, { type: 'openAt' }>,
+  ): Promise<void> {
+    const { relPath, line, character, endLine, endCharacter } = message;
+    if (
+      !relPath ||
+      !Number.isInteger(line) ||
+      line < 0 ||
+      !Number.isInteger(character) ||
+      character < 0 ||
+      !Number.isInteger(endLine) ||
+      endLine < 0 ||
+      !Number.isInteger(endCharacter) ||
+      endCharacter < 0
+    ) {
+      return;
+    }
+    const uri = this.store.toUri(relPath);
+    const stat = await vscode.workspace.fs.stat(uri).then(
+      (s) => s,
+      () => undefined,
+    );
+    if (!stat || stat.type & vscode.FileType.Directory) {
+      return;
+    }
+    const start = new vscode.Position(line, character);
+    let end = new vscode.Position(endLine, endCharacter);
+    if (end.isBefore(start)) {
+      end = start;
+    }
+    await vscode.commands.executeCommand('vscode.open', uri, {
+      viewColumn: this.targetColumn(),
+      selection: new vscode.Range(start, end),
+    });
   }
 
   /** Push on-disk uncommitted paths without a full map re-render. */

@@ -491,6 +491,18 @@
   let dragPayload = null;
   /** @type {{ section: HTMLElement, header?: HTMLElement, mode: string } | null} */
   let dropHighlight = null;
+  /** @type {{ groupId: string, blockKind: string, index: number } | null} */
+  let dropSlotState = null;
+  /** @type {HTMLElement | null} */
+  let dropSlotEl = null;
+  /** Pending cross-group chip drop waiting for Move / Copy / OK. */
+  /** @type {{ kind: 'item' | 'class', relPath?: string, classId?: string, from: string, to: string, isDir?: boolean, blockKind: string, index: number } | null} */
+  let pendingChipDrop = null;
+  /** @type {ReturnType<typeof setTimeout> | 0} */
+  let expandDropTimer = 0;
+  /** @type {string | null} */
+  let expandDropTargetId = null;
+  const EXPAND_DROP_MS = 500;
 
   const dropHint = el('div', 'drop-hint');
   dropHint.hidden = true;
@@ -499,6 +511,12 @@
   const dropEdge = el('div', 'drop-edge');
   dropEdge.hidden = true;
   document.body.append(dropEdge);
+
+  const dropDialog = el('div', 'drop-dialog');
+  dropDialog.hidden = true;
+  dropDialog.setAttribute('role', 'dialog');
+  dropDialog.setAttribute('aria-modal', 'true');
+  document.body.append(dropDialog);
 
   const markTip = el('div', 'mark-tip');
   markTip.hidden = true;
@@ -518,10 +536,24 @@
   /** @type {{ relPath: string, anchor: HTMLElement } | null} */
   let dirPopoverState = null;
 
+  const problemPanel = el('div', 'syn3-menu problem-panel');
+  problemPanel.hidden = true;
+  problemPanel.setAttribute('role', 'dialog');
+  problemPanel.setAttribute('aria-label', 'Errors');
+  document.body.append(problemPanel);
+
+  /**
+   * @typedef {{ relPath: string, message: string, line: number, character: number, endLine: number, endCharacter: number }} ProblemDiag
+   */
+
+  /** @type {{ anchor: HTMLButtonElement, kind: 'file' | 'dir', relPath: string } | null} */
+  let problemPanelState = null;
+
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'state') {
       closeDirPopover();
+      closeProblemPanel();
       data = message;
       if (
         message.restorePage &&
@@ -587,6 +619,11 @@
     } else if (message.type === 'changes' && data) {
       data.dirtyPaths = Array.isArray(message.dirtyPaths) ? message.dirtyPaths : [];
       applyChangeMarks();
+    } else if (message.type === 'problems' && data) {
+      data.problems = Array.isArray(message.problems) ? message.problems : [];
+      applyProblemMarks();
+    } else if (message.type === 'dropAlreadyExists') {
+      openDropExistsDialog();
     } else if (message.type === 'dirListing') {
       fillDirPopover(message);
     } else if (message.type === 'selectAll') {
@@ -2058,6 +2095,44 @@
     });
   }
 
+  /** Expand even when locked — used while dragging a chip onto a folded card. */
+  function expandForDrop(groupId) {
+    if (!isCollapsed(groupId)) {
+      return false;
+    }
+    const next = { ...pageCollapsed() };
+    delete next[groupId];
+    persistCollapsed(next);
+    renderFromToggle = true;
+    render();
+    renderFromToggle = false;
+    return true;
+  }
+
+  function clearExpandForDrop() {
+    if (expandDropTimer) {
+      clearTimeout(expandDropTimer);
+    }
+    expandDropTimer = 0;
+    expandDropTargetId = null;
+  }
+
+  function scheduleExpandForDrop(groupId) {
+    if (expandDropTargetId === groupId) {
+      return;
+    }
+    clearExpandForDrop();
+    if (!isCollapsed(groupId)) {
+      return;
+    }
+    expandDropTargetId = groupId;
+    expandDropTimer = setTimeout(() => {
+      expandDropTimer = 0;
+      expandDropTargetId = null;
+      expandForDrop(groupId);
+    }, EXPAND_DROP_MS);
+  }
+
   function toggleCollapsed(groupId) {
     if (isLocked(groupId)) {
       return;
@@ -2159,12 +2234,21 @@
     ) {
       closeToolbarMenus();
     }
+    const inProblem = !!(target && problemPanel.contains(target));
+    const onProblemAnchor = !!(
+      target &&
+      problemPanelState &&
+      problemPanelState.anchor.contains(target)
+    );
+    if (problemPanelState && !inProblem && !onProblemAnchor) {
+      closeProblemPanel();
+    }
     if (!dirPopoverState) {
       return;
     }
     if (
       target &&
-      (dirPopover.contains(target) || dirPopoverState.anchor.contains(target))
+      (dirPopover.contains(target) || dirPopoverState.anchor.contains(target) || inProblem)
     ) {
       return;
     }
@@ -2222,6 +2306,9 @@
     if (dirPopoverState) {
       closeDirPopover();
     }
+    if (problemPanelState) {
+      closeProblemPanel();
+    }
   });
 
   // Cmd/A: handle when the key reaches the webview (some hosts); also clamp
@@ -2254,16 +2341,25 @@
     if (dirPopoverState) {
       positionDirPopover(dirPopoverState.anchor);
     }
+    if (problemPanelState) {
+      positionProblemPanel();
+    }
   });
 
   document.addEventListener(
     'scroll',
     (event) => {
+      const target = /** @type {Node | null} */ (event.target);
+      if (target && problemPanel.contains(target)) {
+        return;
+      }
+      if (problemPanelState) {
+        closeProblemPanel();
+      }
       if (!dirPopoverState) {
         return;
       }
-      const target = /** @type {Node | null} */ (event.target);
-      if (target && dirPopover.contains(/** @type {Node} */ (target))) {
+      if (target && dirPopover.contains(target)) {
         return;
       }
       closeDirPopover();
@@ -2409,6 +2505,7 @@
     updateActive();
     applyTabMarks();
     applyChangeMarks();
+    applyProblemMarks();
     playFolds(folds);
     layoutFoldRails();
     if (pendingEditAfterExpandId && pendingEditAfterExpandPaints > 0) {
@@ -7772,13 +7869,12 @@
 
     node.addEventListener(
       'dragstart',
-      (event) => {
-        if (!moved) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
+      () => {
+        // Browser fires dragstart once; cancelling it here used to kill header
+        // drags before the 6px click threshold. Mark the gesture so pointerup
+        // does not fold, and let the element's own dragstart call beginDrag.
         dragged = true;
+        moved = true;
       },
       true,
     );
@@ -7811,7 +7907,7 @@
     node.title =
       aliasLine +
       (item.exists ? item.relPath + '\n' + clickHint : item.relPath + '\nMissing') +
-      (locked ? '\nLocked' : '\nDrag to another group · Alt+Drag to copy');
+      (locked ? '\nLocked' : '\n' + t('dragHint'));
     setMapContext(node, {
       webviewSection: item.exists ? 'item' : 'missing',
       markerId: groupId,
@@ -7845,8 +7941,8 @@
       }
       beginDrag(
         event,
-        { kind: 'item', relPath: item.relPath, from: groupId },
-        'copyMove',
+        { kind: 'item', relPath: item.relPath, from: groupId, isDir: !!item.isDir },
+        'move',
         item.relPath,
       );
       node.classList.add('dragging');
@@ -7871,6 +7967,9 @@
   }
 
   function closeDirPopover() {
+    if (problemPanelState && dirPopover.contains(problemPanelState.anchor)) {
+      closeProblemPanel();
+    }
     dirPopoverState = null;
     dirPopover.hidden = true;
     dirPopover.classList.remove('loading');
@@ -7878,6 +7977,9 @@
   }
 
   function fillDirPopover(message) {
+    if (problemPanelState && dirPopover.contains(problemPanelState.anchor)) {
+      closeProblemPanel();
+    }
     if (!dirPopoverState || dirPopoverState.relPath !== message.relPath) {
       return;
     }
@@ -7911,6 +8013,7 @@
     }
     dirPopover.replaceChildren(list);
     applyDirPopoverChangeMarks();
+    applyProblemMarks();
     positionDirPopover(dirPopoverState.anchor);
   }
 
@@ -7949,7 +8052,7 @@
       cls.relPath +
       (cls.line ? ':' + cls.line : '') +
       (cls.exists ? '\nClick: open at class' : '\nMissing file') +
-      (locked ? '\nLocked' : '\nDrag to another group · Alt+Drag to copy');
+      (locked ? '\nLocked' : '\n' + t('dragHint'));
     setMapContext(node, {
       webviewSection: cls.exists ? 'class' : 'missingClass',
       markerId: groupId,
@@ -7974,7 +8077,7 @@
       beginDrag(
         event,
         { kind: 'class', classId: cls.id, from: groupId },
-        'copyMove',
+        'move',
         cls.name,
       );
       node.classList.add('dragging');
@@ -8017,7 +8120,7 @@
       event.stopPropagation();
       const payload = readPayload(event);
       const decision = decideDrop(event, section, group, payload);
-      applyDecision(event, section, header, group, decision);
+      applyDecision(event, section, header, group, decision, payload);
     });
 
     section.addEventListener('drop', (event) => {
@@ -8025,8 +8128,10 @@
       event.stopPropagation();
       const payload = readPayload(event);
       const decision = decideDrop(event, section, group, payload);
+      const slot = dropSlotState && dropSlotState.groupId === group.id ? { ...dropSlotState } : null;
       clearDropHighlights();
       hideDropHint();
+      clearExpandForDrop();
       document.body.classList.remove('is-dragging');
 
       if (!decision || decision.blocked) {
@@ -8060,7 +8165,7 @@
         return;
       }
       if (decision.action === 'item') {
-        handleItemOrExternalDrop(event, group.id, payload);
+        handleItemOrExternalDrop(event, group, payload, slot);
       }
     });
   }
@@ -8159,14 +8264,6 @@
           blocked: true,
         };
       }
-      if (isLocked(group)) {
-        return {
-          action: 'item',
-          mode: 'blocked',
-          hint: 'Group is locked',
-          blocked: true,
-        };
-      }
       if (payload && (payload.kind === 'item' || payload.kind === 'class') && isLocked(payload.from)) {
         return {
           action: 'item',
@@ -8175,12 +8272,11 @@
           blocked: true,
         };
       }
-      const copy = !!(payload && (payload.kind === 'item' || payload.kind === 'class') && event.altKey);
-      const verb = copy ? 'Copy to' : 'Move to';
       return {
         action: 'item',
         mode: 'target',
-        hint: verb + ' "' + group.label + '"',
+        hint: '→ "' + group.label + '"',
+        chip: !!(payload && (payload.kind === 'item' || payload.kind === 'class')),
       };
     }
     return null;
@@ -8198,13 +8294,22 @@
     return { ok: true, reason: '' };
   }
 
-  function applyDecision(event, section, header, group, decision) {
+  /**
+   * @param {DragEvent} event
+   * @param {HTMLElement} section
+   * @param {HTMLElement} header
+   * @param {*} group
+   * @param {*} decision
+   * @param {*} [payload]
+   */
+  function applyDecision(event, section, header, group, decision, payload) {
     moveDropHint(event.clientX, event.clientY);
     if (!decision) {
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = 'none';
       }
       clearDropHighlights();
+      clearExpandForDrop();
       showDropHint('', true);
       return;
     }
@@ -8212,16 +8317,38 @@
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = 'none';
       }
+      clearDropSlot();
+      clearExpandForDrop();
       setDropHighlight(section, 'blocked', header);
       showDropHint(decision.hint, true);
       return;
     }
     if (event.dataTransfer) {
-      event.dataTransfer.dropEffect =
-        decision.action === 'item' && event.altKey ? 'copy' : 'move';
+      event.dataTransfer.dropEffect = 'move';
     }
     setDropHighlight(section, decision.mode, header);
     showDropHint(decision.hint, false);
+
+    if (decision.action === 'item') {
+      if (isCollapsed(group.id)) {
+        scheduleExpandForDrop(group.id);
+        clearDropSlot();
+      } else if (decision.chip && payload) {
+        clearExpandForDrop();
+        const slot = computeChipSlot(event, section, group, payload);
+        if (slot) {
+          ensureDropSlot(section, group, slot.blockKind, slot.index, payload);
+        } else {
+          clearDropSlot();
+        }
+      } else {
+        clearExpandForDrop();
+        clearDropSlot();
+      }
+    } else {
+      clearDropSlot();
+      clearExpandForDrop();
+    }
   }
 
   function beginDrag(event, payload, effectAllowed, plain) {
@@ -8240,6 +8367,7 @@
     dragPayload = null;
     document.body.classList.remove('is-dragging');
     clearDropHighlights();
+    clearExpandForDrop();
     hideDropHint();
   }
 
@@ -8360,31 +8488,38 @@
     }
   }
 
-  function handleItemOrExternalDrop(event, to, payload) {
-    if (payload && payload.kind === 'item') {
-      if (payload.from === to && !event.altKey) {
-        return;
-      }
-      vscode.postMessage({
-        type: 'moveItem',
+  /**
+   * @param {DragEvent} event
+   * @param {*} group
+   * @param {*} payload
+   * @param {{ groupId: string, blockKind: string, index: number } | null} slot
+   */
+  function handleItemOrExternalDrop(event, group, payload, slot) {
+    const to = group.id;
+    if (payload && (payload.kind === 'item' || payload.kind === 'class')) {
+      const blockKind =
+        (slot && slot.blockKind) ||
+        chipBlockKind(payload);
+      const index = slot ? slot.index : blockLength(group, blockKind);
+      const pending = {
+        kind: payload.kind,
         relPath: payload.relPath,
-        from: payload.from,
-        to,
-        copy: !!event.altKey,
-      });
-      return;
-    }
-    if (payload && payload.kind === 'class') {
-      if (payload.from === to && !event.altKey) {
-        return;
-      }
-      vscode.postMessage({
-        type: 'moveClass',
         classId: payload.classId,
         from: payload.from,
         to,
-        copy: !!event.altKey,
-      });
+        isDir: !!payload.isDir,
+        blockKind,
+        index,
+      };
+      if (payload.from === to) {
+        commitChipDrop(pending, false);
+        return;
+      }
+      if (chipAlreadyInGroup(payload, group)) {
+        openDropExistsDialog();
+        return;
+      }
+      openDropChooseDialog(pending);
       return;
     }
     const uris = readUris(event);
@@ -8392,6 +8527,315 @@
       vscode.postMessage({ type: 'dropUris', uris, to });
     }
   }
+
+  /** @param {*} payload */
+  function chipBlockKind(payload) {
+    if (payload.kind === 'class') {
+      return 'classes';
+    }
+    return payload.isDir ? 'dirs' : 'files';
+  }
+
+  /** @param {*} payload @param {*} group */
+  function chipAlreadyInGroup(payload, group) {
+    if (payload.kind === 'class') {
+      return (group.classes || []).some((cls) => cls.id === payload.classId);
+    }
+    return (group.items || []).some((item) => item.relPath === payload.relPath);
+  }
+
+  /** @param {*} group @param {string} blockKind */
+  function blockIds(group, blockKind) {
+    if (blockKind === 'dirs') {
+      return (group.items || []).filter((item) => item.isDir).map((item) => item.relPath);
+    }
+    if (blockKind === 'files') {
+      return (group.items || []).filter((item) => !item.isDir).map((item) => item.relPath);
+    }
+    return (group.classes || []).map((cls) => cls.id);
+  }
+
+  /** @param {*} group @param {string} blockKind */
+  function blockLength(group, blockKind) {
+    return blockIds(group, blockKind).length;
+  }
+
+  /** @param {*} pending */
+  function buildBlockOrder(pending) {
+    const group = (data?.groups || []).find((g) => g.id === pending.to);
+    if (!group) {
+      return [];
+    }
+    const dragKey = pending.kind === 'class' ? pending.classId : pending.relPath;
+    const list = blockIds(group, pending.blockKind).filter((id) => id !== dragKey);
+    const at = Math.max(0, Math.min(pending.index, list.length));
+    list.splice(at, 0, dragKey);
+    return list;
+  }
+
+  /**
+   * @param {*} pending
+   * @param {boolean} copy
+   */
+  function commitChipDrop(pending, copy) {
+    const blockOrder = buildBlockOrder(pending);
+    if (pending.kind === 'class') {
+      vscode.postMessage({
+        type: 'moveClass',
+        classId: pending.classId,
+        from: pending.from,
+        to: pending.to,
+        copy,
+        blockOrder,
+      });
+      return;
+    }
+    vscode.postMessage({
+      type: 'moveItem',
+      relPath: pending.relPath,
+      from: pending.from,
+      to: pending.to,
+      copy,
+      blockOrder,
+    });
+  }
+
+  /**
+   * Insert index for a chip over a group card.
+   * @param {DragEvent} event
+   * @param {HTMLElement} section
+   * @param {*} group
+   * @param {*} payload
+   * @returns {{ blockKind: string, index: number } | null}
+   */
+  function computeChipSlot(event, section, group, payload) {
+    const blockKind = chipBlockKind(payload);
+    const dragKey = payload.kind === 'class' ? payload.classId : payload.relPath;
+    const fromSame = payload.from === group.id;
+    const without = blockIds(group, blockKind).filter((id) => !(fromSame && id === dragKey));
+
+    const children = section.querySelector(':scope > .children');
+    const ownBlock =
+      children instanceof HTMLElement
+        ? children.querySelector(':scope > .block-' + blockKind)
+        : null;
+
+    if (ownBlock instanceof HTMLElement) {
+      const items = [...ownBlock.querySelectorAll(':scope > .item:not(.drop-slot)')].filter(
+        (node) => {
+          if (!(node instanceof HTMLElement)) {
+            return false;
+          }
+          if (!fromSame) {
+            return true;
+          }
+          if (payload.kind === 'class') {
+            return node.dataset.classId !== dragKey;
+          }
+          return node.dataset.rel !== dragKey;
+        },
+      );
+      const blockRect = ownBlock.getBoundingClientRect();
+      if (event.clientY < blockRect.top) {
+        return { blockKind, index: 0 };
+      }
+      if (event.clientY > blockRect.bottom) {
+        return { blockKind, index: without.length };
+      }
+      for (let i = 0; i < items.length; i++) {
+        const node = items[i];
+        if (!(node instanceof HTMLElement)) {
+          continue;
+        }
+        const rect = node.getBoundingClientRect();
+        if (event.clientY < rect.top + rect.height / 2) {
+          return { blockKind, index: i };
+        }
+      }
+      return { blockKind, index: without.length };
+    }
+
+    // No own block yet: foreign blocks above → index 0, otherwise end (0).
+    if (children instanceof HTMLElement) {
+      const order = ['dirs', 'files', 'classes'];
+      const ownPos = order.indexOf(blockKind);
+      for (let i = 0; i < order.length; i++) {
+        if (i === ownPos) {
+          continue;
+        }
+        const other = children.querySelector(':scope > .block-' + order[i]);
+        if (!(other instanceof HTMLElement)) {
+          continue;
+        }
+        const rect = other.getBoundingClientRect();
+        if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
+          return { blockKind, index: i < ownPos ? without.length : 0 };
+        }
+      }
+    }
+    return { blockKind, index: without.length };
+  }
+
+  /**
+   * @param {HTMLElement} section
+   * @param {*} group
+   * @param {string} blockKind
+   * @param {number} index
+   * @param {*} payload
+   */
+  function ensureDropSlot(section, group, blockKind, index, payload) {
+    if (
+      dropSlotState &&
+      dropSlotState.groupId === group.id &&
+      dropSlotState.blockKind === blockKind &&
+      dropSlotState.index === index &&
+      dropSlotEl &&
+      dropSlotEl.isConnected
+    ) {
+      return;
+    }
+    clearDropSlot();
+    dropSlotState = { groupId: group.id, blockKind, index };
+
+    let children = section.querySelector(':scope > .children');
+    if (!(children instanceof HTMLElement)) {
+      children = el('div', 'children');
+      section.append(children);
+    }
+    let block = children.querySelector(':scope > .block-' + blockKind);
+    if (!(block instanceof HTMLElement)) {
+      block = el('div', 'node block block-' + blockKind);
+      insertBlockInOrder(children, block, blockKind);
+    }
+
+    const dragKey = payload.kind === 'class' ? payload.classId : payload.relPath;
+    const fromSame = payload.from === group.id;
+    const items = [...block.querySelectorAll(':scope > .item:not(.drop-slot)')].filter((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      if (!fromSame) {
+        return true;
+      }
+      if (payload.kind === 'class') {
+        return node.dataset.classId !== dragKey;
+      }
+      return node.dataset.rel !== dragKey;
+    });
+
+    const slot = el('div', 'item drop-slot');
+    slot.setAttribute('aria-hidden', 'true');
+    const at = Math.max(0, Math.min(index, items.length));
+    if (at >= items.length) {
+      block.append(slot);
+    } else {
+      block.insertBefore(slot, items[at]);
+    }
+    dropSlotEl = slot;
+  }
+
+  /**
+   * @param {HTMLElement} children
+   * @param {HTMLElement} block
+   * @param {string} blockKind
+   */
+  function insertBlockInOrder(children, block, blockKind) {
+    const order = ['dirs', 'files', 'classes'];
+    const pos = order.indexOf(blockKind);
+    for (let i = pos + 1; i < order.length; i++) {
+      const later = children.querySelector(':scope > .block-' + order[i]);
+      if (later) {
+        children.insertBefore(block, later);
+        return;
+      }
+    }
+    const firstCard = children.querySelector(':scope > section.group, :scope > .note-card');
+    if (firstCard) {
+      children.insertBefore(block, firstCard);
+      return;
+    }
+    children.append(block);
+  }
+
+  function clearDropSlot() {
+    if (dropSlotEl && dropSlotEl.isConnected) {
+      const block = dropSlotEl.parentElement;
+      dropSlotEl.remove();
+      if (block && block.childElementCount === 0 && block.classList.contains('block')) {
+        block.remove();
+      }
+    }
+    dropSlotEl = null;
+    dropSlotState = null;
+  }
+
+  function openDropChooseDialog(pending) {
+    pendingChipDrop = pending;
+    dropDialog.hidden = false;
+    dropDialog.replaceChildren();
+    const panel = el('div', 'drop-dialog-panel');
+    const actions = el('div', 'drop-dialog-actions');
+    const moveBtn = el('button', 'drop-dialog-btn');
+    moveBtn.type = 'button';
+    moveBtn.textContent = t('dropMove');
+    moveBtn.addEventListener('click', () => {
+      const current = pendingChipDrop;
+      closeDropDialog();
+      if (current) {
+        commitChipDrop(current, false);
+      }
+    });
+    const copyBtn = el('button', 'drop-dialog-btn');
+    copyBtn.type = 'button';
+    copyBtn.textContent = t('dropCopy');
+    copyBtn.addEventListener('click', () => {
+      const current = pendingChipDrop;
+      closeDropDialog();
+      if (current) {
+        commitChipDrop(current, true);
+      }
+    });
+    actions.append(moveBtn, copyBtn);
+    panel.append(actions);
+    dropDialog.append(panel);
+    moveBtn.focus();
+  }
+
+  function openDropExistsDialog() {
+    pendingChipDrop = null;
+    dropDialog.hidden = false;
+    dropDialog.replaceChildren();
+    const panel = el('div', 'drop-dialog-panel');
+    panel.append(el('div', 'drop-dialog-message', t('dropAlreadyExists')));
+    const actions = el('div', 'drop-dialog-actions');
+    const okBtn = el('button', 'drop-dialog-btn');
+    okBtn.type = 'button';
+    okBtn.textContent = t('dropOk');
+    okBtn.addEventListener('click', () => closeDropDialog());
+    actions.append(okBtn);
+    panel.append(actions);
+    dropDialog.append(panel);
+    okBtn.focus();
+  }
+
+  function closeDropDialog() {
+    pendingChipDrop = null;
+    dropDialog.hidden = true;
+    dropDialog.replaceChildren();
+  }
+
+  dropDialog.addEventListener('click', (event) => {
+    if (event.target === dropDialog) {
+      closeDropDialog();
+    }
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !dropDialog.hidden) {
+      event.preventDefault();
+      closeDropDialog();
+    }
+  });
 
   function isDescendant(ancestorId, nodeId) {
     const byId = Object.fromEntries(data.groups.map((g) => [g.id, g]));
@@ -8445,6 +8889,7 @@
 
   function clearDropHighlights() {
     hideDropEdge();
+    clearDropSlot();
     if (dropHighlight) {
       dropHighlight.section.classList.remove('drop-target', 'drop-into', 'drop-blocked', 'drop-edge-target');
       dropHighlight.header?.classList.remove('drop-before', 'drop-after', 'drop-into');
@@ -8577,6 +9022,305 @@
         : relPath !== '' && dirtyPaths.includes(relPath);
       setChangeCorner(row, dirty);
     }
+  }
+
+  /** @returns {ProblemDiag[]} */
+  function problemList() {
+    const raw = data?.problems;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw.filter(
+      (entry) =>
+        !!entry &&
+        typeof entry.relPath === 'string' &&
+        typeof entry.message === 'string' &&
+        Number.isInteger(entry.line) &&
+        Number.isInteger(entry.character) &&
+        Number.isInteger(entry.endLine) &&
+        Number.isInteger(entry.endCharacter),
+    );
+  }
+
+  /**
+   * @param {HTMLElement} node
+   * @returns {{ kind: 'file' | 'dir', relPath: string }}
+   */
+  function problemScopeOf(node) {
+    if (node.classList.contains('class-item')) {
+      return { kind: 'file', relPath: node.dataset.file || '' };
+    }
+    if (node.classList.contains('dir')) {
+      return { kind: 'dir', relPath: node.dataset.rel || '' };
+    }
+    return { kind: 'file', relPath: node.dataset.rel || '' };
+  }
+
+  /**
+   * File: exact path. Folder: any error under the tree. Class: its whole file.
+   * @param {HTMLElement} node
+   */
+  function entityHasProblems(node) {
+    const scope = problemScopeOf(node);
+    if (!scope.relPath) {
+      return false;
+    }
+    const problems = problemList();
+    if (scope.kind === 'dir') {
+      return problems.some((problem) => pathCovers(scope.relPath, problem.relPath));
+    }
+    return problems.some((problem) => problem.relPath === scope.relPath);
+  }
+
+  /** Red mark between the type icon and the name. Click opens the error panel. */
+  function applyProblemMarks() {
+    const nodes = [
+      ...root.querySelectorAll('.item'),
+      ...dirPopover.querySelectorAll('.dir-popover-item'),
+    ];
+    for (const node of nodes) {
+      const row = /** @type {HTMLElement} */ (node);
+      const show = entityHasProblems(row);
+      const existing = row.querySelector(':scope > .problem-mark');
+      if (!show) {
+        if (existing instanceof HTMLButtonElement && problemPanelState?.anchor === existing) {
+          closeProblemPanel();
+        }
+        existing?.remove();
+        continue;
+      }
+      if (existing instanceof HTMLButtonElement) {
+        continue;
+      }
+      mountProblemIcon(row);
+    }
+    if (problemPanelState) {
+      if (!problemPanelState.anchor.isConnected) {
+        closeProblemPanel();
+        return;
+      }
+      fillProblemPanel();
+      positionProblemPanel();
+    }
+  }
+
+  /** @param {HTMLElement} node */
+  function mountProblemIcon(node) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'problem-mark';
+    button.setAttribute('aria-label', 'Errors');
+    button.setAttribute('aria-expanded', 'false');
+    button.append(errorGlyph());
+    button.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+      button.dataset.pressed = '1';
+    });
+    const release = () => {
+      button.dataset.pressed = '';
+    };
+    button.addEventListener('pointerup', release);
+    button.addEventListener('pointercancel', release);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      release();
+      toggleProblemPanel(button);
+    });
+    node.addEventListener(
+      'dragstart',
+      (event) => {
+        if (button.dataset.pressed === '1') {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      },
+      true,
+    );
+    const text = node.querySelector(':scope > .item-text') || node.querySelector(':scope > .name');
+    if (text) {
+      text.before(button);
+    } else {
+      node.append(button);
+    }
+  }
+
+  /** @param {HTMLButtonElement} anchor */
+  function toggleProblemPanel(anchor) {
+    if (problemPanelState && problemPanelState.anchor === anchor) {
+      closeProblemPanel();
+      return;
+    }
+    const parent = anchor.parentElement;
+    if (!(parent instanceof HTMLElement)) {
+      return;
+    }
+    const scope = problemScopeOf(parent);
+    if (!scope.relPath) {
+      return;
+    }
+    if (problemPanelState) {
+      problemPanelState.anchor.setAttribute('aria-expanded', 'false');
+    }
+    problemPanelState = { anchor, kind: scope.kind, relPath: scope.relPath };
+    anchor.setAttribute('aria-expanded', 'true');
+    problemPanel.hidden = false;
+    fillProblemPanel();
+    positionProblemPanel();
+  }
+
+  function closeProblemPanel() {
+    if (problemPanelState) {
+      problemPanelState.anchor.setAttribute('aria-expanded', 'false');
+    }
+    problemPanelState = null;
+    problemPanel.hidden = true;
+    problemPanel.style.maxHeight = '';
+    const chrome = ensureMenuChrome(problemPanel);
+    chrome.scroller.replaceChildren();
+    chrome.scroller.scrollTop = 0;
+    chrome.bar.hidden = true;
+  }
+
+  function fillProblemPanel() {
+    if (!problemPanelState) {
+      return;
+    }
+    const scope = problemPanelState;
+    const matched = problemList().filter((problem) =>
+      scope.kind === 'dir' ? pathCovers(scope.relPath, problem.relPath) : problem.relPath === scope.relPath,
+    );
+    if (matched.length === 0) {
+      closeProblemPanel();
+      return;
+    }
+    /** @type {Map<string, ProblemDiag[]>} */
+    const byFile = new Map();
+    for (const problem of matched) {
+      const bucket = byFile.get(problem.relPath);
+      if (bucket) {
+        bucket.push(problem);
+      } else {
+        byFile.set(problem.relPath, [problem]);
+      }
+    }
+    const paths = [...byFile.keys()];
+    const chrome = ensureMenuChrome(problemPanel);
+    const scrollTop = chrome.scroller.scrollTop;
+    chrome.scroller.replaceChildren();
+    for (const relPath of paths) {
+      const block = document.createElement('div');
+      block.className = 'problem-file';
+      for (const problem of byFile.get(relPath) || []) {
+        block.append(problemMessageButton(problem));
+      }
+      block.append(problemFileLink(relPath, problemLinkLabel(relPath, paths)));
+      chrome.scroller.append(block);
+    }
+    chrome.scroller.scrollTop = scrollTop;
+    updateMenuScrollbar(problemPanel);
+  }
+
+  /**
+   * Unique names stay bare. A shared basename becomes parent/file.
+   * @param {string} relPath
+   * @param {string[]} paths
+   */
+  function problemLinkLabel(relPath, paths) {
+    const base = baseName(relPath);
+    const collision = paths.some((other) => other !== relPath && baseName(other) === base);
+    if (!collision) {
+      return base;
+    }
+    const parent = parentName(relPath);
+    return parent ? parent + '/' + base : base;
+  }
+
+  /** @param {string} relPath */
+  function baseName(relPath) {
+    const slash = relPath.lastIndexOf('/');
+    return slash === -1 ? relPath : relPath.slice(slash + 1);
+  }
+
+  /** Immediate parent folder name. Empty at the workspace root. */
+  function parentName(relPath) {
+    const slash = relPath.lastIndexOf('/');
+    if (slash === -1) {
+      return '';
+    }
+    const parent = relPath.slice(0, slash);
+    const slash2 = parent.lastIndexOf('/');
+    return slash2 === -1 ? parent : parent.slice(slash2 + 1);
+  }
+
+  /** @param {ProblemDiag} problem */
+  function problemMessageButton(problem) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'problem-message';
+    button.textContent = problem.message;
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({
+        type: 'openAt',
+        relPath: problem.relPath,
+        line: problem.line,
+        character: problem.character,
+        endLine: problem.endLine,
+        endCharacter: problem.endCharacter,
+      });
+    });
+    return button;
+  }
+
+  /** @param {string} relPath @param {string} label */
+  function problemFileLink(relPath, label) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'problem-file-link';
+    button.textContent = label;
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({ type: 'open', relPath });
+    });
+    return button;
+  }
+
+  function positionProblemPanel() {
+    if (!problemPanelState) {
+      return;
+    }
+    const anchor = problemPanelState.anchor;
+    if (!anchor.isConnected) {
+      closeProblemPanel();
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    const pad = 4;
+    ensureMenuChrome(problemPanel);
+    problemPanel.style.visibility = 'hidden';
+    problemPanel.hidden = false;
+    problemPanel.style.maxHeight = '320px';
+    problemPanel.style.width = 'auto';
+    problemPanel.style.top = '0px';
+    let left = Math.max(pad, rect.left);
+    const rightEdge = window.innerWidth - pad;
+    if (left > rightEdge - 1) {
+      left = Math.max(pad, rightEdge - 1);
+    }
+    problemPanel.style.left = left + 'px';
+    problemPanel.style.right = pad + 'px';
+    let popH = problemPanel.offsetHeight || 40;
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const spaceAbove = rect.top - pad;
+    const below = popH <= spaceBelow || spaceBelow >= spaceAbove;
+    const space = Math.max(80, below ? spaceBelow : spaceAbove);
+    problemPanel.style.maxHeight = Math.min(320, space) + 'px';
+    popH = problemPanel.offsetHeight || popH;
+    const top = below ? rect.bottom + pad : Math.max(pad, rect.top - popH - pad);
+    problemPanel.style.top = top + 'px';
+    problemPanel.style.visibility = '';
+    updateMenuScrollbar(problemPanel);
   }
 
   /**
@@ -8943,6 +9687,23 @@
     ]);
   }
 
+  function errorGlyph() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'icon problem-icon');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('fill-rule', 'evenodd');
+    path.setAttribute('clip-rule', 'evenodd');
+    path.setAttribute(
+      'd',
+      'M21.5 6.5V17.5L12 23L2.5 17.5V6.5L12 1L21.5 6.5ZM12 10C10.8954 10 10 10.8954 10 12C10 13.1046 10.8954 14 12 14C13.1046 14 14 13.1046 14 12C14 10.8954 13.1046 10 12 10Z',
+    );
+    svg.append(path);
+    return svg;
+  }
+
   function folderIcon() {
     return svgIcon('icon folder-icon', [
       [
@@ -9142,6 +9903,22 @@
   window.addEventListener('resize', updateScrollbar);
   new ResizeObserver(updateScrollbar).observe(document.body);
   updateScrollbar();
+
+  // HTML5 DnD blocks native wheel scrolling in the webview; scroll the map by hand.
+  window.addEventListener(
+    'wheel',
+    (event) => {
+      if (!document.body.classList.contains('is-dragging')) {
+        return;
+      }
+      if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) {
+        return;
+      }
+      event.preventDefault();
+      window.scrollBy(0, event.deltaY);
+    },
+    { passive: false, capture: true },
+  );
 
   document.addEventListener(
     'wheel',

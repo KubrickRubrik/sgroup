@@ -2264,16 +2264,35 @@ export class MarkerStore implements vscode.Disposable {
 
   // ---- items ----
 
-  async assign(relPaths: string[], markerId: string): Promise<void> {
+  /** True when the path is already assigned to the marker. */
+  itemInMarker(relPath: string, markerId: string): boolean {
+    return (this.data.items[normalizePath(relPath)] ?? []).includes(markerId);
+  }
+
+  /** True when the class is already assigned to the marker. */
+  classInMarker(classId: string, markerId: string): boolean {
+    return (this.data.classItems[classId] ?? []).includes(markerId);
+  }
+
+  /**
+   * Assign paths to a marker. Returns how many were new.
+   * When every path was already there, no commit.
+   */
+  async assign(relPaths: string[], markerId: string): Promise<number> {
     const now = Date.now();
+    let added = 0;
     relPaths.forEach((relPath, index) => {
       const ids = this.data.items[relPath] ?? [];
       if (!ids.includes(markerId)) {
         this.setItem(relPath, [...ids, markerId]);
         this.setAdded(relPath, markerId, now + index);
+        added += 1;
       }
     });
-    await this.commit();
+    if (added > 0) {
+      await this.commit();
+    }
+    return added;
   }
 
   async unassign(entries: Array<{ relPath: string; markerId?: string }>): Promise<void> {
@@ -2284,17 +2303,56 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  async moveItem(relPath: string, fromMarkerId: string, toMarkerId: string): Promise<void> {
+  /**
+   * Move, copy, or reorder a file/folder chip.
+   * `blockOrder` is the desired order of the same-kind block in `toMarkerId`
+   * (dirs among dirs, files among files), including `relPath`.
+   * Returns false when nothing changed (already in target, or order unchanged).
+   */
+  async moveItem(
+    relPath: string,
+    fromMarkerId: string,
+    toMarkerId: string,
+    options: { copy?: boolean; blockOrder?: string[] } = {},
+  ): Promise<boolean> {
+    const key = normalizePath(relPath);
+    const copy = options.copy === true;
+    const blockOrder = (options.blockOrder ?? []).map(normalizePath);
+    if (!this.data.markers[toMarkerId]) {
+      return false;
+    }
+
     if (fromMarkerId === toMarkerId) {
-      return;
+      if (blockOrder.length === 0 || !blockOrder.includes(key)) {
+        return false;
+      }
+      if (!this.applyItemBlockOrder(toMarkerId, blockOrder)) {
+        return false;
+      }
+      await this.commit();
+      return true;
     }
-    const ids = (this.data.items[relPath] ?? []).filter((x) => x !== fromMarkerId);
-    if (!ids.includes(toMarkerId)) {
-      ids.push(toMarkerId);
-      this.setAdded(relPath, toMarkerId, Date.now());
+
+    const ids = this.data.items[key] ?? [];
+    if (ids.includes(toMarkerId)) {
+      return false;
     }
-    this.setItem(relPath, ids);
+
+    if (copy) {
+      this.setItem(key, [...ids, toMarkerId]);
+    } else {
+      const next = ids.filter((x) => x !== fromMarkerId);
+      next.push(toMarkerId);
+      this.setItem(key, next);
+    }
+
+    const order =
+      blockOrder.length > 0 && blockOrder.includes(key)
+        ? blockOrder
+        : [...this.itemsOf(toMarkerId).filter((p) => p !== key), key];
+    this.applyItemBlockOrder(toMarkerId, order);
     await this.commit();
+    return true;
   }
 
   async setAlias(relPath: string, alias: string | undefined): Promise<void> {
@@ -2379,17 +2437,97 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  async moveClass(classId: string, fromMarkerId: string, toMarkerId: string): Promise<void> {
-    if (fromMarkerId === toMarkerId || !this.data.classes[classId] || !this.data.markers[toMarkerId]) {
-      return;
+  /**
+   * Move, copy, or reorder a class chip.
+   * `blockOrder` is the desired class order in `toMarkerId`, including `classId`.
+   */
+  async moveClass(
+    classId: string,
+    fromMarkerId: string,
+    toMarkerId: string,
+    options: { copy?: boolean; blockOrder?: string[] } = {},
+  ): Promise<boolean> {
+    const copy = options.copy === true;
+    const blockOrder = options.blockOrder ?? [];
+    if (!this.data.classes[classId] || !this.data.markers[toMarkerId]) {
+      return false;
     }
-    const ids = (this.data.classItems[classId] ?? []).filter((x) => x !== fromMarkerId);
-    if (!ids.includes(toMarkerId)) {
-      ids.push(toMarkerId);
-      this.setClassAdded(classId, toMarkerId, Date.now());
+
+    if (fromMarkerId === toMarkerId) {
+      if (blockOrder.length === 0 || !blockOrder.includes(classId)) {
+        return false;
+      }
+      if (!this.applyClassBlockOrder(toMarkerId, blockOrder)) {
+        return false;
+      }
+      await this.commit();
+      return true;
     }
-    this.setClassItem(classId, ids);
+
+    const ids = this.data.classItems[classId] ?? [];
+    if (ids.includes(toMarkerId)) {
+      return false;
+    }
+
+    if (copy) {
+      this.setClassItem(classId, [...ids, toMarkerId]);
+    } else {
+      const next = ids.filter((x) => x !== fromMarkerId);
+      next.push(toMarkerId);
+      this.setClassItem(classId, next);
+    }
+
+    const order =
+      blockOrder.length > 0 && blockOrder.includes(classId)
+        ? blockOrder
+        : [...this.classesOf(toMarkerId).map(([id]) => id).filter((id) => id !== classId), classId];
+    this.applyClassBlockOrder(toMarkerId, order);
     await this.commit();
+    return true;
+  }
+
+  /**
+   * Rewrite `added` timestamps for paths in `blockOrder` on this marker so
+   * `itemsOf` keeps that relative order. Other paths on the marker stay as-is.
+   * Returns false when the order already matches.
+   */
+  private applyItemBlockOrder(markerId: string, blockOrder: string[]): boolean {
+    const unique = [...new Set(blockOrder.map(normalizePath))];
+    if (unique.length === 0) {
+      return false;
+    }
+    let same = true;
+    const current = this.itemsOf(markerId).filter((p) => unique.includes(p));
+    if (current.length !== unique.length || current.some((p, i) => p !== unique[i])) {
+      same = false;
+    }
+    if (same) {
+      return false;
+    }
+    const base = Date.now();
+    unique.forEach((relPath, index) => {
+      this.setAdded(relPath, markerId, base + index);
+    });
+    return true;
+  }
+
+  /** Same as applyItemBlockOrder for class chips. */
+  private applyClassBlockOrder(markerId: string, blockOrder: string[]): boolean {
+    const unique = [...new Set(blockOrder)];
+    if (unique.length === 0) {
+      return false;
+    }
+    const current = this.classesOf(markerId)
+      .map(([id]) => id)
+      .filter((id) => unique.includes(id));
+    if (current.length === unique.length && current.every((id, i) => id === unique[i])) {
+      return false;
+    }
+    const base = Date.now();
+    unique.forEach((classId, index) => {
+      this.setClassAdded(classId, markerId, base + index);
+    });
+    return true;
   }
 
   /** Renames a path and everything nested under it. Returns true if anything changed. */
