@@ -2466,23 +2466,29 @@
       return;
     }
     renderDeferred = false;
-    cancelSlide();
 
     /** @type {HTMLElement | null} */
     let leaving = null;
     let oldHeight = 0;
     const stage = root.parentElement;
-    if (canSlide(direction) && stage) {
-      oldHeight = root.offsetHeight;
-      leaving = /** @type {HTMLElement} */ (root.cloneNode(true));
-      leaving.removeAttribute('id');
-      leaving.classList.add('page-leaving');
-      leaving.setAttribute('aria-hidden', 'true');
-      leaving.inert = true;
-      stage.append(leaving);
-    }
-
-    paintPage();
+    const restoredScroll = preservingPageScroll(() => {
+      cancelSlide();
+      if (canSlide(direction) && stage) {
+        oldHeight = root.offsetHeight;
+        stage.style.height = oldHeight + 'px';
+        leaving = /** @type {HTMLElement} */ (root.cloneNode(true));
+        leaving.removeAttribute('id');
+        leaving.classList.add('page-leaving');
+        leaving.setAttribute('aria-hidden', 'true');
+        leaving.inert = true;
+        stage.append(leaving);
+      }
+      paintPage();
+      if (leaving && stage) {
+        stage.classList.add('is-sliding');
+        stage.style.height = Math.max(oldHeight, root.offsetHeight) + 'px';
+      }
+    });
 
     if (!leaving || !stage) {
       return;
@@ -2492,8 +2498,6 @@
     isSliding = true;
     const enterFrom = direction > 0 ? '100%' : '-100%';
     const leaveTo = direction > 0 ? '-100%' : '100%';
-    stage.classList.add('is-sliding');
-    stage.style.height = Math.max(oldHeight, root.offsetHeight) + 'px';
     root.classList.add('page-entering');
     root.style.transition = 'none';
     root.style.transform = 'translateX(' + enterFrom + ')';
@@ -2516,6 +2520,7 @@
       root.classList.remove('page-entering');
       stage.style.height = '';
       stage.classList.remove('is-sliding');
+      applyDocScroll(restoredScroll);
       flushDeferredRender();
     };
 
@@ -2857,6 +2862,11 @@
   function renderPager() {
     if (!pager) {
       return;
+    }
+    armScrollKeep();
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && pager.contains(focused)) {
+      focused.blur();
     }
     pager.textContent = '';
     const list = pages();
@@ -9226,10 +9236,10 @@
   }
 
   function paintProblemsPage() {
+    preservingPageScroll(() => {
     foldToken += 1;
     isFolding = false;
     setCollapseButton();
-    const scrollTop = root.scrollTop;
     root.textContent = '';
     root.className = 'map-page problems-page';
     root.setAttribute('data-syn3-context', JSON.stringify({ webviewSection: 'problems' }));
@@ -9238,7 +9248,6 @@
     const matched = pageProblemList();
     if (matched.length === 0) {
       root.append(el('div', 'empty', t('problemsEmpty')));
-      root.scrollTop = scrollTop;
       return;
     }
     /** @type {Map<string, ProblemDiag[]>} */
@@ -9261,7 +9270,7 @@
       block.append(problemFileLink(relPath, problemLinkLabel(relPath, paths)));
       root.append(block);
     }
-    root.scrollTop = scrollTop;
+    });
   }
 
   /** @param {ProblemDiag} problem */
@@ -10165,6 +10174,94 @@
   scrollbar.append(scrollbarThumb);
   document.body.append(scrollbar);
 
+  /** Intended document offset. A page rebuild clamps scrollTop; this puts it back. */
+  let heldScroll = 0;
+  let suppressScrollTrack = false;
+  let scrollTrackGen = 0;
+  let scrollHold = 0;
+
+  function docScroller() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function currentDocScroll() {
+    return docScroller().scrollTop || 0;
+  }
+
+  /**
+   * A short page clamps the offset. Keep the intended value unless something
+   * actually moved the viewport (focus, a later user scroll).
+   * @param {number} gen
+   */
+  function releaseScrollTrack(gen) {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (scrollTrackGen !== gen) {
+          return;
+        }
+        suppressScrollTrack = false;
+        const node = docScroller();
+        const live = node.scrollTop || 0;
+        const max = Math.max(0, node.scrollHeight - node.clientHeight);
+        const clamped = live + 1 < heldScroll && live >= max - 1;
+        if (!clamped) {
+          heldScroll = live;
+        }
+      });
+    });
+  }
+
+  /** @param {number} top */
+  function applyDocScroll(top) {
+    const gen = ++scrollTrackGen;
+    suppressScrollTrack = true;
+    heldScroll = top;
+    const node = docScroller();
+    if (Math.abs(node.scrollTop - top) > 0.5) {
+      node.scrollTop = top;
+    }
+    releaseScrollTrack(gen);
+  }
+
+  /**
+   * Replacing the map drops the document scroll. Keep the offset across that swap.
+   * @param {() => void} mutate
+   */
+  function preservingPageScroll(mutate) {
+    if (scrollHold > 0) {
+      mutate();
+      return heldScroll;
+    }
+    const live = currentDocScroll();
+    const keep = heldScroll > live + 1 ? heldScroll : live;
+    const gen = ++scrollTrackGen;
+    suppressScrollTrack = true;
+    scrollHold = 1;
+    try {
+      mutate();
+    } finally {
+      scrollHold = 0;
+      heldScroll = keep;
+      const node = docScroller();
+      if (Math.abs(node.scrollTop - keep) > 0.5) {
+        node.scrollTop = keep;
+      }
+      releaseScrollTrack(gen);
+    }
+    return keep;
+  }
+
+  /** Remember the offset before the pager DOM is replaced (that can drop scroll). */
+  function armScrollKeep() {
+    const live = currentDocScroll();
+    if (!(heldScroll > live + 1)) {
+      heldScroll = live;
+    }
+    const gen = ++scrollTrackGen;
+    suppressScrollTrack = true;
+    releaseScrollTrack(gen);
+  }
+
   function updateScrollbar() {
     const doc = document.documentElement;
     const scrollHeight = doc.scrollHeight;
@@ -10181,7 +10278,16 @@
     scrollbarThumb.style.transform = 'translateY(' + top + 'px)';
   }
 
-  window.addEventListener('scroll', updateScrollbar, { passive: true });
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (!suppressScrollTrack) {
+        heldScroll = currentDocScroll();
+      }
+      updateScrollbar();
+    },
+    { passive: true },
+  );
   window.addEventListener('resize', updateScrollbar);
   new ResizeObserver(updateScrollbar).observe(document.body);
   updateScrollbar();

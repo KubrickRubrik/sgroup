@@ -2646,6 +2646,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   <link rel="stylesheet" href="${css}">
 </head>
 <body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+  <div class="map-chrome">
   <div class="history-bar">
     <div class="toolbar-profile">
       <button id="toolbar-profile" class="history-btn" type="button" aria-label="Профиль" aria-haspopup="menu" aria-expanded="false">
@@ -2729,6 +2730,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     </div>
   </div>
   <div id="pager" class="pager" hidden></div>
+  </div>
   <div id="stage" class="page-stage">
     <div id="root" class="map-page"></div>
   </div>
