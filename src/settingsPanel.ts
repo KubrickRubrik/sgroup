@@ -533,6 +533,16 @@ export class SettingsPanel implements vscode.Disposable {
         </div>
       </div>
     </div>
+    <div class="row">
+      <label for="showProblemsTab" data-i18n="labelShowProblemsTab">Show problems tab</label>
+      <input id="showProblemsTab" type="checkbox">
+      <span class="value" data-for="showProblemsTab"></span>
+    </div>
+    <div class="row">
+      <label for="cyclePageScroll" data-i18n="labelCyclePageScroll">Cycle page scroll</label>
+      <input id="cyclePageScroll" type="checkbox">
+      <span class="value" data-for="cyclePageScroll"></span>
+    </div>
     <p class="hint" id="settings-hint"></p>
 
     <section>
@@ -712,7 +722,14 @@ export class SettingsPanel implements vscode.Disposable {
     let i18n = {};
     let stylesPath = ${JSON.stringify(STYLES_PATH)};
 
-    const toggles = ['cardGradient', 'openFileMark', 'showErrorIcon', 'openFileAnimate'];
+    const toggles = [
+      'showProblemsTab',
+      'cyclePageScroll',
+      'cardGradient',
+      'openFileMark',
+      'showErrorIcon',
+      'openFileAnimate',
+    ];
     const switchWrap = document.getElementById('profile-switch');
     const switchBtn = document.getElementById('profile-switch-btn');
     const switchName = document.getElementById('profile-switch-name');

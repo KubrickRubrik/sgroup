@@ -156,6 +156,16 @@ export interface Appearance {
   openFileAnimate: boolean;
   /** Blink cycle length in seconds, 0–3. */
   openFileDuration: number;
+  /** Problems tab on the pager strip (not a map page). */
+  showProblemsTab: boolean;
+  /** Horizontal wheel wraps from the first pager chip to the last and back. */
+  cyclePageScroll: boolean;
+  /** Include Error diagnostics on the Problems page. */
+  problemsError: boolean;
+  /** Include Warning diagnostics on the Problems page. */
+  problemsWarning: boolean;
+  /** Include Information diagnostics on the Problems page. */
+  problemsInfo: boolean;
   /** Syn3 UI language for menus and settings of this profile. */
   language: Syn3Locale;
 }
@@ -181,6 +191,11 @@ export const DEFAULT_APPEARANCE: Appearance = {
   showErrorIcon: true,
   openFileAnimate: true,
   openFileDuration: 1,
+  showProblemsTab: true,
+  cyclePageScroll: true,
+  problemsError: true,
+  problemsWarning: true,
+  problemsInfo: true,
   language: 'ru',
 };
 
@@ -251,8 +266,26 @@ export function normalizeAppearance(raw: unknown): Appearance {
     showErrorIcon: boolOr(source.showErrorIcon, DEFAULT_APPEARANCE.showErrorIcon),
     openFileAnimate: boolOr(source.openFileAnimate, DEFAULT_APPEARANCE.openFileAnimate),
     openFileDuration: snapOpenFileDuration(numOr(source.openFileDuration, DEFAULT_APPEARANCE.openFileDuration)),
+    showProblemsTab: boolOr(source.showProblemsTab, DEFAULT_APPEARANCE.showProblemsTab),
+    cyclePageScroll: boolOr(source.cyclePageScroll, DEFAULT_APPEARANCE.cyclePageScroll),
+    ...normalizeProblemsFilters(source),
     language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
   };
+}
+
+/** At least one severity filter stays on. */
+function normalizeProblemsFilters(source: Partial<Record<keyof Appearance, unknown>>): {
+  problemsError: boolean;
+  problemsWarning: boolean;
+  problemsInfo: boolean;
+} {
+  let problemsError = boolOr(source.problemsError, DEFAULT_APPEARANCE.problemsError);
+  const problemsWarning = boolOr(source.problemsWarning, DEFAULT_APPEARANCE.problemsWarning);
+  const problemsInfo = boolOr(source.problemsInfo, DEFAULT_APPEARANCE.problemsInfo);
+  if (!problemsError && !problemsWarning && !problemsInfo) {
+    problemsError = true;
+  }
+  return { problemsError, problemsWarning, problemsInfo };
 }
 
 function numOr(value: unknown, fallback: number): number {

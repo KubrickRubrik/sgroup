@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { CodeLanguageService, CodeStamp } from './codeLanguage';
 import { DirtyPathWatcher } from './gitDirty';
 import {
+  Appearance,
   ColumnsMode,
   GENERAL_PROFILE_ID,
   GroupsLayout,
@@ -217,7 +218,8 @@ type IncomingMessage =
       action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull';
       id?: string;
       name?: string;
-    };
+    }
+  | { type: 'setAppearance'; appearance: Partial<Appearance> };
 
 interface DirListingEntry {
   name: string;
@@ -225,10 +227,11 @@ interface DirListingEntry {
   isDir: boolean;
 }
 
-/** One Error diagnostic from the Problems panel. Positions are 0-based. */
+/** One diagnostic for the Problems tab / map error marks. Positions are 0-based. */
 interface ProblemDiag {
   relPath: string;
   message: string;
+  severity: 'error' | 'warning' | 'info';
   line: number;
   character: number;
   endLine: number;
@@ -1494,6 +1497,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.onProfile(message.action, message.id, message.name);
       return;
     }
+    if (message.type === 'setAppearance') {
+      this.rememberFocus(webview);
+      if (message.appearance && typeof message.appearance === 'object') {
+        await this.store.setAppearance(message.appearance);
+      }
+      return;
+    }
     if (message.type === 'reorderPages') {
       await this.store.reorderPages(message.orderedIds);
       return;
@@ -2082,7 +2092,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  /** Push Error diagnostics without a full map re-render. */
+  /** Push diagnostics without a full map re-render. */
   private postProblems(): void {
     if (!this.store.ready) {
       return;
@@ -2120,7 +2130,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         continue;
       }
       for (const diagnostic of diagnostics) {
-        if (diagnostic.severity !== vscode.DiagnosticSeverity.Error) {
+        const severity = this.problemSeverity(diagnostic.severity);
+        if (!severity) {
           continue;
         }
         const message = diagnostic.message.trim();
@@ -2130,6 +2141,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         out.push({
           relPath,
           message,
+          severity,
           line: diagnostic.range.start.line,
           character: diagnostic.range.start.character,
           endLine: diagnostic.range.end.line,
@@ -2142,15 +2154,39 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         a.relPath.localeCompare(b.relPath) ||
         a.line - b.line ||
         a.character - b.character ||
+        a.severity.localeCompare(b.severity) ||
         a.message.localeCompare(b.message),
     );
     return out;
   }
 
+  private problemSeverity(
+    severity: vscode.DiagnosticSeverity,
+  ): ProblemDiag['severity'] | undefined {
+    if (severity === vscode.DiagnosticSeverity.Error) {
+      return 'error';
+    }
+    if (severity === vscode.DiagnosticSeverity.Warning) {
+      return 'warning';
+    }
+    if (severity === vscode.DiagnosticSeverity.Information) {
+      return 'info';
+    }
+    return undefined;
+  }
+
   private problemSignature(list: ProblemDiag[]): string {
     return list
       .map((item) =>
-        [item.relPath, item.line, item.character, item.endLine, item.endCharacter, item.message].join('\n'),
+        [
+          item.relPath,
+          item.severity,
+          item.line,
+          item.character,
+          item.endLine,
+          item.endCharacter,
+          item.message,
+        ].join('\n'),
       )
       .join('\n\0');
   }

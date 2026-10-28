@@ -481,6 +481,8 @@
     uiState.side = bodySide;
     vscode.setState(uiState);
   }
+  /** Local to this webview — not persisted in setState. */
+  let problemsPageOpen = false;
   /** @type {any} */
   let data = null;
   const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
@@ -543,7 +545,7 @@
   document.body.append(problemPanel);
 
   /**
-   * @typedef {{ relPath: string, message: string, line: number, character: number, endLine: number, endCharacter: number }} ProblemDiag
+   * @typedef {{ relPath: string, message: string, severity: 'error' | 'warning' | 'info', line: number, character: number, endLine: number, endCharacter: number }} ProblemDiag
    */
 
   /** @type {{ anchor: HTMLButtonElement, kind: 'file' | 'dir', relPath: string } | null} */
@@ -587,9 +589,12 @@
       updatePageMenu();
       renderProfiles(message.profiles, message.activeProfileId, message.positionSync);
       applyAppearance(message.appearance);
+      if (!showProblemsTab()) {
+        problemsPageOpen = false;
+      }
       renderPager();
       render();
-      if (typeof message.focusNoteId === 'string') {
+      if (typeof message.focusNoteId === 'string' && !isProblemsPageOpen()) {
         focusNoteInput(message.focusNoteId);
       }
       vscode.postMessage({ type: 'activePage', pageId: uiState.activePageId });
@@ -621,7 +626,11 @@
       applyChangeMarks();
     } else if (message.type === 'problems' && data) {
       data.problems = Array.isArray(message.problems) ? message.problems : [];
-      applyProblemMarks();
+      if (isProblemsPageOpen()) {
+        paintProblemsPage();
+      } else {
+        applyProblemMarks();
+      }
     } else if (message.type === 'dropAlreadyExists') {
       openDropExistsDialog();
     } else if (message.type === 'dirListing') {
@@ -722,18 +731,46 @@
   let slideTimer = 0;
 
   function setActivePage(pageId) {
-    if (!pages().some((page) => page.id === pageId) || uiState.activePageId === pageId) {
+    if (!pages().some((page) => page.id === pageId)) {
       return;
     }
-    rememberSlide(pageId);
-    uiState.activePageId = pageId;
-    vscode.setState(uiState);
-    setHistoryButtons(data && data.history);
-    setToolbar(activePage() || data);
-    updatePageMenu();
+    const samePage = uiState.activePageId === pageId;
+    const leaveProblems = problemsPageOpen;
+    problemsPageOpen = false;
+    if (samePage && !leaveProblems) {
+      return;
+    }
+    if (!samePage) {
+      rememberSlide(pageId);
+      uiState.activePageId = pageId;
+      vscode.setState(uiState);
+      setHistoryButtons(data && data.history);
+      setToolbar(activePage() || data);
+      updatePageMenu();
+      vscode.postMessage({ type: 'activePage', pageId });
+    }
     renderPager();
     render();
-    vscode.postMessage({ type: 'activePage', pageId });
+  }
+
+  function showProblemsTab() {
+    return data?.appearance?.showProblemsTab !== false;
+  }
+
+  function isProblemsPageOpen() {
+    return problemsPageOpen && showProblemsTab();
+  }
+
+  function openProblemsPage() {
+    if (!showProblemsTab() || problemsPageOpen) {
+      return;
+    }
+    problemsPageOpen = true;
+    closeProblemPanel();
+    cancelSlide();
+    pendingSlide = 0;
+    renderPager();
+    render();
   }
 
   /** Direction from the current page to `pageId`, using the list as it is now. */
@@ -1264,6 +1301,29 @@
     cancelMenuClose('context');
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
+    if (section === 'problems') {
+      const filters = problemsFilterState();
+      scroller.append(
+        menuChoice(t('filterProblemsError'), filters.error, {
+          set: 'problemsFilter',
+          value: 'error',
+        }),
+      );
+      scroller.append(
+        menuChoice(t('filterProblemsWarning'), filters.warning, {
+          set: 'problemsFilter',
+          value: 'warning',
+        }),
+      );
+      scroller.append(
+        menuChoice(t('filterProblemsInfo'), filters.info, {
+          set: 'problemsFilter',
+          value: 'info',
+        }),
+      );
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
     for (const item of contextMenuItems(ctx)) {
       if (item.kind === 'separator') {
         scroller.append(menuSeparator());
@@ -1731,6 +1791,14 @@
       return;
     }
 
+    if (button.dataset.set === 'problemsFilter' && button.dataset.value) {
+      const value = button.dataset.value;
+      if (value === 'error' || value === 'warning' || value === 'info') {
+        toggleProblemsFilter(value);
+      }
+      return;
+    }
+
     if (button.dataset.set === 'layout' && button.dataset.value) {
       const page = activePage();
       if (page) {
@@ -2172,7 +2240,7 @@
     return String(Math.round(value * 10) / 10) + '%';
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number } | undefined} appearance */
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number, showProblemsTab?: boolean, cyclePageScroll?: boolean, problemsError?: boolean, problemsWarning?: boolean, problemsInfo?: boolean } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
@@ -2471,11 +2539,16 @@
   }
 
   function paintPage() {
+    if (isProblemsPageOpen()) {
+      paintProblemsPage();
+      return;
+    }
     const folds = captureFolds();
     foldToken += 1;
     isFolding = false;
     setCollapseButton();
     root.textContent = '';
+    root.removeAttribute('data-syn3-context');
     const page = activePage();
     const layout = page?.layout || data.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data.groupsLayout || 'flow';
@@ -2787,13 +2860,22 @@
     }
     pager.textContent = '';
     const list = pages();
-    if (list.length === 0) {
+    const problemsTab = showProblemsTab();
+    if (!problemsTab) {
+      problemsPageOpen = false;
+    }
+    if (list.length === 0 && !problemsTab) {
       pager.hidden = true;
       return;
     }
     pager.hidden = false;
+    const problemsOpen = isProblemsPageOpen();
     for (const page of list) {
-      const chip = el('button', 'pager-chip' + (page.id === uiState.activePageId ? ' active' : ''), page.name);
+      const chip = el(
+        'button',
+        'pager-chip' + (page.id === uiState.activePageId && !problemsOpen ? ' active' : ''),
+        page.name,
+      );
       chip.type = 'button';
       chip.draggable = true;
       chip.dataset.pageId = page.id;
@@ -2852,6 +2934,13 @@
         ordered.splice(toIndex, 0, from);
         vscode.postMessage({ type: 'reorderPages', orderedIds: ordered });
       });
+      pager.append(chip);
+    }
+    if (problemsTab) {
+      const chip = el('button', 'pager-chip problems-tab' + (problemsOpen ? ' active' : ''), t('tabProblems'));
+      chip.type = 'button';
+      chip.title = t('tabProblems');
+      chip.addEventListener('click', () => openProblemsPage());
       pager.append(chip);
     }
   }
@@ -9033,22 +9122,170 @@
     }
   }
 
+  /**
+   * @param {unknown} value
+   * @returns {'error' | 'warning' | 'info'}
+   */
+  function normalizeProblemSeverity(value) {
+    if (value === 'warning' || value === 'info' || value === 'error') {
+      return value;
+    }
+    return 'error';
+  }
+
   /** @returns {ProblemDiag[]} */
   function problemList() {
     const raw = data?.problems;
     if (!Array.isArray(raw)) {
       return [];
     }
-    return raw.filter(
-      (entry) =>
-        !!entry &&
-        typeof entry.relPath === 'string' &&
-        typeof entry.message === 'string' &&
-        Number.isInteger(entry.line) &&
-        Number.isInteger(entry.character) &&
-        Number.isInteger(entry.endLine) &&
-        Number.isInteger(entry.endCharacter),
-    );
+    /** @type {ProblemDiag[]} */
+    const out = [];
+    for (const entry of raw) {
+      if (
+        !entry ||
+        typeof entry.relPath !== 'string' ||
+        typeof entry.message !== 'string' ||
+        !Number.isInteger(entry.line) ||
+        !Number.isInteger(entry.character) ||
+        !Number.isInteger(entry.endLine) ||
+        !Number.isInteger(entry.endCharacter)
+      ) {
+        continue;
+      }
+      out.push({
+        relPath: entry.relPath,
+        message: entry.message,
+        severity: normalizeProblemSeverity(entry.severity),
+        line: entry.line,
+        character: entry.character,
+        endLine: entry.endLine,
+        endCharacter: entry.endCharacter,
+      });
+    }
+    return out;
+  }
+
+  /** Map marks and the hover popup stay Error-only. */
+  function errorProblemList() {
+    return problemList().filter((problem) => problem.severity === 'error');
+  }
+
+  function problemsFilterState() {
+    const a = data?.appearance || {};
+    return {
+      error: a.problemsError !== false,
+      warning: a.problemsWarning !== false,
+      info: a.problemsInfo !== false,
+    };
+  }
+
+  /** Problems page list after profile severity filters. */
+  function pageProblemList() {
+    const filters = problemsFilterState();
+    return problemList().filter((problem) => {
+      if (problem.severity === 'error') {
+        return filters.error;
+      }
+      if (problem.severity === 'warning') {
+        return filters.warning;
+      }
+      if (problem.severity === 'info') {
+        return filters.info;
+      }
+      return false;
+    });
+  }
+
+  /** @param {'error' | 'warning' | 'info'} value */
+  function toggleProblemsFilter(value) {
+    const key =
+      value === 'warning' ? 'problemsWarning' : value === 'info' ? 'problemsInfo' : 'problemsError';
+    const state = problemsFilterState();
+    const on = value === 'warning' ? state.warning : value === 'info' ? state.info : state.error;
+    if (on) {
+      const enabled =
+        (value === 'error' ? 0 : state.error ? 1 : 0) +
+        (value === 'warning' ? 0 : state.warning ? 1 : 0) +
+        (value === 'info' ? 0 : state.info ? 1 : 0);
+      if (enabled === 0) {
+        return;
+      }
+    }
+    const next = { [key]: !on };
+    if (data?.appearance && typeof data.appearance === 'object') {
+      data.appearance = { ...data.appearance, ...next };
+    }
+    vscode.postMessage({ type: 'setAppearance', appearance: next });
+    if (openMenuState?.kind === 'context' && openMenuState.ctx?.webviewSection === 'problems') {
+      renderContextMenu();
+    }
+    if (isProblemsPageOpen()) {
+      paintProblemsPage();
+    }
+  }
+
+  function paintProblemsPage() {
+    foldToken += 1;
+    isFolding = false;
+    setCollapseButton();
+    const scrollTop = root.scrollTop;
+    root.textContent = '';
+    root.className = 'map-page problems-page';
+    root.setAttribute('data-syn3-context', JSON.stringify({ webviewSection: 'problems' }));
+    clearDropHighlights();
+
+    const matched = pageProblemList();
+    if (matched.length === 0) {
+      root.append(el('div', 'empty', t('problemsEmpty')));
+      root.scrollTop = scrollTop;
+      return;
+    }
+    /** @type {Map<string, ProblemDiag[]>} */
+    const byFile = new Map();
+    for (const problem of matched) {
+      const bucket = byFile.get(problem.relPath);
+      if (bucket) {
+        bucket.push(problem);
+      } else {
+        byFile.set(problem.relPath, [problem]);
+      }
+    }
+    const paths = [...byFile.keys()];
+    for (const relPath of paths) {
+      const block = document.createElement('div');
+      block.className = 'problem-file';
+      for (const problem of byFile.get(relPath) || []) {
+        block.append(problemPageMessageButton(problem));
+      }
+      block.append(problemFileLink(relPath, problemLinkLabel(relPath, paths)));
+      root.append(block);
+    }
+    root.scrollTop = scrollTop;
+  }
+
+  /** @param {ProblemDiag} problem */
+  function problemPageMessageButton(problem) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'problem-message severity-' + problem.severity;
+    button.append(severityGlyph(problem.severity));
+    const text = document.createElement('span');
+    text.className = 'problem-message-text';
+    text.textContent = problem.message;
+    button.append(text);
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({
+        type: 'openAt',
+        relPath: problem.relPath,
+        line: problem.line,
+        character: problem.character,
+        endLine: problem.endLine,
+        endCharacter: problem.endCharacter,
+      });
+    });
+    return button;
   }
 
   /**
@@ -9074,7 +9311,7 @@
     if (!scope.relPath) {
       return false;
     }
-    const problems = problemList();
+    const problems = errorProblemList();
     if (scope.kind === 'dir') {
       return problems.some((problem) => pathCovers(scope.relPath, problem.relPath));
     }
@@ -9201,7 +9438,7 @@
       return;
     }
     const scope = problemPanelState;
-    const matched = problemList().filter((problem) =>
+    const matched = errorProblemList().filter((problem) =>
       scope.kind === 'dir' ? pathCovers(scope.relPath, problem.relPath) : problem.relPath === scope.relPath,
     );
     if (matched.length === 0) {
@@ -9718,6 +9955,37 @@
     return svg;
   }
 
+  /** @param {'error' | 'warning' | 'info'} severity */
+  function severityGlyph(severity) {
+    if (severity === 'error') {
+      const svg = errorGlyph();
+      svg.setAttribute('class', 'icon problem-severity-icon severity-error');
+      return svg;
+    }
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute(
+      'class',
+      'icon problem-severity-icon severity-' + (severity === 'warning' ? 'warning' : 'info'),
+    );
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    if (severity === 'warning') {
+      path.setAttribute(
+        'd',
+        'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z',
+      );
+    } else {
+      path.setAttribute(
+        'd',
+        'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z',
+      );
+    }
+    svg.append(path);
+    return svg;
+  }
+
   function folderIcon() {
     return svgIcon('icon folder-icon', [
       [
@@ -9934,10 +10202,49 @@
     { passive: false, capture: true },
   );
 
+  /**
+   * Pager chips in strip order: Syn3 pages, then Problems when enabled.
+   * @returns {Array<{ kind: 'page', id: string } | { kind: 'problems' }>}
+   */
+  function pagerSlots() {
+    /** @type {Array<{ kind: 'page', id: string } | { kind: 'problems' }>} */
+    const slots = pages().map((page) => ({ kind: 'page', id: page.id }));
+    if (showProblemsTab()) {
+      slots.push({ kind: 'problems' });
+    }
+    return slots;
+  }
+
+  function currentPagerIndex() {
+    const slots = pagerSlots();
+    if (isProblemsPageOpen()) {
+      return slots.findIndex((slot) => slot.kind === 'problems');
+    }
+    const pageId = uiState.activePageId;
+    return slots.findIndex((slot) => slot.kind === 'page' && slot.id === pageId);
+  }
+
+  /** @param {{ kind: 'page', id: string } | { kind: 'problems' }} slot */
+  function goToPagerSlot(slot) {
+    if (slot.kind === 'problems') {
+      openProblemsPage();
+      return;
+    }
+    setActivePage(slot.id);
+  }
+
+  function cyclePageScrollEnabled() {
+    return data?.appearance?.cyclePageScroll !== false;
+  }
+
   document.addEventListener(
     'wheel',
     (event) => {
-      if (!data || pages().length < 2) {
+      if (!data) {
+        return;
+      }
+      const slots = pagerSlots();
+      if (slots.length < 2) {
         return;
       }
       if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) {
@@ -9948,12 +10255,17 @@
         return;
       }
       wheelLock = true;
-      const list = pages();
-      const index = list.findIndex((page) => page.id === uiState.activePageId);
+      const index = currentPagerIndex();
       if (index >= 0) {
-        const next = event.deltaX > 0 ? index + 1 : index - 1;
-        if (next >= 0 && next < list.length) {
-          setActivePage(list[next].id);
+        // Wheel up / clockwise → right (next chip). Same sign as shift+wheel deltaX.
+        let next = event.deltaX < 0 ? index + 1 : index - 1;
+        if (next < 0 || next >= slots.length) {
+          if (cyclePageScrollEnabled()) {
+            next = ((next % slots.length) + slots.length) % slots.length;
+            goToPagerSlot(slots[next]);
+          }
+        } else {
+          goToPagerSlot(slots[next]);
         }
       }
       window.setTimeout(() => {

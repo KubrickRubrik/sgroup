@@ -410,6 +410,10 @@ html::-webkit-scrollbar {
   margin: 0 0 8px;
 }
 
+.pager-chip.problems-tab {
+  margin-left: auto;
+}
+
 .page-stage {
   position: relative;
 }
@@ -2202,15 +2206,58 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   padding: 4px 16px 2px 12px;
 }
 
+.problems-page .problem-message {
+  align-items: flex-start;
+  color: var(--vscode-foreground);
+  display: flex;
+  gap: 8px;
+  padding: 6px 12px;
+}
+
+.problems-page .problem-message-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.problem-severity-icon {
+  flex: 0 0 auto;
+  height: 1.1em;
+  margin-top: 0.15em;
+  width: 1.1em;
+}
+
+.problem-severity-icon.severity-error {
+  color: var(--vscode-editorError-foreground, var(--vscode-errorForeground));
+}
+
+.problem-severity-icon.severity-warning {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700));
+}
+
+.problem-severity-icon.severity-info {
+  color: var(--vscode-editorInfo-foreground, var(--vscode-list-infoForeground, #3794ff));
+}
+
 .problem-file-link {
   color: var(--vscode-textLink-foreground);
   padding: 2px 16px 6px 12px;
   text-decoration: underline;
 }
 
+.problems-page .problem-file-link {
+  padding: 2px 12px 10px 36px;
+}
+
 .problem-message:hover,
 .problem-file-link:hover {
   background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
+.problems-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

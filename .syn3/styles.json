@@ -23,6 +23,11 @@
         "showErrorIcon": true,
         "openFileAnimate": true,
         "openFileDuration": 1.5,
+        "showProblemsTab": true,
+        "cyclePageScroll": true,
+        "problemsError": true,
+        "problemsWarning": true,
+        "problemsInfo": true,
         "language": "en"
       },
       "open": {
@@ -53,6 +58,11 @@
         "showErrorIcon": true,
         "openFileAnimate": true,
         "openFileDuration": 1.6,
+        "showProblemsTab": true,
+        "cyclePageScroll": true,
+        "problemsError": true,
+        "problemsWarning": true,
+        "problemsInfo": true,
         "language": "ru"
       },
       "open": {
