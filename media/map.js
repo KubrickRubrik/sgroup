@@ -2172,7 +2172,7 @@
     return String(Math.round(value * 10) / 10) + '%';
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, openFileAnimate?: boolean, openFileDuration?: number } | undefined} appearance */
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
@@ -2218,6 +2218,15 @@
     const a = data?.appearance || {};
     return {
       show: a.openFileMark !== false,
+      animate: a.openFileAnimate !== false,
+    };
+  }
+
+  /** Error glyph is its own toggle. Blink uses the same switch and duration as the corner. */
+  function errorIconMode() {
+    const a = data?.appearance || {};
+    return {
+      show: a.showErrorIcon !== false,
       animate: a.openFileAnimate !== false,
     };
   }
@@ -9074,13 +9083,14 @@
 
   /** Red mark between the type icon and the name. Click opens the error panel. */
   function applyProblemMarks() {
+    const mode = errorIconMode();
     const nodes = [
       ...root.querySelectorAll('.item'),
       ...dirPopover.querySelectorAll('.dir-popover-item'),
     ];
     for (const node of nodes) {
       const row = /** @type {HTMLElement} */ (node);
-      const show = entityHasProblems(row);
+      const show = mode.show && entityHasProblems(row);
       const existing = row.querySelector(':scope > .problem-mark');
       if (!show) {
         if (existing instanceof HTMLButtonElement && problemPanelState?.anchor === existing) {
@@ -9090,9 +9100,10 @@
         continue;
       }
       if (existing instanceof HTMLButtonElement) {
+        existing.classList.toggle('is-live', mode.animate);
         continue;
       }
-      mountProblemIcon(row);
+      mountProblemIcon(row, mode.animate);
     }
     if (problemPanelState) {
       if (!problemPanelState.anchor.isConnected) {
@@ -9104,11 +9115,14 @@
     }
   }
 
-  /** @param {HTMLElement} node */
-  function mountProblemIcon(node) {
+  /**
+   * @param {HTMLElement} node
+   * @param {boolean} animate
+   */
+  function mountProblemIcon(node, animate) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'problem-mark';
+    button.className = 'problem-mark' + (animate ? ' is-live' : '');
     button.setAttribute('aria-label', 'Errors');
     button.setAttribute('aria-expanded', 'false');
     button.append(errorGlyph());

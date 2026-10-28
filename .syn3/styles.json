@@ -20,6 +20,7 @@
         "bgHover": 5,
         "labelSaturation": 70,
         "openFileMark": true,
+        "showErrorIcon": true,
         "openFileAnimate": true,
         "openFileDuration": 1.5,
         "language": "en"
@@ -49,6 +50,7 @@
         "bgHover": 5,
         "labelSaturation": 70,
         "openFileMark": true,
+        "showErrorIcon": true,
         "openFileAnimate": true,
         "openFileDuration": 1.6,
         "language": "ru"

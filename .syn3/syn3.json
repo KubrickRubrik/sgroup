@@ -47,12 +47,12 @@
     },
     "marker": {
       "label": "Новый групп",
-      "color": "syn3.red",
+      "color": "#e62600",
       "page": "map"
     },
     "version": {
       "label": "Version",
-      "color": "#de3c1b",
+      "color": "#eaff9e",
       "icons": [
         "🔥",
         "🐞"
@@ -261,7 +261,7 @@
     "note-6": {
       "markerId": "version",
       "text": "Вот это так заметка",
-      "color": "#e2dbda"
+      "color": "#dadfe2"
     },
     "note-7": {
       "markerId": "group-2",

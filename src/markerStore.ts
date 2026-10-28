@@ -150,7 +150,9 @@ export interface Appearance {
   labelSaturation: number;
   /** Corner on badges whose file is open in an editor tab. */
   openFileMark: boolean;
-  /** Blink the corner chain of the focused editor tab. */
+  /** Error glyph between the type icon and the name. */
+  showErrorIcon: boolean;
+  /** Blink the corner chain of the focused editor tab, and every error icon. */
   openFileAnimate: boolean;
   /** Blink cycle length in seconds, 0–3. */
   openFileDuration: number;
@@ -176,6 +178,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   bgHover: 10,
   labelSaturation: 20,
   openFileMark: true,
+  showErrorIcon: true,
   openFileAnimate: true,
   openFileDuration: 1,
   language: 'ru',
@@ -245,6 +248,7 @@ export function normalizeAppearance(raw: unknown): Appearance {
     bgHover: snapPercent(numOr(source.bgHover, DEFAULT_APPEARANCE.bgHover)),
     labelSaturation: snapSaturation(numOr(source.labelSaturation, DEFAULT_APPEARANCE.labelSaturation)),
     openFileMark: boolOr(source.openFileMark, DEFAULT_APPEARANCE.openFileMark),
+    showErrorIcon: boolOr(source.showErrorIcon, DEFAULT_APPEARANCE.showErrorIcon),
     openFileAnimate: boolOr(source.openFileAnimate, DEFAULT_APPEARANCE.openFileAnimate),
     openFileDuration: snapOpenFileDuration(numOr(source.openFileDuration, DEFAULT_APPEARANCE.openFileDuration)),
     language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
@@ -1368,6 +1372,10 @@ export class MarkerStore implements vscode.Disposable {
     let columns = normalizeColumns(def.columns);
     if (columns === undefined && parent !== undefined) {
       columns = normalizeColumns(this.data.markers[parent].columns);
+    }
+    // New groups open in one column unless a parent layout is inherited.
+    if (columns === undefined) {
+      columns = '1';
     }
     this.data.markers[id] = {
       ...def,
