@@ -1920,9 +1920,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       const locale = normalizeLocale(this.store.appearance.language);
-      const isRoot = !def.parent;
+      const hasChildren = this.store.linkChildren(message.linkId).length > 0;
       const confirm = await vscode.window.showWarningMessage(
-        isRoot
+        hasChildren
           ? t(locale, 'linkDeleteSubtreeConfirm', { name: def.label })
           : t(locale, 'linkDeleteConfirm', { name: def.label }),
         { modal: true },

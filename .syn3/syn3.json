@@ -179,7 +179,7 @@
       "page": "map"
     },
     "bottom": {
-      "page": "map"
+      "page": "page-page-2"
     },
     "left": {
       "page": "map"
@@ -190,7 +190,7 @@
     "open": {
       "bottom": true,
       "left": false,
-      "right": true
+      "right": false
     }
   },
   "aliases": {
@@ -288,7 +288,7 @@
   },
   "links": {
     "link-1": {
-      "label": "Ваш макет",
+      "label": "Страница Книги",
       "page": "page-page-2",
       "color": "#51aad6"
     },
@@ -365,7 +365,7 @@
     "link-8": {
       "label": "Ваш макет",
       "page": "page-page-2",
-      "color": "#37be7f"
+      "color": "#8245ba"
     },
     "link-9": {
       "label": "Ваш компонент",

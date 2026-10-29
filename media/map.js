@@ -2705,6 +2705,8 @@
   let pendingLinkDrop = null;
   /** @type {string | null} */
   let openLinkPanelId = null;
+  /** Focus the name field once, when the link chip panel is opened. */
+  let focusLinkNameOnOpen = false;
 
   function pageLinks() {
     const pageId = activePage()?.id;
@@ -2824,10 +2826,15 @@
       if (openLinkPanelId && !byId[openLinkPanelId]) {
         openLinkPanelId = null;
       }
+      focusLinkNameOnOpen = false;
       existing?.remove();
       return;
     }
     if (existing instanceof HTMLElement && existing.dataset.linkId === openLinkPanelId) {
+      if (focusLinkNameOnOpen) {
+        focusLinkNameOnOpen = false;
+        focusLinkPanelName(existing);
+      }
       return;
     }
     existing?.remove();
@@ -2845,6 +2852,27 @@
     });
     backdrop.append(renderLinkPanel(byId[openLinkPanelId]));
     document.body.append(backdrop);
+    if (focusLinkNameOnOpen) {
+      focusLinkNameOnOpen = false;
+      focusLinkPanelName(backdrop);
+    }
+  }
+
+  /** Put the caret in the chip name («Ваш макет») and select it for immediate rename. */
+  function focusLinkPanelName(rootEl) {
+    const nameInput = rootEl.querySelector('.link-panel-name-row input.link-panel-input');
+    if (!(nameInput instanceof HTMLInputElement) || nameInput.disabled) {
+      return;
+    }
+    const apply = () => {
+      if (!nameInput.isConnected || nameInput.disabled) {
+        return;
+      }
+      nameInput.focus();
+      nameInput.select();
+    };
+    apply();
+    requestAnimationFrame(apply);
   }
 
   function paintLinksPage() {
@@ -3033,6 +3061,7 @@
       window.clearTimeout(openTimer);
       openTimer = 0;
       openLinkPanelId = link.id;
+      focusLinkNameOnOpen = true;
       paintLinksPage();
     });
     if (link.url) {

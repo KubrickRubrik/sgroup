@@ -70,7 +70,7 @@
       "open": {
         "bottom": true,
         "left": false,
-        "right": true
+        "right": false
       }
     }
   }

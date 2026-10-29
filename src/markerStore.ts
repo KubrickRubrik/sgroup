@@ -2502,16 +2502,13 @@ export class MarkerStore implements vscode.Disposable {
     return this.rootLinks(def.page).length <= 1;
   }
 
-  /** True when the node may be deleted (last root and nodes with children are blocked). */
+  /** True when the node may be deleted. Only the last root layout is blocked. */
   canDeleteLink(id: string): boolean {
     const def = this.data.links[id];
     if (!def) {
       return false;
     }
     if (!def.parent && this.isLastRootLink(id)) {
-      return false;
-    }
-    if (def.parent && this.linkChildren(id).length > 0) {
       return false;
     }
     return true;
@@ -2586,8 +2583,8 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Delete a link. Roots with siblings remove the whole subtree.
-   * Components must have no children. The last root cannot be deleted.
+   * Delete a link and everything nested inside it.
+   * The last root layout cannot be deleted.
    */
   async deleteLink(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     const def = this.data.links[id];
@@ -2595,27 +2592,23 @@ export class MarkerStore implements vscode.Disposable {
       return { ok: false, reason: 'Link not found.' };
     }
     if (!this.canDeleteLink(id)) {
-      if (!def.parent && this.isLastRootLink(id)) {
-        return { ok: false, reason: 'Cannot delete the last layout.' };
-      }
-      return { ok: false, reason: 'Remove child components first.' };
+      return { ok: false, reason: 'Cannot delete the last layout.' };
     }
-    if (!def.parent) {
-      const siblings = this.rootLinks(def.page!).filter(([linkId]) => linkId !== id);
-      this.purgeLinkTree(id);
+    const parentId = def.parent;
+    const pageId = def.page;
+    this.purgeLinkTree(id);
+    if (parentId) {
       this.applyLinkSiblingOrder(
-        def.page!,
         undefined,
-        siblings.map(([linkId]) => linkId),
+        parentId,
+        this.linkChildren(parentId).map(([linkId]) => linkId),
       );
-    } else {
-      const parentId = def.parent;
-      const siblings = this.linkChildren(parentId)
-        .map(([linkId]) => linkId)
-        .filter((linkId) => linkId !== id);
-      delete this.data.links[id];
-      this.forgetCollapsed(id);
-      this.applyLinkSiblingOrder(undefined, parentId, siblings);
+    } else if (pageId) {
+      this.applyLinkSiblingOrder(
+        pageId,
+        undefined,
+        this.rootLinks(pageId).map(([linkId]) => linkId),
+      );
     }
     await this.commit();
     return { ok: true };
