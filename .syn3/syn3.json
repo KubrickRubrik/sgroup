@@ -179,18 +179,18 @@
       "page": "map"
     },
     "bottom": {
-      "page": "page-page-2"
+      "page": "map"
     },
     "left": {
       "page": "map"
     },
     "right": {
-      "page": "map"
+      "page": "page-page-2"
     },
     "open": {
       "bottom": true,
       "left": false,
-      "right": false
+      "right": true
     }
   },
   "aliases": {

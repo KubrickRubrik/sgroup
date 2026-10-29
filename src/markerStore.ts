@@ -669,6 +669,8 @@ export class MarkerStore implements vscode.Disposable {
   private posRemote: PositionsFile = emptyPositions();
   /** False until pos_local / pos_remote have been read and applied. */
   private positionsReady = false;
+  /** True while `setSurfacePage` is inside `commitNow`, so listeners can skip rebuilding page bodies. */
+  private surfaceOnlyChange = false;
 
   readonly onDidChange = this.changeEmitter.event;
   lastError?: string;
@@ -1991,7 +1993,22 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     this.data.surfaces[surface] = { page: pageId };
-    await this.commit();
+    await this.enqueue(async () => {
+      this.surfaceOnlyChange = true;
+      try {
+        await this.commitNow();
+      } finally {
+        this.surfaceOnlyChange = false;
+      }
+    });
+  }
+
+  /**
+   * The current `onDidChange` is only the active page of a map surface.
+   * Groups, notes, and links are unchanged, so listeners can reuse a page body they already built.
+   */
+  isSurfaceOnlyChange(): boolean {
+    return this.surfaceOnlyChange;
   }
 
   /** Persist whether a movable panel is open on the active profile. Does not create an undo step. */

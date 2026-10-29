@@ -140,6 +140,10 @@
   let linkPreviewHideTimer = null;
   /** @type {string | null} */
   let linkPreviewUrl = null;
+  /** Bumped when the page changes so a preview from the previous page cannot stay or reopen. */
+  let linkPreviewGen = 0;
+  /** Generation captured when the current preview was shown. */
+  let linkPreviewShownGen = 0;
   let clipboardRequestId = 0;
   /** @type {{ ctx: Record<string, unknown>, x: number, y: number, requestId: string } | null} */
   let pendingClipboardMenu = null;
@@ -510,6 +514,12 @@
   let problemsPageOpen = false;
   /** @type {any} */
   let data = null;
+  /** Drops a state push that lost the race with a newer one. */
+  let stateSeq = 0;
+  /** Bumped when map data changes. Same revision means a visited page can be shown from cache. */
+  let bodyRev = -1;
+  /** @type {Map<string, { groups: any[], notes: any[], links: any[] }>} */
+  const pageBodies = new Map();
   const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
   /** @type {string | null} */
   let pageDragId = null;
@@ -579,8 +589,16 @@
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'state') {
+      if (typeof message.stateSeq === 'number') {
+        if (message.stateSeq < stateSeq) {
+          return;
+        }
+        stateSeq = message.stateSeq;
+      }
       closeDirPopover();
       closeProblemPanel();
+      const previousPageId = uiState.activePageId;
+      const previousProblems = problemsPageOpen;
       data = message;
       if (
         message.restorePage &&
@@ -604,6 +622,7 @@
         themeGeneration = message.themeGeneration;
       }
       ensureActivePage();
+      syncPageBodies();
       if (message.i18n && typeof message.i18n === 'object') {
         i18nBag = message.i18n;
       }
@@ -616,6 +635,9 @@
       applyAppearance(message.appearance);
       if (!showProblemsTab()) {
         problemsPageOpen = false;
+      }
+      if (previousPageId !== uiState.activePageId || previousProblems !== problemsPageOpen) {
+        dismissLinkPreview();
       }
       renderPager();
       render();
@@ -637,6 +659,7 @@
         return;
       }
       rememberSlide(message.pageId);
+      dismissLinkPreview();
       uiState.activePageId = message.pageId;
       vscode.setState(uiState);
     } else if (message.type === 'active' && data) {
@@ -739,6 +762,48 @@
     }
   }
 
+  /** @param {string} pageId */
+  function rememberPageBody(pageId) {
+    if (!data || !pageId) {
+      return;
+    }
+    pageBodies.set(pageId, {
+      groups: Array.isArray(data.groups) ? data.groups : [],
+      notes: Array.isArray(data.notes) ? data.notes : [],
+      links: Array.isArray(data.links) ? data.links : [],
+    });
+  }
+
+  /** Put a previously opened page back on screen. @param {string} pageId */
+  function applyPageBody(pageId) {
+    const body = pageBodies.get(pageId);
+    if (!data || !body) {
+      return false;
+    }
+    data.groups = body.groups;
+    data.notes = body.notes;
+    data.links = body.links;
+    data.contentPageId = pageId;
+    return true;
+  }
+
+  function syncPageBodies() {
+    if (!data) {
+      return;
+    }
+    if (typeof data.bodyRev === 'number' && data.bodyRev !== bodyRev) {
+      pageBodies.clear();
+      bodyRev = data.bodyRev;
+    }
+    if (typeof data.contentPageId === 'string') {
+      rememberPageBody(data.contentPageId);
+    }
+    const activeId = activePage()?.id;
+    if (activeId && data.contentPageId !== activeId) {
+      applyPageBody(activeId);
+    }
+  }
+
   /** 1 = next page enters from the right, -1 = previous enters from the left. */
   let pendingSlide = 0;
   let isSliding = false;
@@ -765,6 +830,7 @@
     if (samePage && !leaveProblems) {
       return;
     }
+    dismissLinkPreview();
     if (!samePage) {
       rememberSlide(pageId);
       uiState.activePageId = pageId;
@@ -773,6 +839,7 @@
       setToolbar(activePage() || data);
       updatePageMenu();
       vscode.postMessage({ type: 'activePage', pageId });
+      applyPageBody(pageId);
     }
     renderPager();
     render();
@@ -790,6 +857,7 @@
     if (!showProblemsTab() || problemsPageOpen) {
       return;
     }
+    dismissLinkPreview();
     problemsPageOpen = true;
     closeProblemPanel();
     cancelSlide();
@@ -2195,6 +2263,16 @@
     return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
 
+  function syncToolbarView() {
+    const onLinks = !isProblemsPageOpen() && activePage()?.kind === 'links';
+    if (toolbarViewWrap) {
+      toolbarViewWrap.hidden = onLinks;
+    }
+    if (onLinks) {
+      closeToolbarViewMenu();
+    }
+  }
+
   function setCollapseButton() {
     const groups = collapsibleTopGroups();
     const collapsed = groups.length > 0 && groups.every((group) => isCollapsed(group.id));
@@ -2510,10 +2588,30 @@
     }
   });
 
+  /** Body in `data` belongs to the page on screen. Other pages arrive with the next state. */
+  function pageContentReady() {
+    if (isProblemsPageOpen()) {
+      return true;
+    }
+    const page = activePage();
+    return !!page && data.contentPageId === page.id;
+  }
+
   function render() {
     if (!data) {
       return;
     }
+    if (!pageContentReady()) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      root.classList.add('is-page-loading');
+      root.setAttribute('aria-busy', 'true');
+      return;
+    }
+    root.classList.remove('is-page-loading');
+    root.removeAttribute('aria-busy');
     const direction = consumeSlideDirection();
     if (isSliding && direction === 0) {
       renderDeferred = true;
@@ -2939,16 +3037,24 @@
     });
     if (link.url) {
       chip.dataset.previewUrl = link.url;
+      let previewGen = linkPreviewGen;
       chip.addEventListener('mouseenter', () => {
+        previewGen = linkPreviewGen;
         window.clearTimeout(previewTimer);
         previewTimer = window.setTimeout(() => {
           previewTimer = 0;
+          if (previewGen !== linkPreviewGen || !chip.isConnected) {
+            return;
+          }
           showLinkPreview(chip);
         }, 1000);
       });
       chip.addEventListener('mouseleave', () => {
         window.clearTimeout(previewTimer);
         previewTimer = 0;
+        if (previewGen !== linkPreviewGen || !chip.isConnected) {
+          return;
+        }
         scheduleHideLinkPreview();
       });
     }
@@ -3365,6 +3471,7 @@
   }
 
   function paintPage() {
+    syncToolbarView();
     removeLinkPanelBackdrop();
     if (isProblemsPageOpen()) {
       paintProblemsPage();
@@ -4719,10 +4826,18 @@
         // at this point, a drag selects text, a single click opens the URL.
       });
       if (!editing) {
+        let previewGen = linkPreviewGen;
         node.addEventListener('mouseenter', () => {
+          previewGen = linkPreviewGen;
+          if (!node.isConnected) {
+            return;
+          }
           showLinkPreview(node);
         });
         node.addEventListener('mouseleave', () => {
+          if (previewGen !== linkPreviewGen || !node.isConnected) {
+            return;
+          }
           scheduleHideLinkPreview();
         });
       }
@@ -7565,7 +7680,19 @@
   /**
    * @param {HTMLElement} link Anchor in a note, or a chip with `data-preview-url`.
    */
+  function dismissLinkPreview() {
+    linkPreviewGen += 1;
+    if (linkPreviewHideTimer) {
+      clearTimeout(linkPreviewHideTimer);
+      linkPreviewHideTimer = null;
+    }
+    hideLinkPreview();
+  }
+
   function showLinkPreview(link) {
+    if (!link.isConnected) {
+      return;
+    }
     if (linkPreviewHideTimer) {
       clearTimeout(linkPreviewHideTimer);
       linkPreviewHideTimer = null;
@@ -7575,6 +7702,7 @@
       return;
     }
     linkPreviewUrl = url;
+    linkPreviewShownGen = linkPreviewGen;
     ensureLinkPreviewEl();
     if (!linkPreviewEl) {
       return;
@@ -7596,10 +7724,15 @@
   }
 
   function scheduleHideLinkPreview() {
+    const gen = linkPreviewGen;
     if (linkPreviewHideTimer) {
       clearTimeout(linkPreviewHideTimer);
     }
     linkPreviewHideTimer = setTimeout(() => {
+      linkPreviewHideTimer = null;
+      if (gen !== linkPreviewGen) {
+        return;
+      }
       hideLinkPreview();
     }, 180);
   }
@@ -7615,21 +7748,25 @@
     if (linkPreviewEl) {
       return;
     }
-    linkPreviewEl = el('div', 'note-link-preview');
-    linkPreviewEl.hidden = true;
+    const preview = el('div', 'note-link-preview');
+    linkPreviewEl = preview;
+    preview.hidden = true;
     const scroll = el('div', 'note-link-preview-scroll');
     const bar = el('div', 'note-link-preview-bar');
     bar.hidden = true;
     const thumb = el('div', 'note-link-preview-thumb');
     bar.append(thumb);
-    linkPreviewEl.append(scroll, bar);
-    linkPreviewEl.addEventListener('mouseenter', () => {
+    preview.append(scroll, bar);
+    preview.addEventListener('mouseenter', () => {
       if (linkPreviewHideTimer) {
         clearTimeout(linkPreviewHideTimer);
         linkPreviewHideTimer = null;
       }
     });
-    linkPreviewEl.addEventListener('mouseleave', () => {
+    preview.addEventListener('mouseleave', () => {
+      if (preview.hidden || linkPreviewShownGen !== linkPreviewGen) {
+        return;
+      }
       scheduleHideLinkPreview();
     });
     scroll.addEventListener('scroll', updateLinkPreviewScrollbar, { passive: true });

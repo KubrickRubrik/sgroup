@@ -61,7 +61,7 @@
         "openFileDuration": 1.6,
         "showProblemsTab": true,
         "cyclePageScroll": true,
-        "openLinksInCursor": false,
+        "openLinksInCursor": true,
         "problemsError": true,
         "problemsWarning": true,
         "problemsInfo": true,
@@ -70,7 +70,7 @@
       "open": {
         "bottom": true,
         "left": false,
-        "right": false
+        "right": true
       }
     }
   }

@@ -105,6 +105,13 @@ interface MapPage {
   collapsed: Record<string, boolean>;
 }
 
+/** Groups, notes, and links of a single map page. */
+interface PageBody {
+  groups: MapGroup[];
+  notes: MapNote[];
+  links: MapLink[];
+}
+
 interface MapLink {
   id: string;
   label: string;
@@ -536,6 +543,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private problems: ProblemDiag[] = [];
   private problemsTimer: ReturnType<typeof setTimeout> | undefined;
   private problemsKey = '';
+  /**
+   * Bumped on every store change. Page payloads for the same generation are built once
+   * and shared by every open map, so several panels do not stat the same files twice.
+   */
+  private bodyGen = 0;
+  private readonly bodyCache = new Map<string, PageBody>();
+  private readonly bodyFlight = new Map<string, Promise<PageBody>>();
+  /** Latest state push per webview. An older in-flight push must not land after it. */
+  private readonly stateSeq = new WeakMap<vscode.Webview, number>();
+  /** Coalesces refresh bursts and lets the caller finish switching the active page first. */
+  private readonly stateDelay = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly store: MarkerStore,
@@ -563,7 +581,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       this.languages.onDidChangeTheme(() => this.postThemeGeneration()),
       vscode.languages.onDidChangeDiagnostics(() => this.scheduleProblems()),
       store.onDidChange(() => {
-        this.refresh();
+        if (this.store.isSurfaceOnlyChange()) {
+          // Active page changed. The body built for this generation is still valid.
+          this.scheduleAll();
+        } else {
+          this.refresh();
+        }
         this.postOpenFlags();
         void this.syncOpenSurfacesIfNeeded();
       }),
@@ -591,6 +614,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (this.problemsTimer) {
       clearTimeout(this.problemsTimer);
     }
+    for (const timer of this.stateDelay.values()) {
+      clearTimeout(timer);
+    }
+    this.stateDelay.clear();
     this.subscriptions.forEach((s) => s.dispose());
   }
 
@@ -1101,12 +1128,41 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   /** Re-sends the state, e.g. after marked files appeared or disappeared on disk. */
   refresh(): void {
+    this.bodyGen++;
+    this.bodyCache.clear();
+    this.scheduleAll();
+  }
+
+  /** Push current pages without dropping a body built for this generation. */
+  private scheduleAll(): void {
     for (const webview of this.webviews) {
-      void this.postState(webview);
+      this.scheduleState(webview);
     }
     if (this.store.ready) {
       void this.syncFocusContext();
     }
+  }
+
+  /**
+   * Push on the next turn so a page switch that happens in the same call
+   * (create/delete page updates the hint after `commit` notifies) is the one we build.
+   * Repeated calls collapse into a single push.
+   */
+  private scheduleState(webview: vscode.Webview): void {
+    if (!this.webviews.has(webview)) {
+      return;
+    }
+    const pending = this.stateDelay.get(webview);
+    if (pending) {
+      clearTimeout(pending);
+    }
+    this.stateDelay.set(
+      webview,
+      setTimeout(() => {
+        this.stateDelay.delete(webview);
+        void this.postState(webview);
+      }, 0),
+    );
   }
 
   async historyBack(): Promise<void> {
@@ -1514,7 +1570,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'activePage') {
+      const prev = this.pageIdFor(webview);
       this.rememberFocus(webview, message.pageId);
+      if (this.pageIdFor(webview) !== prev) {
+        this.scheduleState(webview);
+      }
       await this.syncFocusContext();
       return;
     }
@@ -1617,6 +1677,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'confirmOpenLinkUrl') {
+      if (this.store.appearance.openLinksInCursor) {
+        await this.openLinkUrl(message.url);
+        return;
+      }
       const answer = await vscode.window.showInformationMessage(
         'Открыть ссылку в браузере?',
         { modal: true },
@@ -2128,13 +2192,130 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return other?.viewColumn ?? vscode.ViewColumn.Beside;
   }
 
+  /** One build per store generation, shared by every map that shows this page. */
+  private loadPageBody(pageId: string): Promise<PageBody> {
+    const gen = this.bodyGen;
+    const key = `${gen}:${pageId}`;
+    const cached = this.bodyCache.get(key);
+    if (cached) {
+      return Promise.resolve(cached);
+    }
+    const existing = this.bodyFlight.get(key);
+    if (existing) {
+      return existing;
+    }
+    const promise = this.buildPageBody(pageId)
+      .then((body) => {
+        if (this.bodyGen === gen) {
+          this.bodyCache.set(key, body);
+        }
+        return body;
+      })
+      .finally(() => {
+        if (this.bodyFlight.get(key) === promise) {
+          this.bodyFlight.delete(key);
+        }
+      });
+    this.bodyFlight.set(key, promise);
+    return promise;
+  }
+
+  /** Markers, notes, and links that belong to `pageId`, including file stats for that page only. */
+  private async buildPageBody(pageId: string): Promise<PageBody> {
+    const groups: MapGroup[] = await Promise.all(
+      this.store
+        .markers()
+        .filter(([id]) => this.store.pageOf(id) === pageId)
+        .map(async ([id, def]) => ({
+          id,
+          label: def.label,
+          icons: def.icons?.length ? def.icons.slice() : undefined,
+          color: def.color ? cssColor(def.color) : undefined,
+          alias: def.alias,
+          parent: def.parent,
+          page: pageId,
+          columns: def.columns ?? 'flow',
+          locked: def.locked === true ? true : undefined,
+          depth: this.store.depthOf(id),
+          subtreeHeight: this.store.subtreeHeight(id),
+          children: this.store.children(id).map(([childId]) => childId),
+          noteChildren: this.store.notesOf(id).map(([noteId]) => noteId),
+          order: def.order,
+          items: await Promise.all(this.store.itemsOf(id).map((relPath) => this.mapItem(relPath))),
+          classes: await Promise.all(
+            this.store.classesOf(id).map(([classId, classDef]) => this.mapClass(classId, classDef)),
+          ),
+        })),
+    );
+    const notes: MapNote[] = this.store
+      .notes()
+      .filter(([id]) => this.store.pageOfNote(id) === pageId)
+      .map(([id, def]) => ({
+        id,
+        text: def.text,
+        page: def.page,
+        markerId: def.markerId,
+        parentNote: def.parentNote,
+        locked: def.locked === true ? true : undefined,
+        icons: def.icons?.length ? def.icons.slice() : undefined,
+        depth: this.store.noteDepthOf(id),
+        subtreeHeight: this.store.noteSubtreeHeight(id),
+        children: this.store.noteChildren(id).map(([childId]) => childId),
+        order: def.order,
+        color: this.noteColor(id),
+      }));
+    const links: MapLink[] = this.store
+      .links()
+      .filter(([id]) => this.store.pageOfLink(id) === pageId)
+      .map(([id, def]) => {
+        const colorId = this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
+        const resolvedHex =
+          normalizeHex(colorId) ?? PALETTE.find((swatch) => swatch.id === colorId)?.hex ?? colorId;
+        return {
+          id,
+          label: def.label,
+          description: def.description,
+          url: def.url,
+          parent: def.parent,
+          page: def.page ?? pageId,
+          locked: def.locked === true ? true : undefined,
+          depth: this.store.linkDepthOf(id),
+          subtreeHeight: this.store.linkSubtreeHeight(id),
+          children: this.store.linkChildren(id).map(([childId]) => childId),
+          order: def.order,
+          color: cssColor(resolvedHex),
+          colorId: def.parent ? undefined : resolvedHex,
+          lastRoot: this.store.isLastRootLink(id) ? true : undefined,
+          canDelete: this.store.canDeleteLink(id),
+        };
+      });
+    return { groups, notes, links };
+  }
+
   private async postState(webview: vscode.Webview): Promise<void> {
-    if (!this.store.ready || !this.readyWebviews.has(webview)) {
+    if (!this.webviews.has(webview) || !this.store.ready || !this.readyWebviews.has(webview)) {
       return;
     }
+    const seq = (this.stateSeq.get(webview) ?? 0) + 1;
+    this.stateSeq.set(webview, seq);
     const restorePage = this.needsPageRestore.has(webview);
-    if (restorePage) {
-      this.needsPageRestore.delete(webview);
+    let pageId = this.pageIdFor(webview);
+    // Only the page on screen: other pages are built when the user opens them.
+    let body = await this.loadPageBody(pageId);
+    if (!this.webviews.has(webview) || this.stateSeq.get(webview) !== seq) {
+      return;
+    }
+    const latest = this.pageIdFor(webview);
+    if (latest !== pageId) {
+      pageId = latest;
+      body = await this.loadPageBody(pageId);
+      if (!this.webviews.has(webview) || this.stateSeq.get(webview) !== seq) {
+        return;
+      }
+      if (this.pageIdFor(webview) !== pageId) {
+        this.scheduleState(webview);
+        return;
+      }
     }
     const surface = this.surfaceOf(webview);
     const pages: MapPage[] = this.store.pages().map(([id, def]) => ({
@@ -2145,65 +2326,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       groupsLayout: def.groupsLayout,
       collapsed: { ...def.collapsed[surface] },
     }));
-    const groups: MapGroup[] = await Promise.all(
-      this.store.markers().map(async ([id, def]) => ({
-        id,
-        label: def.label,
-        icons: def.icons?.length ? def.icons.slice() : undefined,
-        color: def.color ? cssColor(def.color) : undefined,
-        alias: def.alias,
-        parent: def.parent,
-        page: this.store.pageOf(id),
-        columns: def.columns ?? 'flow',
-        locked: def.locked === true ? true : undefined,
-        depth: this.store.depthOf(id),
-        subtreeHeight: this.store.subtreeHeight(id),
-        children: this.store.children(id).map(([childId]) => childId),
-        noteChildren: this.store.notesOf(id).map(([noteId]) => noteId),
-        order: def.order,
-        items: await Promise.all(this.store.itemsOf(id).map((relPath) => this.mapItem(relPath))),
-        classes: await Promise.all(
-          this.store.classesOf(id).map(([classId, classDef]) => this.mapClass(classId, classDef)),
-        ),
-      })),
-    );
-    const notes: MapNote[] = this.store.notes().map(([id, def]) => ({
-      id,
-      text: def.text,
-      page: def.page,
-      markerId: def.markerId,
-      parentNote: def.parentNote,
-      locked: def.locked === true ? true : undefined,
-      icons: def.icons?.length ? def.icons.slice() : undefined,
-      depth: this.store.noteDepthOf(id),
-      subtreeHeight: this.store.noteSubtreeHeight(id),
-      children: this.store.noteChildren(id).map(([childId]) => childId),
-      order: def.order,
-      color: this.noteColor(id),
-    }));
-    const links: MapLink[] = this.store.links().map(([id, def]) => {
-      const colorId = this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
-      const resolvedHex =
-        normalizeHex(colorId) ?? PALETTE.find((swatch) => swatch.id === colorId)?.hex ?? colorId;
-      return {
-        id,
-        label: def.label,
-        description: def.description,
-        url: def.url,
-        parent: def.parent,
-        page: def.page ?? this.store.pageOfLink(id),
-        locked: def.locked === true ? true : undefined,
-        depth: this.store.linkDepthOf(id),
-        subtreeHeight: this.store.linkSubtreeHeight(id),
-        children: this.store.linkChildren(id).map(([childId]) => childId),
-        order: def.order,
-        color: cssColor(resolvedHex),
-        colorId: def.parent ? undefined : resolvedHex,
-        lastRoot: this.store.isLastRootLink(id) ? true : undefined,
-        canDelete: this.store.canDeleteLink(id),
-      };
-    });
-    const pageId = this.pageIdFor(webview);
     if (restorePage) {
       this.persistSurfacePage(webview, pageId);
     }
@@ -2211,14 +2333,24 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const focusNoteId = this.focusNoteId;
     this.focusNoteId = undefined;
     const locale = normalizeLocale(this.store.appearance.language);
+    if (this.stateSeq.get(webview) !== seq) {
+      if (focusNoteId) {
+        this.focusNoteId = focusNoteId;
+      }
+      return;
+    }
+    this.needsPageRestore.delete(webview);
     await webview.postMessage({
       type: 'state',
+      stateSeq: seq,
       restorePage: restorePage || undefined,
       activePageId: restorePage ? pageId : undefined,
+      contentPageId: pageId,
+      bodyRev: this.bodyGen,
       pages,
-      groups,
-      notes,
-      links,
+      groups: body.groups,
+      notes: body.notes,
+      links: body.links,
       focusNoteId,
       maxPages: MAX_PAGES,
       layout: page?.layout ?? 'chips',

@@ -873,6 +873,11 @@ html::-webkit-scrollbar {
   pointer-events: none;
 }
 
+.map-page.is-page-loading {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 .page-leaving,
 .map-page.page-entering {
   transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
