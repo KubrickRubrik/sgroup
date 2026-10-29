@@ -8,6 +8,10 @@
     "page-page": {
       "name": "Заметки",
       "kind": "notes"
+    },
+    "page-page-2": {
+      "name": "Тест ссылок",
+      "kind": "links"
     }
   },
   "markers": {
@@ -175,7 +179,7 @@
       "page": "map"
     },
     "bottom": {
-      "page": "map"
+      "page": "page-page-2"
     },
     "left": {
       "page": "map"
@@ -280,6 +284,92 @@
       "page": "page-page",
       "text": "Моя заметка",
       "color": "#657a9a"
+    }
+  },
+  "links": {
+    "link-1": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#51aad6"
+    },
+    "link-10": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#f46d34"
+    },
+    "link-11": {
+      "label": "Ваш компонент",
+      "parent": "link-10"
+    },
+    "link-12": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#439a2d"
+    },
+    "link-13": {
+      "label": "Ваш компонент",
+      "parent": "link-12"
+    },
+    "link-14": {
+      "label": "Ваш компонент",
+      "parent": "link-4"
+    },
+    "link-15": {
+      "label": "Ваш компонент",
+      "parent": "link-14"
+    },
+    "link-16": {
+      "label": "Ваш компонент",
+      "parent": "link-14"
+    },
+    "link-17": {
+      "label": "Ваш компонент",
+      "parent": "link-5"
+    },
+    "link-18": {
+      "label": "Ваш компонент",
+      "parent": "link-4"
+    },
+    "link-19": {
+      "label": "Ссылка 2",
+      "url": "https://pikabu.ru/story/novosibirsk_14473034",
+      "parent": "link-3"
+    },
+    "link-2": {
+      "label": "Ваш компонент",
+      "parent": "link-1"
+    },
+    "link-3": {
+      "label": "Ссылка 1",
+      "url": "https://pikabu.ru/story/novosibirsk_14473034",
+      "parent": "link-1"
+    },
+    "link-4": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#6c51d6"
+    },
+    "link-5": {
+      "label": "Ваш компонент",
+      "parent": "link-4"
+    },
+    "link-6": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#f49a34"
+    },
+    "link-7": {
+      "label": "Ваш компонент",
+      "parent": "link-6"
+    },
+    "link-8": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#37be7f"
+    },
+    "link-9": {
+      "label": "Ваш компонент",
+      "parent": "link-8"
     }
   }
 }

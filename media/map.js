@@ -205,6 +205,13 @@
   });
   toolbarCreate?.addEventListener('click', (event) => {
     event.stopPropagation();
+    if (activePage()?.kind === 'links') {
+      cancelMenuClose();
+      closeToolbarMenus();
+      closeContextMenu();
+      postToolbar('createLinkLayout');
+      return;
+    }
     if (!toolbarCreateMenu) {
       return;
     }
@@ -334,12 +341,30 @@
   toolbarMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
     const button = target?.closest('button');
-    const action = button?.dataset.action;
-    if (!action || button?.disabled) {
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    if (button.id === 'menu-create-page') {
+      event.stopPropagation();
+      const sub = document.getElementById('menu-create-page-sub');
+      if (sub) {
+        const open = sub.hidden;
+        sub.hidden = !open;
+        button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      return;
+    }
+    const action = button.dataset.action;
+    if (!action) {
       return;
     }
     cancelMenuClose();
     closeToolbarMenus();
+    const sub = document.getElementById('menu-create-page-sub');
+    if (sub) {
+      sub.hidden = true;
+    }
+    document.getElementById('menu-create-page')?.setAttribute('aria-expanded', 'false');
     postToolbar(action);
   });
   toolbarMoreWrap?.addEventListener('mouseenter', () => {
@@ -920,7 +945,7 @@
 
   function updatePageMenu() {
     const list = pages();
-    const max = typeof data?.maxPages === 'number' ? data.maxPages : 3;
+    const max = typeof data?.maxPages === 'number' ? data.maxPages : 6;
     const createBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-create-page'));
     const deleteBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-delete-page'));
     if (createBtn) {
@@ -980,6 +1005,9 @@
     setBtnLocale(panelToggleRight, 'toolbarPanelRight');
     setBtnLocale(toolbarMore, 'toolbarMore');
     setMenuItemLocale('menu-create-page', 'menuNewPage');
+    setMenuItemLocaleByAction('createPageFiles', 'menuNewPageGroups');
+    setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
+    setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
     setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
@@ -1063,12 +1091,21 @@
    * @param {string} label
    */
   function setMenuButtonText(button, label) {
+    const i18nSpan = button.querySelector('[data-i18n]');
+    if (i18nSpan) {
+      i18nSpan.textContent = label;
+      return;
+    }
     const icon = button.querySelector('.tool-icon, img, svg');
+    const caret = button.querySelector('.toolbar-menu-caret');
     button.replaceChildren();
     if (icon) {
       button.append(icon);
     }
     button.append(document.createTextNode(label));
+    if (caret) {
+      button.append(caret);
+    }
   }
 
   function closeToolbarMenus() {
@@ -1076,6 +1113,11 @@
     if (toolbarMenu) {
       toolbarMenu.hidden = true;
     }
+    const createSub = document.getElementById('menu-create-page-sub');
+    if (createSub) {
+      createSub.hidden = true;
+    }
+    document.getElementById('menu-create-page')?.setAttribute('aria-expanded', 'false');
     if (toolbarPanelsMenu) {
       toolbarPanelsMenu.hidden = true;
     }
@@ -1112,8 +1154,12 @@
     const isMenu = menuRoot.classList.contains('syn3-menu');
     const target = isMenu ? ensureMenuChrome(menuRoot).scroller : menuRoot;
     target.replaceChildren();
-    target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
-    target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
+    if (activePage()?.kind === 'links') {
+      target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
+    } else {
+      target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
+      target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
+    }
     if (isMenu) {
       updateMenuScrollbar(menuRoot);
     }
@@ -2114,18 +2160,32 @@
         return !!group.locked;
       }
       const note = data?.notes?.find((item) => item.id === groupOrId);
-      return !!note?.locked;
+      if (note) {
+        return !!note.locked;
+      }
+      const link = (data?.links || []).find((item) => item.id === groupOrId);
+      return !!link?.locked;
     }
     return !!groupOrId?.locked;
   }
 
-  /** Top-level groups and root notes (notes always fold to one line). */
+  /** Top-level groups, root notes, and link layouts that can fold. */
   function collapsibleTopGroups() {
+    const page = activePage();
+    if (page?.kind === 'links') {
+      return (data?.links || []).filter(
+        (link) =>
+          !link.parent &&
+          link.page === page.id &&
+          !isLocked(link) &&
+          (link.children || []).length > 0,
+      );
+    }
     const groups = pageGroups().filter(
       (group) => !group.parent && !isEmptyGroup(group) && !isLocked(group),
     );
     const notes = (data?.notes || []).filter(
-      (note) => note.page === activePage()?.id && !isLocked(note),
+      (note) => note.page === page?.id && !isLocked(note),
     );
     return [...groups, ...notes];
   }
@@ -2543,9 +2603,776 @@
     outgoing.style.transform = 'translateX(' + leaveTo + ')';
   }
 
+  /** @type {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' } | null} */
+  let pendingLinkDrop = null;
+  /** @type {string | null} */
+  let openLinkPanelId = null;
+
+  function pageLinks() {
+    const pageId = activePage()?.id;
+    return (data?.links || []).filter((link) => link.page === pageId || pageOfLink(link) === pageId);
+  }
+
+  /** @param {*} link */
+  function pageOfLink(link) {
+    if (link.page) {
+      return link.page;
+    }
+    let current = link;
+    const byId = Object.fromEntries((data?.links || []).map((item) => [item.id, item]));
+    const seen = new Set();
+    while (current && current.parent && !seen.has(current.id)) {
+      seen.add(current.id);
+      current = byId[current.parent];
+    }
+    return current?.page;
+  }
+
+  function removeLinkPanelBackdrop() {
+    document.querySelectorAll('.link-panel-backdrop').forEach((node) => node.remove());
+  }
+
+  /** Tree shape aside from folded flags. A collapse must not rebuild the chips. */
+  let linksStructureKey = '';
+
+  /** @param {Array<*>} links */
+  function linkStructureKey(links) {
+    return links
+      .map((link) =>
+        [
+          link.id,
+          link.parent || '',
+          link.order ?? '',
+          link.label || '',
+          link.color || '',
+          link.colorId || '',
+          link.url || '',
+          link.description || '',
+          link.locked ? 1 : 0,
+          link.depth || 0,
+          link.canDelete ? 1 : 0,
+          link.lastRoot ? 1 : 0,
+          (link.children || []).join(','),
+        ].join('\u001f'),
+      )
+      .join('\u001e');
+  }
+
+  /** Fold flags only: the chip under the pointer stays mounted, so its fill does not restart. */
+  function syncLinkCollapsed() {
+    root.querySelectorAll('.link-node').forEach((node) => {
+      if (!(node instanceof HTMLElement) || !node.dataset.linkId) {
+        return;
+      }
+      const collapsed = isCollapsed(node.dataset.linkId);
+      node.classList.toggle('is-collapsed', collapsed);
+      const tri = node.querySelector(
+        ':scope > .link-body > .link-chip-wrap > .link-chip > .link-chip-tri',
+      );
+      if (tri) {
+        tri.classList.toggle('is-collapsed', collapsed);
+      }
+    });
+  }
+
+  function closeLinkPanel() {
+    const backdrop = document.querySelector('.link-panel-backdrop');
+    const active = document.activeElement;
+    if (
+      backdrop instanceof HTMLElement &&
+      active instanceof HTMLElement &&
+      backdrop.contains(active)
+    ) {
+      active.blur();
+    }
+    if (!openLinkPanelId) {
+      return;
+    }
+    openLinkPanelId = null;
+    paintLinksPage();
+  }
+
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (!openLinkPanelId) {
+        return;
+      }
+      const isEsc = event.key === 'Escape';
+      const isEnter = event.key === 'Enter';
+      if (!isEsc && !isEnter) {
+        return;
+      }
+      const backdrop = document.querySelector('.link-panel-backdrop');
+      const inside =
+        backdrop instanceof HTMLElement &&
+        event.target instanceof Node &&
+        backdrop.contains(event.target);
+      if (isEnter && (!inside || event.target instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      closeLinkPanel();
+    },
+    true,
+  );
+
+  /** @param {Array<*>} links */
+  function mountLinkPanel(links) {
+    const byId = Object.fromEntries(links.map((link) => [link.id, link]));
+    const existing = document.querySelector('.link-panel-backdrop');
+    if (!openLinkPanelId || !byId[openLinkPanelId]) {
+      if (openLinkPanelId && !byId[openLinkPanelId]) {
+        openLinkPanelId = null;
+      }
+      existing?.remove();
+      return;
+    }
+    if (existing instanceof HTMLElement && existing.dataset.linkId === openLinkPanelId) {
+      return;
+    }
+    existing?.remove();
+    const backdrop = el('div', 'link-panel-backdrop');
+    backdrop.dataset.linkId = openLinkPanelId;
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        openLinkPanelId = null;
+        paintLinksPage();
+      }
+    });
+    backdrop.append(renderLinkPanel(byId[openLinkPanelId]));
+    document.body.append(backdrop);
+  }
+
+  function paintLinksPage() {
+    const links = pageLinks();
+    const key = linkStructureKey(links);
+    const tree = root.querySelector(':scope > .links-tree');
+    if (key === linksStructureKey && tree && root.classList.contains('links-page') && !data?.error) {
+      syncLinkCollapsed();
+      setCollapseButton();
+      mountLinkPanel(links);
+      return;
+    }
+    linksStructureKey = key;
+    removeLinkPanelBackdrop();
+    const folds = captureFolds();
+    foldToken += 1;
+    isFolding = false;
+    setCollapseButton();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page links-page';
+    clearDropHighlights();
+    if (data.error) {
+      root.append(el('div', 'error', data.error));
+    }
+    const roots = links.filter((link) => !link.parent).sort((a, b) => a.order - b.order);
+    if (roots.length === 0) {
+      root.append(el('div', 'empty', 'Пока пусто. Нажми «Создать», чтобы добавить макет.'));
+      return;
+    }
+    const byId = Object.fromEntries(links.map((link) => [link.id, link]));
+    const nextTree = el('div', 'links-tree');
+    roots.forEach((link, index) => {
+      nextTree.append(renderLinkNode(link, byId, index > 0, roots[index + 1]?.color || ''));
+    });
+    root.append(nextTree);
+    mountLinkPanel(links);
+    playFolds(folds);
+  }
+
+  const LINK_BRANCH_GAP = 18;
+  const LINK_ELBOW_RADIUS = 8;
+  const LINK_ROW_GAP = 10;
+
+  /** Half of the chip height. Root 40, depth 1 is 15% shorter, depth 2 is 20% shorter. */
+  function linkChipHalf(depth) {
+    if (!depth) {
+      return 20;
+    }
+    if (depth === 1) {
+      return 17;
+    }
+    return 16;
+  }
+
+  /**
+   * Rounded elbow into the chip. This branch's color stops at the turn.
+   * The spine below that point is the next sibling's color.
+   * @param {number} mid
+   * @param {string} [stemColor]
+   * @returns {SVGSVGElement}
+   */
+  function linkElbow(mid, stemColor) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'link-elbow');
+    svg.setAttribute('width', String(LINK_BRANCH_GAP));
+    svg.setAttribute('height', '100%');
+    svg.setAttribute('aria-hidden', 'true');
+    const radius = Math.min(LINK_ELBOW_RADIUS, Math.max(2, mid - 1));
+    const turnY = mid - radius;
+    if (stemColor) {
+      const stem = document.createElementNS(SVG_NS, 'path');
+      stem.setAttribute('class', 'link-elbow-stem');
+      stem.setAttribute('d', `M1 ${turnY} V9999`);
+      stem.setAttribute('fill', 'none');
+      stem.setAttribute('stroke', stemColor);
+      stem.setAttribute('stroke-width', '1.4');
+      stem.setAttribute('stroke-linecap', 'butt');
+      svg.append(stem);
+    }
+    const turn = document.createElementNS(SVG_NS, 'path');
+    turn.setAttribute('d', `M1 0 V${turnY} Q1 ${mid} ${1 + radius} ${mid} H${LINK_BRANCH_GAP}`);
+    turn.setAttribute('fill', 'none');
+    turn.setAttribute('stroke', 'currentColor');
+    turn.setAttribute('stroke-width', '1.4');
+    turn.setAttribute('stroke-linecap', 'butt');
+    svg.append(turn);
+    return svg;
+  }
+
+  /** Rounded down-triangle: group color, thick white rim. @returns {SVGSVGElement} */
+  function linkCaretIcon() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 28 26');
+    svg.setAttribute('aria-hidden', 'true');
+    const rim = document.createElementNS(SVG_NS, 'path');
+    rim.setAttribute(
+      'd',
+      'M 10.00 3.80 L 18.00 3.80 Q 24.40 3.80 21.42 9.47 L 16.98 17.93 Q 14.00 23.60 11.02 17.93 L 6.58 9.47 Q 3.60 3.80 10.00 3.80 Z',
+    );
+    rim.setAttribute('fill', '#fff');
+    const fill = document.createElementNS(SVG_NS, 'path');
+    fill.setAttribute(
+      'd',
+      'M 11.12 5.65 L 16.88 5.65 Q 21.49 5.65 19.35 9.73 L 16.14 15.82 Q 14.00 19.90 11.86 15.82 L 8.65 9.73 Q 6.51 5.65 11.12 5.65 Z',
+    );
+    fill.setAttribute('fill', 'currentColor');
+    svg.append(rim, fill);
+    return svg;
+  }
+
+  /**
+   * @param {*} link
+   * @param {Record<string, *>} byId
+   * @param {boolean} leadingGap
+   * @param {string} [nextColor] color of the following sibling; paints the spine below this turn
+   */
+  function renderLinkNode(link, byId, leadingGap, nextColor) {
+    const childIds = link.children || [];
+    const children = childIds.map((id) => byId[id]).filter(Boolean);
+    const collapsed = childIds.length > 0 && isCollapsed(link.id);
+    const locked = isLocked(link);
+    const depth = link.depth || 0;
+    const row = el(
+      'div',
+      'link-node depth-' +
+        depth +
+        (leadingGap ? ' has-gap' : '') +
+        (collapsed ? ' is-collapsed' : '') +
+        (locked ? ' is-locked' : '') +
+        (!link.parent ? ' is-layout' : ' is-component'),
+    );
+    row.dataset.linkId = link.id;
+    row.dataset.depth = String(depth);
+    row.style.setProperty('--link-color', link.color || 'var(--vscode-foreground)');
+    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + linkChipHalf(depth), nextColor));
+
+    const body = el('div', 'link-body');
+    const chipWrap = el('div', 'link-chip-wrap');
+    const chip = el('button', 'link-chip');
+    chip.type = 'button';
+    chip.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
+    if (childIds.length > 0) {
+      const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+      tri.append(linkCaretIcon());
+      tri.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (locked) {
+          flashLock(link.id, chipWrap);
+          return;
+        }
+        toggleLinkCollapsed(link.id);
+      });
+      tri.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      chip.append(tri);
+    }
+    let openTimer = 0;
+    let previewTimer = 0;
+    chip.addEventListener('click', (event) => {
+      window.clearTimeout(previewTimer);
+      previewTimer = 0;
+      hideLinkPreview();
+      if (event.detail > 1) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Element && target.closest('.link-chip-tri')) {
+        return;
+      }
+      if (!link.url) {
+        return;
+      }
+      window.clearTimeout(openTimer);
+      openTimer = window.setTimeout(() => {
+        openTimer = 0;
+        vscode.postMessage({ type: 'confirmOpenLinkUrl', url: link.url });
+      }, 400);
+    });
+    chip.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.clearTimeout(openTimer);
+      openTimer = 0;
+      openLinkPanelId = link.id;
+      paintLinksPage();
+    });
+    if (link.url) {
+      chip.dataset.previewUrl = link.url;
+      chip.addEventListener('mouseenter', () => {
+        window.clearTimeout(previewTimer);
+        previewTimer = window.setTimeout(() => {
+          previewTimer = 0;
+          showLinkPreview(chip);
+        }, 1000);
+      });
+      chip.addEventListener('mouseleave', () => {
+        window.clearTimeout(previewTimer);
+        previewTimer = 0;
+        scheduleHideLinkPreview();
+      });
+    }
+    chipWrap.append(chip);
+
+    const side = el('div', 'link-side');
+    const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    lock.type = 'button';
+    lock.title = locked ? t('unlockLink') : t('lockLink');
+    lock.setAttribute('aria-label', lock.title);
+    lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+    lock.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
+    });
+    if (childIds.length > 0) {
+      side.append(el('span', 'link-child-count', String(childIds.length)));
+    }
+    side.append(lock);
+    chipWrap.append(side);
+    body.append(chipWrap);
+
+    if (!locked) {
+      chip.draggable = true;
+      chip.addEventListener('dragstart', (event) => {
+        beginDrag(
+          event,
+          {
+            kind: 'link',
+            id: link.id,
+            depth: link.depth || 0,
+            subtreeHeight: link.subtreeHeight || 0,
+            label: link.label,
+          },
+          'copyMove',
+          link.label || '',
+        );
+        chip.classList.add('dragging');
+      });
+      chip.addEventListener('dragend', () => {
+        chip.classList.remove('dragging');
+        endDrag();
+      });
+    }
+
+    row.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'link' || payload.id === link.id) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = event.altKey ? 'copy' : 'move';
+      }
+      row.classList.add('link-drop-target');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('link-drop-target'));
+    row.addEventListener('drop', (event) => {
+      row.classList.remove('link-drop-target');
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'link' || payload.id === link.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = row.getBoundingClientRect();
+      const edge =
+        event.clientY < rect.top + rect.height / 3
+          ? 'before'
+          : event.clientY > rect.bottom - rect.height / 3
+            ? 'after'
+            : 'into';
+      if (edge === 'into') {
+        const nextDepth = (link.depth || 0) + 1 + (payload.subtreeHeight || 0);
+        if (nextDepth > MAX_DEPTH) {
+          vscode.postMessage({ type: 'nestLink', id: payload.id, parentId: link.id });
+          return;
+        }
+        openLinkDropChoose({ id: payload.id, targetId: link.id, mode: 'nest' });
+        return;
+      }
+      openLinkDropChoose({
+        id: payload.id,
+        targetId: link.id,
+        mode: 'place',
+        position: edge,
+      });
+    });
+
+    row.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLinkContextMenu(event.clientX, event.clientY, link);
+    });
+
+    if (children.length > 0) {
+      const kids = el('div', 'link-children');
+      const foldRail = el('button', 'link-fold-rail');
+      foldRail.type = 'button';
+      foldRail.title = t('toolbarCollapse');
+      foldRail.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (locked) {
+          flashLock(link.id, chipWrap);
+          return;
+        }
+        toggleLinkCollapsed(link.id);
+      });
+      kids.append(foldRail);
+      const ordered = children.slice().sort((a, b) => a.order - b.order);
+      ordered.forEach((child, index) => {
+        kids.append(renderLinkNode(child, byId, true, ordered[index + 1]?.color || ''));
+      });
+      body.append(kids);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /** @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending */
+  function openLinkDropChoose(pending) {
+    pendingLinkDrop = pending;
+    pendingChipDrop = null;
+    dropDialog.hidden = false;
+    dropDialog.replaceChildren();
+    const panel = el('div', 'drop-dialog-panel');
+    const actions = el('div', 'drop-dialog-actions');
+    const moveBtn = el('button', 'drop-dialog-btn');
+    moveBtn.type = 'button';
+    moveBtn.textContent = t('dropMove');
+    moveBtn.addEventListener('click', () => {
+      const current = pendingLinkDrop;
+      closeDropDialog();
+      pendingLinkDrop = null;
+      if (current) {
+        commitLinkDrop(current, false);
+      }
+    });
+    const copyBtn = el('button', 'drop-dialog-btn');
+    copyBtn.type = 'button';
+    copyBtn.textContent = t('dropCopy');
+    copyBtn.addEventListener('click', () => {
+      const current = pendingLinkDrop;
+      closeDropDialog();
+      pendingLinkDrop = null;
+      if (current) {
+        commitLinkDrop(current, true);
+      }
+    });
+    actions.append(moveBtn, copyBtn);
+    panel.append(actions);
+    dropDialog.append(panel);
+    moveBtn.focus();
+  }
+
+  /**
+   * @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending
+   * @param {boolean} copy
+   */
+  function commitLinkDrop(pending, copy) {
+    if (pending.mode === 'nest') {
+      vscode.postMessage({ type: 'nestLink', id: pending.id, parentId: pending.targetId, copy });
+      return;
+    }
+    vscode.postMessage({
+      type: 'placeLink',
+      id: pending.id,
+      targetId: pending.targetId,
+      position: pending.position || 'after',
+      copy,
+    });
+  }
+
+  /** @param {string} id */
+  function toggleLinkCollapsed(id) {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    const next = { ...(page.collapsed || {}) };
+    if (next[id]) {
+      delete next[id];
+    } else {
+      next[id] = true;
+    }
+    const tops = collapsibleTopGroups();
+    const allTopCollapsed = tops.length > 0 && tops.every((item) => !!next[item.id]);
+    vscode.postMessage({
+      type: 'setCollapsed',
+      pageId: page.id,
+      collapsed: next,
+      allTopCollapsed,
+    });
+    page.collapsed = next;
+    paintLinksPage();
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {*} link
+   */
+  function openLinkContextMenu(x, y, link) {
+    cancelMenuClose('context');
+    closeToolbarMenus();
+    const canCreate = (link.depth || 0) < MAX_DEPTH && !isLocked(link);
+    const createBtn = menuActionChoice(t('linkCreateChild'), { create: 'linkChild' });
+    createBtn.disabled = !canCreate;
+    createBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (!createBtn.disabled) {
+        vscode.postMessage({ type: 'createLinkChild', parentId: link.id });
+      }
+    });
+    openMenuState = {
+      kind: 'context',
+      viewExpanded: false,
+      createExpanded: false,
+      deleteExpanded: false,
+      ctx: { linkId: link.id },
+      x,
+      y,
+    };
+    const scroller = ensureMenuChrome(contextMenu).scroller;
+    scroller.replaceChildren(createBtn);
+    updateMenuScrollbar(contextMenu);
+    contextMenu.hidden = false;
+    positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  /** @param {*} link */
+  function renderLinkPanel(link) {
+    const locked = isLocked(link);
+    const panel = el('aside', 'link-panel' + (locked ? ' is-locked' : ''));
+    const nameRow = el('div', 'link-panel-name-row');
+    const nameInput = el('input', 'link-panel-input');
+    nameInput.type = 'text';
+    nameInput.value = link.label || '';
+    nameInput.disabled = locked;
+    nameInput.setAttribute('aria-label', 'Название');
+    const lockBtn = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    lockBtn.type = 'button';
+    lockBtn.title = locked ? t('unlockLink') : t('lockLink');
+    lockBtn.setAttribute('aria-label', lockBtn.title);
+    lockBtn.append(locked ? lockClosedIcon() : lockOpenIcon());
+    lockBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
+    });
+    nameRow.append(nameInput, lockBtn);
+    panel.append(nameRow);
+
+    const descWrap = el('div', 'link-panel-field');
+    const showDesc = link.description != null || panel.dataset.showDesc === '1';
+    if (showDesc) {
+      const descLabel = el('label', '');
+      descLabel.append(document.createTextNode('Описание'));
+      const descInput = el('textarea', 'link-panel-input');
+      descInput.value = link.description && link.description.trim() ? link.description : '';
+      descInput.rows = 3;
+      descInput.disabled = locked;
+      descLabel.append(descInput);
+      descWrap.append(descLabel);
+      descInput.addEventListener('change', () => {
+        if (!locked) {
+          vscode.postMessage({
+            type: 'updateLink',
+            linkId: link.id,
+            description: descInput.value.trim() ? descInput.value : null,
+          });
+        }
+      });
+    } else {
+      const addDesc = el('button', 'link-panel-secondary');
+      addDesc.type = 'button';
+      addDesc.textContent = t('linkAddDescription');
+      addDesc.disabled = locked;
+      addDesc.addEventListener('click', () => {
+        if (locked) {
+          return;
+        }
+        panel.dataset.showDesc = '1';
+        descWrap.replaceChildren();
+        const descLabel = el('label', '');
+        descLabel.append(document.createTextNode('Описание'));
+        const descInput = el('textarea', 'link-panel-input');
+        descInput.rows = 3;
+        descLabel.append(descInput);
+        descWrap.append(descLabel);
+        descInput.focus();
+        descInput.addEventListener('change', () => {
+          vscode.postMessage({
+            type: 'updateLink',
+            linkId: link.id,
+            description: descInput.value.trim() ? descInput.value : null,
+          });
+        });
+      });
+      descWrap.append(addDesc);
+    }
+    panel.append(descWrap);
+
+    if (!link.parent) {
+      const colorField = el('div', 'link-panel-field link-panel-color');
+      const colorRow = el('div', 'link-color-row');
+      const colorCaption = el('span', 'link-color-caption');
+      colorCaption.textContent = t('changeColor');
+      const raw = String(link.colorId || link.color || '');
+      const match = raw.match(/#([0-9a-f]{6})/i);
+      const currentHex = match ? '#' + match[1].toLowerCase() : '#3658d3';
+      const well = el('button', 'link-color-well');
+      well.type = 'button';
+      well.disabled = locked;
+      well.style.background = currentHex;
+      well.setAttribute('aria-label', t('changeColor'));
+      well.setAttribute('aria-expanded', 'false');
+      const picker = el('div', 'link-color-picker');
+      picker.hidden = true;
+      picker.setAttribute('role', 'group');
+      picker.setAttribute('aria-label', t('changeColor'));
+      const sets = el('div', 'link-color-sets');
+      const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+      for (const column of columns) {
+        const set = el('div', 'link-color-set');
+        const name = el('span', 'link-color-set-name');
+        name.textContent = column.label || '';
+        set.append(name);
+        const tones = Array.isArray(column.tones) ? column.tones : [];
+        for (const tone of tones) {
+          const hex = String(tone).toLowerCase();
+          const swatch = el('button', 'link-color-swatch');
+          swatch.type = 'button';
+          swatch.disabled = locked;
+          swatch.style.background = hex;
+          swatch.dataset.hex = hex;
+          swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
+          swatch.setAttribute('aria-pressed', hex === currentHex ? 'true' : 'false');
+          swatch.addEventListener('click', () => {
+            if (locked) {
+              return;
+            }
+            well.style.background = hex;
+            picker.hidden = true;
+            well.setAttribute('aria-expanded', 'false');
+            vscode.postMessage({ type: 'updateLink', linkId: link.id, color: hex });
+          });
+          set.append(swatch);
+        }
+        sets.append(set);
+      }
+      picker.append(sets);
+      well.addEventListener('click', () => {
+        if (locked) {
+          return;
+        }
+        const open = picker.hidden;
+        picker.hidden = !open;
+        well.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      colorRow.append(colorCaption, well);
+      colorField.append(colorRow, picker);
+      panel.append(colorField);
+    }
+
+    const urlLabel = el('label', 'link-panel-field');
+    urlLabel.append(document.createTextNode(t('linkFieldUrl')));
+    const urlInput = el('input', 'link-panel-input');
+    urlInput.type = 'url';
+    urlInput.value = link.url || '';
+    urlInput.placeholder = 'https://…';
+    urlInput.disabled = locked;
+    urlLabel.append(urlInput);
+    panel.append(urlLabel);
+
+    nameInput.addEventListener('change', () => {
+      if (!locked && nameInput.value.trim()) {
+        vscode.postMessage({ type: 'updateLink', linkId: link.id, label: nameInput.value });
+      }
+    });
+    urlInput.addEventListener('change', () => {
+      if (!locked) {
+        vscode.postMessage({
+          type: 'updateLink',
+          linkId: link.id,
+          url: urlInput.value.trim() || null,
+        });
+      }
+    });
+
+    const actions = el('div', 'link-panel-actions');
+    const createChild = el('button', 'link-panel-secondary');
+    createChild.type = 'button';
+    createChild.textContent = t('linkCreateChild');
+    createChild.disabled = locked || (link.depth || 0) >= MAX_DEPTH;
+    createChild.addEventListener('click', () => {
+      if (!createChild.disabled) {
+        vscode.postMessage({ type: 'createLinkChild', parentId: link.id });
+      }
+    });
+    actions.append(createChild);
+
+    const del = el('button', 'link-panel-danger');
+    del.type = 'button';
+    del.textContent = t('menuDelete');
+    del.disabled = locked || !link.canDelete;
+    del.addEventListener('click', () => {
+      if (!del.disabled) {
+        vscode.postMessage({ type: 'deleteLink', linkId: link.id });
+        openLinkPanelId = null;
+      }
+    });
+    actions.append(del);
+    panel.append(actions);
+    return panel;
+  }
+
   function paintPage() {
+    removeLinkPanelBackdrop();
     if (isProblemsPageOpen()) {
       paintProblemsPage();
+      return;
+    }
+    const page = activePage();
+    if (page?.kind === 'links') {
+      paintLinksPage();
       return;
     }
     const folds = captureFolds();
@@ -2554,7 +3381,6 @@
     setCollapseButton();
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
-    const page = activePage();
     const layout = page?.layout || data.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data.groupsLayout || 'flow';
     root.className = 'map-page layout-' + layout + ' groups-' + groupsLayout;
@@ -2890,9 +3716,11 @@
       chip.draggable = true;
       chip.dataset.pageId = page.id;
       chip.title =
-        page.kind === 'notes'
-          ? page.name + ' (' + t('pageKindNotes') + ')'
-          : page.name + ' (' + t('pageKindFiles') + ')';
+        page.kind === 'links'
+          ? page.name + ' (' + t('pageKindLinks') + ')'
+          : page.kind === 'notes'
+            ? page.name + ' (' + t('pageKindNotes') + ')'
+            : page.name + ' (' + t('pageKindFiles') + ')';
       chip.addEventListener('click', () => setActivePage(page.id));
       chip.addEventListener('dragstart', (event) => {
         pageDragId = page.id;
@@ -3175,7 +4003,7 @@
     if (now < until) {
       return;
     }
-    const button = header.querySelector(':scope > .lock-btn');
+    const button = header.querySelector(':scope > .lock-btn, :scope > .link-side > .lock-btn');
     if (!(button instanceof HTMLElement)) {
       return;
     }
@@ -6735,23 +7563,29 @@
   }
 
   /**
-   * @param {HTMLAnchorElement} link
+   * @param {HTMLElement} link Anchor in a note, or a chip with `data-preview-url`.
    */
   function showLinkPreview(link) {
     if (linkPreviewHideTimer) {
       clearTimeout(linkPreviewHideTimer);
       linkPreviewHideTimer = null;
     }
-    const url = link.href;
+    const url = link instanceof HTMLAnchorElement ? link.href : link.dataset.previewUrl || '';
+    if (!url) {
+      return;
+    }
     linkPreviewUrl = url;
     ensureLinkPreviewEl();
     if (!linkPreviewEl) {
       return;
     }
+    const fromChip = !(link instanceof HTMLAnchorElement);
     const narrow = window.innerWidth < 100;
     linkPreviewEl.classList.toggle('is-narrow', narrow);
+    linkPreviewEl.classList.toggle('is-link-chip', fromChip);
     const rect = link.getBoundingClientRect();
-    linkPreviewEl.style.top = Math.min(window.innerHeight - 128, rect.bottom + 4) + 'px';
+    const limit = fromChip ? Math.min(260, window.innerHeight - 16) : 128;
+    linkPreviewEl.style.top = Math.max(8, Math.min(window.innerHeight - limit, rect.bottom + 4)) + 'px';
     linkPreviewEl.hidden = false;
     const scroll = /** @type {HTMLElement} */ (linkPreviewEl.querySelector('.note-link-preview-scroll'));
     scroll.replaceChildren(buildLinkPreviewSkeleton());
@@ -8927,6 +9761,7 @@
   }
 
   function closeDropDialog() {
+    pendingLinkDrop = null;
     pendingChipDrop = null;
     dropDialog.hidden = true;
     dropDialog.replaceChildren();
@@ -9236,6 +10071,7 @@
   }
 
   function paintProblemsPage() {
+    removeLinkPanelBackdrop();
     preservingPageScroll(() => {
     foldToken += 1;
     isFolding = false;

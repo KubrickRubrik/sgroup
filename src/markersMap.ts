@@ -20,7 +20,8 @@ import {
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
 import { openClassAt } from './openClass';
-import { cssColor, normalizeHex } from './palette';
+import { LINK_PALETTE, LINK_PALETTE_DEFAULT } from './linkPalette';
+import { cssColor, normalizeHex, PALETTE } from './palette';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 /** Legacy workspace keys for active page per surface (migrated into syn3.json once). */
@@ -104,6 +105,28 @@ interface MapPage {
   collapsed: Record<string, boolean>;
 }
 
+interface MapLink {
+  id: string;
+  label: string;
+  description?: string;
+  url?: string;
+  parent?: string;
+  page?: string;
+  locked?: true;
+  depth: number;
+  subtreeHeight: number;
+  children: string[];
+  order: number;
+  /** Resolved CSS color from the branch root. */
+  color: string;
+  /** Stored color id / hex for the settings panel (roots only). */
+  colorId?: string;
+  /** True when this is the only root layout on its page. */
+  lastRoot?: true;
+  /** True when delete is allowed. */
+  canDelete: boolean;
+}
+
 interface EditorGroupLayout {
   size?: number;
   groups?: EditorGroupLayout[];
@@ -119,11 +142,15 @@ type IncomingToolbarAction =
   | 'setGroupsLayout'
   | 'createMarker'
   | 'createNote'
+  | 'createLinkLayout'
   | 'collapseGroups'
   | 'expandGroups'
   | 'refresh'
   | 'openSettings'
   | 'createPage'
+  | 'createPageFiles'
+  | 'createPageNotes'
+  | 'createPageLinks'
   | 'renamePage'
   | 'deletePage'
   | 'toggleBottom'
@@ -212,7 +239,33 @@ type IncomingMessage =
   | { type: 'moveNote'; id: string; delta: -1 | 1 }
   | { type: 'toggleLock'; markerId: string }
   | { type: 'toggleNoteLock'; noteId: string }
+  | { type: 'toggleLinkLock'; linkId: string }
   | { type: 'setFocus'; kind: 'marker' | 'note'; id: string }
+  | {
+      type: 'createLinkLayout';
+      pageId: string;
+    }
+  | { type: 'createLinkChild'; parentId: string }
+  | {
+      type: 'updateLink';
+      linkId: string;
+      label?: string;
+      description?: string | null;
+      url?: string | null;
+      color?: string;
+    }
+  | { type: 'deleteLink'; linkId: string }
+  | {
+      type: 'placeLink';
+      id: string;
+      targetId: string;
+      position: 'before' | 'after';
+      copy?: boolean;
+    }
+  | { type: 'nestLink'; id: string; parentId: string; copy?: boolean }
+  | { type: 'unnestLink'; id: string }
+  | { type: 'openLinkUrl'; url: string }
+  | { type: 'confirmOpenLinkUrl'; url: string }
   | {
       type: 'profile';
       action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull';
@@ -933,11 +986,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         delete next[id];
       }
     }
+    for (const [id] of this.store.rootLinks(pageId)) {
+      if (this.store.isLinkLocked(id)) {
+        continue;
+      }
+      if (collapsed) {
+        next[id] = true;
+      } else {
+        delete next[id];
+      }
+    }
     await this.store.setPageCollapsed(pageId, surface, next);
     await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(pageId, next));
   }
 
-  /** Collapse state of unlocked top-level groups and root notes that can fold. */
+  /** Collapse state of unlocked top-level groups, root notes, and link layouts that can fold. */
   private allUnlockedTopCollapsed(pageId: string, collapsed?: Record<string, boolean>): boolean {
     const flags = collapsed ?? this.store.page(pageId)?.collapsed[this.focusedSurface()] ?? {};
     const tops = this.store
@@ -946,8 +1009,39 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const noteTops = this.store
       .rootNotes(pageId)
       .filter(([id]) => !this.store.isNoteLocked(id));
-    const all = [...tops.map(([id]) => id), ...noteTops.map(([id]) => id)];
+    const linkTops = this.store
+      .rootLinks(pageId)
+      .filter(([id]) => !this.store.isLinkLocked(id));
+    const all = [
+      ...tops.map(([id]) => id),
+      ...noteTops.map(([id]) => id),
+      ...linkTops.map(([id]) => id),
+    ];
     return all.length > 0 && all.every((id) => !!flags[id]);
+  }
+
+  private async openLinkUrl(url: string): Promise<void> {
+    try {
+      const uri = vscode.Uri.parse(url);
+      if (uri.scheme !== 'http' && uri.scheme !== 'https') {
+        return;
+      }
+      if (this.store.appearance.openLinksInCursor) {
+        await vscode.commands.executeCommand('simpleBrowser.show', uri.toString(true));
+        return;
+      }
+      await vscode.env.openExternal(uri);
+    } catch {
+      // ignore bad urls
+    }
+  }
+
+  private refuseLinkLocked(linkId: string): boolean {
+    if (!this.store.isLinkLocked(linkId)) {
+      return false;
+    }
+    void vscode.window.showWarningMessage('Syn3: макет закрыт');
+    return true;
   }
 
   private refuseLocked(markerId: string): boolean {
@@ -1480,6 +1574,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             delete next[id];
           }
         }
+        for (const [id] of this.store.links()) {
+          if (!this.store.isLinkLocked(id)) {
+            continue;
+          }
+          if (current[id]) {
+            next[id] = true;
+          } else {
+            delete next[id];
+          }
+        }
         await this.store.setPageCollapsed(message.pageId, surface, next);
         if (webview === this.lastFocusedWebview) {
           await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(message.pageId, next));
@@ -1508,14 +1612,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.store.reorderPages(message.orderedIds);
       return;
     }
-    if (message.type === 'openExternal') {
-      try {
-        const uri = vscode.Uri.parse(message.url);
-        if (uri.scheme === 'http' || uri.scheme === 'https') {
-          await vscode.env.openExternal(uri);
-        }
-      } catch {
-        // ignore bad urls
+    if (message.type === 'openExternal' || message.type === 'openLinkUrl') {
+      await this.openLinkUrl(message.url);
+      return;
+    }
+    if (message.type === 'confirmOpenLinkUrl') {
+      const answer = await vscode.window.showInformationMessage(
+        'Открыть ссылку в браузере?',
+        { modal: true },
+        'Открыть',
+      );
+      if (answer === 'Открыть') {
+        await this.openLinkUrl(message.url);
       }
       return;
     }
@@ -1703,6 +1811,103 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       await this.store.toggleNoteLock(message.noteId);
+      return;
+    }
+    if (message.type === 'toggleLinkLock') {
+      if (!this.store.link(message.linkId)) {
+        return;
+      }
+      await this.store.toggleLinkLock(message.linkId);
+      return;
+    }
+    if (message.type === 'createLinkLayout') {
+      if (!this.store.page(message.pageId) || this.store.page(message.pageId)?.kind !== 'links') {
+        return;
+      }
+      await this.store.createLinkLayout(message.pageId);
+      return;
+    }
+    if (message.type === 'createLinkChild') {
+      const parent = this.store.link(message.parentId);
+      if (!parent || this.refuseLinkLocked(message.parentId)) {
+        return;
+      }
+      await this.store.createLinkChild(message.parentId);
+      return;
+    }
+    if (message.type === 'updateLink') {
+      if (!this.store.link(message.linkId) || this.refuseLinkLocked(message.linkId)) {
+        return;
+      }
+      await this.store.updateLink(message.linkId, {
+        label: message.label,
+        description: message.description,
+        url: message.url,
+        color: message.color,
+      });
+      return;
+    }
+    if (message.type === 'deleteLink') {
+      const def = this.store.link(message.linkId);
+      if (!def || this.refuseLinkLocked(message.linkId)) {
+        return;
+      }
+      if (!this.store.canDeleteLink(message.linkId)) {
+        return;
+      }
+      const locale = normalizeLocale(this.store.appearance.language);
+      const isRoot = !def.parent;
+      const confirm = await vscode.window.showWarningMessage(
+        isRoot
+          ? t(locale, 'linkDeleteSubtreeConfirm', { name: def.label })
+          : t(locale, 'linkDeleteConfirm', { name: def.label }),
+        { modal: true },
+        t(locale, 'menuDelete'),
+      );
+      if (confirm !== t(locale, 'menuDelete')) {
+        return;
+      }
+      const result = await this.store.deleteLink(message.linkId);
+      if (!result.ok) {
+        void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
+      }
+      return;
+    }
+    if (message.type === 'placeLink') {
+      if (this.refuseLinkLocked(message.id)) {
+        return;
+      }
+      try {
+        await this.store.placeLink(message.id, message.targetId, message.position, {
+          copy: !!message.copy,
+        });
+      } catch (error) {
+        void vscode.window.showWarningMessage(
+          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return;
+    }
+    if (message.type === 'nestLink') {
+      if (this.refuseLinkLocked(message.id)) {
+        return;
+      }
+      try {
+        await this.store.nestLink(message.id, message.parentId, { copy: !!message.copy });
+      } catch (error) {
+        const locale = normalizeLocale(this.store.appearance.language);
+        const text = error instanceof Error ? error.message : String(error);
+        void vscode.window.showWarningMessage(
+          text.includes('Maximum nesting') ? t(locale, 'linkNestDepthWarn') : `Syn3: ${text}`,
+        );
+      }
+      return;
+    }
+    if (message.type === 'unnestLink') {
+      if (this.refuseLinkLocked(message.id)) {
+        return;
+      }
+      await this.store.unnestLink(message.id);
       return;
     }
     if (message.type === 'setFocus') {
@@ -1976,6 +2181,28 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       order: def.order,
       color: this.noteColor(id),
     }));
+    const links: MapLink[] = this.store.links().map(([id, def]) => {
+      const colorId = this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
+      const resolvedHex =
+        normalizeHex(colorId) ?? PALETTE.find((swatch) => swatch.id === colorId)?.hex ?? colorId;
+      return {
+        id,
+        label: def.label,
+        description: def.description,
+        url: def.url,
+        parent: def.parent,
+        page: def.page ?? this.store.pageOfLink(id),
+        locked: def.locked === true ? true : undefined,
+        depth: this.store.linkDepthOf(id),
+        subtreeHeight: this.store.linkSubtreeHeight(id),
+        children: this.store.linkChildren(id).map(([childId]) => childId),
+        order: def.order,
+        color: cssColor(resolvedHex),
+        colorId: def.parent ? undefined : resolvedHex,
+        lastRoot: this.store.isLastRootLink(id) ? true : undefined,
+        canDelete: this.store.canDeleteLink(id),
+      };
+    });
     const pageId = this.pageIdFor(webview);
     if (restorePage) {
       this.persistSurfacePage(webview, pageId);
@@ -1991,6 +2218,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       pages,
       groups,
       notes,
+      links,
       focusNoteId,
       maxPages: MAX_PAGES,
       layout: page?.layout ?? 'chips',
@@ -1998,6 +2226,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       appearance: this.store.appearance,
       locale,
       i18n: stringsFor(locale),
+      linkPalette: LINK_PALETTE,
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       positionSync: this.store.positionSync(),
@@ -2358,6 +2587,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           delete next[id];
         }
       }
+      for (const [id] of this.store.rootLinks(activePage)) {
+        if (this.store.isLinkLocked(id)) {
+          continue;
+        }
+        if (collapsed) {
+          next[id] = true;
+        } else {
+          delete next[id];
+        }
+      }
       await this.store.setPageCollapsed(activePage, surface, next);
       if (webview === this.lastFocusedWebview) {
         await this.syncTopCollapsedContext(this.allUnlockedTopCollapsed(activePage, next));
@@ -2376,8 +2615,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
-    if (action === 'createPage') {
-      await this.createPageFlow(webview);
+    if (action === 'createLinkLayout') {
+      if (this.store.page(activePage)?.kind === 'links') {
+        await this.store.createLinkLayout(activePage);
+      }
+      return;
+    }
+    if (
+      action === 'createPage' ||
+      action === 'createPageFiles' ||
+      action === 'createPageNotes' ||
+      action === 'createPageLinks'
+    ) {
+      const kind: PageKind =
+        action === 'createPageNotes' ? 'notes' : action === 'createPageLinks' ? 'links' : 'files';
+      await this.createPageFlow(webview, kind);
       return;
     }
     if (action === 'renamePage') {
@@ -2477,12 +2729,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  private async createPageFlow(webview: vscode.Webview): Promise<void> {
+  private async createPageFlow(webview: vscode.Webview, kind: PageKind = 'files'): Promise<void> {
     if (this.store.pages().length >= MAX_PAGES) {
       return;
     }
+    const locale = normalizeLocale(this.store.appearance.language);
     const name = await vscode.window.showInputBox({
-      title: 'New page',
+      title: t(locale, 'menuNewPage'),
       prompt: 'Page name',
       placeHolder: 'e.g. Docs, Rules, Tips',
       validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
@@ -2490,18 +2743,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!name) {
       return;
     }
-    const kindPick = await vscode.window.showQuickPick(
-      [
-        { label: 'Карта с файлами', description: 'Группы, папки и файлы', id: 'files' as const },
-        { label: 'Карта с записями', description: 'Группы и текстовые записи', id: 'notes' as const },
-      ],
-      { title: 'Тип страницы', placeHolder: 'Выбери тип' },
-    );
-    if (!kindPick) {
-      return;
-    }
-    const kind = normalizePageKind(kindPick.id) ?? 'files';
-    const id = await this.store.createPage(name, kind);
+    const pageKind = normalizePageKind(kind) ?? 'files';
+    const id = await this.store.createPage(name, pageKind);
     if (id) {
       this.activePageByWebview.set(webview, id);
       this.persistSurfacePage(webview, id);
@@ -2720,7 +2963,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ${icon('ellipsis')}
         </button>
         <div id="toolbar-menu" class="toolbar-menu" hidden role="menu">
-          <button type="button" data-action="createPage" role="menuitem" id="menu-create-page">${icon('add')}New Page</button>
+          <div class="toolbar-menu-flyout" id="menu-create-page-wrap">
+            <button type="button" class="toolbar-menu-parent" role="menuitem" id="menu-create-page" aria-haspopup="menu" aria-expanded="false"><span data-i18n="menuNewPage">Create page</span><span class="toolbar-menu-caret" aria-hidden="true">▸</span></button>
+            <div id="menu-create-page-sub" class="toolbar-menu-sub" hidden role="menu">
+              <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Groups</span></button>
+              <button type="button" data-action="createPageNotes" role="menuitem"><span data-i18n="menuNewPageNotes">Notes</span></button>
+              <button type="button" data-action="createPageLinks" role="menuitem"><span data-i18n="menuNewPageLinks">Links</span></button>
+            </div>
+          </div>
           <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
           <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>

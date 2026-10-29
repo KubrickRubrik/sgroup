@@ -27,11 +27,16 @@ export interface NoteLayoutPos {
   order: number;
 }
 
+export interface LinkLayoutPos {
+  order: number;
+}
+
 /** Layout fingerprint of one style profile. */
 export interface ProfileLayout {
   pages: Record<string, PageLayoutPos>;
   markers: Record<string, MarkerLayoutPos>;
   notes: Record<string, NoteLayoutPos>;
+  links: Record<string, LinkLayoutPos>;
 }
 
 /** Working card (group or note) for one profile — local-only. */
@@ -89,7 +94,7 @@ function normalizeGroupsLayoutLocal(value: unknown): GroupsLayout {
 }
 
 export function emptyProfileLayout(): ProfileLayout {
-  return { pages: {}, markers: {}, notes: {} };
+  return { pages: {}, markers: {}, notes: {}, links: {} };
 }
 
 export function emptyPositions(): PositionsFile {
@@ -106,6 +111,7 @@ export function pruneProfileLayout(
   pageIds: Set<string>,
   markerIds: Set<string>,
   noteIds: Set<string>,
+  linkIds: Set<string> = new Set(),
 ): boolean {
   let changed = false;
   for (const id of Object.keys(layout.pages)) {
@@ -118,7 +124,7 @@ export function pruneProfileLayout(
     const nextCollapsed = emptyCollapsedLocal();
     for (const surface of ['explorer', 'bottom', 'left', 'right'] as const) {
       for (const [foldId, on] of Object.entries(page.collapsed[surface])) {
-        if (on && (markerIds.has(foldId) || noteIds.has(foldId))) {
+        if (on && (markerIds.has(foldId) || noteIds.has(foldId) || linkIds.has(foldId))) {
           nextCollapsed[surface][foldId] = true;
         } else if (on) {
           changed = true;
@@ -139,6 +145,15 @@ export function pruneProfileLayout(
       changed = true;
     }
   }
+  if (!layout.links) {
+    layout.links = {};
+  }
+  for (const id of Object.keys(layout.links)) {
+    if (!linkIds.has(id)) {
+      delete layout.links[id];
+      changed = true;
+    }
+  }
   return changed;
 }
 
@@ -147,10 +162,11 @@ export function prunePositionsFile(
   pageIds: Set<string>,
   markerIds: Set<string>,
   noteIds: Set<string>,
+  linkIds: Set<string> = new Set(),
 ): boolean {
   let changed = false;
   for (const layout of Object.values(file.profiles)) {
-    if (pruneProfileLayout(layout, pageIds, markerIds, noteIds)) {
+    if (pruneProfileLayout(layout, pageIds, markerIds, noteIds, linkIds)) {
       changed = true;
     }
   }
@@ -253,10 +269,14 @@ export function packProfileLayout(layout: ProfileLayout): ProfileLayout {
     markers[id] = entry;
   }
   const notes: Record<string, NoteLayoutPos> = {};
-  for (const id of Object.keys(layout.notes).sort()) {
+  for (const id of Object.keys(layout.notes ?? {}).sort()) {
     notes[id] = { order: layout.notes[id].order };
   }
-  return { pages, markers, notes };
+  const links: Record<string, LinkLayoutPos> = {};
+  for (const id of Object.keys(layout.links ?? {}).sort()) {
+    links[id] = { order: layout.links[id].order };
+  }
+  return { pages, markers, notes, links };
 }
 
 /** Stable JSON used to compare local vs remote fingerprints. */
@@ -280,6 +300,7 @@ export function normalizeProfileLayout(raw: unknown): ProfileLayout {
     pages?: unknown;
     markers?: unknown;
     notes?: unknown;
+    links?: unknown;
   };
   if (source.pages && typeof source.pages === 'object' && !Array.isArray(source.pages)) {
     let index = 0;
@@ -324,6 +345,19 @@ export function normalizeProfileLayout(raw: unknown): ProfileLayout {
       }
       const def = value as Partial<NoteLayoutPos>;
       result.notes[id] = {
+        order: typeof def.order === 'number' ? def.order : index,
+      };
+    }
+  }
+  if (source.links && typeof source.links === 'object' && !Array.isArray(source.links)) {
+    let index = 0;
+    for (const [id, value] of Object.entries(source.links as Record<string, unknown>)) {
+      index++;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        continue;
+      }
+      const def = value as Partial<LinkLayoutPos>;
+      result.links[id] = {
         order: typeof def.order === 'number' ? def.order : index,
       };
     }

@@ -16,6 +16,12 @@ import {
   type PageHistoryBook,
 } from './history';
 import { normalizeLocale, Syn3Locale } from './i18n';
+import {
+  isLinkPaletteColor,
+  LINK_PALETTE_DEFAULT,
+  LINK_PALETTE_HEX,
+  randomLinkPaletteColor,
+} from './linkPalette';
 import { normalizeHex } from './palette';
 import {
   cloneProfileLayout,
@@ -71,11 +77,11 @@ export type ColumnsMode = 'flow' | '1' | '2' | '3';
 export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '1', '2', '3'];
 
 /** Max named map pages (pager slides). */
-export const MAX_PAGES = 3;
+export const MAX_PAGES = 6;
 /** Default page id created for legacy files and empty stores. */
 export const DEFAULT_PAGE_ID = 'map';
 
-export type PageKind = 'files' | 'notes';
+export type PageKind = 'files' | 'notes' | 'links';
 export type MapLayout = 'chips' | 'list';
 export type GroupsLayout = 'flow' | '1' | '2' | '3';
 
@@ -84,7 +90,7 @@ export function normalizeColumns(value: unknown): ColumnsMode | undefined {
 }
 
 export function normalizePageKind(value: unknown): PageKind | undefined {
-  return value === 'files' || value === 'notes' ? value : undefined;
+  return value === 'files' || value === 'notes' || value === 'links' ? value : undefined;
 }
 
 export function normalizeMapLayout(value: unknown): MapLayout {
@@ -160,6 +166,8 @@ export interface Appearance {
   showProblemsTab: boolean;
   /** Horizontal wheel wraps from the first pager chip to the last and back. */
   cyclePageScroll: boolean;
+  /** Open link-map URLs in Cursor Simple Browser instead of the system browser. */
+  openLinksInCursor: boolean;
   /** Include Error diagnostics on the Problems page. */
   problemsError: boolean;
   /** Include Warning diagnostics on the Problems page. */
@@ -193,6 +201,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   openFileDuration: 1,
   showProblemsTab: true,
   cyclePageScroll: true,
+  openLinksInCursor: false,
   problemsError: true,
   problemsWarning: true,
   problemsInfo: true,
@@ -268,6 +277,7 @@ export function normalizeAppearance(raw: unknown): Appearance {
     openFileDuration: snapOpenFileDuration(numOr(source.openFileDuration, DEFAULT_APPEARANCE.openFileDuration)),
     showProblemsTab: boolOr(source.showProblemsTab, DEFAULT_APPEARANCE.showProblemsTab),
     cyclePageScroll: boolOr(source.cyclePageScroll, DEFAULT_APPEARANCE.cyclePageScroll),
+    openLinksInCursor: boolOr(source.openLinksInCursor, DEFAULT_APPEARANCE.openLinksInCursor),
     ...normalizeProblemsFilters(source),
     language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
   };
@@ -424,6 +434,31 @@ export type NoteHome =
   | { markerId: string; page?: undefined; parentNote?: undefined }
   | { parentNote: string; page?: undefined; markerId?: undefined };
 
+/** Default labels for a new links-page branch. */
+export const LINK_LAYOUT_LABEL = 'Ваш макет';
+export const LINK_COMPONENT_LABEL = 'Ваш компонент';
+
+/**
+ * Link-map node: root = layout (color), children = components.
+ * Lives only on pages with kind `links`.
+ */
+export interface LinkDef {
+  label: string;
+  /** Optional description shown only in the settings panel. */
+  description?: string;
+  /** http(s) URL opened on single click. */
+  url?: string;
+  /** Parent link id; omitted for top-level layouts. */
+  parent?: string;
+  /** Page id for top-level layouts only. */
+  page?: string;
+  /** Theme color id or `#rrggbb`. Only meaningful on roots. */
+  color?: string;
+  order: number;
+  /** When true, map edits to this node are blocked. Absent means open. */
+  locked?: true;
+}
+
 export function defaultPage(name = 'Карта'): PageDef {
   return {
     name,
@@ -461,6 +496,8 @@ interface MarkersFile {
   /** classId → markerId → epoch ms */
   classAdded: Record<string, Record<string, number>>;
   notes: Record<string, NoteDef>;
+  /** Link-map nodes (layouts / components) keyed by id. */
+  links: Record<string, LinkDef>;
   /**
    * Legacy seed only: read from syn3.json once when styles.json is missing.
    * Never written back into syn3.json.
@@ -567,6 +604,7 @@ interface PageSnapshot {
   classItems: Record<string, string[]>;
   classAdded: Record<string, Record<string, number>>;
   notes: Record<string, NoteDef>;
+  links: Record<string, LinkDef>;
 }
 
 function emptyData(): MarkersFile {
@@ -581,6 +619,7 @@ function emptyData(): MarkersFile {
     classItems: {},
     classAdded: {},
     notes: {},
+    links: {},
     appearance: { ...DEFAULT_APPEARANCE },
     surfaces: emptySurfaces(),
   };
@@ -1810,6 +1849,9 @@ export class MarkerStore implements vscode.Disposable {
       kind,
       order: maxOrder + 1,
     };
+    if (kind === 'links') {
+      this.insertLinkBranch(id, 2);
+    }
     await this.commit();
     return id;
   }
@@ -1848,6 +1890,9 @@ export class MarkerStore implements vscode.Disposable {
       }
       for (const [noteId] of this.rootNotes(id)) {
         this.purgeNoteTree(noteId);
+      }
+      for (const [linkId] of this.rootLinks(id)) {
+        this.purgeLinkTree(linkId);
       }
       delete this.data.pages[id];
       this.applyPageOrder(this.pages().map(([pageId]) => pageId));
@@ -1909,7 +1954,7 @@ export class MarkerStore implements vscode.Disposable {
     }
     const next: Record<string, boolean> = {};
     for (const [id, on] of Object.entries(collapsed)) {
-      if (on && (this.data.markers[id] || this.data.notes[id])) {
+      if (on && (this.data.markers[id] || this.data.notes[id] || this.data.links[id])) {
         next[id] = true;
       }
     }
@@ -2303,7 +2348,399 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  // ---- items ----
+  // ---- links (layouts / components) ----
+
+  links(): Array<[string, LinkDef]> {
+    return Object.entries(this.data.links).sort(
+      (a, b) => a[1].order - b[1].order || a[0].localeCompare(b[0]),
+    );
+  }
+
+  link(id: string): LinkDef | undefined {
+    return this.data.links[id];
+  }
+
+  /** Direct children of a link node, sorted by order. */
+  linkChildren(parentId: string): Array<[string, LinkDef]> {
+    return Object.entries(this.data.links)
+      .filter(([, def]) => def.parent === parentId)
+      .sort((a, b) => a[1].order - b[1].order || a[1].label.localeCompare(b[1].label));
+  }
+
+  /** Top-level layouts on a links page. */
+  rootLinks(pageId: string): Array<[string, LinkDef]> {
+    return Object.entries(this.data.links)
+      .filter(([, def]) => !def.parent && def.page === pageId)
+      .sort((a, b) => a[1].order - b[1].order || a[1].label.localeCompare(b[1].label));
+  }
+
+  pageOfLink(id: string): string | undefined {
+    let current: string | undefined = id;
+    const seen = new Set<string>();
+    while (current && this.data.links[current] && !seen.has(current)) {
+      seen.add(current);
+      const def: LinkDef = this.data.links[current];
+      if (def.page) {
+        return def.page;
+      }
+      current = def.parent;
+    }
+    return undefined;
+  }
+
+  linkDepthOf(id: string): number {
+    let depth = 0;
+    let current = this.data.links[id]?.parent;
+    const seen = new Set<string>();
+    while (current && this.data.links[current] && !seen.has(current)) {
+      seen.add(current);
+      depth++;
+      current = this.data.links[current].parent;
+    }
+    return depth;
+  }
+
+  linkSubtreeHeight(id: string): number {
+    const kids = this.linkChildren(id);
+    if (kids.length === 0) {
+      return 0;
+    }
+    return 1 + Math.max(...kids.map(([childId]) => this.linkSubtreeHeight(childId)));
+  }
+
+  /** Root layout id of the branch containing `id`. */
+  linkRootOf(id: string): string | undefined {
+    let current: string | undefined = id;
+    const seen = new Set<string>();
+    while (current && this.data.links[current] && !seen.has(current)) {
+      seen.add(current);
+      const parent: string | undefined = this.data.links[current].parent;
+      if (!parent) {
+        return current;
+      }
+      current = parent;
+    }
+    return undefined;
+  }
+
+  /** Resolved color of a link node (from its root layout). */
+  linkColorOf(id: string): string | undefined {
+    const root = this.linkRootOf(id);
+    const color = root ? this.data.links[root]?.color : undefined;
+    return color || undefined;
+  }
+
+  isLinkLocked(id: string): boolean {
+    return this.data.links[id]?.locked === true;
+  }
+
+  descendantLinks(linkId: string, includeSelf = false): string[] {
+    const result: string[] = [];
+    const visit = (id: string) => {
+      for (const [childId] of this.linkChildren(id)) {
+        result.push(childId);
+        visit(childId);
+      }
+    };
+    if (includeSelf) {
+      result.push(linkId);
+    }
+    visit(linkId);
+    return result;
+  }
+
+  canNestLink(id: string, parentId: string): NestResult {
+    if (!this.data.links[id] || !this.data.links[parentId]) {
+      return { ok: false, reason: 'Link not found.' };
+    }
+    if (id === parentId) {
+      return { ok: false, reason: 'A link cannot be nested inside itself.' };
+    }
+    let ancestor: string | undefined = parentId;
+    const seen = new Set<string>();
+    while (ancestor) {
+      if (ancestor === id) {
+        return { ok: false, reason: 'A link cannot be nested inside its own child.' };
+      }
+      if (seen.has(ancestor)) {
+        break;
+      }
+      seen.add(ancestor);
+      ancestor = this.data.links[ancestor]?.parent;
+    }
+    const parentDepth = this.linkDepthOf(parentId);
+    const height = this.linkSubtreeHeight(id);
+    if (parentDepth + 1 + height > MAX_MARKER_DEPTH) {
+      return { ok: false, reason: `Maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.` };
+    }
+    return { ok: true };
+  }
+
+  /** True when this is the only root layout on its page. */
+  isLastRootLink(id: string): boolean {
+    const def = this.data.links[id];
+    if (!def || def.parent || !def.page) {
+      return false;
+    }
+    return this.rootLinks(def.page).length <= 1;
+  }
+
+  /** True when the node may be deleted (last root and nodes with children are blocked). */
+  canDeleteLink(id: string): boolean {
+    const def = this.data.links[id];
+    if (!def) {
+      return false;
+    }
+    if (!def.parent && this.isLastRootLink(id)) {
+      return false;
+    }
+    if (def.parent && this.linkChildren(id).length > 0) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Create a root layout «Ваш макет» with one «Ваш компонент» on a links page.
+   * Returns the layout id.
+   */
+  async createLinkLayout(pageId: string): Promise<string | undefined> {
+    const page = this.data.pages[pageId];
+    if (!page || page.kind !== 'links') {
+      return undefined;
+    }
+    const rootId = this.insertLinkBranch(pageId, 1);
+    await this.commit();
+    return rootId;
+  }
+
+  /** Create an empty child «Ваш компонент» under a parent when depth allows. */
+  async createLinkChild(parentId: string): Promise<string | undefined> {
+    const parent = this.data.links[parentId];
+    if (!parent) {
+      return undefined;
+    }
+    if (this.linkDepthOf(parentId) >= MAX_MARKER_DEPTH) {
+      return undefined;
+    }
+    const id = this.insertLinkNode({
+      label: LINK_COMPONENT_LABEL,
+      parent: parentId,
+    });
+    await this.commit();
+    return id;
+  }
+
+  async updateLink(
+    id: string,
+    patch: { label?: string; description?: string | null; url?: string | null; color?: string },
+  ): Promise<void> {
+    const current = this.data.links[id];
+    if (!current) {
+      return;
+    }
+    if (patch.label !== undefined) {
+      const trimmed = patch.label.trim();
+      if (trimmed) {
+        current.label = capitalize(trimmed);
+      }
+    }
+    if (patch.description !== undefined) {
+      if (patch.description === null || !patch.description.trim()) {
+        delete current.description;
+      } else {
+        current.description = patch.description.trim();
+      }
+    }
+    if (patch.url !== undefined) {
+      if (patch.url === null || !patch.url.trim()) {
+        delete current.url;
+      } else {
+        current.url = patch.url.trim();
+      }
+    }
+    if (patch.color !== undefined && !current.parent) {
+      const next = normalizeHex(patch.color);
+      if (next && isLinkPaletteColor(next)) {
+        current.color = next;
+      }
+    }
+    await this.commit();
+  }
+
+  /**
+   * Delete a link. Roots with siblings remove the whole subtree.
+   * Components must have no children. The last root cannot be deleted.
+   */
+  async deleteLink(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const def = this.data.links[id];
+    if (!def) {
+      return { ok: false, reason: 'Link not found.' };
+    }
+    if (!this.canDeleteLink(id)) {
+      if (!def.parent && this.isLastRootLink(id)) {
+        return { ok: false, reason: 'Cannot delete the last layout.' };
+      }
+      return { ok: false, reason: 'Remove child components first.' };
+    }
+    if (!def.parent) {
+      const siblings = this.rootLinks(def.page!).filter(([linkId]) => linkId !== id);
+      this.purgeLinkTree(id);
+      this.applyLinkSiblingOrder(
+        def.page!,
+        undefined,
+        siblings.map(([linkId]) => linkId),
+      );
+    } else {
+      const parentId = def.parent;
+      const siblings = this.linkChildren(parentId)
+        .map(([linkId]) => linkId)
+        .filter((linkId) => linkId !== id);
+      delete this.data.links[id];
+      this.forgetCollapsed(id);
+      this.applyLinkSiblingOrder(undefined, parentId, siblings);
+    }
+    await this.commit();
+    return { ok: true };
+  }
+
+  async toggleLinkLock(id: string): Promise<void> {
+    if (!this.data.links[id]) {
+      return;
+    }
+    const apply = (linkId: string) => {
+      const def = this.data.links[linkId];
+      if (!def) {
+        return;
+      }
+      const wasLocked = def.locked === true;
+      if (wasLocked) {
+        delete def.locked;
+      } else {
+        def.locked = true;
+      }
+      for (const [childId, child] of this.linkChildren(linkId)) {
+        if ((child.locked === true) === wasLocked) {
+          apply(childId);
+        }
+      }
+    };
+    apply(id);
+    await this.commit();
+  }
+
+  /**
+   * Place a link before/after a sibling target (may change parent / promote to root).
+   * When `copy` is true, clones the subtree instead of moving.
+   */
+  async placeLink(
+    id: string,
+    targetId: string,
+    position: 'before' | 'after',
+    options: { copy?: boolean } = {},
+  ): Promise<void> {
+    if (!this.data.links[id] || !this.data.links[targetId] || id === targetId) {
+      return;
+    }
+    const target = this.data.links[targetId];
+    const newParent = target.parent;
+    const newPage = newParent ? undefined : target.page;
+    if (!newParent && !newPage) {
+      return;
+    }
+    if (newParent) {
+      const check = this.canNestLink(id, newParent);
+      if (!check.ok) {
+        throw new Error(check.reason);
+      }
+    }
+    const workingId = options.copy ? this.cloneLinkTree(id, { asRoot: !newParent }) : id;
+    if (!workingId) {
+      return;
+    }
+    if (!options.copy) {
+      this.detachLink(workingId);
+    }
+    if (newParent) {
+      this.setLinkHome(workingId, { parent: newParent });
+    } else if (newPage) {
+      this.setLinkHome(workingId, { page: newPage });
+      if (!this.data.links[workingId].color) {
+        this.data.links[workingId].color = this.nextLinkColor(newPage, workingId);
+      }
+    }
+    const siblings = (
+      newParent ? this.linkChildren(newParent) : this.rootLinks(newPage!)
+    )
+      .map(([linkId]) => linkId)
+      .filter((linkId) => linkId !== workingId);
+    let index = siblings.indexOf(targetId);
+    if (index < 0) {
+      index = siblings.length;
+    } else if (position === 'after') {
+      index += 1;
+    }
+    siblings.splice(index, 0, workingId);
+    this.applyLinkSiblingOrder(newPage, newParent, siblings);
+    await this.commit();
+  }
+
+  /** Nest a link under another link (move or copy). */
+  async nestLink(id: string, parentId: string, options: { copy?: boolean } = {}): Promise<void> {
+    const check = this.canNestLink(id, parentId);
+    if (!check.ok) {
+      throw new Error(check.reason);
+    }
+    const workingId = options.copy ? this.cloneLinkTree(id, { asRoot: false }) : id;
+    if (!workingId) {
+      return;
+    }
+    if (!options.copy) {
+      this.detachLink(workingId);
+    }
+    this.setLinkHome(workingId, { parent: parentId });
+    const siblings = this.linkChildren(parentId)
+      .map(([linkId]) => linkId)
+      .filter((linkId) => linkId !== workingId);
+    siblings.push(workingId);
+    this.applyLinkSiblingOrder(undefined, parentId, siblings);
+    await this.commit();
+  }
+
+  /** Lift a link one level (component → sibling of parent, or promote toward page root). */
+  async unnestLink(id: string): Promise<void> {
+    const def = this.data.links[id];
+    if (!def?.parent) {
+      return;
+    }
+    const parentId = def.parent;
+    const parent = this.data.links[parentId];
+    if (!parent) {
+      return;
+    }
+    this.detachLink(id);
+    if (parent.parent) {
+      this.setLinkHome(id, { parent: parent.parent });
+      const siblings = this.linkChildren(parent.parent)
+        .map(([linkId]) => linkId)
+        .filter((linkId) => linkId !== id);
+      const parentIndex = siblings.indexOf(parentId);
+      const insertAt = parentIndex < 0 ? siblings.length : parentIndex + 1;
+      siblings.splice(insertAt, 0, id);
+      this.applyLinkSiblingOrder(undefined, parent.parent, siblings);
+    } else if (parent.page) {
+      this.setLinkHome(id, { page: parent.page });
+      this.data.links[id].color = this.nextLinkColor(parent.page, id);
+      const siblings = this.rootLinks(parent.page)
+        .map(([linkId]) => linkId)
+        .filter((linkId) => linkId !== id);
+      const parentIndex = siblings.indexOf(parentId);
+      const insertAt = parentIndex < 0 ? siblings.length : parentIndex + 1;
+      siblings.splice(insertAt, 0, id);
+      this.applyLinkSiblingOrder(parent.page, undefined, siblings);
+    }
+    await this.commit();
+  }
 
   /** True when the path is already assigned to the marker. */
   itemInMarker(relPath: string, markerId: string): boolean {
@@ -2813,11 +3250,17 @@ export class MarkerStore implements vscode.Disposable {
       this.present = canonical;
       this.baseline = baseline;
       this.pagePresent = this.captureAllPageSnapshots();
-      this.changeEmitter.fire();
+      if (this.remapOutOfPaletteLinkColors()) {
+        await this.commitNow();
+      } else {
+        this.changeEmitter.fire();
+      }
       return;
     }
     if (canonical === this.present) {
-      if (notify) {
+      if (this.remapOutOfPaletteLinkColors()) {
+        await this.commitNow();
+      } else if (notify) {
         this.changeEmitter.fire();
       }
       return;
@@ -2834,7 +3277,11 @@ export class MarkerStore implements vscode.Disposable {
     this.pagePresent = this.captureAllPageSnapshots();
     this.history = emptyHistory();
     await this.persistHistory();
-    this.changeEmitter.fire();
+    if (this.remapOutOfPaletteLinkColors()) {
+      await this.commitNow();
+    } else {
+      this.changeEmitter.fire();
+    }
   }
 
   private async loadHistory(): Promise<void> {
@@ -3152,7 +3599,7 @@ export class MarkerStore implements vscode.Disposable {
     }
 
     const ids = this.entityIdSets();
-    if (prunePositionsFile(this.posLocal, ids.pages, ids.markers, ids.notes)) {
+    if (prunePositionsFile(this.posLocal, ids.pages, ids.markers, ids.notes, ids.links)) {
       localDirty = true;
     }
     if (prunePositionsFile(this.posRemote, ids.pages, ids.markers, ids.notes)) {
@@ -3197,7 +3644,7 @@ export class MarkerStore implements vscode.Disposable {
   private async reloadPosRemoteFromDisk(): Promise<void> {
     this.posRemote = await this.readPositionsFile(this.posRemoteUri);
     const ids = this.entityIdSets();
-    if (prunePositionsFile(this.posRemote, ids.pages, ids.markers, ids.notes)) {
+    if (prunePositionsFile(this.posRemote, ids.pages, ids.markers, ids.notes, ids.links)) {
       await this.persistPosRemote();
     }
     // Pull into local only when local is empty or lacks the active profile.
@@ -3267,11 +3714,17 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private entityIdSets(): { pages: Set<string>; markers: Set<string>; notes: Set<string> } {
+  private entityIdSets(): {
+    pages: Set<string>;
+    markers: Set<string>;
+    notes: Set<string>;
+    links: Set<string>;
+  } {
     return {
       pages: new Set(Object.keys(this.data.pages)),
       markers: new Set(Object.keys(this.data.markers)),
       notes: new Set(Object.keys(this.data.notes)),
+      links: new Set(Object.keys(this.data.links)),
     };
   }
 
@@ -3295,6 +3748,9 @@ export class MarkerStore implements vscode.Disposable {
     }
     for (const [id, note] of Object.entries(this.data.notes)) {
       layout.notes[id] = { order: note.order };
+    }
+    for (const [id, link] of Object.entries(this.data.links)) {
+      layout.links[id] = { order: link.order };
     }
     return packProfileLayout(layout);
   }
@@ -3325,6 +3781,12 @@ export class MarkerStore implements vscode.Disposable {
       const pos = packed.notes[id];
       if (pos) {
         note.order = pos.order;
+      }
+    }
+    for (const [id, link] of Object.entries(this.data.links)) {
+      const pos = packed.links?.[id];
+      if (pos) {
+        link.order = pos.order;
       }
     }
   }
@@ -3707,6 +4169,13 @@ export class MarkerStore implements vscode.Disposable {
         notes[noteId] = packed;
       }
     }
+    const links: Record<string, LinkDef> = {};
+    for (const [linkId, link] of Object.entries(this.data.links)) {
+      const packed = this.packLink(linkId, link, pageId);
+      if (packed) {
+        links[linkId] = packed;
+      }
+    }
     const pageOrders: Record<string, number> = {};
     for (const [id, page] of Object.entries(this.data.pages)) {
       pageOrders[id] = page.order;
@@ -3730,6 +4199,7 @@ export class MarkerStore implements vscode.Disposable {
       classItems,
       classAdded,
       notes,
+      links,
     };
     return JSON.stringify(payload) + '\n';
   }
@@ -3786,6 +4256,14 @@ export class MarkerStore implements vscode.Disposable {
     for (const noteId of notesOnPage) {
       if (this.data.notes[noteId]) {
         this.purgeNoteTree(noteId);
+      }
+    }
+    const linksOnPage = Object.keys(this.data.links).filter(
+      (linkId) => this.pageOfLink(linkId) === pageId,
+    );
+    for (const linkId of linksOnPage) {
+      if (this.data.links[linkId]) {
+        this.purgeLinkTree(linkId);
       }
     }
     for (const id of currentIds) {
@@ -3981,6 +4459,55 @@ export class MarkerStore implements vscode.Disposable {
       }
       this.data.notes[actualNoteId] = entry;
     }
+
+    const linkIdMap = new Map<string, string>();
+    const snapLinks = Object.entries(snap.links ?? {});
+    for (const [snapLinkId] of snapLinks) {
+      const existing = this.data.links[snapLinkId];
+      if (!existing) {
+        linkIdMap.set(snapLinkId, snapLinkId);
+      } else {
+        const page = this.pageOfLink(snapLinkId);
+        linkIdMap.set(snapLinkId, page === pageId ? snapLinkId : this.uniqueLinkId());
+      }
+    }
+    const orderedSnapLinks = this.orderSnapshotLinks(
+      Object.fromEntries(snapLinks.map(([id, def]) => [id, def])),
+    );
+    for (const snapLinkId of orderedSnapLinks) {
+      const link = snap.links?.[snapLinkId];
+      if (!link) {
+        continue;
+      }
+      const actualLinkId = linkIdMap.get(snapLinkId) ?? snapLinkId;
+      const entry: LinkDef = {
+        label: typeof link.label === 'string' && link.label.trim() ? capitalize(link.label) : LINK_LAYOUT_LABEL,
+        order: typeof link.order === 'number' ? link.order : 1,
+      };
+      if (typeof link.description === 'string' && link.description.trim()) {
+        entry.description = link.description.trim();
+      }
+      if (typeof link.url === 'string' && link.url.trim()) {
+        entry.url = link.url.trim();
+      }
+      if (typeof link.color === 'string' && link.color) {
+        entry.color = migrateColorId(normalizeHex(link.color) ?? link.color);
+      }
+      if (link.locked === true) {
+        entry.locked = true;
+      }
+      if (link.parent) {
+        const parent = linkIdMap.get(link.parent) ?? link.parent;
+        if (!snap.links?.[link.parent] && parent !== actualLinkId) {
+          continue;
+        }
+        entry.parent = parent;
+        delete entry.color;
+      } else {
+        entry.page = pageId;
+      }
+      this.data.links[actualLinkId] = entry;
+    }
   }
 
   /** Parent markers before children. */
@@ -4100,6 +4627,13 @@ export class MarkerStore implements vscode.Disposable {
         notes[id] = packed;
       }
     }
+    const links: Record<string, Record<string, unknown>> = {};
+    for (const [id, def] of Object.entries(this.data.links).sort(([a], [b]) => a.localeCompare(b))) {
+      const packed = this.packLinkContent(def);
+      if (packed) {
+        links[id] = packed;
+      }
+    }
     const payload: Record<string, unknown> = {
       version: 1,
       pages,
@@ -4120,6 +4654,9 @@ export class MarkerStore implements vscode.Disposable {
     }
     if (Object.keys(notes).length > 0) {
       payload.notes = notes;
+    }
+    if (Object.keys(links).length > 0) {
+      payload.links = links;
     }
     return JSON.stringify(payload, null, 2) + '\n';
   }
@@ -4302,6 +4839,319 @@ export class MarkerStore implements vscode.Disposable {
       delete this.data.notes[id];
       this.forgetCollapsed(id);
     }
+  }
+
+  private purgeLinkTree(linkId: string): void {
+    for (const id of this.descendantLinks(linkId, true)) {
+      delete this.data.links[id];
+      this.forgetCollapsed(id);
+    }
+  }
+
+  /**
+   * Insert a root layout plus `childCount` components. Does not commit.
+   * Returns the root id.
+   */
+  private insertLinkBranch(pageId: string, childCount: number): string {
+    const rootId = this.insertLinkNode({
+      label: LINK_LAYOUT_LABEL,
+      page: pageId,
+      color: this.nextLinkColor(pageId),
+    });
+    for (let i = 0; i < childCount; i++) {
+      this.insertLinkNode({
+        label: LINK_COMPONENT_LABEL,
+        parent: rootId,
+      });
+    }
+    return rootId;
+  }
+
+  /** Create a link node and append it to its sibling list. Does not commit. */
+  private insertLinkNode(def: {
+    label: string;
+    page?: string;
+    parent?: string;
+    color?: string;
+    description?: string;
+    url?: string;
+  }): string {
+    const id = this.uniqueLinkId();
+    const parent = def.parent && this.data.links[def.parent] ? def.parent : undefined;
+    const page =
+      parent === undefined
+        ? def.page && this.data.pages[def.page]
+          ? def.page
+          : undefined
+        : undefined;
+    const siblings = parent
+      ? this.linkChildren(parent).map(([linkId]) => linkId)
+      : page
+        ? this.rootLinks(page).map(([linkId]) => linkId)
+        : [];
+    const entry: LinkDef = {
+      label: capitalize(def.label),
+      order: siblings.length + 1,
+    };
+    if (parent) {
+      entry.parent = parent;
+    } else if (page) {
+      entry.page = page;
+    }
+    if (def.color && !parent) {
+      entry.color = def.color;
+    }
+    if (def.description?.trim()) {
+      entry.description = def.description.trim();
+    }
+    if (def.url?.trim()) {
+      entry.url = def.url.trim();
+    }
+    this.data.links[id] = entry;
+    siblings.push(id);
+    this.applyLinkSiblingOrder(page, parent, siblings);
+    return id;
+  }
+
+  /** Next unused link-palette hex on the page; wraps when every tone is taken. */
+  private nextLinkColor(pageId: string, excludeId?: string): string {
+    const used = new Set(
+      this.rootLinks(pageId)
+        .filter(([id]) => id !== excludeId)
+        .map(([, def]) => def.color?.toLowerCase())
+        .filter((c): c is string => !!c),
+    );
+    const free = LINK_PALETTE_HEX.find((hex) => !used.has(hex.toLowerCase()));
+    if (free) {
+      return free;
+    }
+    const roots = this.rootLinks(pageId).filter(([id]) => id !== excludeId);
+    const index = roots.length % LINK_PALETTE_HEX.length;
+    return LINK_PALETTE_HEX[index] ?? LINK_PALETTE_DEFAULT;
+  }
+
+  /**
+   * Replace root link colors that are outside the fixed link palette.
+   * Returns true when any color changed (caller should commit).
+   */
+  private remapOutOfPaletteLinkColors(): boolean {
+    let changed = false;
+    for (const def of Object.values(this.data.links)) {
+      if (def.parent) {
+        continue;
+      }
+      const current = def.color ? normalizeHex(def.color) ?? def.color : '';
+      if (current && isLinkPaletteColor(current)) {
+        if (def.color !== current) {
+          def.color = current;
+          changed = true;
+        }
+        continue;
+      }
+      def.color = randomLinkPaletteColor();
+      changed = true;
+    }
+    return changed;
+  }
+
+  private setLinkHome(id: string, home: { page: string; parent?: undefined } | { parent: string; page?: undefined }): void {
+    const def = this.data.links[id];
+    if (!def) {
+      return;
+    }
+    delete def.page;
+    delete def.parent;
+    if (home.parent) {
+      def.parent = home.parent;
+      delete def.color;
+    } else {
+      def.page = home.page;
+    }
+  }
+
+  /** Remove from sibling list without deleting the node. */
+  private detachLink(id: string): void {
+    const def = this.data.links[id];
+    if (!def) {
+      return;
+    }
+    if (def.parent) {
+      const siblings = this.linkChildren(def.parent)
+        .map(([linkId]) => linkId)
+        .filter((linkId) => linkId !== id);
+      this.applyLinkSiblingOrder(undefined, def.parent, siblings);
+    } else if (def.page) {
+      const siblings = this.rootLinks(def.page)
+        .map(([linkId]) => linkId)
+        .filter((linkId) => linkId !== id);
+      this.applyLinkSiblingOrder(def.page, undefined, siblings);
+    }
+  }
+
+  private applyLinkSiblingOrder(
+    pageId: string | undefined,
+    parentId: string | undefined,
+    orderedIds: string[],
+  ): void {
+    orderedIds.forEach((id, index) => {
+      const def = this.data.links[id];
+      if (!def) {
+        return;
+      }
+      def.order = index + 1;
+      if (parentId) {
+        def.parent = parentId;
+        delete def.page;
+      } else if (pageId) {
+        def.page = pageId;
+        delete def.parent;
+      }
+    });
+  }
+
+  /**
+   * Deep-clone a link subtree. When `asRoot`, the clone becomes a page root with a fresh color.
+   * Returns the new root id.
+   */
+  private cloneLinkTree(id: string, options: { asRoot: boolean }): string | undefined {
+    const source = this.data.links[id];
+    if (!source) {
+      return undefined;
+    }
+    const pageId = this.pageOfLink(id);
+    if (!pageId) {
+      return undefined;
+    }
+    const idMap = new Map<string, string>();
+    const visit = (srcId: string, parentClone?: string): string => {
+      const src = this.data.links[srcId];
+      const newId = this.uniqueLinkId();
+      idMap.set(srcId, newId);
+      const entry: LinkDef = {
+        label: src.label,
+        order: 1,
+      };
+      if (src.description) {
+        entry.description = src.description;
+      }
+      if (src.url) {
+        entry.url = src.url;
+      }
+      if (src.locked) {
+        entry.locked = true;
+      }
+      if (parentClone) {
+        entry.parent = parentClone;
+      } else if (options.asRoot || !src.parent) {
+        entry.page = pageId;
+        entry.color = this.nextLinkColor(pageId);
+      }
+      this.data.links[newId] = entry;
+      for (const [childId] of this.linkChildren(srcId)) {
+        visit(childId, newId);
+      }
+      return newId;
+    };
+    const rootClone = visit(id);
+    // Fix sibling orders under each parent in the clone.
+    const reordering = new Set<string | undefined>([undefined]);
+    for (const newId of idMap.values()) {
+      const def = this.data.links[newId];
+      if (def?.parent) {
+        reordering.add(def.parent);
+      }
+    }
+    for (const parent of reordering) {
+      if (parent === undefined) {
+        continue;
+      }
+      const kids = this.linkChildren(parent).map(([linkId]) => linkId);
+      this.applyLinkSiblingOrder(undefined, parent, kids);
+    }
+    if (options.asRoot || !source.parent) {
+      const roots = this.rootLinks(pageId).map(([linkId]) => linkId);
+      if (!roots.includes(rootClone)) {
+        roots.unshift(rootClone);
+      }
+      this.applyLinkSiblingOrder(pageId, undefined, roots);
+    }
+    return rootClone;
+  }
+
+  private uniqueLinkId(): string {
+    let counter = 1;
+    let id = `link-${counter}`;
+    while (this.data.links[id]) {
+      id = `link-${++counter}`;
+    }
+    return id;
+  }
+
+  private packLink(linkId: string, def: LinkDef, pageId: string): LinkDef | undefined {
+    if (this.pageOfLink(linkId) !== pageId) {
+      return undefined;
+    }
+    return this.packLinkForPersist(def);
+  }
+
+  private packLinkForPersist(def: LinkDef): LinkDef | undefined {
+    const entry: LinkDef = { label: def.label, order: def.order };
+    if (def.description) {
+      entry.description = def.description;
+    }
+    if (def.url) {
+      entry.url = def.url;
+    }
+    if (def.locked) {
+      entry.locked = true;
+    }
+    if (def.parent) {
+      if (!this.data.links[def.parent]) {
+        return undefined;
+      }
+      entry.parent = def.parent;
+    } else if (def.page && this.data.pages[def.page]) {
+      entry.page = def.page;
+      if (def.color) {
+        entry.color = def.color;
+      }
+    } else {
+      return undefined;
+    }
+    return entry;
+  }
+
+  private packLinkContent(def: LinkDef): Record<string, unknown> | undefined {
+    const packed = this.packLinkForPersist(def);
+    if (!packed) {
+      return undefined;
+    }
+    const { order: _order, ...rest } = packed;
+    return rest;
+  }
+
+  private orderSnapshotLinks(links: Record<string, LinkDef>): string[] {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const visit = (id: string) => {
+      if (seen.has(id) || !links[id]) {
+        return;
+      }
+      const parent = links[id].parent;
+      if (parent && links[parent]) {
+        visit(parent);
+      }
+      if (!seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    };
+    for (const id of Object.keys(links).sort(
+      (a, b) => links[a].order - links[b].order || a.localeCompare(b),
+    )) {
+      visit(id);
+    }
+    return result;
   }
 
   private packNote(
@@ -4730,6 +5580,7 @@ function normalize(raw: unknown): MarkersFile {
     classItems?: unknown;
     classAdded?: unknown;
     notes?: unknown;
+    links?: unknown;
     appearance?: unknown;
     surfaces?: unknown;
   };
@@ -5033,10 +5884,89 @@ function normalize(raw: unknown): MarkersFile {
     }
   }
 
+  if (source.links && typeof source.links === 'object') {
+    let index = 0;
+    const rawLinks = Object.entries(source.links as Record<string, unknown>);
+    for (const [id, value] of rawLinks) {
+      index++;
+      if (!value || typeof value !== 'object') {
+        continue;
+      }
+      const def = value as Partial<LinkDef>;
+      if (typeof def.parent === 'string' && def.parent) {
+        continue;
+      }
+      const label =
+        typeof def.label === 'string' && def.label.trim()
+          ? capitalize(def.label)
+          : LINK_LAYOUT_LABEL;
+      const order = typeof def.order === 'number' ? def.order : index;
+      const page = typeof def.page === 'string' ? def.page : undefined;
+      if (!page || !(page in result.pages)) {
+        continue;
+      }
+      const color =
+        typeof def.color === 'string' && def.color
+          ? migrateColorId(normalizeHex(def.color) ?? def.color)
+          : LINK_PALETTE_DEFAULT;
+      const entry: LinkDef = {
+        page,
+        label,
+        order,
+        color,
+      };
+      if (typeof def.description === 'string' && def.description.trim()) {
+        entry.description = def.description.trim();
+      }
+      if (typeof def.url === 'string' && def.url.trim()) {
+        entry.url = def.url.trim();
+      }
+      if (def.locked === true) {
+        entry.locked = true;
+      }
+      result.links[id] = entry;
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [id, value] of rawLinks) {
+        if (result.links[id] || !value || typeof value !== 'object') {
+          continue;
+        }
+        const def = value as Partial<LinkDef>;
+        const parent = typeof def.parent === 'string' ? def.parent : undefined;
+        if (!parent || !(parent in result.links)) {
+          continue;
+        }
+        const label =
+          typeof def.label === 'string' && def.label.trim()
+            ? capitalize(def.label)
+            : LINK_COMPONENT_LABEL;
+        const order = typeof def.order === 'number' ? def.order : ++index;
+        const entry: LinkDef = {
+          parent,
+          label,
+          order,
+        };
+        if (typeof def.description === 'string' && def.description.trim()) {
+          entry.description = def.description.trim();
+        }
+        if (typeof def.url === 'string' && def.url.trim()) {
+          entry.url = def.url.trim();
+        }
+        if (def.locked === true) {
+          entry.locked = true;
+        }
+        result.links[id] = entry;
+        changed = true;
+      }
+    }
+  }
+
   for (const page of Object.values(result.pages)) {
     for (const surface of MAP_SURFACES) {
       for (const id of Object.keys(page.collapsed[surface])) {
-        if (!(id in result.markers) && !(id in result.notes)) {
+        if (!(id in result.markers) && !(id in result.notes) && !(id in result.links)) {
           delete page.collapsed[surface][id];
         }
       }

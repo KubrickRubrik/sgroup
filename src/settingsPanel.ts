@@ -543,6 +543,11 @@ export class SettingsPanel implements vscode.Disposable {
       <input id="cyclePageScroll" type="checkbox">
       <span class="value" data-for="cyclePageScroll"></span>
     </div>
+    <div class="row">
+      <label for="openLinksInCursor" data-i18n="labelOpenLinksInCursor">Open links in Cursor</label>
+      <input id="openLinksInCursor" type="checkbox">
+      <span class="value" data-for="openLinksInCursor"></span>
+    </div>
     <p class="hint" id="settings-hint"></p>
 
     <section>
@@ -725,6 +730,7 @@ export class SettingsPanel implements vscode.Disposable {
     const toggles = [
       'showProblemsTab',
       'cyclePageScroll',
+      'openLinksInCursor',
       'cardGradient',
       'openFileMark',
       'showErrorIcon',

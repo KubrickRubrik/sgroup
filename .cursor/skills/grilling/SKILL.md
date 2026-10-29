@@ -58,10 +58,10 @@ If depth omitted → **medium**.
    - Brief **decision summary**: in scope / out of scope / open risks
    - Offer next step (pick recommendation, always leave both open):
      1. **Сделать план** (Plan mode) — default if scope is wide, several modules, unclear sequencing, or remaining risks matter
-     2. **Перейти к выполнению** — default if the slice is thin, answers close the gaps, and path is obvious
+     2. **Выполнить** — default if the slice is thin, answers close the gaps, and path is obvious
    - If recommending **план**: in the **same turn**, call `SwitchMode` with `target_mode_id: "plan"` (and a short `explanation`) so the user gets the switch-to-Plan control immediately — do not only mention Plan in text
-   - If data is already enough for a clear thin slice, add explicitly: **могу сразу перейти к выполнению**
-   - Wait for the user's choice; do not start coding until they confirm (Plan switch still needs their approval)
+   - If you can start implementation right away: in the **same turn**, call `AskQuestion` so the user gets a clickable control and does not have to type. Option label must be exactly **Выполнить** (put it first); second option **Сделать план**. Short prompt, e.g. «Могу сразу перейти к выполнению». Do not only mention it in prose
+   - Wait for the click or mode approval; do not start coding until the user chooses **Выполнить** (Plan switch still needs their approval). On **Выполнить**, implement in the next turn
 
 ## Question angles (pick what fits; don't dump all)
 
