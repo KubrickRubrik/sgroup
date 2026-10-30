@@ -65,6 +65,8 @@ interface MapGroup {
   icons?: string[];
   color?: string;
   alias?: string;
+  /** Short description shown after a dwell on the group name. */
+  description?: string;
   parent?: string;
   page?: string;
   columns: ColumnsMode;
@@ -211,6 +213,7 @@ type IncomingMessage =
       type: 'createGroup';
       label: string;
       alias?: string;
+      description?: string;
       locked?: boolean;
       /** Hex color; omit when `clearColor` or when host should pick random. */
       color?: string;
@@ -227,6 +230,7 @@ type IncomingMessage =
       markerId: string;
       label?: string;
       alias?: string | null;
+      description?: string | null;
     }
   | { type: 'deleteLinkLift'; linkId: string }
   | {
@@ -2155,6 +2159,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             typeof message.alias === 'string' && message.alias.trim()
               ? message.alias.trim()
               : undefined,
+          description:
+            typeof message.description === 'string' ? message.description : undefined,
           locked: message.locked === true ? true : undefined,
           columns: normalizeColumns(message.columns),
         });
@@ -2175,7 +2181,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!this.store.marker(message.markerId) || this.refuseLocked(message.markerId)) {
         return;
       }
-      const patch: { label?: string; alias?: string } = {};
+      const patch: { label?: string; alias?: string; description?: string } = {};
       if (typeof message.label === 'string') {
         const trimmed = message.label.trim();
         if (!trimmed) {
@@ -2185,6 +2191,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       if (message.alias !== undefined) {
         patch.alias = message.alias === null ? '' : message.alias;
+      }
+      if (message.description !== undefined) {
+        patch.description = message.description === null ? '' : message.description;
       }
       await this.store.updateMarker(message.markerId, patch);
       return;
@@ -2485,6 +2494,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           icons: def.icons?.length ? def.icons.slice() : undefined,
           color: def.color ? cssColor(def.color) : undefined,
           alias: def.alias,
+          description: def.description,
           parent: def.parent,
           page: pageId,
           columns: def.columns ?? 'flow',

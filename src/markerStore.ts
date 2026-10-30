@@ -96,6 +96,27 @@ export function normalizeColumns(value: unknown): ColumnsMode | undefined {
   return value === 'flow' || value === '1' || value === '2' || value === '3' ? value : undefined;
 }
 
+/** Max length of a group description (characters after newline normalization). */
+export const MAX_GROUP_DESCRIPTION_LENGTH = 144;
+/** Max lines in a group description (at most two newline characters). */
+export const MAX_GROUP_DESCRIPTION_LINES = 3;
+
+/**
+ * Normalize an optional group description: `\r\n` → `\n`, at most three lines,
+ * at most {@link MAX_GROUP_DESCRIPTION_LENGTH} characters, then trim.
+ * Empty result means the field should be cleared.
+ */
+export function normalizeGroupDescription(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n').slice(0, MAX_GROUP_DESCRIPTION_LINES);
+  const clipped = lines.join('\n').slice(0, MAX_GROUP_DESCRIPTION_LENGTH);
+  const trimmed = clipped.trim();
+  return trimmed || undefined;
+}
+
 export function normalizePageKind(value: unknown): PageKind | undefined {
   return value === 'files' || value === 'notes' || value === 'links' ? value : undefined;
 }
@@ -346,6 +367,8 @@ export interface MarkerDef {
   icons?: string[];
   /** Display alias shown above the group label. */
   alias?: string;
+  /** Short description (max {@link MAX_GROUP_DESCRIPTION_LENGTH}, three lines). */
+  description?: string;
   /** Parent marker id; omitted for top-level groups. */
   parent?: string;
   /** Page id for top-level groups only; nested groups inherit via root ancestor. */
@@ -1554,6 +1577,7 @@ export class MarkerStore implements vscode.Disposable {
     if (columns === undefined) {
       columns = '1';
     }
+    const description = normalizeGroupDescription(def.description);
     this.data.markers[id] = {
       ...def,
       label: capitalize(def.label),
@@ -1562,6 +1586,11 @@ export class MarkerStore implements vscode.Disposable {
       columns,
       order: 1,
     };
+    if (description) {
+      this.data.markers[id].description = description;
+    } else {
+      delete this.data.markers[id].description;
+    }
     // New groups/notes appear at the start of their sibling list (top of the map for roots).
     this.applySiblingOrder([{ kind: 'marker', id }, ...mixed]);
     await this.commit();
@@ -1591,6 +1620,14 @@ export class MarkerStore implements vscode.Disposable {
         next.alias = trimmed;
       } else {
         delete next.alias;
+      }
+    }
+    if ('description' in patch) {
+      const description = normalizeGroupDescription(patch.description);
+      if (description) {
+        next.description = description;
+      } else {
+        delete next.description;
       }
     }
     if ('locked' in patch) {
@@ -4296,6 +4333,9 @@ export class MarkerStore implements vscode.Disposable {
       if (src.alias) {
         entry.alias = src.alias;
       }
+      if (src.description) {
+        entry.description = src.description;
+      }
       if (src.columns) {
         entry.columns = src.columns;
       }
@@ -4513,6 +4553,9 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (src.alias) {
         entry.alias = src.alias;
+      }
+      if (src.description) {
+        entry.description = src.description;
       }
       if (src.columns) {
         entry.columns = src.columns;
@@ -4764,6 +4807,9 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (def.alias) {
         entry.alias = def.alias;
+      }
+      if (def.description) {
+        entry.description = def.description;
       }
       if (def.locked) {
         entry.locked = true;
@@ -5951,11 +5997,13 @@ function normalize(raw: unknown): MarkersFile {
         (def as { icons?: unknown }).icons,
         (def as { icon?: unknown }).icon,
       );
+      const description = normalizeGroupDescription(def.description);
       result.markers[id] = {
         label: capitalize(typeof def.label === 'string' && def.label.trim() ? def.label : id),
         color: typeof def.color === 'string' && def.color ? migrateColorId(normalizeHex(def.color) ?? def.color) : undefined,
         ...(icons ? { icons } : {}),
         alias: typeof def.alias === 'string' && def.alias.trim() ? def.alias.trim() : undefined,
+        ...(description ? { description } : {}),
         parent,
         page,
         columns: normalizeColumns(def.columns),

@@ -729,6 +729,39 @@ html::-webkit-scrollbar {
   min-width: 0;
 }
 
+.group-panel-backdrop .link-panel-field > .link-panel-input,
+.group-panel-backdrop .link-panel-field > label > .link-panel-input {
+  background: color-mix(in srgb, #000 14%, var(--vscode-sideBar-background, #1e1e1e));
+  border-color: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+}
+
+.group-panel-field-head {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.group-panel-counter {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-panel-backdrop .link-panel-field > label {
+  display: block;
+  width: 100%;
+}
+
+.group-panel-backdrop textarea.link-panel-input {
+  box-sizing: border-box;
+  display: block;
+  min-height: 4.5em;
+  resize: vertical;
+  width: 100%;
+}
+
 .link-panel-name-row .lock-btn {
   margin-left: 0;
   opacity: 0.85;
@@ -2421,6 +2454,22 @@ body.vscode-high-contrast-light .tab-mark::after {
   pointer-events: none;
   position: fixed;
   white-space: nowrap;
+  z-index: 1100;
+}
+
+.group-desc-tip {
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, #454545));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  font-size: var(--size-meta);
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 6px 8px;
+  pointer-events: none;
+  position: fixed;
+  white-space: pre-wrap;
+  word-break: break-word;
   z-index: 1100;
 }
 

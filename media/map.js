@@ -593,6 +593,16 @@
   let markTipTarget = null;
   const MARK_TIP_MS = 350;
 
+  const groupDescTip = el('div', 'group-desc-tip');
+  groupDescTip.hidden = true;
+  groupDescTip.setAttribute('role', 'tooltip');
+  document.body.append(groupDescTip);
+  /** @type {ReturnType<typeof setTimeout> | 0} */
+  let groupDescTipTimer = 0;
+  /** @type {HTMLElement | null} */
+  let groupDescTipTarget = null;
+  const GROUP_DESC_TIP_MS = 2000;
+
   const dirPopover = el('div', 'dir-popover');
   dirPopover.hidden = true;
   dirPopover.setAttribute('role', 'menu');
@@ -2884,6 +2894,22 @@
   /** Focus the name field once, when the link chip panel is opened. */
   let focusLinkNameOnOpen = false;
 
+  const MAX_GROUP_DESCRIPTION_LENGTH = 144;
+  const MAX_GROUP_DESCRIPTION_LINES = 3;
+
+  /**
+   * Clip group description for live typing: newlines, three lines, 144 chars.
+   * Does not trim — empty clear happens on save.
+   * @param {string} value
+   */
+  function clipGroupDescriptionInput(value) {
+    const normalized = String(value ?? '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+    const lines = normalized.split('\n').slice(0, MAX_GROUP_DESCRIPTION_LINES);
+    return lines.join('\n').slice(0, MAX_GROUP_DESCRIPTION_LENGTH);
+  }
+
   /**
    * In-map group settings / create draft.
    * `color`: undefined = untouched (random on create), null = no color, string = hex.
@@ -2895,6 +2921,7 @@
    *   requestId?: string,
    *   label: string,
    *   alias: string,
+   *   description: string,
    *   locked: boolean,
    *   color: string | null | undefined,
    *   colorTouched: boolean,
@@ -3037,12 +3064,20 @@
             const nameInput = backdrop?.querySelector(
               '.link-panel-name-row input.link-panel-input',
             );
-            const aliasInput = backdrop?.querySelectorAll('.link-panel-input')[1];
+            const aliasInput = backdrop?.querySelector(
+              'input.link-panel-input[data-group-field="alias"]',
+            );
+            const descInput = backdrop?.querySelector(
+              'textarea.link-panel-input[data-group-field="description"]',
+            );
             if (nameInput instanceof HTMLInputElement) {
               openGroupPanel.label = nameInput.value;
             }
             if (aliasInput instanceof HTMLInputElement) {
               openGroupPanel.alias = aliasInput.value;
+            }
+            if (descInput instanceof HTMLTextAreaElement) {
+              openGroupPanel.description = clipGroupDescriptionInput(descInput.value);
             }
             commitGroupDraft();
           } else {
@@ -3345,6 +3380,7 @@
    *   requestId?: string,
    *   label?: string,
    *   alias?: string,
+   *   description?: string,
    *   locked?: boolean,
    *   color?: string | null,
    * }} opts
@@ -3363,6 +3399,7 @@
         markerId: opts.markerId,
         label: group?.label || opts.label || '',
         alias: group?.alias || opts.alias || '',
+        description: clipGroupDescriptionInput(group?.description || opts.description || ''),
         locked: !!(group?.locked || opts.locked),
         color: group?.color || opts.color || null,
         colorTouched: true,
@@ -3376,6 +3413,7 @@
         requestId: opts.requestId,
         label: '',
         alias: '',
+        description: '',
         locked: false,
         color: undefined,
         colorTouched: false,
@@ -3415,11 +3453,13 @@
     if (!label) {
       return;
     }
+    const description = clipGroupDescriptionInput(draft.description).trim();
     /** @type {Record<string, unknown>} */
     const payload = {
       type: 'createGroup',
       label,
       alias: draft.alias.trim() || undefined,
+      description: description || undefined,
       locked: draft.locked || undefined,
       parentId: draft.parentId,
       pageId: draft.pageId,
@@ -3483,6 +3523,7 @@
     let locked = state.locked;
     let label = state.label;
     let alias = state.alias;
+    let description = state.description || '';
     let color = state.color;
     if (state.mode === 'edit' && state.markerId) {
       const group = (data?.groups || []).find((item) => item.id === state.markerId);
@@ -3490,10 +3531,12 @@
         locked = !!group.locked;
         label = group.label || label;
         alias = group.alias || '';
+        description = clipGroupDescriptionInput(group.description || '');
         color = group.color || null;
         state.locked = locked;
         state.label = label;
         state.alias = alias;
+        state.description = description;
         state.color = color;
         state.columns = groupColumnMode(group.columns);
       }
@@ -3589,10 +3632,28 @@
     aliasLabel.append(document.createTextNode(t('groupAlias')));
     const aliasInput = el('input', 'link-panel-input');
     aliasInput.type = 'text';
+    aliasInput.dataset.groupField = 'alias';
     aliasInput.value = alias;
     aliasInput.disabled = locked && state.mode === 'edit';
     aliasLabel.append(aliasInput);
     panel.append(aliasLabel);
+
+    const descField = el('div', 'link-panel-field');
+    const descHead = el('div', 'group-panel-field-head');
+    descHead.append(document.createTextNode(t('groupDescription')));
+    const descCounter = el('span', 'group-panel-counter');
+    descCounter.textContent = description.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
+    descHead.append(descCounter);
+    const descLabel = el('label', '');
+    const descInput = el('textarea', 'link-panel-input');
+    descInput.dataset.groupField = 'description';
+    descInput.rows = MAX_GROUP_DESCRIPTION_LINES;
+    descInput.value = description;
+    descInput.disabled = locked && state.mode === 'edit';
+    descInput.setAttribute('aria-label', t('groupDescription'));
+    descLabel.append(descInput);
+    descField.append(descHead, descLabel);
+    panel.append(descField);
 
     const colorField = el('div', 'link-panel-field link-panel-color');
     const colorRow = el('div', 'link-color-row');
@@ -3670,6 +3731,19 @@
     aliasInput.addEventListener('input', () => {
       state.alias = aliasInput.value;
     });
+    descInput.addEventListener('input', () => {
+      const clipped = clipGroupDescriptionInput(descInput.value);
+      if (descInput.value !== clipped) {
+        const start = descInput.selectionStart;
+        descInput.value = clipped;
+        if (typeof start === 'number') {
+          const nextPos = Math.min(start, clipped.length);
+          descInput.setSelectionRange(nextPos, nextPos);
+        }
+      }
+      state.description = descInput.value;
+      descCounter.textContent = descInput.value.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
+    });
     nameInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -3677,6 +3751,7 @@
         if (state.mode === 'create') {
           state.label = nameInput.value;
           state.alias = aliasInput.value;
+          state.description = clipGroupDescriptionInput(descInput.value);
           commitGroupDraft();
         } else {
           nameInput.blur();
@@ -3701,6 +3776,20 @@
         type: 'updateGroup',
         markerId: state.markerId,
         alias: next || null,
+      });
+    });
+    descInput.addEventListener('change', () => {
+      if (state.mode !== 'edit' || !state.markerId || locked) {
+        return;
+      }
+      const next = clipGroupDescriptionInput(descInput.value).trim();
+      descInput.value = next;
+      state.description = next;
+      descCounter.textContent = next.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
+      vscode.postMessage({
+        type: 'updateGroup',
+        markerId: state.markerId,
+        description: next || null,
       });
     });
 
@@ -4367,6 +4456,7 @@
   function paintPage() {
     syncToolbarView();
     removeLinkPanelBackdrop();
+    hideGroupDescTip();
     if (isProblemsPageOpen()) {
       closeGroupPanel(false);
       paintProblemsPage();
@@ -4897,7 +4987,8 @@
     if (group.alias) {
       labelWrap.append(el('span', 'alias', group.alias));
     }
-    labelWrap.append(el('span', 'label', group.label));
+    const labelEl = el('span', 'label', group.label);
+    labelWrap.append(labelEl);
     header.append(labelWrap);
     header.append(lockButton(group));
     header.append(
@@ -4907,10 +4998,7 @@
         String(group.items.length + classList.length + noteChildIds.length + childIds.length),
       ),
     );
-    header.title =
-      (group.alias ? group.alias + '\n' : '') +
-      group.label +
-      (locked ? '\n' + t('locked') : '\n' + t('dragHint'));
+    bindGroupDescriptionTip(labelEl, group.description);
     const skipHeaderChrome = (target) =>
       target instanceof Element &&
       (target.closest('.lock-btn') ||
@@ -12132,6 +12220,80 @@
     markTipTarget = null;
     markTip.hidden = true;
     markTip.textContent = '';
+  }
+
+  /**
+   * Show group description under the name after a 2s hover. No tip when empty.
+   * @param {HTMLElement} labelEl
+   * @param {string | undefined} description
+   */
+  function bindGroupDescriptionTip(labelEl, description) {
+    const text = typeof description === 'string' ? description.trim() : '';
+    if (!text) {
+      return;
+    }
+    labelEl.addEventListener('pointerenter', () => {
+      scheduleGroupDescTip(labelEl, text);
+    });
+    labelEl.addEventListener('pointerleave', () => {
+      if (groupDescTipTarget === labelEl) {
+        hideGroupDescTip();
+      }
+    });
+    labelEl.addEventListener('pointerdown', () => {
+      if (groupDescTipTarget === labelEl) {
+        hideGroupDescTip();
+      }
+    });
+  }
+
+  /**
+   * @param {HTMLElement} labelEl
+   * @param {string} text
+   */
+  function scheduleGroupDescTip(labelEl, text) {
+    clearTimeout(groupDescTipTimer);
+    groupDescTipTarget = labelEl;
+    groupDescTipTimer = setTimeout(() => {
+      if (groupDescTipTarget !== labelEl || !labelEl.isConnected) {
+        return;
+      }
+      groupDescTip.textContent = text;
+      groupDescTip.hidden = false;
+      placeGroupDescTip(labelEl);
+    }, GROUP_DESC_TIP_MS);
+  }
+
+  function hideGroupDescTip() {
+    clearTimeout(groupDescTipTimer);
+    groupDescTipTimer = 0;
+    groupDescTipTarget = null;
+    groupDescTip.hidden = true;
+    groupDescTip.textContent = '';
+  }
+
+  /** @param {HTMLElement} anchor */
+  function placeGroupDescTip(anchor) {
+    const pad = 8;
+    const gap = 6;
+    groupDescTip.style.left = '0px';
+    groupDescTip.style.top = '0px';
+    const rect = anchor.getBoundingClientRect();
+    const tipW = groupDescTip.offsetWidth || 160;
+    const tipH = groupDescTip.offsetHeight || 40;
+    let left = rect.left;
+    if (left + tipW > window.innerWidth - pad) {
+      left = Math.max(pad, window.innerWidth - tipW - pad);
+    }
+    if (left < pad) {
+      left = pad;
+    }
+    let top = rect.bottom + gap;
+    if (top + tipH > window.innerHeight - pad) {
+      top = Math.max(pad, rect.top - tipH - gap);
+    }
+    groupDescTip.style.left = left + 'px';
+    groupDescTip.style.top = top + 'px';
   }
 
   /** @param {number} x @param {number} y */
