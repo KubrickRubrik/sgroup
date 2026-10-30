@@ -85,6 +85,22 @@
    * before focus/expand repaints the card and drops the second click.
    */
   const NOTE_CLICK_MS = 220;
+  /** Wait before folding a group, so a second click can open settings on the same header. */
+  const GROUP_CLICK_MS = 120;
+  /** Second press on the same group within this window opens settings instead of folding. */
+  const GROUP_DOUBLE_MS = 600;
+  /**
+   * Header click kept off the DOM node. A repaint between the two presses must
+   * not drop the double-click, and must not fold once the second press starts.
+   * @type {{ id: string, at: number, timer: number, folded: boolean, held: boolean } | null}
+   */
+  let pendingGroupFold = null;
+  /**
+   * Fold already applied locally. A focus refresh can still deliver the
+   * snapshot taken before setCollapsed, and that snapshot would undo the click.
+   * @type {{ pageId: string, id: string, on: boolean, until: number } | null}
+   */
+  let groupFoldSync = null;
   /** Movement past this many pixels is a text selection, not a click. */
   const NOTE_DRAG_PX = 8;
   /**
@@ -612,6 +628,7 @@
       const previousPageId = uiState.activePageId;
       const previousProblems = problemsPageOpen;
       data = message;
+      reconcileGroupFoldSync();
       if (
         message.restorePage &&
         message.activePageId &&
@@ -680,6 +697,13 @@
         data.open = message.open;
       }
       setPanelToggles(message.open);
+    } else if (message.type === 'openGroupDraft') {
+      openGroupSettingsPanel({
+        mode: 'create',
+        parentId: typeof message.parentId === 'string' ? message.parentId : undefined,
+        pageId: typeof message.pageId === 'string' ? message.pageId : undefined,
+        requestId: typeof message.requestId === 'string' ? message.requestId : undefined,
+      });
     } else if (message.type === 'openPage') {
       if (!message.pageId) {
         return;
@@ -1378,7 +1402,7 @@
     }
     cancelMenuClose('toolbar-view');
     openMenuState = { kind: 'toolbar', viewExpanded: true };
-    fillViewSections(toolbarViewMenu, { includeGroupColumns: false });
+    fillViewSections(toolbarViewMenu);
     toolbarViewMenu.hidden = false;
     toolbarView.setAttribute('aria-expanded', 'true');
     positionToolbarMenu(toolbarViewMenu, toolbarViewWrap);
@@ -1477,12 +1501,14 @@
       }
       if (item.kind === 'view') {
         appendExpandableMenuBlock(scroller, t('toolbarView'), !!openMenuState.viewExpanded, 'toggleView', (nest) => {
-          fillViewSections(nest, {
-            includeGroupColumns: !ctx.locked,
-            columns: typeof ctx.columns === 'string' ? ctx.columns : 'flow',
-            markerId: typeof ctx.markerId === 'string' ? ctx.markerId : undefined,
-          });
+          fillViewSections(nest);
         });
+        continue;
+      }
+      if (item.kind === 'settings') {
+        const row = menuAction(t('menuSettings'));
+        row.dataset.menuAction = 'openSettings';
+        scroller.append(row);
         continue;
       }
       if (item.kind === 'create') {
@@ -1578,7 +1604,7 @@
     const depth = Number(ctx.depth) || 0;
     const isDir = !!ctx.isDir;
     const noteEditing = !!ctx.noteEditing;
-    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'unlock' } | { kind: 'separator' } | { kind: 'copy' } | { kind: 'copyLink' } | { kind: 'paste', disabled?: boolean }>} */
+    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'settings' } | { kind: 'unlock' } | { kind: 'separator' } | { kind: 'copy' } | { kind: 'copyLink' } | { kind: 'paste', disabled?: boolean }>} */
     const items = [];
 
     if (noteEditing && section === 'note' && !locked) {
@@ -1637,14 +1663,11 @@
       items.push({ kind: 'command', command: 'syn3.unassign', label: t('menuRemoveMarker') });
     }
 
+    if (section === 'marker') {
+      items.push({ kind: 'settings' });
+    }
     if (section === 'marker' && !locked) {
-      items.push({ kind: 'command', command: 'syn3.editMarker', label: t('menuEditMarker') });
-      items.push({ kind: 'command', command: 'syn3.setAlias', label: t('menuSetAlias') });
-      if (hasAlias) {
-        items.push({ kind: 'command', command: 'syn3.clearAlias', label: t('menuClearAlias') });
-      }
       items.push({ kind: 'create' });
-      items.push({ kind: 'command', command: 'syn3.changeColor', label: t('menuChangeColor') });
       items.push({ kind: 'command', command: 'syn3.moveMarkerUp', label: t('menuMoveUp') });
       items.push({ kind: 'command', command: 'syn3.moveMarkerDown', label: t('menuMoveDown') });
       if (depth > 0) {
@@ -1676,11 +1699,8 @@
     return items;
   }
 
-  /**
-   * @param {HTMLElement} root
-   * @param {{ includeGroupColumns: boolean, columns?: string, markerId?: string }} options
-   */
-  function fillViewSections(root, options) {
+  /** @param {HTMLElement} root */
+  function fillViewSections(root) {
     const isMenu = root.classList.contains('syn3-menu');
     const target = isMenu ? ensureMenuChrome(root).scroller : root;
     target.replaceChildren();
@@ -1697,41 +1717,6 @@
     target.append(menuChoice(t('viewCol1'), groupsLayout === '1', { set: 'groups', value: '1' }));
     target.append(menuChoice(t('viewCol2'), groupsLayout === '2', { set: 'groups', value: '2' }));
     target.append(menuChoice(t('viewCol3'), groupsLayout === '3', { set: 'groups', value: '3' }));
-
-    if (options.includeGroupColumns && options.markerId) {
-      const columns = options.columns === '1' || options.columns === '2' || options.columns === '3'
-        ? options.columns
-        : 'flow';
-      target.append(menuLabel(t('viewGroupLayout')));
-      target.append(
-        menuChoice(t('viewFlow'), columns === 'flow', {
-          set: 'columns',
-          value: 'flow',
-          markerId: options.markerId,
-        }),
-      );
-      target.append(
-        menuChoice(t('viewCol1'), columns === '1', {
-          set: 'columns',
-          value: '1',
-          markerId: options.markerId,
-        }),
-      );
-      target.append(
-        menuChoice(t('viewCol2'), columns === '2', {
-          set: 'columns',
-          value: '2',
-          markerId: options.markerId,
-        }),
-      );
-      target.append(
-        menuChoice(t('viewCol3'), columns === '3', {
-          set: 'columns',
-          value: '3',
-          markerId: options.markerId,
-        }),
-      );
-    }
     if (isMenu) {
       updateMenuScrollbar(root);
     }
@@ -1850,16 +1835,21 @@
       return;
     }
 
+    if (button.dataset.menuAction === 'openSettings') {
+      const ctx = openMenuState?.ctx;
+      closeContextMenu();
+      if (ctx && typeof ctx.markerId === 'string') {
+        openGroupSettingsPanel({ mode: 'edit', markerId: ctx.markerId });
+      }
+      return;
+    }
+
     if (button.dataset.create) {
       const ctx = openMenuState?.ctx;
       const section = ctx && typeof ctx.webviewSection === 'string' ? ctx.webviewSection : '';
       if (button.dataset.create === 'subgroup' && section === 'marker' && typeof ctx?.markerId === 'string') {
-        vscode.postMessage({
-          type: 'runCommand',
-          command: 'syn3.createSubgroup',
-          arg: ctx,
-        });
         closeContextMenu();
+        openGroupSettingsPanel({ mode: 'create', parentId: ctx.markerId });
         return;
       }
       if (button.dataset.create === 'note') {
@@ -2035,7 +2025,7 @@
 
   function refreshOpenViewHighlights() {
     if (openMenuState?.kind === 'toolbar' && toolbarViewMenu && !toolbarViewMenu.hidden) {
-      fillViewSections(toolbarViewMenu, { includeGroupColumns: false });
+      fillViewSections(toolbarViewMenu);
       return;
     }
     if (openMenuState?.kind === 'context' && openMenuState.viewExpanded) {
@@ -2396,6 +2386,122 @@
     }, EXPAND_DROP_MS);
   }
 
+  function clearPendingGroupFold() {
+    if (!pendingGroupFold) {
+      return;
+    }
+    window.clearTimeout(pendingGroupFold.timer);
+    pendingGroupFold = null;
+  }
+
+  /**
+   * @param {string} groupId
+   * @returns {boolean} true when the group actually folded
+   */
+  function applyGroupFold(groupId) {
+    if (isLocked(groupId)) {
+      const header = root.querySelector(
+        'section.group[data-marker-id="' + CSS.escape(groupId) + '"] > .group-header',
+      );
+      if (header instanceof HTMLElement) {
+        flashLock(groupId, header);
+      }
+      return false;
+    }
+    const group = data?.groups?.find((item) => item.id === groupId);
+    if (!group || isEmptyGroup(group)) {
+      return false;
+    }
+    toggleCollapsed(groupId);
+    return true;
+  }
+
+  /** @param {{ id: string, at: number, timer: number, folded: boolean, held: boolean }} click */
+  function finishPendingGroupFold(click) {
+    if (pendingGroupFold !== click) {
+      return;
+    }
+    click.folded = applyGroupFold(click.id);
+    const rest = GROUP_DOUBLE_MS - (Date.now() - click.at);
+    click.timer = window.setTimeout(() => {
+      if (pendingGroupFold === click) {
+        pendingGroupFold = null;
+      }
+    }, Math.max(0, rest));
+  }
+
+  /**
+   * Second press started. Stop the fold so the header is still here for pointerup.
+   * @param {string} groupId
+   */
+  function holdGroupClick(groupId) {
+    const pending = pendingGroupFold;
+    if (!pending || pending.id !== groupId || pending.held) {
+      return;
+    }
+    if (Date.now() - pending.at >= GROUP_DOUBLE_MS) {
+      return;
+    }
+    window.clearTimeout(pending.timer);
+    pending.held = true;
+    const rest = GROUP_DOUBLE_MS - (Date.now() - pending.at);
+    pending.timer = window.setTimeout(() => {
+      if (pendingGroupFold !== pending) {
+        return;
+      }
+      if (!pending.folded) {
+        pending.folded = applyGroupFold(pending.id);
+      }
+      pendingGroupFold = null;
+    }, Math.max(0, rest));
+  }
+
+  /** @param {string} groupId */
+  function scheduleGroupFold(groupId) {
+    const now = Date.now();
+    const pending = pendingGroupFold;
+    if (pending && pending.id === groupId && now - pending.at < GROUP_DOUBLE_MS) {
+      const undo = pending.folded;
+      clearPendingGroupFold();
+      if (undo) {
+        toggleCollapsed(groupId);
+      }
+      openGroupSettingsPanel({ mode: 'edit', markerId: groupId });
+      return;
+    }
+    clearPendingGroupFold();
+    const click = { id: groupId, at: now, timer: 0, folded: false, held: false };
+    pendingGroupFold = click;
+    click.timer = window.setTimeout(() => finishPendingGroupFold(click), GROUP_CLICK_MS);
+  }
+
+  /** Keep a just-applied fold when a stale focus snapshot arrives. */
+  function reconcileGroupFoldSync() {
+    const hold = groupFoldSync;
+    if (!hold) {
+      return;
+    }
+    if (Date.now() > hold.until) {
+      groupFoldSync = null;
+      return;
+    }
+    const page = pages().find((item) => item.id === hold.pageId);
+    if (!page) {
+      return;
+    }
+    const collapsed = { ...(page.collapsed || {}) };
+    if (!!collapsed[hold.id] === hold.on) {
+      groupFoldSync = null;
+      return;
+    }
+    if (hold.on) {
+      collapsed[hold.id] = true;
+    } else {
+      delete collapsed[hold.id];
+    }
+    page.collapsed = collapsed;
+  }
+
   function toggleCollapsed(groupId) {
     if (isLocked(groupId)) {
       return;
@@ -2405,6 +2511,15 @@
       delete next[groupId];
     } else {
       next[groupId] = true;
+    }
+    const page = activePage();
+    if (page) {
+      groupFoldSync = {
+        pageId: page.id,
+        id: groupId,
+        on: !!next[groupId],
+        until: Date.now() + 1200,
+      };
     }
     persistCollapsed(next);
     renderFromToggle = true;
@@ -2769,6 +2884,40 @@
   /** Focus the name field once, when the link chip panel is opened. */
   let focusLinkNameOnOpen = false;
 
+  /**
+   * In-map group settings / create draft.
+   * `color`: undefined = untouched (random on create), null = no color, string = hex.
+   * @type {{
+   *   mode: 'create' | 'edit',
+   *   markerId?: string,
+   *   parentId?: string,
+   *   pageId?: string,
+   *   requestId?: string,
+   *   label: string,
+   *   alias: string,
+   *   locked: boolean,
+   *   color: string | null | undefined,
+   *   colorTouched: boolean,
+   *   columns: 'flow' | '1' | '2' | '3',
+   * } | null}
+   */
+  let openGroupPanel = null;
+  /** Focus the name field once when the group panel opens. */
+  let focusGroupNameOnOpen = false;
+
+  /**
+   * Shared color picker panel.
+   * @type {{
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   id?: string,
+   *   currentHex: string,
+   *   allowNone: boolean,
+   *   noneDisabled?: boolean,
+   *   locked?: boolean,
+   * } | null}
+   */
+  let openColorPanel = null;
+
   function pageLinks() {
     const pageId = activePage()?.id;
     return (data?.links || []).filter((link) => link.page === pageId || pageOfLink(link) === pageId);
@@ -2790,7 +2939,12 @@
   }
 
   function removeLinkPanelBackdrop() {
-    document.querySelectorAll('.link-panel-backdrop').forEach((node) => node.remove());
+    document.querySelectorAll('.link-panel-backdrop').forEach((node) => {
+      if (node.classList.contains('group-panel-backdrop')) {
+        return;
+      }
+      node.remove();
+    });
   }
 
   /** Tree shape aside from folded flags. A collapse must not rebuild the chips. */
@@ -2856,6 +3010,51 @@
   document.addEventListener(
     'keydown',
     (event) => {
+      if (openColorPanel && event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeColorPanel();
+        return;
+      }
+      if (openGroupPanel) {
+        const isEsc = event.key === 'Escape';
+        const isEnter = event.key === 'Enter';
+        if (!isEsc && !isEnter) {
+          return;
+        }
+        const backdrop = document.querySelector('.group-panel-backdrop');
+        const inside =
+          backdrop instanceof HTMLElement &&
+          event.target instanceof Node &&
+          backdrop.contains(event.target);
+        if (isEnter) {
+          if (!inside || event.target instanceof HTMLTextAreaElement) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          if (openGroupPanel.mode === 'create') {
+            const nameInput = backdrop?.querySelector(
+              '.link-panel-name-row input.link-panel-input',
+            );
+            const aliasInput = backdrop?.querySelectorAll('.link-panel-input')[1];
+            if (nameInput instanceof HTMLInputElement) {
+              openGroupPanel.label = nameInput.value;
+            }
+            if (aliasInput instanceof HTMLInputElement) {
+              openGroupPanel.alias = aliasInput.value;
+            }
+            commitGroupDraft();
+          } else {
+            closeGroupPanel(false);
+          }
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        closeGroupPanel(true);
+        return;
+      }
       if (!openLinkPanelId) {
         return;
       }
@@ -2864,7 +3063,7 @@
       if (!isEsc && !isEnter) {
         return;
       }
-      const backdrop = document.querySelector('.link-panel-backdrop');
+      const backdrop = document.querySelector('.link-panel-backdrop:not(.group-panel-backdrop)');
       const inside =
         backdrop instanceof HTMLElement &&
         event.target instanceof Node &&
@@ -2934,6 +3133,615 @@
     };
     apply();
     requestAnimationFrame(apply);
+  }
+
+  function removeColorPanelBackdrop() {
+    document.querySelectorAll('.color-panel-backdrop').forEach((node) => node.remove());
+  }
+
+  function closeColorPanel() {
+    if (!openColorPanel) {
+      removeColorPanelBackdrop();
+      return;
+    }
+    openColorPanel = null;
+    removeColorPanelBackdrop();
+  }
+
+  /**
+   * @param {{
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   id?: string,
+   *   currentHex?: string,
+   *   allowNone?: boolean,
+   *   noneDisabled?: boolean,
+   *   locked?: boolean,
+   * }} opts
+   */
+  function openColorsPanel(opts) {
+    const currentHex = (opts.currentHex || '').toLowerCase();
+    openColorPanel = {
+      kind: opts.kind,
+      id: opts.id,
+      currentHex: currentHex.startsWith('#') ? currentHex : currentHex ? currentHex : '',
+      allowNone: opts.allowNone !== false,
+      noneDisabled: !!opts.noneDisabled,
+      locked: !!opts.locked,
+    };
+    mountColorPanel();
+  }
+
+  /** @param {string | null | undefined} value */
+  function applyColorPanelChoice(value) {
+    const target = openColorPanel;
+    if (!target || target.locked) {
+      return;
+    }
+    if (target.kind === 'group-draft' && openGroupPanel?.mode === 'create') {
+      openGroupPanel.colorTouched = true;
+      openGroupPanel.color = value;
+      closeColorPanel();
+      mountGroupPanel();
+      return;
+    }
+    if (target.kind === 'text') {
+      if (value) {
+        applyTextColor(value);
+      }
+      closeColorPanel();
+      return;
+    }
+    if (target.kind === 'link' && target.id) {
+      if (!value) {
+        closeColorPanel();
+        return;
+      }
+      vscode.postMessage({ type: 'updateLink', linkId: target.id, color: value });
+      closeColorPanel();
+      return;
+    }
+    if (target.kind === 'marker' && target.id) {
+      vscode.postMessage(
+        value
+          ? { type: 'setColor', markerId: target.id, color: value }
+          : { type: 'setColor', markerId: target.id, clear: true },
+      );
+      closeColorPanel();
+      return;
+    }
+    if (target.kind === 'note' && target.id) {
+      vscode.postMessage(
+        value
+          ? { type: 'setColor', noteId: target.id, color: value }
+          : { type: 'setColor', noteId: target.id, clear: true },
+      );
+      closeColorPanel();
+      return;
+    }
+    closeColorPanel();
+  }
+
+  function openSystemColorPickerForPanel() {
+    const target = openColorPanel;
+    if (!target || target.locked) {
+      return;
+    }
+    const rect = document.querySelector('.color-panel')?.getBoundingClientRect();
+    if (rect) {
+      colorInput.style.left = rect.left + 'px';
+      colorInput.style.top = rect.bottom + 'px';
+    }
+    colorInput.value = target.currentHex || '#8b8d98';
+    if (target.kind === 'text') {
+      colorTarget = { kind: 'text' };
+    } else if (target.kind === 'group-draft') {
+      colorTarget = { kind: 'group-draft' };
+    } else if (target.kind === 'note' && target.id) {
+      colorTarget = { kind: 'note', id: target.id };
+    } else if (target.kind === 'link' && target.id) {
+      colorTarget = { kind: 'link', id: target.id };
+    } else if (target.kind === 'marker' && target.id) {
+      colorTarget = { kind: 'marker', id: target.id };
+    } else {
+      return;
+    }
+    closeColorPanel();
+    if (typeof colorInput.showPicker === 'function') {
+      try {
+        colorInput.showPicker();
+        return;
+      } catch {
+        // fall through
+      }
+    }
+    colorInput.click();
+  }
+
+  function mountColorPanel() {
+    removeColorPanelBackdrop();
+    if (!openColorPanel) {
+      return;
+    }
+    const target = openColorPanel;
+    const backdrop = el('div', 'color-panel-backdrop');
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        closeColorPanel();
+      }
+    });
+    const panel = el('aside', 'color-panel');
+    const title = el('div', 'color-panel-title', t('colorsTitle'));
+    panel.append(title);
+
+    if (target.allowNone) {
+      const noneBtn = el(
+        'button',
+        'color-panel-none' + (!target.currentHex ? ' is-active' : ''),
+      );
+      noneBtn.type = 'button';
+      noneBtn.disabled = !!target.locked || !!target.noneDisabled;
+      noneBtn.append(el('span', 'color-panel-none-swatch'), document.createTextNode(t('noColor')));
+      noneBtn.addEventListener('click', () => {
+        if (!noneBtn.disabled) {
+          applyColorPanelChoice(null);
+        }
+      });
+      panel.append(noneBtn);
+    }
+
+    const sets = el('div', 'link-color-sets');
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    const current = target.currentHex;
+    for (const column of columns) {
+      const set = el('div', 'link-color-set');
+      const name = el('span', 'link-color-set-name');
+      name.textContent = column.label || '';
+      set.append(name);
+      const tones = Array.isArray(column.tones) ? column.tones : [];
+      for (const tone of tones) {
+        const hex = String(tone).toLowerCase();
+        const swatch = el('button', 'link-color-swatch');
+        swatch.type = 'button';
+        swatch.disabled = !!target.locked;
+        swatch.style.background = hex;
+        swatch.dataset.hex = hex;
+        swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
+        swatch.setAttribute('aria-pressed', hex === current ? 'true' : 'false');
+        swatch.addEventListener('click', () => {
+          if (!target.locked) {
+            applyColorPanelChoice(hex);
+          }
+        });
+        set.append(swatch);
+      }
+      sets.append(set);
+    }
+    panel.append(sets);
+
+    const custom = el('button', 'color-panel-custom');
+    custom.type = 'button';
+    custom.textContent = t('customPalette');
+    custom.disabled = !!target.locked;
+    custom.addEventListener('click', () => {
+      if (!custom.disabled) {
+        openSystemColorPickerForPanel();
+      }
+    });
+    panel.append(custom);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+  }
+
+  /**
+   * @param {{
+   *   mode: 'create' | 'edit',
+   *   markerId?: string,
+   *   parentId?: string,
+   *   pageId?: string,
+   *   requestId?: string,
+   *   label?: string,
+   *   alias?: string,
+   *   locked?: boolean,
+   *   color?: string | null,
+   * }} opts
+   */
+  function openGroupSettingsPanel(opts) {
+    if (openGroupPanel?.mode === 'create' && openGroupPanel.requestId) {
+      vscode.postMessage({ type: 'cancelGroupDraft', requestId: openGroupPanel.requestId });
+    }
+    closeLinkPanel();
+    closeColorPanel();
+    document.querySelectorAll('.group-panel-backdrop').forEach((node) => node.remove());
+    if (opts.mode === 'edit' && opts.markerId) {
+      const group = (data?.groups || []).find((item) => item.id === opts.markerId);
+      openGroupPanel = {
+        mode: 'edit',
+        markerId: opts.markerId,
+        label: group?.label || opts.label || '',
+        alias: group?.alias || opts.alias || '',
+        locked: !!(group?.locked || opts.locked),
+        color: group?.color || opts.color || null,
+        colorTouched: true,
+        columns: groupColumnMode(group?.columns),
+      };
+    } else {
+      openGroupPanel = {
+        mode: 'create',
+        parentId: opts.parentId,
+        pageId: opts.pageId || activePage()?.id,
+        requestId: opts.requestId,
+        label: '',
+        alias: '',
+        locked: false,
+        color: undefined,
+        colorTouched: false,
+        columns: defaultDraftColumns(opts.parentId),
+      };
+    }
+    focusGroupNameOnOpen = true;
+    mountGroupPanel();
+  }
+
+  function closeGroupPanel(cancelDraft) {
+    const draft = openGroupPanel;
+    openGroupPanel = null;
+    focusGroupNameOnOpen = false;
+    closeColorPanel();
+    const backdrop = document.querySelector('.group-panel-backdrop');
+    const active = document.activeElement;
+    if (
+      backdrop instanceof HTMLElement &&
+      active instanceof HTMLElement &&
+      backdrop.contains(active)
+    ) {
+      active.blur();
+    }
+    backdrop?.remove();
+    if (cancelDraft && draft?.mode === 'create' && draft.requestId) {
+      vscode.postMessage({ type: 'cancelGroupDraft', requestId: draft.requestId });
+    }
+  }
+
+  function commitGroupDraft() {
+    const draft = openGroupPanel;
+    if (!draft || draft.mode !== 'create') {
+      return;
+    }
+    const label = draft.label.trim();
+    if (!label) {
+      return;
+    }
+    /** @type {Record<string, unknown>} */
+    const payload = {
+      type: 'createGroup',
+      label,
+      alias: draft.alias.trim() || undefined,
+      locked: draft.locked || undefined,
+      parentId: draft.parentId,
+      pageId: draft.pageId,
+      requestId: draft.requestId,
+      columns: draft.columns,
+    };
+    if (draft.colorTouched) {
+      if (draft.color) {
+        payload.color = draft.color;
+      } else {
+        payload.clearColor = true;
+        payload.randomColor = false;
+      }
+    } else {
+      payload.randomColor = true;
+    }
+    vscode.postMessage(payload);
+    openGroupPanel = null;
+    focusGroupNameOnOpen = false;
+    document.querySelector('.group-panel-backdrop')?.remove();
+  }
+
+  function focusGroupPanelName(rootEl) {
+    const nameInput = rootEl.querySelector('.link-panel-name-row input.link-panel-input');
+    if (!(nameInput instanceof HTMLInputElement) || nameInput.disabled) {
+      return;
+    }
+    const apply = () => {
+      if (!nameInput.isConnected || nameInput.disabled) {
+        return;
+      }
+      nameInput.focus();
+      nameInput.select();
+    };
+    apply();
+    requestAnimationFrame(apply);
+  }
+
+  /** @param {unknown} value */
+  function groupColumnMode(value) {
+    return value === 'flow' || value === '1' || value === '2' || value === '3' ? value : 'flow';
+  }
+
+  /** New roots start in one column; a subgroup starts with the parent's layout. */
+  function defaultDraftColumns(parentId) {
+    if (parentId) {
+      const parent = (data?.groups || []).find((item) => item.id === parentId);
+      if (parent) {
+        return groupColumnMode(parent.columns);
+      }
+    }
+    return '1';
+  }
+
+  function mountGroupPanel() {
+    if (!openGroupPanel) {
+      document.querySelectorAll('.group-panel-backdrop').forEach((node) => node.remove());
+      return;
+    }
+    const state = openGroupPanel;
+    let locked = state.locked;
+    let label = state.label;
+    let alias = state.alias;
+    let color = state.color;
+    if (state.mode === 'edit' && state.markerId) {
+      const group = (data?.groups || []).find((item) => item.id === state.markerId);
+      if (group) {
+        locked = !!group.locked;
+        label = group.label || label;
+        alias = group.alias || '';
+        color = group.color || null;
+        state.locked = locked;
+        state.label = label;
+        state.alias = alias;
+        state.color = color;
+        state.columns = groupColumnMode(group.columns);
+      }
+    }
+    const columns = groupColumnMode(state.columns);
+    const colorKey =
+      state.mode === 'create'
+        ? !state.colorTouched
+          ? 'auto'
+          : color
+            ? String(color)
+            : 'none'
+        : color
+          ? String(color)
+          : 'none';
+    const existing = document.querySelector('.group-panel-backdrop');
+    if (existing instanceof HTMLElement) {
+      const sameCreate =
+        state.mode === 'create' &&
+        existing.dataset.mode === 'create' &&
+        (existing.dataset.requestId || '') === (state.requestId || '') &&
+        (existing.dataset.parentId || '') === (state.parentId || '') &&
+        (existing.dataset.colorKey || '') === colorKey &&
+        existing.dataset.locked === (locked ? '1' : '0') &&
+        (existing.dataset.columns || '') === columns;
+      const sameEdit =
+        state.mode === 'edit' &&
+        existing.dataset.mode === 'edit' &&
+        existing.dataset.markerId === state.markerId &&
+        existing.dataset.locked === (locked ? '1' : '0') &&
+        (existing.dataset.colorKey || '') === colorKey &&
+        (existing.dataset.columns || '') === columns;
+      if ((sameCreate || sameEdit) && !focusGroupNameOnOpen) {
+        return;
+      }
+      if (sameEdit && focusGroupNameOnOpen) {
+        focusGroupNameOnOpen = false;
+        focusGroupPanelName(existing);
+        return;
+      }
+      existing.remove();
+    }
+    const backdrop = el('div', 'link-panel-backdrop group-panel-backdrop');
+    backdrop.dataset.mode = state.mode;
+    if (state.markerId) {
+      backdrop.dataset.markerId = state.markerId;
+    }
+    if (state.parentId) {
+      backdrop.dataset.parentId = state.parentId;
+    }
+    if (state.requestId) {
+      backdrop.dataset.requestId = state.requestId;
+    }
+    backdrop.dataset.locked = locked ? '1' : '0';
+    backdrop.dataset.colorKey = colorKey;
+    backdrop.dataset.columns = columns;
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        closeGroupPanel(true);
+      }
+    });
+    const panel = el('aside', 'link-panel' + (locked ? ' is-locked' : ''));
+    const nameRow = el('div', 'link-panel-name-row');
+    const nameInput = el('input', 'link-panel-input');
+    nameInput.type = 'text';
+    nameInput.value = label;
+    nameInput.disabled = locked && state.mode === 'edit';
+    nameInput.setAttribute('aria-label', t('groupName'));
+    nameInput.placeholder = t('groupName');
+    const lockBtn = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    lockBtn.type = 'button';
+    lockBtn.title = locked ? t('unlockGroup') : t('lockGroup');
+    lockBtn.setAttribute('aria-label', lockBtn.title);
+    lockBtn.append(locked ? lockClosedIcon() : lockOpenIcon());
+    lockBtn.addEventListener('click', () => {
+      if (state.mode === 'create') {
+        state.locked = !state.locked;
+        mountGroupPanel();
+        return;
+      }
+      if (state.markerId) {
+        vscode.postMessage({ type: 'toggleLock', markerId: state.markerId });
+      }
+    });
+    nameRow.append(nameInput, lockBtn);
+    panel.append(nameRow);
+
+    const aliasLabel = el('label', 'link-panel-field');
+    aliasLabel.append(document.createTextNode(t('groupAlias')));
+    const aliasInput = el('input', 'link-panel-input');
+    aliasInput.type = 'text';
+    aliasInput.value = alias;
+    aliasInput.disabled = locked && state.mode === 'edit';
+    aliasLabel.append(aliasInput);
+    panel.append(aliasLabel);
+
+    const colorField = el('div', 'link-panel-field link-panel-color');
+    const colorRow = el('div', 'link-color-row');
+    const colorCaption = el('span', 'link-color-caption');
+    colorCaption.textContent = t('changeColor');
+    const well = el('button', 'link-color-well' + (!color ? ' is-empty' : ''));
+    well.type = 'button';
+    well.disabled = locked && state.mode === 'edit';
+    if (color) {
+      well.style.background = color;
+    }
+    well.setAttribute('aria-label', t('changeColor'));
+    well.addEventListener('click', () => {
+      if (well.disabled) {
+        return;
+      }
+      openColorsPanel({
+        kind: state.mode === 'create' ? 'group-draft' : 'marker',
+        id: state.markerId,
+        currentHex: typeof color === 'string' ? color : '',
+        allowNone: true,
+        locked: false,
+      });
+    });
+    colorRow.append(colorCaption, well);
+    colorField.append(colorRow);
+    panel.append(colorField);
+
+    const layoutField = el('div', 'link-panel-field');
+    layoutField.append(el('span', 'link-color-caption', t('viewGroupLayout')));
+    const layoutChoices = el('div', 'group-layout-choices');
+    const layoutLocked = locked && state.mode === 'edit';
+    for (const [value, text] of [
+      ['flow', t('viewFlow')],
+      ['1', t('viewCol1')],
+      ['2', t('viewCol2')],
+      ['3', t('viewCol3')],
+    ]) {
+      const choice = el('button', 'group-layout-choice' + (value === columns ? ' is-active' : ''));
+      choice.type = 'button';
+      choice.textContent = text;
+      choice.disabled = layoutLocked;
+      choice.setAttribute('aria-pressed', value === columns ? 'true' : 'false');
+      choice.addEventListener('click', () => {
+        if (choice.disabled || value === state.columns) {
+          return;
+        }
+        state.columns = /** @type {'flow' | '1' | '2' | '3'} */ (value);
+        if (state.mode === 'create') {
+          mountGroupPanel();
+          return;
+        }
+        if (!state.markerId) {
+          return;
+        }
+        const group = (data?.groups || []).find((item) => item.id === state.markerId);
+        if (group) {
+          group.columns = value;
+        }
+        vscode.postMessage({
+          type: 'runCommand',
+          command: 'syn3.setColumns.' + value,
+          arg: { markerId: state.markerId },
+        });
+        mountGroupPanel();
+      });
+      layoutChoices.append(choice);
+    }
+    layoutField.append(layoutChoices);
+    panel.append(layoutField);
+
+    nameInput.addEventListener('input', () => {
+      state.label = nameInput.value;
+    });
+    aliasInput.addEventListener('input', () => {
+      state.alias = aliasInput.value;
+    });
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (state.mode === 'create') {
+          state.label = nameInput.value;
+          state.alias = aliasInput.value;
+          commitGroupDraft();
+        } else {
+          nameInput.blur();
+        }
+      }
+    });
+    nameInput.addEventListener('change', () => {
+      if (state.mode !== 'edit' || !state.markerId || locked) {
+        return;
+      }
+      const next = nameInput.value.trim();
+      if (next) {
+        vscode.postMessage({ type: 'updateGroup', markerId: state.markerId, label: next });
+      }
+    });
+    aliasInput.addEventListener('change', () => {
+      if (state.mode !== 'edit' || !state.markerId || locked) {
+        return;
+      }
+      const next = aliasInput.value.trim();
+      vscode.postMessage({
+        type: 'updateGroup',
+        markerId: state.markerId,
+        alias: next || null,
+      });
+    });
+
+    if (state.mode === 'edit' && state.markerId) {
+      const actions = el('div', 'link-panel-actions');
+      const delLift = el('button', 'link-panel-danger');
+      delLift.type = 'button';
+      delLift.textContent = t('menuDeleteLift');
+      delLift.disabled = locked;
+      delLift.addEventListener('click', () => {
+        if (delLift.disabled || !state.markerId) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'runCommand',
+          command: 'syn3.deleteMarker',
+          arg: { webviewSection: 'marker', markerId: state.markerId },
+        });
+        closeGroupPanel(false);
+      });
+      const delAll = el('button', 'link-panel-danger');
+      delAll.type = 'button';
+      delAll.textContent = t('menuDeleteTree');
+      delAll.disabled = locked;
+      delAll.addEventListener('click', () => {
+        if (delAll.disabled || !state.markerId) {
+          return;
+        }
+        vscode.postMessage({ type: 'deleteMarkerTree', markerId: state.markerId });
+        closeGroupPanel(false);
+      });
+      actions.append(delLift, delAll);
+      panel.append(actions);
+    }
+
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    if (focusGroupNameOnOpen) {
+      focusGroupNameOnOpen = false;
+      focusGroupPanelName(backdrop);
+    }
   }
 
   function paintLinksPage() {
@@ -3359,6 +4167,13 @@
     cancelMenuClose('context');
     closeToolbarMenus();
     const canCreate = (link.depth || 0) < MAX_DEPTH && !isLocked(link);
+    const settingsBtn = menuAction(t('menuSettings'));
+    settingsBtn.addEventListener('click', () => {
+      closeContextMenu();
+      openLinkPanelId = link.id;
+      focusLinkNameOnOpen = true;
+      paintLinksPage();
+    });
     const createBtn = menuActionChoice(t('linkCreateChild'), { create: 'linkChild' });
     createBtn.disabled = !canCreate;
     createBtn.addEventListener('click', () => {
@@ -3377,7 +4192,7 @@
       y,
     };
     const scroller = ensureMenuChrome(contextMenu).scroller;
-    scroller.replaceChildren(createBtn);
+    scroller.replaceChildren(settingsBtn, createBtn);
     updateMenuScrollbar(contextMenu);
     contextMenu.hidden = false;
     positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
@@ -3467,52 +4282,21 @@
       well.disabled = locked;
       well.style.background = currentHex;
       well.setAttribute('aria-label', t('changeColor'));
-      well.setAttribute('aria-expanded', 'false');
-      const picker = el('div', 'link-color-picker');
-      picker.hidden = true;
-      picker.setAttribute('role', 'group');
-      picker.setAttribute('aria-label', t('changeColor'));
-      const sets = el('div', 'link-color-sets');
-      const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
-      for (const column of columns) {
-        const set = el('div', 'link-color-set');
-        const name = el('span', 'link-color-set-name');
-        name.textContent = column.label || '';
-        set.append(name);
-        const tones = Array.isArray(column.tones) ? column.tones : [];
-        for (const tone of tones) {
-          const hex = String(tone).toLowerCase();
-          const swatch = el('button', 'link-color-swatch');
-          swatch.type = 'button';
-          swatch.disabled = locked;
-          swatch.style.background = hex;
-          swatch.dataset.hex = hex;
-          swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
-          swatch.setAttribute('aria-pressed', hex === currentHex ? 'true' : 'false');
-          swatch.addEventListener('click', () => {
-            if (locked) {
-              return;
-            }
-            well.style.background = hex;
-            picker.hidden = true;
-            well.setAttribute('aria-expanded', 'false');
-            vscode.postMessage({ type: 'updateLink', linkId: link.id, color: hex });
-          });
-          set.append(swatch);
-        }
-        sets.append(set);
-      }
-      picker.append(sets);
       well.addEventListener('click', () => {
         if (locked) {
           return;
         }
-        const open = picker.hidden;
-        picker.hidden = !open;
-        well.setAttribute('aria-expanded', open ? 'true' : 'false');
+        openColorsPanel({
+          kind: 'link',
+          id: link.id,
+          currentHex,
+          allowNone: true,
+          noneDisabled: true,
+          locked: false,
+        });
       });
       colorRow.append(colorCaption, well);
-      colorField.append(colorRow, picker);
+      colorField.append(colorRow);
       panel.append(colorField);
     }
 
@@ -3553,17 +4337,29 @@
     });
     actions.append(createChild);
 
-    const del = el('button', 'link-panel-danger');
-    del.type = 'button';
-    del.textContent = t('menuDelete');
-    del.disabled = locked || !link.canDelete;
-    del.addEventListener('click', () => {
-      if (!del.disabled) {
+    const delLift = el('button', 'link-panel-danger');
+    delLift.type = 'button';
+    delLift.textContent = t('menuDeleteLift');
+    delLift.disabled = locked || !link.canDelete;
+    delLift.addEventListener('click', () => {
+      if (!delLift.disabled) {
+        vscode.postMessage({ type: 'deleteLinkLift', linkId: link.id });
+        openLinkPanelId = null;
+      }
+    });
+    actions.append(delLift);
+
+    const delAll = el('button', 'link-panel-danger');
+    delAll.type = 'button';
+    delAll.textContent = t('menuDeleteTree');
+    delAll.disabled = locked || !link.canDelete;
+    delAll.addEventListener('click', () => {
+      if (!delAll.disabled) {
         vscode.postMessage({ type: 'deleteLink', linkId: link.id });
         openLinkPanelId = null;
       }
     });
-    actions.append(del);
+    actions.append(delAll);
     panel.append(actions);
     return panel;
   }
@@ -3572,12 +4368,21 @@
     syncToolbarView();
     removeLinkPanelBackdrop();
     if (isProblemsPageOpen()) {
+      closeGroupPanel(false);
       paintProblemsPage();
       return;
     }
     const page = activePage();
     if (page?.kind === 'links') {
+      if (openGroupPanel?.mode === 'create') {
+        // Keep create draft if host asked for it on this surface.
+      } else if (openGroupPanel) {
+        closeGroupPanel(false);
+      }
       paintLinksPage();
+      if (openGroupPanel) {
+        mountGroupPanel();
+      }
       return;
     }
     const folds = captureFolds();
@@ -3602,6 +4407,9 @@
           ? 'Пока пусто. Создай группу или заметку.'
           : 'No markers yet. Right-click a file in the Explorer → "Mark…", or drag files here onto a group.';
       root.append(el('div', 'empty', emptyText));
+      if (openGroupPanel) {
+        mountGroupPanel();
+      }
       return;
     }
 
@@ -3635,6 +4443,9 @@
       if (!(activeNoteEdit?.input?.isConnected)) {
         focusNoteInput(id);
       }
+    }
+    if (openGroupPanel) {
+      mountGroupPanel();
     }
   }
 
@@ -4047,7 +4858,12 @@
         flashLock(group.id, header);
         return;
       }
-      openColorPicker(group.id, bar, section);
+      openColorsPanel({
+        kind: 'marker',
+        id: group.id,
+        currentHex: group.color || toHex(getComputedStyle(bar).backgroundColor) || '',
+        allowNone: true,
+      });
     });
     header.append(el('span', 'chevron', isEmpty ? '' : '▾'), bar);
     header.append(
@@ -4095,27 +4911,23 @@
       (group.alias ? group.alias + '\n' : '') +
       group.label +
       (locked ? '\n' + t('locked') : '\n' + t('dragHint'));
+    const skipHeaderChrome = (target) =>
+      target instanceof Element &&
+      (target.closest('.lock-btn') ||
+        target.closest('.bar') ||
+        target.closest('.type-icon') ||
+        target.closest('.badge-icons'));
+    header.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || skipHeaderChrome(event.target)) {
+        return;
+      }
+      holdGroupClick(group.id);
+    });
     trackPress(header, (event) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest('.lock-btn')) {
+      if (skipHeaderChrome(event.target)) {
         return;
       }
-      if (locked) {
-        flashLock(group.id, header);
-        return;
-      }
-      if (
-        target instanceof Element &&
-        (target.closest('.bar') ||
-          target.closest('.type-icon') ||
-          target.closest('.badge-icons'))
-      ) {
-        return;
-      }
-      if (isEmpty) {
-        return;
-      }
-      toggleCollapsed(group.id);
+      scheduleGroupFold(group.id);
     });
     if (!isEmpty) {
       attachFoldRail(section, group.id, header, locked);
@@ -7777,21 +8589,13 @@
     }
     saveNoteSelection();
     liveTextColorSpans = null;
-    const rect = (toolbarFormatMenu || toolbarFormat || activeNoteEdit.input).getBoundingClientRect();
-    colorInput.style.left = rect.left + 'px';
-    colorInput.style.top = rect.bottom + 'px';
     const at = marksAtCaret();
-    colorInput.value = pendingNoteMarks.color || at.color || '#4daafc';
-    colorTarget = { kind: 'text' };
-    if (typeof colorInput.showPicker === 'function') {
-      try {
-        colorInput.showPicker();
-        return;
-      } catch {
-        // fall through
-      }
-    }
-    colorInput.click();
+    const current = pendingNoteMarks.color || at.color || '#4daafc';
+    openColorsPanel({
+      kind: 'text',
+      currentHex: current,
+      allowNone: false,
+    });
   }
 
   /**
@@ -8457,7 +9261,12 @@
         flashLock(note.id, header);
         return;
       }
-      openColorPicker(note.id, bar, section, 'note');
+      openColorsPanel({
+        kind: 'note',
+        id: note.id,
+        currentHex: note.color || toHex(getComputedStyle(bar).backgroundColor) || '',
+        allowNone: true,
+      });
     });
     header.append(bar);
     const noteIcons = Array.isArray(note.icons) ? note.icons : [];
@@ -9007,6 +9816,7 @@
     let moved = false;
     let dragged = false;
     let activated = false;
+    let pressAt = 0;
     let x = 0;
     let y = 0;
 
@@ -9024,6 +9834,7 @@
       }
       tracking = true;
       pressStarted = true;
+      pressAt = Date.now();
       moved = false;
       dragged = false;
       activated = false;
@@ -9058,13 +9869,23 @@
     });
 
     node.addEventListener('pointercancel', () => {
+      // Focus moving into the webview cancels the pointer, then still delivers
+      // click. Leave pressStarted so that click can activate.
       tracking = false;
-      pressStarted = false;
     });
 
     node.addEventListener(
       'dragstart',
-      () => {
+      (event) => {
+        const dx = event.clientX - x;
+        const dy = event.clientY - y;
+        // The first press after the panel takes focus can start a drag without
+        // leaving the point, and that drag eats the click. A real drag has moved.
+        if (dx * dx + dy * dy < 4) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         // Browser fires dragstart once; cancelling it here used to kill header
         // drags before the 6px click threshold. Mark the gesture so pointerup
         // does not fold, and let the element's own dragstart call beginDrag.
@@ -9084,7 +9905,8 @@
       // Selection drag from .note-input often ends with mouseup on the header;
       // the browser then fires click on the common ancestor. Only treat click as
       // a fallback when this node actually received the matching press.
-      if (!pressStarted) {
+      if (!pressStarted || Date.now() - pressAt > 600) {
+        pressStarted = false;
         return;
       }
       pressStarted = false;
@@ -11405,11 +12227,11 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note' | 'text', id?: string, section?: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft', id?: string, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
-    if (colorTarget?.kind === 'text') {
+    if (colorTarget?.kind === 'text' || colorTarget?.kind === 'link' || colorTarget?.kind === 'group-draft') {
       return;
     }
     colorTarget?.section?.style.setProperty('--group-color', colorInput.value);
@@ -11419,6 +12241,12 @@
       if (colorTarget.kind === 'text') {
         applyTextColor(colorInput.value);
         liveTextColorSpans = null;
+      } else if (colorTarget.kind === 'group-draft' && openGroupPanel?.mode === 'create') {
+        openGroupPanel.colorTouched = true;
+        openGroupPanel.color = colorInput.value;
+        mountGroupPanel();
+      } else if (colorTarget.kind === 'link' && colorTarget.id) {
+        vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: colorInput.value });
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
       } else if (colorTarget.id) {

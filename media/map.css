@@ -843,19 +843,160 @@ html::-webkit-scrollbar {
   outline-offset: 1px;
 }
 
+.color-panel-backdrop {
+  align-items: center;
+  background: color-mix(in srgb, #000 45%, transparent);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 60;
+}
+
+.color-panel {
+  background: var(--vscode-sideBar-background, #1e1e1e);
+  border: 1px solid var(--vscode-widget-border, #333);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  padding: 12px;
+  width: min(320px, calc(100vw - 32px));
+}
+
+.color-panel-title {
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.color-panel-none {
+  align-items: center;
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--vscode-foreground) 28%, transparent);
+  border-radius: 4px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: flex-start;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.color-panel-none:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.color-panel-none.is-active {
+  border-style: solid;
+  border-color: var(--vscode-focusBorder, #4daafc);
+}
+
+.color-panel-none-swatch {
+  background:
+    linear-gradient(
+      135deg,
+      transparent 46%,
+      color-mix(in srgb, var(--vscode-foreground) 55%, transparent) 46%,
+      color-mix(in srgb, var(--vscode-foreground) 55%, transparent) 54%,
+      transparent 54%
+    ),
+    var(--vscode-input-background, #2a2a2a);
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
+  border-radius: 4px;
+  flex: none;
+  height: 18px;
+  width: 18px;
+}
+
+.color-panel-custom {
+  background: var(--vscode-button-secondaryBackground, #3a3a3a);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.color-panel-custom:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #454545);
+}
+
+.link-color-well.is-empty {
+  background:
+    linear-gradient(
+      135deg,
+      transparent 46%,
+      color-mix(in srgb, var(--vscode-foreground) 55%, transparent) 46%,
+      color-mix(in srgb, var(--vscode-foreground) 55%, transparent) 54%,
+      transparent 54%
+    ),
+    var(--vscode-input-background, #2a2a2a) !important;
+}
+
+.group-layout-choices {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.group-layout-choice {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+  border-radius: 4px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  text-align: center;
+}
+
+.group-layout-choice:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
+.group-layout-choice.is-active {
+  background: color-mix(
+    in srgb,
+    var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)) 55%,
+    transparent
+  );
+}
+
+.group-layout-choice:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .link-panel-actions {
   align-items: stretch;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .link-panel-actions > .link-panel-secondary {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
 }
 
 .link-panel-actions > .link-panel-danger {
-  flex: 0 0 auto;
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
 }
 
 .link-panel-secondary,

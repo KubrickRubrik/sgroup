@@ -10,17 +10,19 @@ import {
   GroupsLayout,
   MapLayout,
   MapSurface,
+  MAX_MARKER_DEPTH,
   MAX_PAGES,
   MarkerStore,
   NOTE_ROOT_COLOR,
   PageKind,
+  normalizeColumns,
   normalizeGroupsLayout,
   normalizeMapLayout,
   normalizePageKind,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
 import { openClassAt } from './openClass';
-import { LINK_PALETTE, LINK_PALETTE_DEFAULT } from './linkPalette';
+import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
@@ -197,7 +199,36 @@ type IncomingMessage =
     }
   | { type: 'runCommand'; command: string; arg?: Record<string, unknown> }
   | { type: 'reorderPages'; orderedIds: string[] }
-  | { type: 'setColor'; markerId?: string; noteId?: string; color: string }
+  | {
+      type: 'setColor';
+      markerId?: string;
+      noteId?: string;
+      /** Hex or theme id; omit or empty with `clear: true` to remove color. */
+      color?: string;
+      clear?: boolean;
+    }
+  | {
+      type: 'createGroup';
+      label: string;
+      alias?: string;
+      locked?: boolean;
+      /** Hex color; omit when `clearColor` or when host should pick random. */
+      color?: string;
+      clearColor?: boolean;
+      randomColor?: boolean;
+      parentId?: string;
+      pageId?: string;
+      requestId?: string;
+      columns?: string;
+    }
+  | { type: 'cancelGroupDraft'; requestId?: string }
+  | {
+      type: 'updateGroup';
+      markerId: string;
+      label?: string;
+      alias?: string | null;
+    }
+  | { type: 'deleteLinkLift'; linkId: string }
   | {
       type: 'moveItem';
       relPath: string;
@@ -519,6 +550,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
   private lastFocusedWebview?: vscode.Webview;
+  /** Explorer «New marker» draft: resolve with created id or undefined on cancel. */
+  private readonly pendingGroupDrafts = new Map<
+    string,
+    { resolve: (id: string | undefined) => void; webview: vscode.Webview }
+  >();
   /** Skip writing open=false while we close a column ourselves. */
   private closingColumn?: ColumnSide;
   /** Profile sync or the toolbar is opening/closing the bottom tab. */
@@ -1181,6 +1217,94 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   async historyAccept(): Promise<void> {
     await this.store.accept(this.focusedPageId());
     await this.syncHistoryContext();
+  }
+
+  /**
+   * Open the in-map group draft panel and wait for Enter (create) or cancel.
+   * Used by Explorer «New marker…» and command-palette create flows.
+   */
+  async promptCreateGroup(options?: {
+    parentId?: string;
+    pageId?: string;
+  }): Promise<string | undefined> {
+    await this.ensureMapWebview();
+    const webview = this.lastFocusedWebview;
+    if (!webview) {
+      return undefined;
+    }
+    const requestId = crypto.randomBytes(8).toString('hex');
+    const pageId =
+      options?.parentId === undefined
+        ? options?.pageId && this.store.page(options.pageId)
+          ? options.pageId
+          : this.store.defaultFilesPageId()
+        : undefined;
+    if (pageId) {
+      this.activePageByWebview.set(webview, pageId);
+      void webview.postMessage({ type: 'openPage', pageId });
+    }
+    return new Promise<string | undefined>((resolve) => {
+      this.pendingGroupDrafts.set(requestId, { resolve, webview });
+      void webview.postMessage({
+        type: 'openGroupDraft',
+        requestId,
+        parentId: options?.parentId,
+        pageId,
+      });
+    });
+  }
+
+  /** Focus an existing map surface; open the Explorer map view when none is ready. */
+  private async ensureMapWebview(): Promise<void> {
+    if (this.lastFocusedWebview && this.readyWebviews.has(this.lastFocusedWebview)) {
+      return;
+    }
+    for (const webview of this.webviews) {
+      if (this.readyWebviews.has(webview)) {
+        this.lastFocusedWebview = webview;
+        return;
+      }
+    }
+    try {
+      await vscode.commands.executeCommand('workbench.view.explorer');
+      await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
+    } catch {
+      // View may be missing until reload.
+    }
+    await new Promise<void>((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        if (this.lastFocusedWebview && this.readyWebviews.has(this.lastFocusedWebview)) {
+          resolve();
+          return;
+        }
+        for (const webview of this.webviews) {
+          if (this.readyWebviews.has(webview)) {
+            this.lastFocusedWebview = webview;
+            resolve();
+            return;
+          }
+        }
+        if (Date.now() - started > 4000) {
+          resolve();
+          return;
+        }
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  private settleGroupDraft(requestId: string | undefined, id: string | undefined): void {
+    if (!requestId) {
+      return;
+    }
+    const pending = this.pendingGroupDrafts.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingGroupDrafts.delete(requestId);
+    pending.resolve(id);
   }
 
   /**
@@ -1952,15 +2076,117 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ? t(locale, 'linkDeleteSubtreeConfirm', { name: def.label })
           : t(locale, 'linkDeleteConfirm', { name: def.label }),
         { modal: true },
-        t(locale, 'menuDelete'),
+        t(locale, 'menuDeleteTree'),
       );
-      if (confirm !== t(locale, 'menuDelete')) {
+      if (confirm !== t(locale, 'menuDeleteTree')) {
         return;
       }
       const result = await this.store.deleteLink(message.linkId);
       if (!result.ok) {
         void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
       }
+      return;
+    }
+    if (message.type === 'deleteLinkLift') {
+      const def = this.store.link(message.linkId);
+      if (!def || this.refuseLinkLocked(message.linkId)) {
+        return;
+      }
+      if (!this.store.canDeleteLink(message.linkId)) {
+        return;
+      }
+      const locale = normalizeLocale(this.store.appearance.language);
+      const confirm = await vscode.window.showWarningMessage(
+        t(locale, 'linkDeleteLiftConfirm', { name: def.label }),
+        { modal: true },
+        t(locale, 'menuDeleteLift'),
+      );
+      if (confirm !== t(locale, 'menuDeleteLift')) {
+        return;
+      }
+      const result = await this.store.deleteLinkLift(message.linkId);
+      if (!result.ok) {
+        void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
+      }
+      return;
+    }
+    if (message.type === 'createGroup') {
+      const label = typeof message.label === 'string' ? message.label.trim() : '';
+      if (!label) {
+        this.settleGroupDraft(message.requestId, undefined);
+        return;
+      }
+      const parentId =
+        typeof message.parentId === 'string' && this.store.marker(message.parentId)
+          ? message.parentId
+          : undefined;
+      if (parentId !== undefined && this.store.depthOf(parentId) >= MAX_MARKER_DEPTH) {
+        void vscode.window.showWarningMessage(
+          `Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`,
+        );
+        this.settleGroupDraft(message.requestId, undefined);
+        return;
+      }
+      if (parentId && this.refuseLocked(parentId)) {
+        this.settleGroupDraft(message.requestId, undefined);
+        return;
+      }
+      let color: string | undefined;
+      if (message.clearColor) {
+        color = undefined;
+      } else if (typeof message.color === 'string' && message.color.trim()) {
+        color = normalizeHex(message.color) ?? message.color.trim();
+      } else if (message.randomColor !== false) {
+        color = randomLinkPaletteColor();
+      }
+      const page =
+        parentId === undefined
+          ? message.pageId && this.store.page(message.pageId)
+            ? message.pageId
+            : this.pageIdFor(webview) || this.store.defaultFilesPageId()
+          : undefined;
+      try {
+        const id = await this.store.createMarker({
+          label,
+          color,
+          parent: parentId,
+          page,
+          alias:
+            typeof message.alias === 'string' && message.alias.trim()
+              ? message.alias.trim()
+              : undefined,
+          locked: message.locked === true ? true : undefined,
+          columns: normalizeColumns(message.columns),
+        });
+        this.settleGroupDraft(message.requestId, id);
+      } catch (error) {
+        void vscode.window.showWarningMessage(
+          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        this.settleGroupDraft(message.requestId, undefined);
+      }
+      return;
+    }
+    if (message.type === 'cancelGroupDraft') {
+      this.settleGroupDraft(message.requestId, undefined);
+      return;
+    }
+    if (message.type === 'updateGroup') {
+      if (!this.store.marker(message.markerId) || this.refuseLocked(message.markerId)) {
+        return;
+      }
+      const patch: { label?: string; alias?: string } = {};
+      if (typeof message.label === 'string') {
+        const trimmed = message.label.trim();
+        if (!trimmed) {
+          return;
+        }
+        patch.label = trimmed;
+      }
+      if (message.alias !== undefined) {
+        patch.alias = message.alias === null ? '' : message.alias;
+      }
+      await this.store.updateMarker(message.markerId, patch);
       return;
     }
     if (message.type === 'placeLink') {
@@ -2011,8 +2237,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'setColor') {
-      const color = normalizeHex(message.color);
-      if (!color) {
+      const clear = message.clear === true || message.color === '' || message.color === null;
+      const color = clear ? undefined : normalizeHex(String(message.color ?? '')) ?? String(message.color ?? '');
+      if (!clear && !color) {
         return;
       }
       if (typeof message.noteId === 'string') {
@@ -2767,7 +2994,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'createMarker') {
-      await vscode.commands.executeCommand('syn3.createMarker', activePage);
+      void webview.postMessage({
+        type: 'openGroupDraft',
+        pageId: activePage,
+      });
       return;
     }
     if (action === 'createNote') {

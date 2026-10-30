@@ -12,10 +12,12 @@ import { openTargets, targetsForDirectory, targetsForMarker } from './openBatch'
 import { openClassAt, symbolAtCursor } from './openClass';
 import { PALETTE, normalizeHex, themeColorId } from './palette';
 import { ClassNode, ItemNode, MarkersTreeProvider, Node } from './markersTree';
+import type { MarkersMapProvider } from './markersMap';
 
 export function registerCommands(
   store: MarkerStore,
   tree: MarkersTreeProvider,
+  map: MarkersMapProvider,
 ): vscode.Disposable[] {
   function selected(node?: Node, nodes?: readonly Node[]): Node[] {
     if (nodes && nodes.length > 0) {
@@ -145,27 +147,11 @@ export function registerCommands(
         void vscode.window.showWarningMessage(`Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
         return undefined;
       }
+      if (refuseLocked(parentId)) {
+        return undefined;
+      }
     }
-    const label = await vscode.window.showInputBox({
-      title: parentId ? 'New subgroup' : 'New marker',
-      prompt: 'Marker name',
-      placeHolder: 'e.g. Ads, Shells, Placeholders',
-      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
-    });
-    if (!label) {
-      return undefined;
-    }
-    const color = await pickColor();
-    if (color === null) {
-      return undefined;
-    }
-    const page =
-      parentId === undefined
-        ? pageId && store.page(pageId)
-          ? pageId
-          : store.defaultFilesPageId()
-        : undefined;
-    return store.createMarker({ label: label.trim(), color, parent: parentId, page });
+    return map.promptCreateGroup({ parentId, pageId });
   }
 
   /** Markers on files pages only; page name when more than one files page exists. */

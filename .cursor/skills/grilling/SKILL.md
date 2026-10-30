@@ -63,15 +63,13 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
    - Next round only after the user replies; rewrite or drop questions that answers already covered
 
 4. **Stop condition** — when answers are coherent enough for a thin vertical slice:
-   - Brief **decision summary** in the message: in scope / out of scope / open risks. No recommendation in the message. Do not write «Дальше» or «1. Дальше»
-   - **The choice is `AskQuestion` in that same turn.** A stop message without it is invalid. Chat text cannot show a button
-   - One question. Its `prompt` is the recommendation, placed above the options — not the word «Дальше», and do not number it yourself:
+   - Brief **decision summary** in the message: in scope / out of scope / open risks. No recommendation in the message. Do not write «Дальше», «1. Дальше», or «Сделать план»
+   - **Plan is the system switch, in that same turn.** Call `SwitchMode` with `target_mode_id: "plan"`. That card replaces the old «Сделать план» option: one approval, no second switch on a later turn. `explanation` is the recommendation:
      - `Рекомендую сделать план` — the slice is wide, touches several modules, sequencing is unclear, or an open fork has to be decided first
-     - `Рекомендую выполнить` — the slice is thin, the answers close the gaps, and the path is obvious
-   - Options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`
+     - `Рекомендую выполнить` — the slice is thin, the answers close the gaps, and the path is obvious. Plan stays available through the same card
+   - **Execute stays a form button in that same turn.** Call `AskQuestion`. One question. `prompt` is that same recommendation, not «Дальше», and do not number it yourself. The form cannot host the system switch inside an option, so do not add «Сделать план» or «Switch to Plan». Options, in order: `{ id: "execute", label: "Выполнить" }`, `{ id: "hold", label: "Не выполнять" }`
    - The prompt does not ask them to type «выполняй», «скажи», «если хочешь», or «переключись в Plan»
-   - Do not also call `SwitchMode` in that turn
-   - Wait for the click. On `execute`, implement in the next turn. On `plan`, the next turn calls `SwitchMode` with `target_mode_id: "plan"` and a short `explanation`, and does nothing else until they approve
+   - Wait for the click. If the switch is approved, the next turn does nothing else until Plan mode is on. On `execute`, implement in the next turn and do not call `SwitchMode` again. On `hold`, stop: no code, no second switch
 
 ## Question angles (pick what fits; don't dump all)
 
@@ -100,6 +98,7 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
 - Interrogation without reading the project
 - Asking the next round before the user answered the current one
 - Rewarding hand-waving without noting the risk
-- A stop form whose prompt is «Дальше», or a recommendation written in the message instead of the form prompt
-- Ending the stop turn with a sentence that asks the user to type «выполняй», «скажи» or «переключись в Plan» instead of `AskQuestion`
-- Calling `SwitchMode` in the stop turn instead of letting them click «Выполнить» or «Сделать план»
+- A stop form whose prompt is «Дальше», or a recommendation written in the message instead of the switch explanation and the form prompt
+- Offering «Сделать план» in the form and calling `SwitchMode` only after that click
+- Ending the stop turn with a sentence that asks the user to type «выполняй», «скажи» or «переключись в Plan» instead of `SwitchMode` and `AskQuestion`
+- Leaving the stop turn without the Plan switch card, or without «Выполнить»

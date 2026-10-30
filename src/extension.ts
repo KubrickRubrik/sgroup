@@ -127,7 +127,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewPanelSerializer(MarkersMapProvider.panelType, map),
     vscode.commands.registerCommand('syn3.map.toggleColumn', () => map.toggleColumn()),
     vscode.commands.registerCommand('syn3.map.toggleRight', () => map.toggleRight()),
-    ...registerCommands(store, tree),
+    ...registerCommands(store, tree, map),
     vscode.commands.registerCommand('syn3.openMap', async () => {
       await vscode.commands.executeCommand('workbench.view.explorer');
       try {

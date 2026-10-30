@@ -1578,6 +1578,28 @@ export class MarkerStore implements vscode.Disposable {
     if (patch.parent !== undefined) {
       next.parent = patch.parent || undefined;
     }
+    if ('color' in patch) {
+      if (patch.color) {
+        next.color = migrateColorId(normalizeHex(patch.color) ?? patch.color);
+      } else {
+        delete next.color;
+      }
+    }
+    if ('alias' in patch) {
+      const trimmed = typeof patch.alias === 'string' ? patch.alias.trim() : '';
+      if (trimmed) {
+        next.alias = trimmed;
+      } else {
+        delete next.alias;
+      }
+    }
+    if ('locked' in patch) {
+      if (patch.locked) {
+        next.locked = true;
+      } else {
+        delete next.locked;
+      }
+    }
     if ('columns' in patch) {
       next.columns = normalizeColumns(patch.columns);
     }
@@ -2251,9 +2273,14 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  async setNoteColor(id: string, color: string): Promise<void> {
+  async setNoteColor(id: string, color: string | undefined): Promise<void> {
     const note = this.data.notes[id];
     if (!note) {
+      return;
+    }
+    if (!color) {
+      delete note.color;
+      await this.commit();
       return;
     }
     const next = migrateColorId(normalizeHex(color) ?? color);
@@ -2729,6 +2756,54 @@ export class MarkerStore implements vscode.Disposable {
         undefined,
         this.rootLinks(pageId).map(([linkId]) => linkId),
       );
+    }
+    await this.commit();
+    return { ok: true };
+  }
+
+  /**
+   * Delete a link and lift its children one level (to the same parent or page root).
+   * The last root layout cannot be deleted.
+   */
+  async deleteLinkLift(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const def = this.data.links[id];
+    if (!def) {
+      return { ok: false, reason: 'Link not found.' };
+    }
+    if (!this.canDeleteLink(id)) {
+      return { ok: false, reason: 'Cannot delete the last layout.' };
+    }
+    const parentId = def.parent;
+    const pageId = def.page;
+    const childIds = this.linkChildren(id).map(([childId]) => childId);
+    let ordered: string[];
+    if (parentId) {
+      ordered = this.linkChildren(parentId).map(([linkId]) => linkId);
+    } else if (pageId) {
+      ordered = this.rootLinks(pageId).map(([linkId]) => linkId);
+    } else {
+      return { ok: false, reason: 'Link not found.' };
+    }
+    const index = ordered.indexOf(id);
+    const without = ordered.filter((linkId) => linkId !== id);
+    for (const childId of childIds) {
+      if (parentId) {
+        this.setLinkHome(childId, { parent: parentId });
+      } else if (pageId) {
+        this.setLinkHome(childId, { page: pageId });
+        if (!this.data.links[childId]?.color) {
+          this.data.links[childId].color = this.nextLinkColor(pageId, childId);
+        }
+      }
+    }
+    delete this.data.links[id];
+    this.forgetCollapsed(id);
+    const insertAt = index < 0 ? without.length : index;
+    const next = [...without.slice(0, insertAt), ...childIds, ...without.slice(insertAt)];
+    if (parentId) {
+      this.applyLinkSiblingOrder(undefined, parentId, next);
+    } else if (pageId) {
+      this.applyLinkSiblingOrder(pageId, undefined, next);
     }
     await this.commit();
     return { ok: true };

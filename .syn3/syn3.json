@@ -49,6 +49,12 @@
       ],
       "parent": "4"
     },
+    "marker-2": {
+      "label": "Новая группа",
+      "color": "#0998f1",
+      "alias": "тест группы",
+      "page": "map"
+    },
     "marker": {
       "label": "Новый групп",
       "color": "#e62600",
@@ -61,15 +67,6 @@
         "🔥",
         "🐞"
       ],
-      "page": "map"
-    },
-    "ttest-6": {
-      "label": "Ttest 6",
-      "icons": [
-        "❗",
-        "⚠️"
-      ],
-      "locked": true,
       "page": "map"
     },
     "1-3": {
@@ -91,7 +88,15 @@
     },
     "test-dir": {
       "label": "Test_dir",
-      "page": "map"
+      "parent": "4"
+    },
+    "ttest-6": {
+      "label": "Ttest 6",
+      "icons": [
+        "❗",
+        "⚠️"
+      ],
+      "parent": "4"
     },
     "1-2": {
       "label": "Группа т 1",
@@ -188,18 +193,18 @@
       "page": "map"
     },
     "bottom": {
-      "page": "map"
+      "page": "page-page-2"
     },
     "left": {
       "page": "map"
     },
     "right": {
-      "page": "page-page-2"
+      "page": "map"
     },
     "open": {
-      "bottom": true,
+      "bottom": false,
       "left": false,
-      "right": false
+      "right": true
     }
   },
   "aliases": {
@@ -275,11 +280,6 @@
       "markerId": "group-2",
       "text": "Моя заметка заметка"
     },
-    "note-9": {
-      "page": "map",
-      "text": "",
-      "color": "syn3.slate"
-    },
     "note-2": {
       "markerId": "1-2",
       "text": "Запись 2\nhttps://www.youtube.com/"
@@ -354,15 +354,110 @@
       "url": "map://group/1",
       "parent": "link-1"
     },
+    "link-20": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#d65156"
+    },
+    "link-21": {
+      "label": "Ваш компонент",
+      "parent": "link-20"
+    },
+    "link-22": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#d3363b"
+    },
+    "link-23": {
+      "label": "Ваш компонент",
+      "parent": "link-22"
+    },
+    "link-24": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#99292c"
+    },
+    "link-25": {
+      "label": "Ваш компонент",
+      "parent": "link-24"
+    },
+    "link-26": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#d6517e"
+    },
+    "link-27": {
+      "label": "Ваш компонент",
+      "parent": "link-26"
+    },
+    "link-28": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#d3366a"
+    },
+    "link-29": {
+      "label": "Ваш компонент",
+      "parent": "link-28"
+    },
     "link-3": {
       "label": "Ссылка 1",
       "url": "https://pikabu.ru/story/novosibirsk_14473034",
       "parent": "link-1"
     },
+    "link-30": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#99294e"
+    },
+    "link-31": {
+      "label": "Ваш компонент",
+      "parent": "link-30"
+    },
+    "link-32": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#f56124"
+    },
+    "link-33": {
+      "label": "Ваш компонент",
+      "parent": "link-32"
+    },
+    "link-34": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#af491d"
+    },
+    "link-35": {
+      "label": "Ваш компонент",
+      "parent": "link-34"
+    },
+    "link-36": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#f2870d"
+    },
+    "link-37": {
+      "label": "Ваш компонент",
+      "parent": "link-36"
+    },
+    "link-38": {
+      "label": "Ваш макет",
+      "page": "page-page-2",
+      "color": "#af6b1d"
+    },
+    "link-39": {
+      "label": "Ваш компонент",
+      "parent": "link-38"
+    },
     "link-4": {
       "label": "Ваш макет",
       "page": "page-page-2",
       "color": "#6c51d6"
+    },
+    "link-40": {
+      "label": "Группа",
+      "url": "map://group/1",
+      "parent": "link-4"
     },
     "link-5": {
       "label": "Ваш компонент",
