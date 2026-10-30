@@ -554,6 +554,18 @@
   dropDialog.setAttribute('role', 'dialog');
   dropDialog.setAttribute('aria-modal', 'true');
   document.body.append(dropDialog);
+  /** @type {'' | 'drop' | 'choice'} */
+  let dialogKind = '';
+  /** @type {(() => void) | null} */
+  let choiceDismiss = null;
+
+  const refactorBanner = el('div', 'refactor-banner');
+  refactorBanner.hidden = true;
+  document.body.append(refactorBanner);
+  /** @type {number | null} */
+  let seenRefactorEpoch = null;
+  /** @type {ReturnType<typeof setTimeout> | 0} */
+  let refactorTimer = 0;
 
   const markTip = el('div', 'mark-tip');
   markTip.hidden = true;
@@ -644,7 +656,25 @@
       if (typeof message.focusNoteId === 'string' && !isProblemsPageOpen()) {
         focusNoteInput(message.focusNoteId);
       }
+      noteRefactorEpoch(message.refactorEpoch);
+      pumpEntityReveal();
+      if (flashNodes && Date.now() < flashUntil) {
+        requestAnimationFrame(() => applyEntityFlash(false));
+      }
       vscode.postMessage({ type: 'activePage', pageId: uiState.activePageId });
+    } else if (message.type === 'entityLinkTarget') {
+      if (!message.pageId || !Array.isArray(message.chain) || !message.chain.length) {
+        return;
+      }
+      startEntityReveal(message.pageId, message.chain);
+    } else if (message.type === 'entityLinkBroken') {
+      const source = entityLinkSource;
+      entityLinkSource = null;
+      openBrokenLinkDialog(
+        source && source.url === message.url
+          ? source
+          : { url: typeof message.url === 'string' ? message.url : '' },
+      );
     } else if (message.type === 'openFlags') {
       if (data) {
         data.open = message.open;
@@ -811,6 +841,8 @@
   let renderDeferred = false;
   let renderFromToggle = false;
   let isFolding = false;
+  /** Entity-link reveal should land on the final layout, without a fold animation. */
+  let skipNextFolds = false;
   let foldToken = 0;
   const FOLD_MS = 200;
   const FOLD_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -1513,6 +1545,12 @@
         scroller.append(row);
         continue;
       }
+      if (item.kind === 'copyLink') {
+        const row = menuAction(t('menuCopyLink'));
+        row.dataset.menuAction = 'copyLink';
+        scroller.append(row);
+        continue;
+      }
       if (item.kind === 'paste') {
         const row = menuAction(t('menuPaste'));
         row.dataset.menuAction = 'paste';
@@ -1540,7 +1578,7 @@
     const depth = Number(ctx.depth) || 0;
     const isDir = !!ctx.isDir;
     const noteEditing = !!ctx.noteEditing;
-    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'unlock' } | { kind: 'separator' } | { kind: 'copy' } | { kind: 'paste', disabled?: boolean }>} */
+    /** @type {Array<{ kind: 'command', command: string, label: string } | { kind: 'view' } | { kind: 'create' } | { kind: 'delete' } | { kind: 'unlock' } | { kind: 'separator' } | { kind: 'copy' } | { kind: 'copyLink' } | { kind: 'paste', disabled?: boolean }>} */
     const items = [];
 
     if (noteEditing && section === 'note' && !locked) {
@@ -1625,6 +1663,10 @@
         items.push({ kind: 'command', command: 'syn3.unnestNote', label: t('menuUnnest') });
       }
       items.push({ kind: 'delete' });
+    }
+
+    if (section === 'marker' || section === 'note') {
+      items.push({ kind: 'copyLink' });
     }
 
     if ((section === 'marker' || section === 'note') && locked) {
@@ -1891,6 +1933,21 @@
       copyInFocusedField();
       closeContextMenu();
       activeNoteEdit?.input.focus();
+      return;
+    }
+    if (button.dataset.menuAction === 'copyLink') {
+      const ctx = openMenuState?.ctx;
+      const section = ctx && typeof ctx.webviewSection === 'string' ? ctx.webviewSection : '';
+      const url =
+        section === 'note' && typeof ctx?.noteId === 'string'
+          ? entityLinkFor('note', ctx.noteId)
+          : section === 'marker' && typeof ctx?.markerId === 'string'
+            ? entityLinkFor('group', ctx.markerId)
+            : '';
+      if (url) {
+        vscode.postMessage({ type: 'clipboardWrite', text: url });
+      }
+      closeContextMenu();
       return;
     }
     if (button.dataset.menuAction === 'paste') {
@@ -2678,8 +2735,12 @@
       root.classList.remove('page-entering');
       stage.style.height = '';
       stage.classList.remove('is-sliding');
-      applyDocScroll(restoredScroll);
       flushDeferredRender();
+      if (entityAlignPending() && !isFolding) {
+        applyEntityFlash(true);
+      } else if (!entityAlignPending()) {
+        applyDocScroll(restoredScroll);
+      }
     };
 
     slideEndHandler = (event) => {
@@ -3012,7 +3073,7 @@
 
     const body = el('div', 'link-body');
     const chipWrap = el('div', 'link-chip-wrap');
-    const chip = el('button', 'link-chip');
+    const chip = el('button', 'link-chip' + (entityLinkIsBroken(link.url) ? ' is-broken' : ''));
     chip.type = 'button';
     chip.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
     if (childIds.length > 0) {
@@ -3052,6 +3113,9 @@
       window.clearTimeout(openTimer);
       openTimer = window.setTimeout(() => {
         openTimer = 0;
+        if (followEntityUrl(link.url, { linkId: link.id, url: link.url })) {
+          return;
+        }
         vscode.postMessage({ type: 'confirmOpenLinkUrl', url: link.url });
       }, 400);
     });
@@ -3064,7 +3128,7 @@
       focusLinkNameOnOpen = true;
       paintLinksPage();
     });
-    if (link.url) {
+    if (link.url && !parseEntityLink(link.url)) {
       chip.dataset.previewUrl = link.url;
       let previewGen = linkPreviewGen;
       chip.addEventListener('mouseenter', () => {
@@ -3181,6 +3245,8 @@
 
     if (children.length > 0) {
       const kids = el('div', 'link-children');
+      const clip = el('div', 'link-children-clip');
+      const slide = el('div', 'link-children-slide');
       const foldRail = el('button', 'link-fold-rail');
       foldRail.type = 'button';
       foldRail.title = t('toolbarCollapse');
@@ -3192,11 +3258,12 @@
         }
         toggleLinkCollapsed(link.id);
       });
-      kids.append(foldRail);
       const ordered = children.slice().sort((a, b) => a.order - b.order);
       ordered.forEach((child, index) => {
-        kids.append(renderLinkNode(child, byId, true, ordered[index + 1]?.color || ''));
+        slide.append(renderLinkNode(child, byId, true, ordered[index + 1]?.color || ''));
       });
+      clip.append(slide);
+      kids.append(foldRail, clip);
       body.append(kids);
     }
     row.append(body);
@@ -3207,6 +3274,8 @@
   function openLinkDropChoose(pending) {
     pendingLinkDrop = pending;
     pendingChipDrop = null;
+    dialogKind = 'drop';
+    choiceDismiss = null;
     dropDialog.hidden = false;
     dropDialog.replaceChildren();
     const panel = el('div', 'drop-dialog-panel');
@@ -3581,6 +3650,10 @@
    * @returns {Array<{ id: string, opening: boolean, height: number, marginTop: string, snapshot: HTMLElement | null }>}
    */
   function captureFolds() {
+    if (skipNextFolds) {
+      skipNextFolds = false;
+      return [];
+    }
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       return [];
     }
@@ -3737,6 +3810,9 @@
       }
       layoutFoldRails();
       flushDeferredRender();
+      if (entityAlignPending() && !isSliding) {
+        applyEntityFlash(true);
+      }
     }, FOLD_MS + 80);
   }
 
@@ -4178,8 +4254,12 @@
   }
 
   const NOTE_JSON_PREFIX = 'syn3json:';
-  /** Markdown link or bare http(s) URL. Groups: 1=label, 2=md-url, 3=bare-url. */
-  const NOTE_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"']+)/g;
+  /**
+   * Markdown link or bare URL. Groups: 1=label, 2=md-url, 3=bare-url.
+   * http(s) and entity links (`page://group/…`, `page://note/…`).
+   */
+  const NOTE_LINK_RE =
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+|[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:group|note)\/[^)\s]+)\)|(https?:\/\/[^\s<>"']+|[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:group|note)\/[^\s<>"')\]]+)/g;
 
   function saveNoteSelection() {
     const sel = window.getSelection();
@@ -4475,7 +4555,10 @@
       doc.blocks
         .map((block) => (block.type === 'code' ? block.text : runsToText(block.runs)))
         .join(' ')
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '$1')
+        .replace(
+          /\[([^\]]+)\]\((https?:\/\/[^)\s]+|[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:group|note)\/[^)\s]+)\)/g,
+          '$1',
+        )
         .replace(/\s+/g, ' ')
         .trim() || ''
     );
@@ -4502,12 +4585,14 @@
         const link = el('a', 'note-link', label);
         link.href = mdUrl;
         link.rel = 'noopener noreferrer';
+        markBrokenEntityLink(link, mdUrl);
         fragment.append(link);
         last = match.index + match[0].length;
       } else if (bareUrl) {
         const link = el('a', 'note-link', bareUrl);
         link.href = bareUrl;
         link.rel = 'noopener noreferrer';
+        markBrokenEntityLink(link, bareUrl);
         fragment.append(link);
         last = match.index + bareUrl.length;
       } else {
@@ -5696,7 +5781,9 @@
       if (isCollapsed(gesture.noteId)) {
         toggleCollapsed(gesture.noteId);
       }
-      vscode.postMessage({ type: 'openExternal', url: gesture.linkUrl });
+      if (!followEntityUrl(gesture.linkUrl, { noteId: gesture.noteId, url: gesture.linkUrl })) {
+        vscode.postMessage({ type: 'openExternal', url: gesture.linkUrl });
+      }
       return;
     }
     const input = gesture.input.isConnected ? gesture.input : noteInputById(gesture.noteId);
@@ -7245,6 +7332,7 @@
     link.setAttribute('href', href);
     link.rel = 'noopener noreferrer';
     link.textContent = label;
+    markBrokenEntityLink(link, href);
     return link;
   }
 
@@ -8307,6 +8395,9 @@
   function isPasteableNoteUrl(text) {
     const trimmed = text.trim();
     // Allow surrounding whitespace already trimmed; reject whitespace inside.
+    if (parseEntityLink(trimmed)) {
+      return true;
+    }
     if (!/^https?:\/\/\S+$/i.test(trimmed)) {
       return false;
     }
@@ -8595,11 +8686,7 @@
         flashLock(note.id, header);
         return;
       }
-      if (
-        activeNoteEdit?.input === input &&
-        event.target instanceof Element &&
-        event.target.closest('a.note-link')
-      ) {
+      if (event.target instanceof Element && event.target.closest('a.note-link')) {
         event.preventDefault();
       }
     });
@@ -9879,6 +9966,8 @@
 
   function openDropChooseDialog(pending) {
     pendingChipDrop = pending;
+    dialogKind = 'drop';
+    choiceDismiss = null;
     dropDialog.hidden = false;
     dropDialog.replaceChildren();
     const panel = el('div', 'drop-dialog-panel');
@@ -9911,6 +10000,8 @@
 
   function openDropExistsDialog() {
     pendingChipDrop = null;
+    dialogKind = 'drop';
+    choiceDismiss = null;
     dropDialog.hidden = false;
     dropDialog.replaceChildren();
     const panel = el('div', 'drop-dialog-panel');
@@ -9929,22 +10020,536 @@
   function closeDropDialog() {
     pendingLinkDrop = null;
     pendingChipDrop = null;
+    dialogKind = '';
+    choiceDismiss = null;
     dropDialog.hidden = true;
     dropDialog.replaceChildren();
   }
 
-  dropDialog.addEventListener('click', (event) => {
-    if (event.target === dropDialog) {
-      closeDropDialog();
+  /**
+   * @param {string} message
+   * @param {Array<{ label: string, onClick: () => void }>} buttons
+   * @param {() => void} [onDismiss]
+   */
+  function openChoiceDialog(message, buttons, onDismiss) {
+    dialogKind = 'choice';
+    choiceDismiss = onDismiss || null;
+    dropDialog.hidden = false;
+    dropDialog.replaceChildren();
+    const panel = el('div', 'drop-dialog-panel');
+    panel.append(el('div', 'drop-dialog-message', message));
+    const actions = el('div', 'drop-dialog-actions');
+    for (const button of buttons) {
+      const node = el('button', 'drop-dialog-btn');
+      node.type = 'button';
+      node.textContent = button.label;
+      node.addEventListener('click', () => {
+        choiceDismiss = null;
+        dialogKind = '';
+        dropDialog.hidden = true;
+        dropDialog.replaceChildren();
+        button.onClick();
+      });
+      actions.append(node);
     }
+    panel.append(actions);
+    dropDialog.append(panel);
+    const first = actions.querySelector('button');
+    if (first instanceof HTMLButtonElement) {
+      first.focus();
+    }
+  }
+
+  function dismissChoiceDialog() {
+    const dismiss = choiceDismiss;
+    choiceDismiss = null;
+    dialogKind = '';
+    dropDialog.hidden = true;
+    dropDialog.replaceChildren();
+    if (dismiss) {
+      dismiss();
+    }
+  }
+
+  dropDialog.addEventListener('click', (event) => {
+    if (event.target !== dropDialog) {
+      return;
+    }
+    if (dialogKind === 'choice') {
+      dismissChoiceDialog();
+      return;
+    }
+    closeDropDialog();
   });
 
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !dropDialog.hidden) {
-      event.preventDefault();
-      closeDropDialog();
+    if (event.key !== 'Escape' || dropDialog.hidden) {
+      return;
     }
+    event.preventDefault();
+    if (dialogKind === 'choice') {
+      dismissChoiceDialog();
+      return;
+    }
+    closeDropDialog();
   });
+
+  /** @type {{ noteId?: string, linkId?: string, url: string } | null} */
+  let entityLinkSource = null;
+  /**
+   * @typedef {{ kind: 'group' | 'note', id: string, locked?: boolean }} EntityChainNode
+   * @typedef {{ pageId: string, chain: EntityChainNode[], choice: 'yes' | 'no' | null, alignTop: boolean }} EntityReveal
+   */
+  /** @type {EntityReveal | null} */
+  let entityReveal = null;
+  /** @type {EntityChainNode[] | null} */
+  let flashNodes = null;
+  let flashUntil = 0;
+  /** Page switch: pin the landing row just under the toolbar. */
+  let flashAlignTop = false;
+  let entityAlignPageId = '';
+  /** @type {ReturnType<typeof setTimeout> | 0} */
+  let entityFlashTimer = 0;
+
+  /** @param {string | undefined} raw */
+  function parseEntityLink(raw) {
+    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note)\/([^?\s#]+)$/.exec(
+      String(raw || '').trim(),
+    );
+    if (!match) {
+      return null;
+    }
+    const ids = match[3].split('/').filter((id) => id && !/[\s/?#]/.test(id));
+    if (!ids.length || ids.join('/').length !== match[3].length) {
+      return null;
+    }
+    return {
+      pageId: match[1],
+      kind: /** @type {'group' | 'note'} */ (match[2]),
+      ids,
+      leaf: ids[ids.length - 1],
+    };
+  }
+
+  /**
+   * @param {'group' | 'note'} kind
+   * @param {string} id
+   */
+  function entityExists(kind, id) {
+    const bag = data?.entities;
+    if (!bag) {
+      return true;
+    }
+    const list = kind === 'group' ? bag.groups : bag.notes;
+    return Array.isArray(list) && list.includes(id);
+  }
+
+  /** @param {string | undefined} url */
+  function entityLinkIsBroken(url) {
+    const parsed = parseEntityLink(url);
+    if (!parsed || !data?.entities) {
+      return false;
+    }
+    return !entityExists(parsed.kind, parsed.leaf);
+  }
+
+  /**
+   * @param {HTMLAnchorElement} link
+   * @param {string} href
+   */
+  function markBrokenEntityLink(link, href) {
+    if (entityLinkIsBroken(href)) {
+      link.classList.add('is-broken');
+    }
+  }
+
+  /** @param {number | undefined} epoch */
+  function noteRefactorEpoch(epoch) {
+    if (typeof epoch !== 'number') {
+      return;
+    }
+    if (seenRefactorEpoch === null) {
+      seenRefactorEpoch = epoch;
+      return;
+    }
+    if (epoch === seenRefactorEpoch) {
+      return;
+    }
+    seenRefactorEpoch = epoch;
+    refactorBanner.textContent = t('refactoring');
+    refactorBanner.hidden = false;
+    if (refactorTimer) {
+      clearTimeout(refactorTimer);
+    }
+    refactorTimer = window.setTimeout(() => {
+      refactorTimer = 0;
+      refactorBanner.hidden = true;
+    }, 500);
+  }
+
+  /**
+   * @param {'group' | 'note'} kind
+   * @param {string} id
+   */
+  function entityLinkFor(kind, id) {
+    const pageId = uiState.activePageId;
+    if (!pageId || !/^[a-zA-Z][a-zA-Z0-9+.-]*$/.test(pageId)) {
+      return '';
+    }
+    if (kind === 'group') {
+      const ids = groupIdChain(id);
+      return ids && ids.length ? pageId + '://group/' + ids.join('/') : '';
+    }
+    const notes = noteIdChain(id);
+    if (!notes || !notes.length) {
+      return '';
+    }
+    const root = (data?.notes || []).find((note) => note.id === notes[0]);
+    const groups = root?.markerId ? groupIdChain(root.markerId) : [];
+    if (root?.markerId && !groups) {
+      return '';
+    }
+    return pageId + '://note/' + [...(groups || []), ...notes].join('/');
+  }
+
+  /** @param {string} id @returns {string[] | null} */
+  function groupIdChain(id) {
+    const chain = [];
+    const seen = new Set();
+    let current = id;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const group = (data?.groups || []).find((item) => item.id === current);
+      if (!group) {
+        return null;
+      }
+      chain.unshift(group.id);
+      current = group.parent || '';
+    }
+    return chain;
+  }
+
+  /** @param {string} id @returns {string[] | null} */
+  function noteIdChain(id) {
+    const chain = [];
+    const seen = new Set();
+    let current = id;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const note = (data?.notes || []).find((item) => item.id === current);
+      if (!note) {
+        return null;
+      }
+      chain.unshift(note.id);
+      current = note.parentNote || '';
+    }
+    return chain;
+  }
+
+  /**
+   * @param {string} url
+   * @param {{ noteId?: string, linkId?: string, url: string }} source
+   */
+  function followEntityUrl(url, source) {
+    const parsed = parseEntityLink(url);
+    if (!parsed) {
+      return false;
+    }
+    if (entityLinkIsBroken(url)) {
+      openBrokenLinkDialog(source);
+      return true;
+    }
+    entityLinkSource = source;
+    vscode.postMessage({ type: 'openEntityLink', url: String(url || '').trim() });
+    return true;
+  }
+
+  /** @param {{ noteId?: string, linkId?: string, url: string }} source */
+  function openBrokenLinkDialog(source) {
+    openChoiceDialog(t('brokenLink'), [
+      {
+        label: t('brokenDelete'),
+        onClick: () => {
+          if (source.noteId) {
+            vscode.postMessage({ type: 'stripEntityLink', noteId: source.noteId, url: source.url });
+            return;
+          }
+          if (source.linkId) {
+            vscode.postMessage({ type: 'clearLinkUrl', linkId: source.linkId });
+          }
+        },
+      },
+    ]);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {EntityChainNode[]} chain
+   */
+  /**
+   * Open ancestors on `pageId` before the page paints, so a switch can scroll
+   * straight to the landing row.
+   * @param {string} pageId
+   * @param {EntityChainNode[]} chain
+   */
+  function revealCollapsed(pageId, chain) {
+    const page = pages().find((item) => item.id === pageId);
+    if (!page) {
+      return null;
+    }
+    const next = { ...(page.collapsed || {}) };
+    let changed = false;
+    for (let i = 0; i < chain.length - 1; i++) {
+      if (next[chain[i].id]) {
+        delete next[chain[i].id];
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return null;
+    }
+    page.collapsed = next;
+    return next;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {EntityChainNode[]} chain
+   */
+  function startEntityReveal(pageId, chain) {
+    if (!pages().some((page) => page.id === pageId)) {
+      entityReveal = null;
+      return;
+    }
+    const switching = uiState.activePageId !== pageId || isProblemsPageOpen();
+    const needsAsk = chain.some((node) => node.locked);
+    entityReveal = { pageId, chain, choice: null, alignTop: switching };
+    const opened = switching && !needsAsk ? revealCollapsed(pageId, chain) : null;
+    if (switching) {
+      setActivePage(pageId);
+    }
+    if (opened) {
+      persistCollapsed(opened);
+    }
+    pumpEntityReveal();
+  }
+
+  function pumpEntityReveal() {
+    const job = entityReveal;
+    if (!job) {
+      return;
+    }
+    if (uiState.activePageId !== job.pageId || isProblemsPageOpen()) {
+      return;
+    }
+    if (!data || data.contentPageId !== job.pageId) {
+      return;
+    }
+    const parents = job.chain.slice(0, -1);
+    const needsAsk =
+      !job.choice && (parents.some((node) => node.locked) || !!job.chain[job.chain.length - 1]?.locked);
+    if (needsAsk) {
+      if (dialogKind !== 'choice') {
+        openUnlockDialog(job);
+      }
+      return;
+    }
+    entityReveal = null;
+    performEntityReveal(job);
+  }
+
+  /** @param {EntityReveal} job */
+  function openUnlockDialog(job) {
+    openChoiceDialog(
+      t('unlockAsk'),
+      [
+        {
+          label: t('unlockYes'),
+          onClick: () => {
+            job.choice = 'yes';
+            const top = job.chain.find((node) => node.locked);
+            if (top?.kind === 'note') {
+              vscode.postMessage({ type: 'toggleNoteLock', noteId: top.id });
+            } else if (top) {
+              vscode.postMessage({ type: 'toggleLock', markerId: top.id });
+            }
+          },
+        },
+        {
+          label: t('unlockNo'),
+          onClick: () => {
+            job.choice = 'no';
+            entityReveal = null;
+            performEntityReveal(job);
+          },
+        },
+      ],
+      () => {
+        entityReveal = null;
+      },
+    );
+  }
+
+  /**
+   * @param {EntityChainNode[]} chain
+   * @param {'yes' | 'no' | null} choice
+   */
+  function entityLandingIndex(chain, choice) {
+    if (choice !== 'no') {
+      return chain.length - 1;
+    }
+    let lockedAt = -1;
+    for (let i = 0; i < chain.length - 1; i++) {
+      if (chain[i].locked) {
+        lockedAt = i;
+        break;
+      }
+    }
+    if (lockedAt < 0) {
+      return chain.length - 1;
+    }
+    for (let j = lockedAt - 1; j >= 0; j--) {
+      if (!chain[j].locked) {
+        return j;
+      }
+    }
+    return 0;
+  }
+
+  /** @param {EntityReveal} job */
+  function performEntityReveal(job) {
+    const stop = entityLandingIndex(job.chain, job.choice);
+    const next = { ...pageCollapsed() };
+    let changed = false;
+    for (let i = 0; i < stop; i++) {
+      const id = job.chain[i].id;
+      if (next[id]) {
+        delete next[id];
+        changed = true;
+      }
+    }
+    if (changed) {
+      persistCollapsed(next);
+      if (job.alignTop) {
+        skipNextFolds = true;
+      }
+      renderFromToggle = true;
+      render();
+      renderFromToggle = false;
+    }
+    armEntityFlash(job.chain.slice(0, stop + 1), job.alignTop);
+  }
+
+  /**
+   * @param {EntityChainNode[]} nodes
+   * @param {boolean} [alignTop]
+   */
+  function armEntityFlash(nodes, alignTop) {
+    flashNodes = nodes;
+    flashUntil = Date.now() + 500;
+    flashAlignTop = !!alignTop;
+    if (alignTop) {
+      entityAlignPageId = uiState.activePageId;
+      applyEntityFlash(true);
+    }
+    requestAnimationFrame(() => applyEntityFlash(true));
+    if (entityFlashTimer) {
+      clearTimeout(entityFlashTimer);
+    }
+    entityFlashTimer = window.setTimeout(() => {
+      entityFlashTimer = 0;
+      flashNodes = null;
+      flashAlignTop = false;
+      root.querySelectorAll('.is-link-flash').forEach((node) => {
+        node.classList.remove('is-link-flash');
+      });
+    }, 500);
+  }
+
+  function entityAlignPending() {
+    return (
+      flashAlignTop &&
+      !!flashNodes &&
+      Date.now() < flashUntil &&
+      uiState.activePageId === entityAlignPageId &&
+      !isProblemsPageOpen()
+    );
+  }
+
+  /** @param {EntityChainNode} node */
+  function entityHeader(node) {
+    const card =
+      node.kind === 'note'
+        ? root.querySelector('.note-card[data-note-id="' + CSS.escape(node.id) + '"]')
+        : root.querySelector(
+            'section.group[data-marker-id="' + CSS.escape(node.id) + '"]:not(.note-card)',
+          );
+    if (!(card instanceof HTMLElement)) {
+      return null;
+    }
+    const header = card.querySelector(':scope > .group-header');
+    return header instanceof HTMLElement ? header : null;
+  }
+
+  /**
+   * Put the landing row's top edge against the bottom of the sticky toolbar.
+   * A short page stops at its max scroll, so the row stays as high as it can.
+   * @param {HTMLElement} landing
+   */
+  function scrollLandingBelowChrome(landing) {
+    const chrome = document.querySelector('.map-chrome');
+    const chromeBottom = chrome instanceof HTMLElement ? chrome.getBoundingClientRect().bottom : 0;
+    const node = docScroller();
+    const delta = landing.getBoundingClientRect().top - chromeBottom;
+    const max = Math.max(0, node.scrollHeight - node.clientHeight);
+    const next = Math.min(max, Math.max(0, (node.scrollTop || 0) + delta));
+    applyDocScroll(next);
+  }
+
+  /** @param {boolean} scroll */
+  function applyEntityFlash(scroll) {
+    if (!flashNodes || Date.now() > flashUntil) {
+      return;
+    }
+    /** @type {HTMLElement | null} */
+    let landing = null;
+    for (const node of flashNodes) {
+      const card =
+        node.kind === 'note'
+          ? root.querySelector('.note-card[data-note-id="' + CSS.escape(node.id) + '"]')
+          : root.querySelector(
+              'section.group[data-marker-id="' + CSS.escape(node.id) + '"]:not(.note-card)',
+            );
+      if (!(card instanceof HTMLElement)) {
+        continue;
+      }
+      const header = card.querySelector(':scope > .group-header');
+      if (header instanceof HTMLElement) {
+        header.classList.add('is-link-flash');
+        landing = header;
+      }
+      if (node.kind === 'note') {
+        const body = card.querySelector('.note-body');
+        if (body instanceof HTMLElement) {
+          body.classList.add('is-link-flash');
+        }
+      }
+    }
+    if (!scroll) {
+      return;
+    }
+    if (flashAlignTop) {
+      const target = flashNodes[flashNodes.length - 1];
+      const header = target && entityHeader(target);
+      if (header && !isFolding) {
+        scrollLandingBelowChrome(header);
+      }
+      return;
+    }
+    if (landing) {
+      landing.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }
 
   function isDescendant(ancestorId, nodeId) {
     const byId = Object.fromEntries(data.groups.map((g) => [g.id, g]));

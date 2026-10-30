@@ -188,7 +188,7 @@
       "page": "map"
     },
     "bottom": {
-      "page": "page-page-2"
+      "page": "map"
     },
     "left": {
       "page": "map"
@@ -261,11 +261,6 @@
       "markerId": "1-2",
       "text": "Вот это поворот\nhttps://www.youtube.com/watch?v=RG2IK8oRZNA"
     },
-    "note-3": {
-      "page": "map",
-      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"интересно\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
-      "color": "#19b849"
-    },
     "note-5": {
       "parentNote": "note-4",
       "text": "Заметка 2",
@@ -280,9 +275,19 @@
       "markerId": "group-2",
       "text": "Моя заметка заметка"
     },
+    "note-9": {
+      "page": "map",
+      "text": "",
+      "color": "syn3.slate"
+    },
     "note-2": {
       "markerId": "1-2",
       "text": "Запись 2\nhttps://www.youtube.com/"
+    },
+    "note-3": {
+      "page": "map",
+      "text": "syn3json:{\"v\":1,\"blocks\":[{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"},{\"type\":\"p\",\"runs\":[{\"text\":\"\"},{\"text\":\"интересно\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"},{\"text\":\"\"}]},{\"type\":\"code\",\"text\":\"markerNode(markerId: string): MarkerNode {\\n   return this.intern<MarkerNode>({ kind: 'marker', id: `m:${markerId}`, markerId });\\n }\",\"languageId\":\"typescript\",\"label\":\"ts\"}]}",
+      "color": "#19b849"
     },
     "note-4": {
       "page": "map",
@@ -345,7 +350,8 @@
       "parent": "link-3"
     },
     "link-2": {
-      "label": "Ваш компонент",
+      "label": "Тест группы",
+      "url": "map://group/1",
       "parent": "link-1"
     },
     "link-3": {

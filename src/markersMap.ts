@@ -245,6 +245,9 @@ type IncomingMessage =
   | { type: 'unnestNote'; id: string }
   | { type: 'moveNote'; id: string; delta: -1 | 1 }
   | { type: 'toggleLock'; markerId: string }
+  | { type: 'openEntityLink'; url: string }
+  | { type: 'stripEntityLink'; noteId: string; url: string }
+  | { type: 'clearLinkUrl'; linkId: string }
   | { type: 'toggleNoteLock'; noteId: string }
   | { type: 'toggleLinkLock'; linkId: string }
   | { type: 'setFocus'; kind: 'marker' | 'note'; id: string }
@@ -1657,6 +1660,29 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    if (message.type === 'openEntityLink') {
+      const resolved = this.store.resolveEntityLink(message.url);
+      if (!resolved) {
+        void webview.postMessage({ type: 'entityLinkBroken', url: message.url });
+        return;
+      }
+      void webview.postMessage({
+        type: 'entityLinkTarget',
+        pageId: resolved.pageId,
+        chain: resolved.chain,
+      });
+      return;
+    }
+    if (message.type === 'stripEntityLink') {
+      await this.store.stripEntityLink(message.noteId, message.url);
+      return;
+    }
+    if (message.type === 'clearLinkUrl') {
+      if (this.store.link(message.linkId)) {
+        await this.store.updateLink(message.linkId, { url: null });
+      }
+      return;
+    }
     if (message.type === 'profile') {
       await this.onProfile(message.action, message.id, message.name);
       return;
@@ -2368,6 +2394,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       dirtyPaths: this.dirtyPaths,
       error: this.store.lastError,
       history: this.store.historySteps(),
+      entities: {
+        groups: this.store.markers().map(([id]) => id),
+        notes: this.store.notes().map(([id]) => id),
+      },
+      refactorEpoch: this.store.refactoringEpoch,
       open: this.store.surfaceOpen(),
       surface: this.surfaceOf(webview),
       codeStamp: this.languages.getStamp() ?? null,

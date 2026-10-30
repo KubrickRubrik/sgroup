@@ -2,6 +2,13 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+  formatEntityLink,
+  mapNoteEntityLinks,
+  parseEntityLink,
+  type EntityLinkKind,
+  stripNoteEntityLink,
+} from './entityLink';
+import {
   decodeHistory,
   dropPageHistory,
   emptyHistory,
@@ -635,6 +642,12 @@ function isFileNotFound(error: unknown): boolean {
   return error instanceof vscode.FileSystemError && error.code === 'FileNotFound';
 }
 
+export interface EntityChainNode {
+  kind: EntityLinkKind;
+  id: string;
+  locked: boolean;
+}
+
 export class MarkerStore implements vscode.Disposable {
   private data: MarkersFile = emptyData();
   private profilesData: ProfilesFile = emptyProfiles();
@@ -657,6 +670,8 @@ export class MarkerStore implements vscode.Disposable {
   private history: PageHistoryBook = emptyHistory();
   /** False until the history file has been read, so startup cannot record a step. */
   private historyReady = false;
+  /** Bumps when a move rewrites entity links. Webviews show «Рефакторинг» once per bump. */
+  private refactorEpoch = 0;
   /** True when the loaded file had no `surfaces` block — workspace state may hydrate it once. */
   private surfacesNeedLegacyHydration = false;
   private queue: Promise<void> = Promise.resolve();
@@ -771,6 +786,11 @@ export class MarkerStore implements vscode.Disposable {
   /** True after markers and history have been read. Page ids are meaningful only then. */
   get ready(): boolean {
     return this.historyReady;
+  }
+
+  /** Increments each time a move rewrites at least one entity link. */
+  get refactoringEpoch(): number {
+    return this.refactorEpoch;
   }
 
   canUndo(pageId: string): boolean {
@@ -1188,6 +1208,89 @@ export class MarkerStore implements vscode.Disposable {
     return undefined;
   }
 
+  /** Current link for a group or note, from the live parent chain. */
+  entityLinkOf(kind: EntityLinkKind, id: string): string | undefined {
+    if (kind === 'group') {
+      const ids = this.markerChain(id);
+      const pageId = this.pageOf(id);
+      if (!ids || !pageId) {
+        return undefined;
+      }
+      return formatEntityLink(pageId, 'group', ids);
+    }
+    const notes = this.noteChain(id);
+    const pageId = this.pageOfNote(id);
+    if (!notes || !pageId) {
+      return undefined;
+    }
+    const root = this.data.notes[notes[0]];
+    const groups = root?.markerId ? this.markerChain(root.markerId) ?? [] : [];
+    return formatEntityLink(pageId, 'note', [...groups, ...notes]);
+  }
+
+  /**
+   * Live place of a link. The page and parents stored in the URL are ignored
+   * when the card has moved; the type and the last id are the identity.
+   */
+  resolveEntityLink(raw: string): { pageId: string; chain: EntityChainNode[] } | undefined {
+    const parsed = parseEntityLink(raw);
+    if (!parsed) {
+      return undefined;
+    }
+    const id = parsed.ids[parsed.ids.length - 1];
+    if (parsed.kind === 'group') {
+      const ids = this.markerChain(id);
+      const pageId = this.pageOf(id);
+      if (!ids || !pageId) {
+        return undefined;
+      }
+      return {
+        pageId,
+        chain: ids.map((markerId) => ({
+          kind: 'group' as const,
+          id: markerId,
+          locked: this.data.markers[markerId]?.locked === true,
+        })),
+      };
+    }
+    const notes = this.noteChain(id);
+    const pageId = this.pageOfNote(id);
+    if (!notes || !pageId) {
+      return undefined;
+    }
+    const root = this.data.notes[notes[0]];
+    const groups = root?.markerId ? this.markerChain(root.markerId) ?? [] : [];
+    return {
+      pageId,
+      chain: [
+        ...groups.map((markerId) => ({
+          kind: 'group' as const,
+          id: markerId,
+          locked: this.data.markers[markerId]?.locked === true,
+        })),
+        ...notes.map((noteId) => ({
+          kind: 'note' as const,
+          id: noteId,
+          locked: this.data.notes[noteId]?.locked === true,
+        })),
+      ],
+    };
+  }
+
+  /** Drop one entity URL from a note. Code blocks are left untouched. */
+  async stripEntityLink(noteId: string, url: string): Promise<void> {
+    const note = this.data.notes[noteId];
+    if (!note) {
+      return;
+    }
+    const next = stripNoteEntityLink(note.text, url);
+    if (next.count === 0 || next.text === note.text) {
+      return;
+    }
+    note.text = next.text;
+    await this.commit();
+  }
+
   /** Depth of a note counted only along `parentNote` (0 at page/group root). */
   noteDepthOf(id: string): number {
     let depth = 0;
@@ -1470,6 +1573,7 @@ export class MarkerStore implements vscode.Disposable {
     if (!current) {
       return;
     }
+    const prevParent = current.parent;
     const next: MarkerDef = { ...current, ...patch, label: capitalize(patch.label ?? current.label) };
     if (patch.parent !== undefined) {
       next.parent = patch.parent || undefined;
@@ -1486,6 +1590,9 @@ export class MarkerStore implements vscode.Disposable {
       }
     }
     this.data.markers[id] = next;
+    if (patch.parent !== undefined && (next.parent || undefined) !== (prevParent || undefined)) {
+      this.relinkMarkerTree(id);
+    }
     await this.commit();
   }
 
@@ -1603,6 +1710,12 @@ export class MarkerStore implements vscode.Disposable {
     this.unlinkMarkerAssignments(id);
     const ordered = [...siblings, ...lifted];
     this.applySiblingOrder(ordered);
+    for (const childId of liftedMarkers) {
+      this.relinkMarkerTree(childId);
+    }
+    for (const noteId of liftedNotes) {
+      this.relinkNoteTree(noteId);
+    }
     await this.commit();
   }
 
@@ -1712,6 +1825,9 @@ export class MarkerStore implements vscode.Disposable {
         this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'marker' && s.id === id)),
       );
     }
+    if (parent !== oldParent || (parent === undefined && targetPage !== oldPage)) {
+      this.relinkMarkerTree(id);
+    }
     await this.commit();
   }
 
@@ -1771,6 +1887,9 @@ export class MarkerStore implements vscode.Disposable {
         this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'marker' && s.id === id)),
       );
     }
+    if (parent !== oldParent || (parent === undefined && targetPage !== oldPage)) {
+      this.relinkMarkerTree(id);
+    }
     await this.commit();
   }
 
@@ -1799,6 +1918,7 @@ export class MarkerStore implements vscode.Disposable {
         this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'marker' && s.id === id)),
       );
     }
+    this.relinkMarkerTree(id);
     await this.commit();
   }
 
@@ -1831,6 +1951,7 @@ export class MarkerStore implements vscode.Disposable {
     siblings.splice(insertAt, 0, { kind: 'marker', id });
     this.applySiblingOrder(siblings);
     this.applySiblingOrder(this.mixedSiblings({ markerId: parentId }));
+    this.relinkMarkerTree(id);
     await this.commit();
   }
 
@@ -2165,6 +2286,9 @@ export class MarkerStore implements vscode.Disposable {
       ...siblings,
       ...lifted.map((childId) => ({ kind: 'note' as const, id: childId })),
     ]);
+    for (const childId of lifted) {
+      this.relinkNoteTree(childId);
+    }
     await this.commit();
   }
 
@@ -2259,14 +2383,12 @@ export class MarkerStore implements vscode.Disposable {
     }
     ordered.splice(index, 0, { kind: 'note', id });
     this.applySiblingOrder(ordered);
-    if (
-      oldHome.page !== newHome.page ||
-      oldHome.markerId !== newHome.markerId ||
-      oldHome.parentNote !== newHome.parentNote
-    ) {
+    const homeChanged = !this.sameNoteHome(oldHome, newHome);
+    if (homeChanged) {
       this.applySiblingOrder(
         this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'note' && s.id === id)),
       );
+      this.relinkNoteTree(id);
     }
     await this.commit();
   }
@@ -2298,14 +2420,11 @@ export class MarkerStore implements vscode.Disposable {
     );
     ordered.push({ kind: 'note', id });
     this.applySiblingOrder(ordered);
-    if (
-      oldHome.page !== newHome.page ||
-      oldHome.markerId !== newHome.markerId ||
-      oldHome.parentNote !== newHome.parentNote
-    ) {
+    if (!this.sameNoteHome(oldHome, newHome)) {
       this.applySiblingOrder(
         this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'note' && s.id === id)),
       );
+      this.relinkNoteTree(id);
     }
     await this.commit();
   }
@@ -2362,6 +2481,7 @@ export class MarkerStore implements vscode.Disposable {
     this.applySiblingOrder(
       this.mixedSiblings(oldScope).filter((s) => !(s.kind === 'note' && s.id === id)),
     );
+    this.relinkNoteTree(id);
     await this.commit();
   }
 
@@ -4810,6 +4930,119 @@ export class MarkerStore implements vscode.Disposable {
     } else {
       def.page = home.page;
     }
+  }
+
+  /** Root-first marker ids, including `id`. */
+  private markerChain(id: string): string[] | undefined {
+    if (!this.data.markers[id]) {
+      return undefined;
+    }
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let current: string | undefined = id;
+    while (current && this.data.markers[current] && !seen.has(current)) {
+      seen.add(current);
+      chain.push(current);
+      current = this.data.markers[current].parent;
+    }
+    chain.reverse();
+    return chain;
+  }
+
+  /** Outermost note first, including `id`. */
+  private noteChain(id: string): string[] | undefined {
+    if (!this.data.notes[id]) {
+      return undefined;
+    }
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let current: string | undefined = id;
+    while (current && this.data.notes[current] && !seen.has(current)) {
+      seen.add(current);
+      chain.push(current);
+      current = this.data.notes[current].parentNote;
+    }
+    chain.reverse();
+    return chain;
+  }
+
+  private sameNoteHome(a: NoteHome, b: NoteHome): boolean {
+    if (a.parentNote || b.parentNote) {
+      return a.parentNote === b.parentNote;
+    }
+    if (a.markerId || b.markerId) {
+      return a.markerId === b.markerId;
+    }
+    return a.page === b.page;
+  }
+
+  /** Rewrite links that point at these cards. Call after their homes have changed. */
+  private relinkEntities(groups: Iterable<string>, notes: Iterable<string>): void {
+    const groupSet = new Set(groups);
+    const noteSet = new Set(notes);
+    if (groupSet.size === 0 && noteSet.size === 0) {
+      return;
+    }
+    const mapUrl = (url: string): string | undefined => {
+      const parsed = parseEntityLink(url);
+      if (!parsed) {
+        return undefined;
+      }
+      const leaf = parsed.ids[parsed.ids.length - 1];
+      const hit = parsed.kind === 'group' ? groupSet.has(leaf) : noteSet.has(leaf);
+      if (!hit) {
+        return undefined;
+      }
+      const built = this.entityLinkOf(parsed.kind, leaf);
+      if (!built || built === url) {
+        return undefined;
+      }
+      return built;
+    };
+    let count = 0;
+    for (const note of Object.values(this.data.notes)) {
+      const next = mapNoteEntityLinks(note.text, mapUrl);
+      if (next.count > 0) {
+        note.text = next.text;
+        count += next.count;
+      }
+    }
+    for (const link of Object.values(this.data.links)) {
+      if (!link.url) {
+        continue;
+      }
+      const built = mapUrl(link.url.trim());
+      if (!built) {
+        continue;
+      }
+      link.url = built;
+      count += 1;
+    }
+    if (count > 0) {
+      this.refactorEpoch += 1;
+    }
+  }
+
+  private relinkMarkerTree(id: string): void {
+    const groups: string[] = [];
+    const notes: string[] = [];
+    for (const markerId of this.descendantMarkers(id, true)) {
+      if (!this.data.markers[markerId]) {
+        continue;
+      }
+      groups.push(markerId);
+      for (const [noteId] of this.notesOf(markerId)) {
+        notes.push(...this.descendantNotes(noteId, true));
+      }
+    }
+    this.relinkEntities(groups, notes);
+  }
+
+  private relinkNoteTree(id: string): void {
+    if (!this.data.notes[id]) {
+      return;
+    }
+    this.relinkEntities([], this.descendantNotes(id, true));
   }
 
   private applyNoteLock(noteId: string, wasLocked: boolean): void {

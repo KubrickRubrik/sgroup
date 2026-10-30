@@ -29,13 +29,15 @@ If depth omitted → **medium**.
 
 ## Depth
 
-| Level | Max questions / round | Focus across rounds |
-|-------|----------------------|---------------------|
+| Level | Recommended / round | Focus across rounds |
+|-------|---------------------|---------------------|
 | light | 2–3 | goal, scope boundary, success signal |
 | medium | 3–5 | + edge cases, failure modes, fit to existing patterns |
 | deep | 4–6 | + adversarial cases, ops, rollout, rollback, abuse, data lifecycle |
 
-**Gradual grilling (hard rule):** never dump the full questionnaire in one message. Ask only the next small batch, **stop and wait** for answers, then ask the next round based on what was said (gaps, contradictions, new branches). Depth is total thoroughness over the session, not one wall of questions.
+About **5 questions in a round** is a comfortable size, not a hard cap. There is no minimum number of rounds.
+
+**Gradual grilling (hard rule):** never dump the full questionnaire in one round. Ask only the next small batch, **stop and wait** for answers, then ask the next round based on what was said (gaps, contradictions, new branches). Depth is total thoroughness over the session, not one wall of questions.
 
 ## Workflow
 
@@ -49,17 +51,27 @@ If depth omitted → **medium**.
 3. **Grill** with project-grounded questions (one round at a time):
    - Prefer questions that reference real files, APIs, types, UX flows, or patterns in *this* repo
    - Avoid generic checklists that ignore the codebase
-   - One concern per question; numbered list; stay within the round cap for the chosen depth
-   - End the message after the batch — no “ещё на потом” list, no coding, no plan
-   - Mark assumptions explicitly ("кажется, X уже делает Y — верно?")
+   - One concern per question
+   - **Write the questions in the message first**, as a numbered list, after the mirror. Then one `AskQuestion` call. Chat text cannot show a button
+   - That list is what the user sees while the form is still being produced. Write it before the tool call. Do not add a fake skeleton, gray bars, or placeholders: the product has no temporary skeleton, and leftover blocks stay in the transcript after the form appears
+   - The form holds the answer options for those questions, in the same order, one form question per list item. `prompt` is that question, so the options sit under it. No extra commentary in the form
+   - Each question needs at least two options (`id` + `label`). The form always adds a free-text choice besides those options — that is the normal path for a caveat or a clarification
+   - Options follow the question. A natural pair may use any short labels («Да» / «Нет», «Верно» / «Неверно», «Сейчас» / «Потом», and so on). Do not rewrite a complex question into a yes/no pair; write the real options and leave the nuance to the free-text choice
+   - If unsure whether a question is binary, still put it in the form
+   - An assumption that needs a confirmation is one of these questions, written in the list and in the form. Do not hide it inside the mirror
+   - End the turn after the mirror, the numbered questions, and the form — no “ещё на потом” list, no coding, no plan
    - Next round only after the user replies; rewrite or drop questions that answers already covered
 
 4. **Stop condition** — when answers are coherent enough for a thin vertical slice:
-   - Brief **decision summary** only: in scope / out of scope / open risks. No offer, no "скажи", no "если хочешь", no "могу сразу перейти к выполнению"
-   - **The choice is a tool call in that same turn.** A stop message without one is invalid. Chat text cannot show a button
-   - Slice is thin enough to implement (plan is still allowed as the other button): call `AskQuestion` before the turn ends. One question, prompt `Дальше`, options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`. Do not restate the choice in prose
-   - Slice is too wide to implement (several modules, unclear sequencing, risks that must be decided first): call `SwitchMode` with `target_mode_id: "plan"` and a short `explanation`. Do not also ask them to type a confirmation
-   - Wait for the click or the mode approval. On `execute`, implement in the next turn. On `plan` from `AskQuestion`, the next turn calls `SwitchMode` to `plan` and does nothing else until they approve
+   - Brief **decision summary** in the message: in scope / out of scope / open risks. No recommendation in the message. Do not write «Дальше» or «1. Дальше»
+   - **The choice is `AskQuestion` in that same turn.** A stop message without it is invalid. Chat text cannot show a button
+   - One question. Its `prompt` is the recommendation, placed above the options — not the word «Дальше», and do not number it yourself:
+     - `Рекомендую сделать план` — the slice is wide, touches several modules, sequencing is unclear, or an open fork has to be decided first
+     - `Рекомендую выполнить` — the slice is thin, the answers close the gaps, and the path is obvious
+   - Options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`
+   - The prompt does not ask them to type «выполняй», «скажи», «если хочешь», or «переключись в Plan»
+   - Do not also call `SwitchMode` in that turn
+   - Wait for the click. On `execute`, implement in the next turn. On `plan`, the next turn calls `SwitchMode` with `target_mode_id: "plan"` and a short `explanation`, and does nothing else until they approve
 
 ## Question angles (pick what fits; don't dump all)
 
@@ -80,9 +92,14 @@ If depth omitted → **medium**.
 
 ## Anti-patterns
 
-- Dumping all angles / the whole depth budget in one message
+- Dumping all angles / the whole depth budget in one round
+- Leaving the questions only inside the form, or only in the message without `AskQuestion`
+- Inserting a fake skeleton or placeholder that stays in the message after the form appears
+- Rewriting a complex question into «Да/Нет» or «Верно/Неверно» so it fits two buttons
 - Jumping to implementation or architecture essays mid-grill
 - Interrogation without reading the project
 - Asking the next round before the user answered the current one
 - Rewarding hand-waving without noting the risk
-- Ending the stop turn with a sentence that asks the user to type «выполняй», «скажи» or «переключись в Plan» instead of `AskQuestion` / `SwitchMode`
+- A stop form whose prompt is «Дальше», or a recommendation written in the message instead of the form prompt
+- Ending the stop turn with a sentence that asks the user to type «выполняй», «скажи» or «переключись в Plan» instead of `AskQuestion`
+- Calling `SwitchMode` in the stop turn instead of letting them click «Выполнить» or «Сделать план»
