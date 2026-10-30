@@ -55,13 +55,11 @@ If depth omitted → **medium**.
    - Next round only after the user replies; rewrite or drop questions that answers already covered
 
 4. **Stop condition** — when answers are coherent enough for a thin vertical slice:
-   - Brief **decision summary**: in scope / out of scope / open risks
-   - Offer next step (pick recommendation, always leave both open):
-     1. **Сделать план** (Plan mode) — default if scope is wide, several modules, unclear sequencing, or remaining risks matter
-     2. **Выполнить** — default if the slice is thin, answers close the gaps, and path is obvious
-   - If recommending **план**: in the **same turn**, call `SwitchMode` with `target_mode_id: "plan"` (and a short `explanation`) so the user gets the switch-to-Plan control immediately — do not only mention Plan in text
-   - If you can start implementation right away: in the **same turn**, call `AskQuestion` so the user gets a clickable control and does not have to type. Option label must be exactly **Выполнить** (put it first); second option **Сделать план**. Short prompt, e.g. «Могу сразу перейти к выполнению». Do not only mention it in prose
-   - Wait for the click or mode approval; do not start coding until the user chooses **Выполнить** (Plan switch still needs their approval). On **Выполнить**, implement in the next turn
+   - Brief **decision summary** only: in scope / out of scope / open risks. No offer, no "скажи", no "если хочешь", no "могу сразу перейти к выполнению"
+   - **The choice is a tool call in that same turn.** A stop message without one is invalid. Chat text cannot show a button
+   - Slice is thin enough to implement (plan is still allowed as the other button): call `AskQuestion` before the turn ends. One question, prompt `Дальше`, options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`. Do not restate the choice in prose
+   - Slice is too wide to implement (several modules, unclear sequencing, risks that must be decided first): call `SwitchMode` with `target_mode_id: "plan"` and a short `explanation`. Do not also ask them to type a confirmation
+   - Wait for the click or the mode approval. On `execute`, implement in the next turn. On `plan` from `AskQuestion`, the next turn calls `SwitchMode` to `plan` and does nothing else until they approve
 
 ## Question angles (pick what fits; don't dump all)
 
@@ -87,3 +85,4 @@ If depth omitted → **medium**.
 - Interrogation without reading the project
 - Asking the next round before the user answered the current one
 - Rewarding hand-waving without noting the risk
+- Ending the stop turn with a sentence that asks the user to type «выполняй», «скажи» or «переключись в Plan» instead of `AskQuestion` / `SwitchMode`

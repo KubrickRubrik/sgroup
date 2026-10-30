@@ -1474,7 +1474,9 @@ body {
   --size-meta: calc(var(--vscode-font-size, 13px) * 0.8);
   /* chevron(16) + gap(6) + bar(5) */
   --tree-gutter: 27px;
-  --branch-gap: 10px;
+  --branch-gap: 14px;
+  --branch-w: 2px;
+  --branch-r: 6px;
   --drop-color: var(--vscode-list-focusOutline, var(--vscode-focusBorder, #4daafc));
   /* 0 = default 135°, 100 = +360° (same direction). Set from appearance via map.js. */
   --gradient-turn: 0;
@@ -1551,6 +1553,8 @@ body {
 .children {
   /* Parent's color — stubs/verticals to children stay this color even if a child has its own. */
   --branch: color-mix(in srgb, var(--group-color) 50%, transparent);
+  /* Sagging quarter-turn plus the stub, one stroke so the join cannot open. */
+  --elbow-arc: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 0V1Q1 7 7 7H14' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='butt'/%3E%3C/svg%3E");
   margin: 2px 0 0 var(--tree-gutter);
   padding-left: var(--branch-gap);
   position: relative;
@@ -1559,112 +1563,120 @@ body {
 }
 
 .children > .node {
+  --stub-y: calc(var(--size-file) * 0.775);
+  --elbow-r: min(var(--branch-r), max(2px, calc(var(--stub-y) - 1px)));
+  --upper-h: calc(var(--stub-y) - var(--elbow-r) + 2px);
+  --lower-top: calc(var(--stub-y) - var(--elbow-r));
+  --lower-h: calc(100% - (var(--stub-y) - var(--elbow-r)));
+  --spine-bridge: -2px;
   position: relative;
 }
 
-/* Horizontal stub to the node. */
-.children > .node::before {
+.children > .node.block {
+  /* .block + .block has margin-top: 4px. The tail has to cross it. */
+  --spine-bridge: -4px;
+}
+
+.children > .node.block-dirs {
+  --stub-y: calc(var(--size-folder) * 0.775);
+}
+
+.children > .node.group {
+  --stub-y: calc(var(--size-subgroup) * 0.775);
+}
+
+/* Last node: spine stops at the turn. No tail below the stub. */
+.children > .node:last-child {
+  --lower-h: 0px;
+}
+
+/* Rounded elbow. One mask, so the 50% branch color is painted once:
+   straight spine, quarter-circle, then the stub. */
+.children > .node::before,
+.layout-list .group.columns-flow > .children > .block > .item::before {
   background: var(--branch);
   content: '';
-  height: 2px;
   left: calc(-1 * var(--branch-gap));
   pointer-events: none;
   position: absolute;
-  top: calc(var(--size-file) * 0.775);
-  transform: translateY(-50%);
+  bottom: var(--spine-bridge);
+  top: 0;
   width: var(--branch-gap);
   z-index: 1;
-}
-
-.children > .node.block-dirs::before {
-  top: calc(var(--size-folder) * 0.775);
-}
-
-.children > .node.group::before {
-  top: calc(var(--size-subgroup) * 0.775);
-}
-
-/* Vertical segment: full height for middle nodes. */
-.children > .node::after {
-  background: var(--branch);
-  bottom: -2px;
-  content: '';
-  left: calc(-1 * var(--branch-gap));
-  pointer-events: none;
-  position: absolute;
-  top: 0;
-  width: 2px;
-}
-
-/* Last node: vertical stops at the stub (no tail below). */
-.children > .node:last-child::after {
-  bottom: auto;
-  height: calc(var(--size-file) * 0.775);
-}
-
-.children > .node.block-dirs:last-child::after {
-  height: calc(var(--size-folder) * 0.775);
-}
-
-.children > .node.group:last-child::after {
-  height: calc(var(--size-subgroup) * 0.775);
+  -webkit-mask-image:
+    linear-gradient(#fff, #fff),
+    linear-gradient(#fff, #fff),
+    var(--elbow-arc);
+  -webkit-mask-size:
+    var(--branch-w) var(--upper-h),
+    var(--branch-w) var(--lower-h),
+    var(--branch-gap) calc(var(--elbow-r) * 9 / 6);
+  -webkit-mask-position:
+    left top,
+    left var(--lower-top),
+    left calc(var(--stub-y) - var(--elbow-r) * 7 / 6);
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-composite: source-over, source-over;
+  mask-image:
+    linear-gradient(#fff, #fff),
+    linear-gradient(#fff, #fff),
+    var(--elbow-arc);
+  mask-size:
+    var(--branch-w) var(--upper-h),
+    var(--branch-w) var(--lower-h),
+    var(--branch-gap) calc(var(--elbow-r) * 9 / 6);
+  mask-position:
+    left top,
+    left var(--lower-top),
+    left calc(var(--stub-y) - var(--elbow-r) * 7 / 6);
+  mask-repeat: no-repeat;
+  mask-composite: add, add;
+  mask-mode: alpha;
 }
 
 /* List mode without columns: stub per file/folder row; block-level connectors off. */
-.layout-list .group.columns-flow > .children > .block::before,
-.layout-list .group.columns-flow > .children > .block::after {
+.layout-list .group.columns-flow > .children > .block::before {
   display: none;
 }
 
 .layout-list .group.columns-flow > .children > .block > .item {
+  --stub-y: 50%;
+  --elbow-r: var(--branch-r);
+  --upper-h: calc(var(--stub-y) - var(--elbow-r) + 2px);
+  --lower-top: calc(var(--stub-y) - var(--elbow-r));
+  --lower-h: calc(100% - (var(--stub-y) - var(--elbow-r)));
+  --spine-bridge: -1px;
   overflow: visible;
   position: relative;
 }
 
-.layout-list .group.columns-flow > .children > .block > .item::before {
-  background: var(--branch);
-  content: '';
-  height: 2px;
-  left: calc(-1 * var(--branch-gap));
-  pointer-events: none;
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--branch-gap);
-  z-index: 1;
+/* First row: no spine above the stub. */
+.layout-list .group.columns-flow > .children > .block:first-child > .item:first-child {
+  --upper-h: 0px;
+  --lower-top: calc(50% - var(--branch-w) / 2);
+  --lower-h: calc(100% - (50% - var(--branch-w) / 2));
 }
 
-.layout-list .group.columns-flow > .children > .block > .item::after {
-  background: var(--branch);
-  bottom: -1px;
-  content: '';
-  left: calc(-1 * var(--branch-gap));
-  pointer-events: none;
-  position: absolute;
-  top: 0;
-  width: 2px;
+/* Last row of the whole tree: spine stops at the turn. */
+.layout-list .group.columns-flow > .children > .block:last-child > .item:last-child {
+  --upper-h: calc(50% - var(--elbow-r) + 2px);
+  --lower-top: calc(50% - var(--elbow-r));
+  --lower-h: 0px;
 }
 
-/* First row: vertical starts at the stub. */
-.layout-list .group.columns-flow > .children > .block:first-child > .item:first-child::after {
-  top: 50%;
-}
-
-/* Last row of the whole tree: vertical ends at the stub. */
-.layout-list .group.columns-flow > .children > .block:last-child > .item:last-child::after {
-  bottom: auto;
-  height: 50%;
-  top: 0;
-}
-
-.layout-list .group.columns-flow > .children > .block:first-child:last-child > .item:only-child::after,
-.layout-list .group.columns-flow > .children > .block:last-child > .item:only-child:first-child::after {
-  display: none;
-}
-
-/* Sole item that is also the last node overall — only the stub, no vertical. */
-.layout-list .group.columns-flow > .children > .block:only-child > .item:only-child::after {
-  display: none;
+/* No vertical at all: straight stub. */
+.layout-list .group.columns-flow > .children > .block:first-child:last-child > .item:only-child::before,
+.layout-list .group.columns-flow > .children > .block:last-child > .item:only-child:first-child::before,
+.layout-list .group.columns-flow > .children > .block:only-child > .item:only-child::before {
+  -webkit-mask-image: linear-gradient(#fff, #fff);
+  -webkit-mask-size: 100% var(--branch-w);
+  -webkit-mask-position: left calc(50% - var(--branch-w) / 2);
+  -webkit-mask-repeat: no-repeat;
+  mask-image: linear-gradient(#fff, #fff);
+  mask-size: 100% var(--branch-w);
+  mask-position: left calc(50% - var(--branch-w) / 2);
+  mask-repeat: no-repeat;
+  mask-composite: add;
 }
 
 .group-header {
