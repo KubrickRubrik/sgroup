@@ -88,7 +88,7 @@ export const MAX_PAGES = 6;
 /** Default page id created for legacy files and empty stores. */
 export const DEFAULT_PAGE_ID = 'map';
 
-export type PageKind = 'files' | 'notes' | 'links';
+export type PageKind = 'files' | 'notes' | 'links' | 'review';
 export type MapLayout = 'chips' | 'list';
 export type GroupsLayout = 'flow' | '1' | '2' | '3';
 
@@ -118,7 +118,9 @@ export function normalizeGroupDescription(value: unknown): string | undefined {
 }
 
 export function normalizePageKind(value: unknown): PageKind | undefined {
-  return value === 'files' || value === 'notes' || value === 'links' ? value : undefined;
+  return value === 'files' || value === 'notes' || value === 'links' || value === 'review'
+    ? value
+    : undefined;
 }
 
 export function normalizeMapLayout(value: unknown): MapLayout {
@@ -204,6 +206,8 @@ export interface Appearance {
   problemsInfo: boolean;
   /** Syn3 UI language for menus and settings of this profile. */
   language: Syn3Locale;
+  /** Auto-refresh interval for review pages, seconds (30–3600). */
+  reviewRefreshSec: number;
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -234,6 +238,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   problemsWarning: true,
   problemsInfo: true,
   language: 'ru',
+  reviewRefreshSec: 60,
 };
 
 const FONT_SCALE_MIN = 0.6;
@@ -245,6 +250,9 @@ const MULTIPLIER_STEP = 0.1;
 const SATURATION_STEP = 5;
 const GRADIENT_STEP = 1;
 const OPEN_FILE_DURATION_STEP = 0.1;
+const REVIEW_REFRESH_MIN = 30;
+const REVIEW_REFRESH_MAX = 3600;
+const REVIEW_REFRESH_STEP = 10;
 
 export function snapFontScale(value: number): number {
   return snap(value, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP);
@@ -270,6 +278,11 @@ export function snapPercent(value: number): number {
 /** Open-tab blink cycle, seconds. */
 export function snapOpenFileDuration(value: number): number {
   return snap(value, 0, 3, OPEN_FILE_DURATION_STEP);
+}
+
+/** Review page auto-refresh interval, seconds. */
+export function snapReviewRefreshSec(value: number): number {
+  return snap(value, REVIEW_REFRESH_MIN, REVIEW_REFRESH_MAX, REVIEW_REFRESH_STEP);
 }
 
 function snap(value: number, min: number, max: number, step: number): number {
@@ -308,6 +321,9 @@ export function normalizeAppearance(raw: unknown): Appearance {
     openLinksInCursor: boolOr(source.openLinksInCursor, DEFAULT_APPEARANCE.openLinksInCursor),
     ...normalizeProblemsFilters(source),
     language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
+    reviewRefreshSec: snapReviewRefreshSec(
+      numOr(source.reviewRefreshSec, DEFAULT_APPEARANCE.reviewRefreshSec),
+    ),
   };
 }
 

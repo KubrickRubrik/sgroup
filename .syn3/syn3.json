@@ -12,6 +12,10 @@
     "page-page-2": {
       "name": "Тест ссылок",
       "kind": "links"
+    },
+    "page-page-3": {
+      "name": "Тест ревью",
+      "kind": "review"
     }
   },
   "markers": {
@@ -199,7 +203,7 @@
       "page": "map"
     },
     "right": {
-      "page": "map"
+      "page": "page-page-3"
     },
     "open": {
       "bottom": false,

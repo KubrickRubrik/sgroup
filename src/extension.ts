@@ -82,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.globalState,
     context.workspaceState,
     languages,
+    context.secrets,
   );
   const settings = new SettingsPanel(store, context.extensionUri);
 

@@ -624,9 +624,59 @@
   /** @type {{ anchor: HTMLButtonElement, kind: 'file' | 'dir', relPath: string } | null} */
   let problemPanelState = null;
 
+  /**
+   * @typedef {{
+   *   pageId: string,
+   *   loading?: boolean,
+   *   error?: string,
+   *   empty?: boolean,
+   *   messages?: Array<{
+   *     id: string,
+   *     content: string,
+   *     timestamp: string,
+   *     isMr: boolean,
+   *     webUrl?: string,
+   *     title?: string,
+   *     draft?: boolean,
+   *     threadId?: string,
+   *     replies: Array<{ id: string, content: string, timestamp: string, isReview: boolean }>,
+   *     repliesHasMore: boolean
+   *   }>,
+   *   canLoadOlder?: boolean,
+   *   canLoadNewer?: boolean,
+   *   focusMessageId?: string
+   * }} ReviewState
+   */
+  /** @type {ReviewState | null} */
+  let reviewState = null;
+  /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, provider: 'gitlab' | 'github' } | null} */
+  let reviewMrPanel = null;
+
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'state') {
+    if (message.type === 'reviewState') {
+      reviewState = message.review || null;
+      if (activePage()?.kind === 'review') {
+        paintReviewPage();
+      }
+    } else if (message.type === 'reviewMrPanel') {
+      reviewMrPanel = {
+        pageId: message.pageId,
+        branches: Array.isArray(message.branches) ? message.branches : [],
+        parent: typeof message.parent === 'string' ? message.parent : '',
+        people: Array.isArray(message.people) ? message.people : [],
+        provider: message.provider === 'github' ? 'github' : 'gitlab',
+      };
+      openReviewMrPanel();
+    } else if (message.type === 'reviewCreatePagePanel') {
+      openReviewCreatePagePanel({
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        hasGitlab: message.hasGitlab === true,
+        hasGithub: message.hasGithub === true,
+        hasDiscord: message.hasDiscord === true,
+      });
+    } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
         if (message.stateSeq < stateSeq) {
           return;
@@ -1142,6 +1192,7 @@
     setMenuItemLocaleByAction('createPageFiles', 'menuNewPageGroups');
     setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
     setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
+    setMenuItemLocaleByAction('createPageReview', 'menuNewPageReview');
     setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
@@ -1290,6 +1341,8 @@
     target.replaceChildren();
     if (activePage()?.kind === 'links') {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
+    } else if (activePage()?.kind === 'review') {
+      target.append(menuActionChoice(t('createMr'), { toolbar: 'createMr' }));
     } else {
       target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
       target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
@@ -1301,7 +1354,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1313,6 +1366,15 @@
     }
     if (attrs.deleteAction) {
       button.dataset.deleteAction = attrs.deleteAction;
+    }
+    if (attrs.review) {
+      button.dataset.review = attrs.review;
+    }
+    if (attrs.pageId) {
+      button.dataset.pageId = attrs.pageId;
+    }
+    if (attrs.messageId) {
+      button.dataset.messageId = attrs.messageId;
     }
     return button;
   }
@@ -1481,6 +1543,26 @@
     cancelMenuClose('context');
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
+    if (section === 'reviewMr') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      scroller.append(
+        menuActionChoice(t('reviewBranch'), {
+          review: 'branch',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('reviewChanges'), {
+          review: 'changes',
+          pageId,
+          messageId,
+        }),
+      );
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
     if (section === 'problems') {
       const filters = problemsFilterState();
       scroller.append(
@@ -1794,6 +1876,17 @@
     if (button.dataset.toolbar) {
       closeToolbarMenus();
       postToolbar(button.dataset.toolbar);
+      return;
+    }
+
+    if (button.dataset.review) {
+      closeContextMenu();
+      vscode.postMessage({
+        type: 'reviewStart',
+        pageId: button.dataset.pageId || '',
+        messageId: button.dataset.messageId || '',
+        kind: button.dataset.review,
+      });
       return;
     }
 
@@ -3833,6 +3926,491 @@
     }
   }
 
+  function paintReviewPage() {
+    setCollapseButton();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page review-page';
+    clearDropHighlights();
+    const page = activePage();
+    const pageId = page?.id || '';
+    if (!reviewState || reviewState.pageId !== pageId) {
+      root.append(el('div', 'review-status', '…'));
+      if (pageId) {
+        vscode.postMessage({ type: 'reviewLoad', pageId });
+      }
+      return;
+    }
+    if (reviewState.loading && (!reviewState.messages || reviewState.messages.length === 0)) {
+      root.append(el('div', 'review-status', '…'));
+      return;
+    }
+    if (reviewState.error) {
+      const box = el('div', 'review-error');
+      box.append(el('div', 'review-error-text', reviewState.error || t('reviewSyncError')));
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewLoad', pageId });
+      });
+      box.append(retry);
+      root.append(box);
+      return;
+    }
+    if (reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
+      root.append(el('div', 'empty', t('reviewEmpty')));
+      return;
+    }
+    if (reviewState.contentBlocked) {
+      const warn = el('div', 'review-content-blocked');
+      warn.append(el('div', 'review-content-blocked-text', t('reviewContentBlocked')));
+      const howto = el('button', 'review-howto-link', t('reviewHowToConnect'));
+      howto.type = 'button';
+      howto.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewLoad', pageId });
+      });
+      const actions = el('div', 'review-content-blocked-actions');
+      actions.append(howto, retry);
+      warn.append(actions);
+      root.append(warn);
+    }
+    if (reviewState.canLoadOlder) {
+      const older = el('button', 'review-load-edge', t('reviewLoadOlder'));
+      older.type = 'button';
+      older.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewLoadOlder', pageId });
+      });
+      root.append(older);
+    }
+    const list = el('div', 'review-list');
+    for (const msg of reviewState.messages) {
+      list.append(renderReviewChip(msg, pageId));
+    }
+    root.append(list);
+    if (reviewState.canLoadNewer) {
+      const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
+      newer.type = 'button';
+      newer.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewLoadNewer', pageId });
+      });
+      root.append(newer);
+    }
+    if (reviewState.focusMessageId) {
+      const focused = root.querySelector('[data-review-id="' + reviewState.focusMessageId + '"]');
+      if (focused instanceof HTMLElement) {
+        focused.classList.add('is-focus');
+        focused.scrollIntoView({ block: 'nearest' });
+        vscode.postMessage({ type: 'reviewClearFocus', pageId });
+      }
+    }
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   */
+  function renderReviewChip(msg, pageId) {
+    const wrap = el('div', 'review-chip-wrap' + (msg.isMr ? ' is-mr' : ''));
+    wrap.dataset.reviewId = msg.id;
+    const chip = el('div', 'review-chip' + (msg.isMr ? ' is-mr' : ''));
+    const raw = typeof msg.content === 'string' ? msg.content.trim() : '';
+    const missing = msg.contentMissing === true || !raw;
+    if (msg.author) {
+      chip.append(el('div', 'review-chip-author', '@' + msg.author));
+    }
+    const title = msg.isMr
+      ? (msg.draft ? 'Draft · ' : '') + (msg.title || raw.split('\n')[2] || raw.slice(0, 80) || t('reviewEmptyMessage'))
+      : missing
+        ? t('reviewEmptyMessage')
+        : raw.slice(0, 120);
+    chip.append(el('div', 'review-chip-title' + (missing && !msg.isMr ? ' is-missing' : ''), title));
+    if (msg.webUrl) {
+      const link = el('a', 'review-chip-url', msg.webUrl);
+      link.href = msg.webUrl;
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        vscode.postMessage({ type: 'openExternal', url: msg.webUrl });
+      });
+      chip.append(link);
+    } else if (!msg.isMr && raw && !missing) {
+      chip.append(el('div', 'review-chip-body', raw.slice(0, 200)));
+    }
+    if (msg.isMr) {
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+    }
+    wrap.append(chip);
+    if (msg.threadId || (msg.replies && msg.replies.length) || msg.repliesHasMore) {
+      const thread = el('div', 'review-thread');
+      if (msg.repliesHasMore) {
+        const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
+        more.type = 'button';
+        more.addEventListener('click', () => {
+          vscode.postMessage({ type: 'reviewLoadThread', pageId, messageId: msg.id });
+        });
+        thread.append(more);
+      }
+      for (const reply of msg.replies || []) {
+        const child = el('div', 'review-reply' + (reply.isReview ? ' is-review' : ''));
+        const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
+        const replyMissing = reply.contentMissing === true || !replyText;
+        if (reply.author) {
+          child.append(el('div', 'review-chip-author', '@' + reply.author));
+        }
+        child.append(
+          el(
+            'div',
+            'review-reply-text' + (replyMissing && !reply.isReview ? ' is-missing' : ''),
+            reply.isReview
+              ? replyText.split('\n')[0] || 'R-SYN3'
+              : replyMissing
+                ? t('reviewEmptyMessage')
+                : replyText.slice(0, 160),
+          ),
+        );
+        thread.append(child);
+      }
+      wrap.append(thread);
+    }
+    return wrap;
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewMr', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  function closeReviewMrPanel() {
+    document.getElementById('review-mr-panel')?.remove();
+    reviewMrPanel = null;
+  }
+
+  function closeReviewCreatePagePanel() {
+    document.getElementById('review-create-page-panel')?.remove();
+  }
+
+  /**
+   * @param {{ origin: string, suggestedProvider: 'gitlab' | 'github', hasGitlab: boolean, hasGithub: boolean, hasDiscord: boolean }} opts
+   */
+  function openReviewCreatePagePanel(opts) {
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    const panel = el('div', 'review-mr-panel review-create-page-panel');
+    panel.id = 'review-create-page-panel';
+    const header = el('div', 'review-create-page-header');
+    header.append(el('div', 'review-mr-people-title', t('reviewCreatePageTitle')));
+    const howTo = el('button', 'review-howto-link', t('reviewHowToConnect'));
+    howTo.type = 'button';
+    howTo.addEventListener('click', () => {
+      vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+    });
+    header.append(howTo);
+    panel.append(header);
+
+    /**
+     * @param {string} labelKey
+     * @param {{ type?: string, value?: string, placeholder?: string, password?: boolean }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : field.type || 'text';
+      if (field.value) {
+        input.value = field.value;
+      }
+      if (field.placeholder) {
+        input.placeholder = field.placeholder;
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = fieldRow('reviewFieldPageName', { placeholder: 'Review' });
+    const channelInput = fieldRow('reviewFieldChannelId', { placeholder: '123456789012345678' });
+
+    /** @type {'gitlab' | 'github'} */
+    let provider = opts.suggestedProvider === 'github' ? 'github' : 'gitlab';
+    const providerBox = el('div', 'review-provider-row');
+    providerBox.append(el('div', 'review-mr-people-title', t('reviewFieldProvider')));
+    const providerChoices = el('div', 'review-provider-choices');
+    /** @type {HTMLButtonElement[]} */
+    const providerButtons = [];
+    for (const value of /** @type {const} */ (['gitlab', 'github'])) {
+      const btn = el(
+        'button',
+        'review-btn review-provider-btn' + (provider === value ? ' is-primary' : ''),
+        t(value === 'github' ? 'reviewProviderGithub' : 'reviewProviderGitlab'),
+      );
+      btn.type = 'button';
+      btn.dataset.provider = value;
+      btn.addEventListener('click', () => {
+        provider = value;
+        for (const other of providerButtons) {
+          other.classList.toggle('is-primary', other.dataset.provider === provider);
+        }
+        renderHostToken();
+      });
+      providerButtons.push(btn);
+      providerChoices.append(btn);
+    }
+    providerBox.append(providerChoices);
+    panel.append(providerBox);
+
+    const repoInput = fieldRow('reviewFieldRepoUrl', { value: opts.origin });
+    const peopleInput = fieldRow('reviewFieldPeople', {
+      placeholder: 'alice, bob=Bob Smith',
+    });
+
+    const hostTokenSlot = el('div', 'review-host-token-slot');
+    panel.append(hostTokenSlot);
+
+    /** @type {HTMLInputElement | null} */
+    let hostTokenInput = null;
+
+    function renderHostToken() {
+      hostTokenSlot.replaceChildren();
+      hostTokenInput = null;
+      const saved = provider === 'github' ? opts.hasGithub : opts.hasGitlab;
+      const labelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
+      if (saved) {
+        hostTokenSlot.append(el('div', 'review-token-hint', t(labelKey) + ': ' + t('reviewTokenSaved')));
+        return;
+      }
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = 'password';
+      label.append(input);
+      hostTokenSlot.append(label);
+      hostTokenInput = input;
+    }
+    renderHostToken();
+
+    /** @type {HTMLInputElement | null} */
+    let discordInput = null;
+    if (opts.hasDiscord) {
+      const saved = el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved'));
+      panel.append(saved);
+    } else {
+      discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewCreatePagePanel());
+    const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      error.hidden = true;
+      error.textContent = '';
+      const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const repoUrl = repoInput.value.trim();
+      if (!name) {
+        error.textContent = t('reviewFieldPageName');
+        error.hidden = false;
+        nameInput.focus();
+        return;
+      }
+      if (!/^\d{5,}$/.test(channelId)) {
+        error.textContent = t('reviewFieldChannelId');
+        error.hidden = false;
+        channelInput.focus();
+        return;
+      }
+      if (!repoUrl) {
+        error.textContent = t('reviewFieldRepoUrl');
+        error.hidden = false;
+        repoInput.focus();
+        return;
+      }
+      const hostSaved = provider === 'github' ? opts.hasGithub : opts.hasGitlab;
+      const hostLabelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
+      if (!hostSaved && !(hostTokenInput?.value || '').trim()) {
+        error.textContent = t(hostLabelKey);
+        error.hidden = false;
+        hostTokenInput?.focus();
+        return;
+      }
+      if (!opts.hasDiscord && !(discordInput?.value || '').trim()) {
+        error.textContent = t('reviewFieldDiscordToken');
+        error.hidden = false;
+        discordInput?.focus();
+        return;
+      }
+      const hostToken = hostTokenInput?.value.trim() || undefined;
+      vscode.postMessage({
+        type: 'reviewCreatePage',
+        name,
+        provider,
+        channelId,
+        repoUrl,
+        people: peopleInput.value,
+        gitlabToken: provider === 'gitlab' ? hostToken : undefined,
+        githubToken: provider === 'github' ? hostToken : undefined,
+        discordToken: discordInput?.value.trim() || undefined,
+      });
+      closeReviewCreatePagePanel();
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    document.body.append(panel);
+    nameInput.focus();
+  }
+
+  function openReviewMrPanel() {
+    closeReviewMrPanel();
+    if (!reviewMrPanel) {
+      return;
+    }
+    const isGithub = reviewMrPanel.provider === 'github';
+    const createLabel = t(isGithub ? 'createPr' : 'createMr');
+    const panel = el('div', 'review-mr-panel');
+    panel.id = 'review-mr-panel';
+    const titleRow = el('div', 'review-mr-title-row');
+    const draftChip = el('button', 'review-draft-chip', 'Draft');
+    draftChip.type = 'button';
+    draftChip.dataset.on = '1';
+    draftChip.classList.add('is-on');
+    draftChip.addEventListener('click', () => {
+      const on = draftChip.dataset.on === '1';
+      draftChip.dataset.on = on ? '0' : '1';
+      draftChip.classList.toggle('is-on', !on);
+    });
+    const titleInput = document.createElement('input');
+    titleInput.className = 'review-mr-title';
+    titleInput.placeholder = t(isGithub ? 'reviewPrTitlePlaceholder' : 'reviewMrTitlePlaceholder');
+    titleRow.append(draftChip, titleInput);
+    panel.append(titleRow);
+
+    const branchLabel = el('label', 'review-mr-field', createLabel);
+    const branchSelect = document.createElement('select');
+    branchSelect.className = 'review-mr-select';
+    for (const branch of reviewMrPanel.branches) {
+      const opt = document.createElement('option');
+      opt.value = branch;
+      opt.textContent = branch + (branch === reviewMrPanel.parent ? ' ←' : '');
+      if (branch === reviewMrPanel.parent) {
+        opt.selected = true;
+      }
+      branchSelect.append(opt);
+    }
+    if (!reviewMrPanel.branches.length && reviewMrPanel.parent) {
+      const opt = document.createElement('option');
+      opt.value = reviewMrPanel.parent;
+      opt.textContent = reviewMrPanel.parent;
+      opt.selected = true;
+      branchSelect.append(opt);
+    }
+    branchLabel.append(branchSelect);
+    panel.append(branchLabel);
+
+    /** @type {Set<string>} */
+    const reviewers = new Set();
+    /** @type {Set<string>} */
+    const assignees = new Set();
+    const peopleBox = el('div', 'review-mr-people');
+    peopleBox.append(el('div', 'review-mr-people-title', 'Reviewers / Assignees'));
+    for (const person of reviewMrPanel.people) {
+      const row = el('div', 'review-mr-person');
+      const label = person.name ? person.name + ' (' + person.nick + ')' : person.nick;
+      row.append(el('span', 'review-mr-person-name', label));
+      const rev = el('button', 'review-person-toggle', 'R');
+      rev.type = 'button';
+      rev.title = 'Reviewer';
+      rev.addEventListener('click', () => {
+        if (reviewers.has(person.nick)) {
+          reviewers.delete(person.nick);
+          rev.classList.remove('is-on');
+        } else {
+          reviewers.add(person.nick);
+          rev.classList.add('is-on');
+        }
+      });
+      const asg = el('button', 'review-person-toggle', 'A');
+      asg.type = 'button';
+      asg.title = 'Assignee';
+      asg.addEventListener('click', () => {
+        if (assignees.has(person.nick)) {
+          assignees.delete(person.nick);
+          asg.classList.remove('is-on');
+        } else {
+          assignees.add(person.nick);
+          asg.classList.add('is-on');
+        }
+      });
+      row.append(rev, asg);
+      peopleBox.append(row);
+    }
+    panel.append(peopleBox);
+
+    const squash = document.createElement('input');
+    squash.type = 'checkbox';
+    squash.checked = true;
+    if (!isGithub) {
+      const squashRow = el('label', 'review-mr-field review-mr-squash');
+      squashRow.append(squash, document.createTextNode(' Squash'));
+      panel.append(squashRow);
+    }
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', 'Cancel');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewMrPanel());
+    const submit = el('button', 'review-btn is-primary', createLabel);
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      const title = titleInput.value.trim();
+      if (!title) {
+        titleInput.focus();
+        return;
+      }
+      const pageId = reviewMrPanel?.pageId;
+      if (!pageId) {
+        return;
+      }
+      vscode.postMessage({
+        type: 'reviewCreateMr',
+        pageId,
+        title,
+        draft: draftChip.dataset.on === '1',
+        targetBranch: branchSelect.value,
+        reviewers: [...reviewers],
+        assignees: [...assignees],
+        squash: squash.checked,
+      });
+      closeReviewMrPanel();
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    document.body.append(panel);
+    titleInput.focus();
+  }
+
   function paintLinksPage() {
     const links = pageLinks();
     const key = linkStructureKey(links);
@@ -4463,6 +5041,11 @@
       return;
     }
     const page = activePage();
+    if (page?.kind === 'review') {
+      closeGroupPanel(false);
+      paintReviewPage();
+      return;
+    }
     if (page?.kind === 'links') {
       if (openGroupPanel?.mode === 'create') {
         // Keep create draft if host asked for it on this surface.
@@ -4831,9 +5414,11 @@
       chip.title =
         page.kind === 'links'
           ? page.name + ' (' + t('pageKindLinks') + ')'
-          : page.kind === 'notes'
-            ? page.name + ' (' + t('pageKindNotes') + ')'
-            : page.name + ' (' + t('pageKindFiles') + ')';
+          : page.kind === 'review'
+            ? page.name + ' (' + t('pageKindReview') + ')'
+            : page.kind === 'notes'
+              ? page.name + ' (' + t('pageKindNotes') + ')'
+              : page.name + ' (' + t('pageKindFiles') + ')';
       chip.addEventListener('click', () => setActivePage(page.id));
       chip.addEventListener('dragstart', (event) => {
         pageDragId = page.id;

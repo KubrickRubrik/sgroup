@@ -29,7 +29,8 @@
         "problemsError": true,
         "problemsWarning": true,
         "problemsInfo": true,
-        "language": "en"
+        "language": "en",
+        "reviewRefreshSec": 60
       },
       "open": {
         "bottom": false,
@@ -65,7 +66,8 @@
         "problemsError": true,
         "problemsWarning": true,
         "problemsInfo": true,
-        "language": "ru"
+        "language": "ru",
+        "reviewRefreshSec": 30
       },
       "open": {
         "bottom": false,

@@ -562,6 +562,16 @@ export class SettingsPanel implements vscode.Disposable {
     </section>
 
     <section>
+      <h2 data-i18n="sectionReview">Review</h2>
+      <div class="row">
+        <label for="reviewRefreshSec" data-i18n="labelReviewRefreshSec">Refresh interval</label>
+        <input id="reviewRefreshSec" type="range" min="30" max="3600" step="10">
+        <span class="value" data-for="reviewRefreshSec"></span>
+      </div>
+      <p class="note" data-i18n="noteReviewRefresh"></p>
+    </section>
+
+    <section>
       <h2 data-i18n="sectionPositions">Card positions</h2>
       <p class="note" data-i18n="notePositions"></p>
       <div class="sync-actions">
@@ -708,7 +718,7 @@ export class SettingsPanel implements vscode.Disposable {
       'fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale',
       'gradientDirection', 'cardFill', 'cardBorder',
       'bgFolder', 'bgFile', 'bgSubgroup', 'bgClass', 'bgNote', 'bgHover',
-      'labelSaturation', 'openFileDuration',
+      'labelSaturation', 'openFileDuration', 'reviewRefreshSec',
     ];
     const percentKeys = {
       labelSaturation: true,
@@ -764,6 +774,7 @@ export class SettingsPanel implements vscode.Disposable {
       if (percentKeys[key]) return Math.round(value) + '%';
       if (key === 'fontScale') return Number(value).toFixed(1) + '×';
       if (key === 'openFileDuration') return Number(value).toFixed(1) + ' ' + tr('secondsUnit');
+      if (key === 'reviewRefreshSec') return Math.round(Number(value)) + ' ' + tr('secondsUnit');
       return Number(value).toFixed(2);
     }
 

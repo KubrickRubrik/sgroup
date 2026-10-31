@@ -19,11 +19,15 @@ import {
   normalizeGroupsLayout,
   normalizeMapLayout,
   normalizePageKind,
+  snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
+import { ReviewKind } from './reviewPending';
+import { ReviewMapController, ReviewPageState } from './reviewMap';
+import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 /** Legacy workspace keys for active page per surface (migrated into syn3.json once). */
@@ -162,6 +166,8 @@ type IncomingToolbarAction =
   | 'createPageFiles'
   | 'createPageNotes'
   | 'createPageLinks'
+  | 'createPageReview'
+  | 'createMr'
   | 'renamePage'
   | 'deletePage'
   | 'toggleBottom'
@@ -317,7 +323,42 @@ type IncomingMessage =
       id?: string;
       name?: string;
     }
-  | { type: 'setAppearance'; appearance: Partial<Appearance> };
+  | { type: 'setAppearance'; appearance: Partial<Appearance> }
+  | { type: 'reviewLoad'; pageId: string }
+  | { type: 'reviewLoadOlder'; pageId: string }
+  | { type: 'reviewLoadNewer'; pageId: string }
+  | { type: 'reviewLoadThread'; pageId: string; messageId: string }
+  | { type: 'reviewClearFocus'; pageId: string }
+  | {
+      type: 'reviewCreateMr';
+      pageId: string;
+      title: string;
+      draft: boolean;
+      targetBranch: string;
+      reviewers: string[];
+      assignees: string[];
+      squash: boolean;
+    }
+  | { type: 'reviewDiscordRefresh'; pageId: string; webUrl: string; sourceBranch: string }
+  | {
+      type: 'reviewStart';
+      pageId: string;
+      messageId: string;
+      kind: ReviewKind;
+    }
+  | { type: 'reviewRetryFile'; pageId: string; messageId: string }
+  | {
+      type: 'reviewCreatePage';
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      people: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    }
+  | { type: 'reviewOpenSetupDoc' };
 
 interface DirListingEntry {
   name: string;
@@ -597,17 +638,32 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly stateSeq = new WeakMap<vscode.Webview, number>();
   /** Coalesces refresh bursts and lets the caller finish switching the active page first. */
   private readonly stateDelay = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
+  private readonly review: ReviewMapController;
+  /** MR waiting for Discord retry after a failed post. */
+  private pendingDiscordMr?: { pageId: string; mr: ReviewMr };
+  /** Per-webview interval for review page Discord poll. */
+  private readonly reviewRefreshTimers = new Map<vscode.Webview, ReturnType<typeof setInterval>>();
 
   constructor(
     private readonly store: MarkerStore,
-    extensionUri: vscode.Uri,
+    private readonly extensionUri: vscode.Uri,
     private readonly memento: vscode.Memento,
     private readonly workspaceState: vscode.Memento,
     languages?: CodeLanguageService,
+    secrets?: vscode.SecretStorage,
   ) {
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
     this.ownsLanguages = !languages;
     this.languages = languages ?? new CodeLanguageService(extensionUri.fsPath);
+    this.review = new ReviewMapController(
+      store.root,
+      secrets ?? {
+        get: async () => undefined,
+        store: async () => undefined,
+        delete: async () => undefined,
+        onDidChange: () => ({ dispose() {} }),
+      },
+    );
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
     this.dirtyWatcher = new DirtyPathWatcher(store, (paths) => {
@@ -661,7 +717,54 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       clearTimeout(timer);
     }
     this.stateDelay.clear();
+    for (const timer of this.reviewRefreshTimers.values()) {
+      clearInterval(timer);
+    }
+    this.reviewRefreshTimers.clear();
     this.subscriptions.forEach((s) => s.dispose());
+  }
+
+  private clearReviewRefresh(webview: vscode.Webview): void {
+    const timer = this.reviewRefreshTimers.get(webview);
+    if (timer) {
+      clearInterval(timer);
+      this.reviewRefreshTimers.delete(webview);
+    }
+  }
+
+  private armReviewRefresh(webview: vscode.Webview): void {
+    this.clearReviewRefresh(webview);
+    if (!this.readyWebviews.has(webview) || !this.webviews.has(webview)) {
+      return;
+    }
+    const pageId = this.pageIdFor(webview);
+    if (this.store.page(pageId)?.kind !== 'review') {
+      return;
+    }
+    const sec = snapReviewRefreshSec(this.store.appearance.reviewRefreshSec);
+    const timer = setInterval(() => {
+      void this.tickReviewRefresh(webview);
+    }, sec * 1000);
+    this.reviewRefreshTimers.set(webview, timer);
+  }
+
+  private rearmAllReviewRefresh(): void {
+    for (const webview of this.webviews) {
+      this.armReviewRefresh(webview);
+    }
+  }
+
+  private async tickReviewRefresh(webview: vscode.Webview): Promise<void> {
+    if (!this.webviews.has(webview) || !this.readyWebviews.has(webview)) {
+      this.clearReviewRefresh(webview);
+      return;
+    }
+    const pageId = this.pageIdFor(webview);
+    if (this.store.page(pageId)?.kind !== 'review') {
+      this.clearReviewRefresh(webview);
+      return;
+    }
+    await this.pushReviewState(webview, await this.review.pollRefresh(pageId));
   }
 
   // ---- section inside Explorer ----
@@ -684,6 +787,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
     });
     view.onDidDispose(() => {
+      this.clearReviewRefresh(webview);
       this.webviews.delete(webview);
       if (this.bottomView === view) {
         this.bottomView = undefined;
@@ -1457,6 +1561,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
     });
     panel.onDidDispose(() => {
+      this.clearReviewRefresh(panel.webview);
       this.webviews.delete(panel.webview);
       const wasSlot = this.clearPanelSlot(side, panel);
       if (wasSlot && this.closingColumn !== side && this.store.ready) {
@@ -1698,15 +1803,28 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       await this.postState(webview);
       await this.syncFocusContext();
+      const readyPage = this.pageIdFor(webview);
+      if (this.store.page(readyPage)?.kind === 'review') {
+        await this.pushReviewState(webview, await this.review.loadInitial(readyPage));
+      }
+      this.armReviewRefresh(webview);
       return;
     }
     if (message.type === 'activePage') {
       const prev = this.pageIdFor(webview);
+      const switched = message.pageId !== prev;
       this.rememberFocus(webview, message.pageId);
-      if (this.pageIdFor(webview) !== prev) {
+      if (switched) {
         this.scheduleState(webview);
       }
       await this.syncFocusContext();
+      // Only fetch Discord when entering a review page — state churn must not re-hit the API.
+      if (switched && this.store.page(message.pageId)?.kind === 'review') {
+        await this.pushReviewState(webview, await this.review.loadInitial(message.pageId));
+      }
+      if (switched) {
+        this.armReviewRefresh(webview);
+      }
       return;
     }
     if (message.type === 'mapFocus') {
@@ -1815,10 +1933,96 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.onProfile(message.action, message.id, message.name);
       return;
     }
+    if (message.type === 'reviewLoad') {
+      await this.pushReviewState(webview, await this.review.loadInitial(message.pageId));
+      return;
+    }
+    if (message.type === 'reviewLoadOlder') {
+      await this.pushReviewState(webview, await this.review.loadOlder(message.pageId));
+      return;
+    }
+    if (message.type === 'reviewLoadNewer') {
+      await this.pushReviewState(webview, await this.review.loadNewer(message.pageId));
+      return;
+    }
+    if (message.type === 'reviewLoadThread') {
+      await this.pushReviewState(
+        webview,
+        await this.review.loadMoreThread(message.pageId, message.messageId),
+      );
+      return;
+    }
+    if (message.type === 'reviewClearFocus') {
+      this.review.clearFocus(message.pageId);
+      await this.pushReviewState(webview, this.review.snapshot(message.pageId));
+      return;
+    }
+    if (message.type === 'reviewCreateMr') {
+      const result = await this.review.createMrFromPanel(message.pageId, {
+        title: message.title,
+        draft: message.draft,
+        targetBranch: message.targetBranch,
+        reviewers: message.reviewers,
+        assignees: message.assignees,
+        squash: message.squash,
+      });
+      await this.handleReviewMrResult(webview, message.pageId, result);
+      return;
+    }
+    if (message.type === 'reviewDiscordRefresh') {
+      const mr =
+        this.pendingDiscordMr?.pageId === message.pageId
+          ? this.pendingDiscordMr.mr
+          : ({
+              iid: 0,
+              title: '',
+              web_url: message.webUrl,
+              draft: false,
+              source_branch: message.sourceBranch,
+              target_branch: '',
+              author: { username: '' },
+              assignees: [],
+              reviewers: [],
+            } satisfies ReviewMr);
+      const result = await this.review.retryDiscordPost(message.pageId, mr);
+      await this.handleReviewMrResult(webview, message.pageId, result);
+      return;
+    }
+    if (message.type === 'reviewStart') {
+      const result = await this.review.startOrSendReview(
+        message.pageId,
+        message.messageId,
+        message.kind,
+      );
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewRetryFile') {
+      const result = await this.review.retryReviewFile(message.pageId, message.messageId);
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewCreatePage') {
+      await this.createReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'reviewOpenSetupDoc') {
+      const doc = vscode.Uri.joinPath(this.extensionUri, 'docs', 'review-setup.md');
+      try {
+        await vscode.commands.executeCommand('markdown.showPreview', doc);
+      } catch {
+        await vscode.window.showTextDocument(doc, { preview: true });
+      }
+      return;
+    }
     if (message.type === 'setAppearance') {
       this.rememberFocus(webview);
       if (message.appearance && typeof message.appearance === 'object') {
+        const prevRefresh = this.store.appearance.reviewRefreshSec;
         await this.store.setAppearance(message.appearance);
+        if (this.store.appearance.reviewRefreshSec !== prevRefresh) {
+          this.rearmAllReviewRefresh();
+        }
       }
       return;
     }
@@ -3024,14 +3228,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    if (action === 'createMr') {
+      if (this.store.page(activePage)?.kind === 'review') {
+        await this.handleReviewPlus(webview, activePage);
+      }
+      return;
+    }
     if (
       action === 'createPage' ||
       action === 'createPageFiles' ||
       action === 'createPageNotes' ||
-      action === 'createPageLinks'
+      action === 'createPageLinks' ||
+      action === 'createPageReview'
     ) {
       const kind: PageKind =
-        action === 'createPageNotes' ? 'notes' : action === 'createPageLinks' ? 'links' : 'files';
+        action === 'createPageNotes'
+          ? 'notes'
+          : action === 'createPageLinks'
+            ? 'links'
+            : action === 'createPageReview'
+              ? 'review'
+              : 'files';
       await this.createPageFlow(webview, kind);
       return;
     }
@@ -3136,6 +3353,23 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (this.store.pages().length >= MAX_PAGES) {
       return;
     }
+    const pageKind = normalizePageKind(kind) ?? 'files';
+    if (pageKind === 'review') {
+      const defaults = await this.review.createPageDefaults();
+      if ('error' in defaults) {
+        void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+        return;
+      }
+      await webview.postMessage({
+        type: 'reviewCreatePagePanel',
+        origin: defaults.origin,
+        suggestedProvider: defaults.suggestedProvider,
+        hasGitlab: defaults.hasGitlab,
+        hasGithub: defaults.hasGithub,
+        hasDiscord: defaults.hasDiscord,
+      });
+      return;
+    }
     const locale = normalizeLocale(this.store.appearance.language);
     const name = await vscode.window.showInputBox({
       title: t(locale, 'menuNewPage'),
@@ -3146,13 +3380,158 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!name) {
       return;
     }
-    const pageKind = normalizePageKind(kind) ?? 'files';
     const id = await this.store.createPage(name, pageKind);
     if (id) {
       this.activePageByWebview.set(webview, id);
       this.persistSurfacePage(webview, id);
       await webview.postMessage({ type: 'openPage', pageId: id });
     }
+  }
+
+  private async createReviewPageFromPanel(
+    webview: vscode.Webview,
+    message: {
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      people: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    },
+  ): Promise<void> {
+    if (this.store.pages().length >= MAX_PAGES) {
+      return;
+    }
+    const name = message.name.trim();
+    if (!name) {
+      void vscode.window.showErrorMessage('Syn3: page name is required');
+      return;
+    }
+    const provider = isReviewHostProvider(message.provider) ? message.provider : undefined;
+    if (!provider) {
+      void vscode.window.showErrorMessage('Syn3: choose GitLab or GitHub');
+      return;
+    }
+    const defaults = await this.review.createPageDefaults();
+    if ('error' in defaults) {
+      void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+      return;
+    }
+    const accessError = this.review.validateCreateAccess({
+      provider,
+      channelId: message.channelId,
+      repoUrl: message.repoUrl,
+      origin: defaults.origin,
+    });
+    if (accessError) {
+      void vscode.window.showErrorMessage(`Syn3: ${accessError}`);
+      return;
+    }
+    const secrets = await this.review.applyCreatePageSecrets({
+      provider,
+      gitlabToken: message.gitlabToken,
+      githubToken: message.githubToken,
+      discordToken: message.discordToken,
+    });
+    if (!secrets.ok) {
+      void vscode.window.showErrorMessage(`Syn3: ${secrets.message}`);
+      return;
+    }
+    const id = await this.store.createPage(name, 'review');
+    if (!id) {
+      return;
+    }
+    await this.review.savePageAccess(id, {
+      provider,
+      channelId: message.channelId.trim(),
+      repoUrl: defaults.origin,
+      people: this.review.parsePeople(message.people),
+    });
+    this.activePageByWebview.set(webview, id);
+    this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'openPage', pageId: id });
+    // Load once here. Later activePage events for the same pageId are ignored (rate limits).
+    await this.pushReviewState(webview, await this.review.loadInitial(id));
+    this.armReviewRefresh(webview);
+  }
+
+  private async pushReviewState(webview: vscode.Webview, state: ReviewPageState): Promise<void> {
+    await webview.postMessage({ type: 'reviewState', review: state });
+  }
+
+  private async handleReviewPlus(webview: vscode.Webview, pageId: string): Promise<void> {
+    const result = await this.review.handleCreateMr(pageId);
+    if (result.kind === 'needPanel') {
+      await webview.postMessage({
+        type: 'reviewMrPanel',
+        pageId,
+        branches: result.branches,
+        parent: result.parent,
+        people: result.people,
+        provider: result.provider,
+      });
+      return;
+    }
+    await this.handleReviewMrResult(webview, pageId, result);
+  }
+
+  private async handleReviewMrResult(
+    webview: vscode.Webview,
+    pageId: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'discordFail'; mr: ReviewMr; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      return;
+    }
+    if (result.kind === 'discordFail') {
+      this.pendingDiscordMr = { pageId, mr: result.mr };
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewDiscordFail'),
+        t(locale, 'reviewRefresh'),
+      );
+      if (choice === t(locale, 'reviewRefresh')) {
+        const retry = await this.review.retryDiscordPost(pageId, result.mr);
+        await this.handleReviewMrResult(webview, pageId, retry);
+      }
+      return;
+    }
+    this.pendingDiscordMr = undefined;
+    await this.pushReviewState(webview, result.state);
+  }
+
+  private async handleReviewFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    messageId: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        const retry = await this.review.retryReviewFile(pageId, messageId);
+        await this.handleReviewFileResult(webview, pageId, messageId, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
   }
 
   private async renamePageFlow(pageId: string): Promise<void> {
@@ -3177,6 +3556,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const page = this.store.page(pageId);
+    if (page?.kind === 'review') {
+      await this.review.deletePageAccess(pageId);
+    }
     if (!page) {
       return;
     }
@@ -3372,6 +3754,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
               <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Groups</span></button>
               <button type="button" data-action="createPageNotes" role="menuitem"><span data-i18n="menuNewPageNotes">Notes</span></button>
               <button type="button" data-action="createPageLinks" role="menuitem"><span data-i18n="menuNewPageLinks">Links</span></button>
+              <button type="button" data-action="createPageReview" role="menuitem"><span data-i18n="menuNewPageReview">Review</span></button>
             </div>
           </div>
           <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>

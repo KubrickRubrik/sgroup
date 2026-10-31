@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "pages": {
+    "page-page-3": {
+      "provider": "github",
+      "channelId": "1566097491751866419",
+      "repoUrl": "https://github.com/KubrickRubrik/sgroup",
+      "people": [
+        {
+          "nick": "KubrickRubrik"
+        }
+      ]
+    }
+  }
+}
