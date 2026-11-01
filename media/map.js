@@ -31,6 +31,11 @@
   const toolbarCreateMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-create-menu'));
   const toolbarCreateWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-create'));
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
+  const toolbarReviewTab = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-review-tab'));
+  const reviewFilePane = /** @type {HTMLElement | null} */ (document.getElementById('review-file'));
+  const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
+  const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
+  const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
   const toolbarMoreWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-more'));
@@ -305,6 +310,19 @@
     closeToolbarMenus();
     closeContextMenu();
     postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
+  });
+  toolbarReviewTab?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewOpenFileTab',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+    });
+  });
+  reviewFileClose?.addEventListener('click', () => {
+    closeReviewFileView();
   });
   toolbarPanels?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -653,6 +671,8 @@
    *       isReview: boolean,
    *       isPill?: boolean,
    *       pillLabel?: string,
+   *       hasFile?: boolean,
+   *       filename?: string,
    *       contentMissing?: boolean
    *     }>,
    *     repliesHasMore: boolean,
@@ -681,10 +701,28 @@
   const reviewTitleExpanded = new Set();
   /** Plain parents with expanded body + thread. */
   const reviewPlainExpanded = new Set();
+  /** Tree identity aside from fold flags, so a collapse can animate in place. */
+  let reviewStructureKeyValue = '';
+  /** Downloaded review bodies, keyed by Discord message id. */
+  const reviewFileCache = new Map();
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   title: string,
+   *   filename: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   text: string,
+   *   error: string,
+   * } | null}
+   */
+  let reviewFileView = null;
 
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'reviewState') {
+    if (message.type === 'reviewFile') {
+      onReviewFileResult(message);
+    } else if (message.type === 'reviewState') {
       reviewState = message.review || null;
       if (reviewState && reviewState.pageId) {
         reviewAutoLoad.delete(reviewState.pageId);
@@ -1687,6 +1725,13 @@
           messageId,
         }),
       );
+      scroller.append(
+        menuActionChoice(t('menuChangeColor'), {
+          reviewEdit: 'color',
+          pageId,
+          messageId,
+        }),
+      );
       updateMenuScrollbar(contextMenu);
       return;
     }
@@ -2028,6 +2073,14 @@
           messageId,
           title: chip?.title || '',
           isPr: typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl),
+        });
+      } else if (button.dataset.reviewEdit === 'color') {
+        openColorsPanel({
+          kind: 'review',
+          id: messageId,
+          pageId,
+          currentHex: chip?.color || '',
+          allowNone: false,
         });
       } else {
         vscode.postMessage({
@@ -3173,8 +3226,9 @@
   /**
    * Shared color picker panel.
    * @type {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review',
    *   id?: string,
+   *   pageId?: string,
    *   currentHex: string,
    *   allowNone: boolean,
    *   noneDisabled?: boolean,
@@ -3275,6 +3329,12 @@
   document.addEventListener(
     'keydown',
     (event) => {
+      if (reviewFileView && event.key === 'Escape' && !openColorPanel) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeReviewFileView();
+        return;
+      }
       if (openColorPanel && event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -3423,8 +3483,9 @@
 
   /**
    * @param {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review',
    *   id?: string,
+   *   pageId?: string,
    *   currentHex?: string,
    *   allowNone?: boolean,
    *   noneDisabled?: boolean,
@@ -3436,6 +3497,7 @@
     openColorPanel = {
       kind: opts.kind,
       id: opts.id,
+      pageId: opts.pageId,
       currentHex: currentHex.startsWith('#') ? currentHex : currentHex ? currentHex : '',
       allowNone: opts.allowNone !== false,
       noneDisabled: !!opts.noneDisabled,
@@ -3491,6 +3553,16 @@
       closeColorPanel();
       return;
     }
+    if (target.kind === 'review' && target.id && target.pageId && value) {
+      vscode.postMessage({
+        type: 'reviewUpdateMr',
+        pageId: target.pageId,
+        messageId: target.id,
+        color: value,
+      });
+      closeColorPanel();
+      return;
+    }
     closeColorPanel();
   }
 
@@ -3515,6 +3587,8 @@
       colorTarget = { kind: 'link', id: target.id };
     } else if (target.kind === 'marker' && target.id) {
       colorTarget = { kind: 'marker', id: target.id };
+    } else if (target.kind === 'review' && target.id && target.pageId) {
+      colorTarget = { kind: 'review', id: target.id, pageId: target.pageId };
     } else {
       return;
     }
@@ -4280,6 +4354,18 @@
     const edge = reviewPaintEdge(pageId);
     const samePage = !!(reviewState && reviewState.pageId === pageId);
     const keepScroll = samePage && edge !== 'initial' ? currentDocScroll() : 0;
+    const structureKey = reviewStructureKey(pageId, edge);
+    if (
+      structureKey &&
+      structureKey === reviewStructureKeyValue &&
+      root.classList.contains('review-page') &&
+      root.querySelector('.review-tree')
+    ) {
+      syncReviewCollapsed();
+      syncReviewFileMark();
+      return;
+    }
+    reviewStructureKeyValue = structureKey;
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page review-page';
@@ -4387,6 +4473,82 @@
         skel.scrollIntoView({ block: 'nearest' });
       }
     }
+    syncReviewFileMark();
+  }
+
+  /**
+   * Fold flags are omitted so toggling them can reuse the mounted tree.
+   * @param {string} pageId
+   * @param {'initial' | 'older' | 'newer' | ''} edge
+   */
+  function reviewStructureKey(pageId, edge) {
+    const state = reviewState;
+    if (!state || state.pageId !== pageId || edge === 'initial') {
+      return '';
+    }
+    /** @type {string[]} */
+    const chunks = [
+      pageId,
+      edge || '',
+      state.error || '',
+      state.empty ? '1' : '0',
+      state.contentBlocked ? '1' : '0',
+      state.canLoadOlder ? '1' : '0',
+      state.canLoadNewer ? '1' : '0',
+      state.focusMessageId || '',
+      [...reviewTitleExpanded].sort().join(','),
+      [...reviewPlainExpanded].sort().join(','),
+    ];
+    for (const msg of state.messages || []) {
+      chunks.push(
+        msg.id,
+        msg.color || '',
+        msg.title || '',
+        msg.draft ? 'd' : '',
+        msg.timestamp || '',
+        msg.hasThread ? 't' : '',
+        msg.repliesHasMore ? 'm' : '',
+        msg.contentMissing ? 'x' : '',
+        String((msg.content || '').length),
+      );
+      for (const reply of msg.replies || []) {
+        chunks.push(
+          reply.id,
+          reply.pillLabel || '',
+          reply.isPill ? 'p' : '',
+          reply.timestamp || '',
+          reply.hasFile ? 'f' : '',
+          reply.filename || '',
+          reply.contentMissing ? 'x' : '',
+          String((reply.content || '').length),
+        );
+      }
+    }
+    return chunks.join('\u001f');
+  }
+
+  function syncReviewCollapsed() {
+    root.querySelectorAll('.review-node[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const collapsed = reviewCollapsed.has(node.dataset.reviewId || '');
+      node.classList.toggle('is-collapsed', collapsed);
+      const tri = node.querySelector('.review-mr-head .link-chip-tri');
+      if (tri) {
+        tri.classList.toggle('is-collapsed', collapsed);
+      }
+    });
+  }
+
+  function syncReviewFileMark() {
+    const openId = reviewFileView && activePage()?.kind === 'review' ? reviewFileView.messageId : '';
+    root.querySelectorAll('[data-review-reply-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewReplyId === openId);
+    });
   }
 
   /** Stamp block above content (10px * 1.2) + body gap — must match .review-stamp / .review-body. */
@@ -4523,7 +4685,7 @@
       head.append(chipWrap, title);
       body.append(head);
 
-      if (!collapsed && canFold) {
+      if (canFold) {
         body.append(renderReviewThread(msg, pageId, true));
       }
     } else {
@@ -4564,6 +4726,7 @@
    */
   function renderReviewThread(msg, pageId, allowPills) {
     const children = el('div', 'review-children');
+    const clip = el('div', 'review-children-clip');
     const slide = el('div', 'review-children-slide');
     const color = msg.color || '#8e4ec6';
     if (msg.repliesHasMore) {
@@ -4578,10 +4741,11 @@
     for (let index = 0; index < replies.length; index += 1) {
       const next = replies[index + 1];
       slide.append(
-        renderReviewReply(replies[index], color, allowPills, true, next ? color : ''),
+        renderReviewReply(replies[index], color, allowPills, true, next ? color : '', pageId),
       );
     }
-    children.append(slide);
+    clip.append(slide);
+    children.append(clip);
     return children;
   }
 
@@ -4591,11 +4755,13 @@
    * @param {boolean} allowPills
    * @param {boolean} leadingGap
    * @param {string} nextColor stem below this turn (hidden on :last-child via CSS)
+   * @param {string} [pageId]
    */
-  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor) {
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId) {
     const stamp = formatReviewStamp(reply.timestamp);
     const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
     const row = el('div', 'review-reply-node' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewReplyId = reply.id;
     row.style.setProperty('--link-color', color);
     row.append(
       linkElbow(
@@ -4616,6 +4782,11 @@
     if (isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill', reply.pillLabel);
+      chip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewFileView(pageId || '', reply);
+      });
       wrap.append(chip);
       const side = el('div', 'review-side');
       side.append(reviewCommentIcon());
@@ -4638,6 +4809,117 @@
     }
     row.append(body);
     return row;
+  }
+
+  /** @param {string} pageId @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply */
+  function openReviewFileView(pageId, reply) {
+    if (!pageId) {
+      return;
+    }
+    if (reviewFileView && reviewFileView.pageId === pageId && reviewFileView.messageId === reply.id) {
+      closeReviewFileView();
+      return;
+    }
+    const cached = reviewFileCache.get(reply.id);
+    reviewFileView = {
+      pageId,
+      messageId: reply.id,
+      title: reply.pillLabel || reply.filename || t('reviewFileTitle'),
+      filename: (cached && cached.filename) || reply.filename || '',
+      status: cached ? 'ready' : reply.hasFile === false ? 'error' : 'loading',
+      text: cached ? cached.text : '',
+      error: reply.hasFile === false ? t('reviewFileMissing') : '',
+    };
+    mountReviewFile();
+    if (!cached && reply.hasFile !== false) {
+      vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId: reply.id });
+    }
+  }
+
+  function closeReviewFileView() {
+    if (!reviewFileView) {
+      mountReviewFile();
+      return;
+    }
+    reviewFileView = null;
+    mountReviewFile();
+  }
+
+  /** @param {{ messageId?: string, ok?: boolean, text?: string, filename?: string, message?: string }} message */
+  function onReviewFileResult(message) {
+    if (!reviewFileView || reviewFileView.messageId !== message.messageId) {
+      return;
+    }
+    if (message.ok && typeof message.text === 'string') {
+      const filename = message.filename || reviewFileView.filename;
+      reviewFileCache.set(message.messageId, { text: message.text, filename });
+      reviewFileView.status = 'ready';
+      reviewFileView.text = message.text;
+      reviewFileView.filename = filename;
+      reviewFileView.error = '';
+    } else {
+      reviewFileView.status = 'error';
+      reviewFileView.error = message.message || t('reviewFileDownloadFail');
+    }
+    mountReviewFile();
+  }
+
+  function reviewFileSkeleton() {
+    const wrap = el('div', 'review-file-skel');
+    for (const width of ['78%', '100%', '92%', '64%', '100%', '84%', '70%']) {
+      const bar = el('div', 'review-file-skel-bar');
+      bar.style.width = width;
+      wrap.append(bar);
+    }
+    return wrap;
+  }
+
+  function mountReviewFile() {
+    if (!reviewFilePane || !reviewFileBody || !reviewFileTitle) {
+      return;
+    }
+    const view = reviewFileView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      reviewFilePane.hidden = true;
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+      syncReviewFileMark();
+      return;
+    }
+    reviewFilePane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      reviewFilePane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    reviewFileTitle.textContent = view.title || t('reviewFileTitle');
+    reviewFileTitle.title = view.filename || '';
+    if (reviewFileClose) {
+      reviewFileClose.title = t('reviewFileClose');
+      reviewFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    reviewFileBody.replaceChildren();
+    if (view.status === 'loading') {
+      reviewFileBody.append(reviewFileSkeleton());
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+    } else if (view.status === 'error') {
+      reviewFileBody.append(el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')));
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+    } else {
+      reviewFileBody.append(el('pre', 'review-file-text', view.text || ''));
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = false;
+        const label = t('reviewOpenTab');
+        toolbarReviewTab.title = label;
+        toolbarReviewTab.setAttribute('aria-label', label);
+      }
+    }
+    syncReviewFileMark();
   }
 
   /**
@@ -6304,6 +6586,10 @@
       return;
     }
     const page = activePage();
+    if (page?.kind !== 'review' && reviewFileView) {
+      reviewFileView = null;
+      mountReviewFile();
+    }
     if (page?.kind === 'review') {
       closeGroupPanel(false);
       paintReviewPage();
@@ -14267,7 +14553,7 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft', id?: string, section?: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review', id?: string, pageId?: string, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
@@ -14289,6 +14575,13 @@
         vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: colorInput.value });
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
+      } else if (colorTarget.kind === 'review' && colorTarget.id && colorTarget.pageId) {
+        vscode.postMessage({
+          type: 'reviewUpdateMr',
+          pageId: colorTarget.pageId,
+          messageId: colorTarget.id,
+          color: colorInput.value,
+        });
       } else if (colorTarget.id) {
         vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: colorInput.value });
       }

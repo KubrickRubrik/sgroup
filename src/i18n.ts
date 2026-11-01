@@ -165,6 +165,11 @@ const EN = {
   reviewPageSettingsSave: 'Save',
   reviewHowToConnect: 'How to connect',
   reviewEmptyMessage: '(no text)',
+  reviewOpenTab: 'Open in tab',
+  reviewFileTitle: 'Review',
+  reviewFileClose: 'Close',
+  reviewFileMissing: 'This message has no file attached',
+  reviewFileDownloadFail: 'Could not download the review file',
   reviewContentBlocked:
     'Discord returned empty message text. Enable Message Content Intent for the bot (Developer Portal → Bot → Privileged Gateway Intents), then Retry.',
   reviewFieldPageName: 'Page name',
@@ -431,6 +436,11 @@ const RU: Syn3Strings = {
   reviewPageSettingsSave: 'Сохранить',
   reviewHowToConnect: 'Как подключить',
   reviewEmptyMessage: '(нет текста)',
+  reviewOpenTab: 'Открыть во вкладке',
+  reviewFileTitle: 'Ревью',
+  reviewFileClose: 'Закрыть',
+  reviewFileMissing: 'К этому сообщению не приложен файл',
+  reviewFileDownloadFail: 'Не удалось скачать файл ревью',
   reviewContentBlocked:
     'Discord вернул пустой текст сообщений. Включи Message Content Intent у бота (Developer Portal → Bot → Privileged Gateway Intents) и нажми Повторить.',
   reviewFieldPageName: 'Название страницы',

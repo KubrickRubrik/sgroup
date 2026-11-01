@@ -3005,6 +3005,8 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 .review-page {
   --link-branch-gap: 18px;
+  --link-fold-duration: 320ms;
+  --link-fold-ease: cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3038,7 +3040,16 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .review-node.is-collapsed > .review-body > .review-children {
-  display: none;
+  grid-template-rows: 0fr;
+  pointer-events: none;
+}
+
+.review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide {
+  transform: translateY(-100%);
+  visibility: hidden;
+  transition:
+    transform var(--link-fold-duration) var(--link-fold-ease),
+    visibility 0s linear var(--link-fold-duration);
 }
 
 .review-node > .link-elbow {
@@ -3264,14 +3275,112 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 @media (prefers-reduced-motion: reduce) {
   .review-skel-ico,
-  .review-skel-bar {
+  .review-skel-bar,
+  .review-children,
+  .review-children-slide,
+  .review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide {
     animation: none;
+    transition: none;
   }
 }
 
+.review-reply-node.is-file-open > .review-body .review-chip {
+  outline: 1px solid var(--vscode-focusBorder, #3794ff);
+}
+
+.review-file {
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  left: 0;
+  position: fixed;
+  right: 0;
+  z-index: 30;
+}
+
+.review-file-head .history-btn {
+  font-size: 16px;
+  line-height: 1;
+  width: auto;
+  min-width: 22px;
+}
+
+.review-file[hidden] {
+  display: none;
+}
+
+.review-file-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px 4px;
+}
+
+.review-file-title {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-file-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 16px 24px;
+}
+
+.review-file-text {
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.review-file-error {
+  color: var(--vscode-errorForeground, #f14c4c);
+  padding: 12px 0;
+}
+
+.review-file-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.review-file-skel-bar {
+  animation: review-skel-shimmer 1.35s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--vscode-descriptionForeground) 16%, transparent) 0%,
+    color-mix(in srgb, var(--vscode-foreground) 32%, transparent) 45%,
+    color-mix(in srgb, var(--vscode-descriptionForeground) 16%, transparent) 100%
+  );
+  background-size: 220% 100%;
+  border-radius: 5px;
+  height: 10px;
+  max-width: 100%;
+}
+
 .review-children {
+  display: grid;
+  grid-template-rows: 1fr;
   margin: 0 0 0 10px;
+  overflow-anchor: none;
   position: relative;
+  transition: grid-template-rows var(--link-fold-duration) var(--link-fold-ease);
+}
+
+.review-children-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .review-children-slide {
@@ -3279,6 +3388,10 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   flex-direction: column;
   padding-left: var(--link-branch-gap);
   position: relative;
+  transform: translateY(0);
+  transition:
+    transform var(--link-fold-duration) var(--link-fold-ease),
+    visibility 0s linear 0s;
 }
 
 .review-reply-node {

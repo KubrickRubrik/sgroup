@@ -404,6 +404,19 @@ export function replaceMrDiscordHead(content: string, draft: boolean, title: str
   return lines.join('\n');
 }
 
+/** Set or append the `color: #rrggbb` line. Other lines stay as they are. */
+export function replaceMrDiscordColor(content: string, color: string): string {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const next = `color: ${color}`;
+  const idx = lines.findIndex((line) => line.trim().toLowerCase().startsWith('color:'));
+  if (idx >= 0) {
+    lines[idx] = next;
+  } else {
+    lines.push(next);
+  }
+  return lines.join('\n');
+}
+
 export async function postChannelMessage(
   token: string,
   channelId: string,

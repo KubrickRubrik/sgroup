@@ -25,8 +25,10 @@ import {
   parseMrChip,
   parseReviewAttachment,
   parseReviewMessagePill,
+  fetchAttachmentText,
   postChannelMessage,
   postMessageWithFile,
+  replaceMrDiscordColor,
   replaceMrDiscordHead,
   sortMessagesAsc,
 } from './discordApi';
@@ -40,6 +42,7 @@ import {
 import { createMergeRequest, findOpenMrByBranch, updateMergeRequest } from './gitlabApi';
 import { createPullRequest, findOpenPrByBranch, updatePullRequest } from './githubApi';
 import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
+import { normalizeHex } from './palette';
 import {
   detectProviderFromRepoUrl,
   providerMatchesRepo,
@@ -49,6 +52,7 @@ import {
 import { deleteReviewFile, runReviewSkill, writeReviewFile } from './reviewAgent';
 import { ReviewKind, ReviewPendingStore } from './reviewPending';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 
 export interface ReviewThreadMsg {
@@ -61,6 +65,9 @@ export interface ReviewThreadMsg {
   isPill?: boolean;
   /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | L:5`. */
   pillLabel?: string;
+  /** Discord attachment on this message. The CDN url stays on the host. */
+  hasFile?: boolean;
+  filename?: string;
   contentMissing?: boolean;
 }
 
@@ -128,13 +135,21 @@ function toChip(
   };
 }
 
+function reviewAttachment(msg: DiscordMessage): { filename: string; url: string } | undefined {
+  const files = msg.attachments ?? [];
+  return files.find((file) => /\.(md|markdown|txt)$/i.test(file.filename)) ?? files[0];
+}
+
 function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
+  const file = reviewAttachment(msg);
   return {
     id: msg.id,
     content: msg.content,
     author: msg.author,
     timestamp: msg.timestamp,
     isReview: isReviewMessage(msg.content),
+    hasFile: !!file,
+    filename: file?.filename,
     contentMissing: msg.contentMissing,
   };
 }
@@ -277,6 +292,8 @@ export class ReviewMapController {
   private readonly errors = new Map<string, string>();
   /** Cached pill labels from message text, keyed by reply message id. */
   private readonly replyMeta = new Map<string, { isPill: boolean; pillLabel?: string }>();
+  /** Downloaded review attachments, keyed by Discord message id. */
+  private readonly fileCache = new Map<string, { filename: string; text: string }>();
 
   constructor(
     private readonly root: vscode.Uri,
@@ -1040,12 +1057,13 @@ export class ReviewMapController {
   }
 
   /**
-   * Rename or toggle draft on the host MR/PR, then rewrite the Discord chip.
+   * Rename or toggle draft on the host MR/PR, or recolor the Discord chip.
+   * Color stays in the Discord body and does not touch the host MR/PR.
    */
   async updateMrChip(
     pageId: string,
     messageId: string,
-    patch: { title?: string; draft?: boolean },
+    patch: { title?: string; draft?: boolean; color?: string },
   ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
     const win = this.windows.get(pageId);
     const access = await this.getAccess(pageId);
@@ -1056,6 +1074,9 @@ export class ReviewMapController {
     }
     if (!isMrMessage(parent.content)) {
       return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    }
+    if (patch.color !== undefined && patch.title === undefined && patch.draft === undefined) {
+      return this.recolorMrChip(pageId, win, access.channelId, discord, parent, patch.color);
     }
     const parsed = parseMrChip(parent.content);
     if (!parsed.webUrl) {
@@ -1104,6 +1125,102 @@ export class ReviewMapController {
       };
     }
     return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /** Rewrite `color:` on the Discord MR message, then refresh the chip from that body. */
+  private async recolorMrChip(
+    pageId: string,
+    win: ReviewWindow,
+    channelId: string,
+    discord: string,
+    parent: DiscordMessage,
+    rawColor: string,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const color = normalizeHex(rawColor);
+    if (!color) {
+      return { kind: 'error', message: 'Color is not a hex value' };
+    }
+    const parsed = parseMrChip(parent.content);
+    if ((parsed.color || '').toLowerCase() === color) {
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    const edited = await editChannelMessage(
+      discord,
+      channelId,
+      parent.id,
+      replaceMrDiscordColor(parent.content, color),
+    );
+    if (!edited.ok) {
+      return { kind: 'error', message: edited.message };
+    }
+    const idx = win.messages.findIndex((item) => item.id === parent.id);
+    if (idx >= 0) {
+      win.messages[idx] = {
+        ...edited.value,
+        thread: edited.value.thread ?? parent.thread,
+        hasThread: edited.value.hasThread || parent.hasThread,
+      };
+    }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Download the review attachment for a thread message.
+   * The Discord body has no file URL; the file is `attachments[0]`.
+   */
+  async readReviewAttachment(
+    pageId: string,
+    messageId: string,
+  ): Promise<{ ok: true; filename: string; text: string } | { ok: false; message: string }> {
+    const cached = this.fileCache.get(messageId);
+    if (cached) {
+      return { ok: true, filename: cached.filename, text: cached.text };
+    }
+    const win = this.windows.get(pageId);
+    const token = await this.discordToken();
+    if (!win || !token) {
+      return { ok: false, message: 'Review page is not ready' };
+    }
+    let found: DiscordMessage | undefined;
+    for (const bucket of win.threads.values()) {
+      found = bucket.replies.find((item) => item.id === messageId);
+      if (found) {
+        break;
+      }
+    }
+    const attachment = found ? reviewAttachment(found) : undefined;
+    if (!found || !attachment) {
+      return { ok: false, message: 'Review file is not attached to this message' };
+    }
+    const downloaded = await fetchAttachmentText(token, attachment.url);
+    if (!downloaded.ok) {
+      return { ok: false, message: downloaded.message || 'Could not download the review file' };
+    }
+    const value = { filename: attachment.filename, text: downloaded.value };
+    this.fileCache.set(messageId, value);
+    return { ok: true, filename: value.filename, text: value.text };
+  }
+
+  /** Write the cached attachment to a temp file and open it in an editor tab. */
+  async openReviewAttachmentTab(
+    pageId: string,
+    messageId: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const read = await this.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      return read;
+    }
+    const safe = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
+    const dir = path.join(os.tmpdir(), 'syn3-reviews');
+    await fs.mkdir(dir, { recursive: true });
+    const full = path.join(dir, `${messageId}-${safe}`);
+    await fs.writeFile(full, read.text, 'utf8');
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+    await vscode.window.showTextDocument(doc, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.Beside,
+    });
+    return { ok: true };
   }
 
   async startOrSendReview(

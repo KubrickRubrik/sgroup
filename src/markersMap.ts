@@ -364,6 +364,7 @@ type IncomingMessage =
       messageId: string;
       title?: string;
       draft?: boolean;
+      color?: string;
     }
   | { type: 'reviewDiscordRefresh'; pageId: string; webUrl: string; sourceBranch: string }
   | {
@@ -373,6 +374,8 @@ type IncomingMessage =
       kind: ReviewKind;
     }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFile'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFileTab'; pageId: string; messageId: string }
   | {
       type: 'reviewCreatePage';
       name: string;
@@ -2073,6 +2076,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       const result = await this.review.updateMrChip(message.pageId, message.messageId, {
         title: message.title,
         draft: message.draft,
+        color: message.color,
       });
       if (result.kind === 'error') {
         void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
@@ -2112,6 +2116,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'reviewRetryFile') {
       const result = await this.review.retryReviewFile(message.pageId, message.messageId);
       await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewOpenFile') {
+      const result = await this.review.readReviewAttachment(message.pageId, message.messageId);
+      await webview.postMessage({
+        type: 'reviewFile',
+        pageId: message.pageId,
+        messageId: message.messageId,
+        ok: result.ok,
+        filename: result.ok ? result.filename : undefined,
+        text: result.ok ? result.text : undefined,
+        message: result.ok ? undefined : result.message,
+      });
+      return;
+    }
+    if (message.type === 'reviewOpenFileTab') {
+      const result = await this.review.openReviewAttachmentTab(message.pageId, message.messageId);
+      if (!result.ok) {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
       return;
     }
     if (message.type === 'reviewCreatePage') {
@@ -4148,6 +4172,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ${icon('collapse-all', 'collapse')}
         ${icon('expand-all', 'expand', true)}
       </button>
+      <button id="toolbar-review-tab" class="history-btn" type="button" title="Открыть во вкладке" aria-label="Открыть во вкладке" hidden>
+        ${icon('split-horizontal')}
+      </button>
       <div class="toolbar-panels">
         <button id="toolbar-panels" class="history-btn" type="button" title="Toggle panels" aria-label="Toggle panels" aria-haspopup="true" aria-expanded="false">
           ${icon('menu')}
@@ -4190,6 +4217,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   </div>
   <div id="stage" class="page-stage">
     <div id="root" class="map-page"></div>
+    <aside id="review-file" class="review-file" hidden>
+      <div class="review-file-head">
+        <span id="review-file-title" class="review-file-title"></span>
+        <button id="review-file-close" class="history-btn" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <div id="review-file-body" class="review-file-body"></div>
+    </aside>
   </div>
   <script nonce="${nonce}" src="${js}"></script>
 </body>
