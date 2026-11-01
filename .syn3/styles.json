@@ -67,7 +67,7 @@
         "problemsWarning": true,
         "problemsInfo": true,
         "language": "ru",
-        "reviewRefreshSec": 30
+        "reviewRefreshSec": 3600
       },
       "open": {
         "bottom": false,

@@ -7,7 +7,7 @@ export type ReviewKind = 'branch' | 'changes';
 export interface PendingReview {
   webUrl: string;
   kind: ReviewKind;
-  /** Absolute fs path to the pending file. */
+  /** Absolute fs path to the assembled review file. */
   fsPath: string;
 }
 
@@ -29,10 +29,6 @@ export class ReviewPendingStore {
     return vscode.Uri.joinPath(this.root, REVIEW_PENDING_REL);
   }
 
-  fsPath(): string {
-    return this.uri().fsPath;
-  }
-
   async read(): Promise<PendingReview | undefined> {
     try {
       const buf = await vscode.workspace.fs.readFile(this.uri());
@@ -40,25 +36,26 @@ export class ReviewPendingStore {
       const lines = text.split(/\r?\n/);
       const webUrl = (lines[0] || '').trim();
       const kind = parseKind(lines[1] || '');
-      if (!webUrl.startsWith('http') || !kind) {
+      const fsPath = (lines[2] || '').trim();
+      if (!webUrl.startsWith('http') || !kind || !fsPath) {
         return undefined;
       }
-      return { webUrl, kind, fsPath: this.fsPath() };
+      return { webUrl, kind, fsPath };
     } catch {
       return undefined;
     }
   }
 
-  async write(webUrl: string, kind: ReviewKind): Promise<PendingReview> {
+  async write(webUrl: string, kind: ReviewKind, fsPath: string): Promise<PendingReview> {
     const dir = vscode.Uri.joinPath(this.root, '.syn3');
     try {
       await vscode.workspace.fs.createDirectory(dir);
     } catch {
       // exists
     }
-    const body = `${webUrl.trim()}\n${kind}\n`;
+    const body = `${webUrl.trim()}\n${kind}\n${fsPath.trim()}\n`;
     await vscode.workspace.fs.writeFile(this.uri(), Buffer.from(body, 'utf8'));
-    return { webUrl: webUrl.trim(), kind, fsPath: this.fsPath() };
+    return { webUrl: webUrl.trim(), kind, fsPath: fsPath.trim() };
   }
 
   async clear(): Promise<void> {

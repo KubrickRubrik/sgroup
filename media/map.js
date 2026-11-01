@@ -630,17 +630,32 @@
    *   loading?: boolean,
    *   error?: string,
    *   empty?: boolean,
+   *   contentBlocked?: boolean,
    *   messages?: Array<{
    *     id: string,
    *     content: string,
+   *     author?: string,
    *     timestamp: string,
    *     isMr: boolean,
    *     webUrl?: string,
    *     title?: string,
    *     draft?: boolean,
+   *     color?: string,
    *     threadId?: string,
-   *     replies: Array<{ id: string, content: string, timestamp: string, isReview: boolean }>,
-   *     repliesHasMore: boolean
+   *     hasThread?: boolean,
+   *     replies: Array<{
+   *       id: string,
+   *       content: string,
+   *       author?: string,
+   *       timestamp: string,
+   *       isReview: boolean,
+   *       isPill?: boolean,
+   *       pillLabel?: string,
+   *       contentMissing?: boolean
+   *     }>,
+   *     repliesHasMore: boolean,
+   *     repliesLoaded?: boolean,
+   *     contentMissing?: boolean
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
@@ -651,6 +666,12 @@
   let reviewState = null;
   /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, provider: 'gitlab' | 'github' } | null} */
   let reviewMrPanel = null;
+  /** Collapsed MR threads (default open when hasThread). */
+  const reviewCollapsed = new Set();
+  /** MR titles expanded past one line. */
+  const reviewTitleExpanded = new Set();
+  /** Plain parents with expanded body + thread. */
+  const reviewPlainExpanded = new Set();
 
   window.addEventListener('message', (event) => {
     const message = event.data;
@@ -3926,6 +3947,58 @@
     }
   }
 
+  function formatReviewStamp(iso) {
+    if (!iso) {
+      return '';
+    }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      return '';
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    return (
+      pad(d.getDate()) +
+      '.' +
+      pad(d.getMonth() + 1) +
+      '.' +
+      String(d.getFullYear()).slice(-2) +
+      ' ' +
+      pad(d.getHours()) +
+      ':' +
+      pad(d.getMinutes())
+    );
+  }
+
+  function reviewCommentIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M2.5 2.5h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.2L3.5 14.2V11.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  function reviewPersonIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M8 8a2.75 2.75 0 1 0 0-5.5A2.75 2.75 0 0 0 8 8zm0 1.25c-2.4 0-4.5 1.2-4.5 2.75V13h9v-.999c0-1.55-2.1-2.751-4.5-2.751z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
   function paintReviewPage() {
     setCollapseButton();
     root.textContent = '';
@@ -3987,11 +4060,14 @@
       });
       root.append(older);
     }
-    const list = el('div', 'review-list');
-    for (const msg of reviewState.messages) {
-      list.append(renderReviewChip(msg, pageId));
-    }
-    root.append(list);
+    const tree = el('div', 'review-tree');
+    const messages = reviewState.messages;
+    messages.forEach((msg, index) => {
+      const next = messages[index + 1];
+      const nextColor = next ? next.color || (next.isMr ? '#8e4ec6' : '#6e6e6e') : '';
+      tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
+    });
+    root.append(tree);
     if (reviewState.canLoadNewer) {
       const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
       newer.type = 'button';
@@ -4013,74 +4089,208 @@
   /**
    * @param {NonNullable<ReviewState['messages']>[number]} msg
    * @param {string} pageId
+   * @param {boolean} leadingGap
+   * @param {string} nextColor
    */
-  function renderReviewChip(msg, pageId) {
-    const wrap = el('div', 'review-chip-wrap' + (msg.isMr ? ' is-mr' : ''));
-    wrap.dataset.reviewId = msg.id;
-    const chip = el('div', 'review-chip' + (msg.isMr ? ' is-mr' : ''));
-    const raw = typeof msg.content === 'string' ? msg.content.trim() : '';
-    const missing = msg.contentMissing === true || !raw;
-    if (msg.author) {
-      chip.append(el('div', 'review-chip-author', '@' + msg.author));
+  function renderReviewNode(msg, pageId, leadingGap, nextColor) {
+    const color = msg.color || (msg.isMr ? '#8e4ec6' : '#6e6e6e');
+    const canFold = msg.isMr && !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    const collapsed = canFold && reviewCollapsed.has(msg.id);
+    const plainOpen = !msg.isMr && reviewPlainExpanded.has(msg.id);
+    const row = el(
+      'div',
+      'review-node' +
+        (msg.isMr ? ' is-mr' : ' is-plain') +
+        (leadingGap ? ' has-gap' : '') +
+        (collapsed ? ' is-collapsed' : '') +
+        (plainOpen ? ' is-plain-open' : ''),
+    );
+    row.dataset.reviewId = msg.id;
+    row.style.setProperty('--link-color', color);
+    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + 20, nextColor));
+
+    const body = el('div', 'review-body');
+    const stamp = formatReviewStamp(msg.timestamp);
+    if (stamp) {
+      body.append(el('div', 'review-stamp', stamp));
     }
-    const title = msg.isMr
-      ? (msg.draft ? 'Draft · ' : '') + (msg.title || raw.split('\n')[2] || raw.slice(0, 80) || t('reviewEmptyMessage'))
-      : missing
-        ? t('reviewEmptyMessage')
-        : raw.slice(0, 120);
-    chip.append(el('div', 'review-chip-title' + (missing && !msg.isMr ? ' is-missing' : ''), title));
-    if (msg.webUrl) {
-      const link = el('a', 'review-chip-url', msg.webUrl);
-      link.href = msg.webUrl;
-      link.addEventListener('click', (event) => {
-        event.preventDefault();
-        vscode.postMessage({ type: 'openExternal', url: msg.webUrl });
-      });
-      chip.append(link);
-    } else if (!msg.isMr && raw && !missing) {
-      chip.append(el('div', 'review-chip-body', raw.slice(0, 200)));
-    }
+
     if (msg.isMr) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-mr-pill');
+      chip.type = 'button';
+      chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
+      if (canFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (reviewCollapsed.has(msg.id)) {
+            reviewCollapsed.delete(msg.id);
+          } else {
+            reviewCollapsed.add(msg.id);
+          }
+          paintReviewPage();
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        if (!canFold) {
+          return;
+        }
+        if (reviewCollapsed.has(msg.id)) {
+          reviewCollapsed.delete(msg.id);
+        } else {
+          reviewCollapsed.add(msg.id);
+        }
+        paintReviewPage();
+      });
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
         openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
       });
-    }
-    wrap.append(chip);
-    if (msg.threadId || (msg.replies && msg.replies.length) || msg.repliesHasMore) {
-      const thread = el('div', 'review-thread');
-      if (msg.repliesHasMore) {
-        const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
-        more.type = 'button';
-        more.addEventListener('click', () => {
-          vscode.postMessage({ type: 'reviewLoadThread', pageId, messageId: msg.id });
-        });
-        thread.append(more);
-      }
-      for (const reply of msg.replies || []) {
-        const child = el('div', 'review-reply' + (reply.isReview ? ' is-review' : ''));
-        const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
-        const replyMissing = reply.contentMissing === true || !replyText;
-        if (reply.author) {
-          child.append(el('div', 'review-chip-author', '@' + reply.author));
+      chipWrap.append(chip);
+      const side = el('div', 'review-side');
+      side.append(reviewPersonIcon());
+      chipWrap.append(side);
+
+      const titleText =
+        msg.title ||
+        (typeof msg.content === 'string' ? msg.content.split('\n')[2] : '') ||
+        t('reviewEmptyMessage');
+      const title = el(
+        'button',
+        'review-mr-title-text' + (reviewTitleExpanded.has(msg.id) ? ' is-expanded' : ''),
+        titleText,
+      );
+      title.type = 'button';
+      title.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (reviewTitleExpanded.has(msg.id)) {
+          reviewTitleExpanded.delete(msg.id);
+        } else {
+          reviewTitleExpanded.add(msg.id);
         }
-        child.append(
-          el(
-            'div',
-            'review-reply-text' + (replyMissing && !reply.isReview ? ' is-missing' : ''),
-            reply.isReview
-              ? replyText.split('\n')[0] || 'R-SYN3'
-              : replyMissing
-                ? t('reviewEmptyMessage')
-                : replyText.slice(0, 160),
-          ),
-        );
-        thread.append(child);
+        paintReviewPage();
+      });
+      if (msg.webUrl) {
+        title.title = msg.webUrl;
+        title.addEventListener('dblclick', (event) => {
+          event.preventDefault();
+          vscode.postMessage({ type: 'openExternal', url: msg.webUrl });
+        });
       }
-      wrap.append(thread);
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap, title);
+      body.append(head);
+
+      if (!collapsed && canFold) {
+        body.append(renderReviewThread(msg, pageId, true));
+      }
+    } else {
+      const raw = typeof msg.content === 'string' ? msg.content.trim() : '';
+      const missing = msg.contentMissing === true || !raw;
+      const preview = el('button', 'review-plain' + (plainOpen ? ' is-open' : ''));
+      preview.type = 'button';
+      const ico = el('span', 'review-plain-ico');
+      ico.append(reviewCommentIcon());
+      preview.append(ico);
+      const text = el(
+        'span',
+        'review-plain-text' + (missing ? ' is-missing' : ''),
+        missing ? t('reviewEmptyMessage') : raw,
+      );
+      preview.append(text);
+      preview.addEventListener('click', () => {
+        if (reviewPlainExpanded.has(msg.id)) {
+          reviewPlainExpanded.delete(msg.id);
+          paintReviewPage();
+          return;
+        }
+        reviewPlainExpanded.add(msg.id);
+        if (!msg.repliesLoaded) {
+          vscode.postMessage({ type: 'reviewExpandPlain', pageId, messageId: msg.id });
+        }
+        paintReviewPage();
+      });
+      body.append(preview);
+      if (plainOpen && (msg.repliesLoaded || (msg.replies && msg.replies.length) || msg.repliesHasMore)) {
+        body.append(renderReviewThread(msg, pageId, false));
+      }
     }
-    return wrap;
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   * @param {boolean} allowPills
+   */
+  function renderReviewThread(msg, pageId, allowPills) {
+    const children = el('div', 'review-children');
+    const slide = el('div', 'review-children-slide');
+    if (msg.repliesHasMore) {
+      const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
+      more.type = 'button';
+      more.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewLoadThread', pageId, messageId: msg.id });
+      });
+      slide.append(more);
+    }
+    for (const reply of msg.replies || []) {
+      slide.append(renderReviewReply(reply, msg.color || '#8e4ec6', allowPills));
+    }
+    children.append(slide);
+    return children;
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply
+   * @param {string} color
+   * @param {boolean} allowPills
+   */
+  function renderReviewReply(reply, color, allowPills) {
+    const row = el('div', 'review-reply-node');
+    row.style.setProperty('--link-color', color);
+    row.append(linkElbow(16, ''));
+    const body = el('div', 'review-body');
+    const stamp = formatReviewStamp(reply.timestamp);
+    if (stamp) {
+      body.append(el('div', 'review-stamp', stamp));
+    }
+    const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
+    const replyMissing = reply.contentMissing === true || !replyText;
+    if (allowPills && reply.isPill && reply.pillLabel) {
+      const wrap = el('div', 'review-chip-wrap');
+      const chip = el('div', 'review-chip is-review-pill', reply.pillLabel);
+      wrap.append(chip);
+      const side = el('div', 'review-side');
+      side.append(reviewCommentIcon());
+      wrap.append(side);
+      body.append(wrap);
+    } else {
+      const plain = el('div', 'review-plain is-child');
+      const ico = el('span', 'review-plain-ico');
+      ico.append(reviewCommentIcon());
+      plain.append(ico);
+      let shown = replyMissing
+        ? t('reviewEmptyMessage')
+        : reply.isReview
+          ? replyText.split('\n').slice(0, 2).join('\n') || 'R-SYN3'
+          : replyText;
+      plain.append(
+        el('span', 'review-plain-text' + (replyMissing ? ' is-missing' : ''), shown),
+      );
+      body.append(plain);
+    }
+    row.append(body);
+    return row;
   }
 
   /**
@@ -4116,12 +4326,19 @@
     panel.id = 'review-create-page-panel';
     const header = el('div', 'review-create-page-header');
     header.append(el('div', 'review-mr-people-title', t('reviewCreatePageTitle')));
+    const headerLinks = el('div', 'review-create-page-links');
     const howTo = el('button', 'review-howto-link', t('reviewHowToConnect'));
     howTo.type = 'button';
     howTo.addEventListener('click', () => {
       vscode.postMessage({ type: 'reviewOpenSetupDoc' });
     });
-    header.append(howTo);
+    const promptEx = el('button', 'review-howto-link', t('reviewPromptExample'));
+    promptEx.type = 'button';
+    promptEx.addEventListener('click', () => {
+      vscode.postMessage({ type: 'reviewOpenPromptExample' });
+    });
+    headerLinks.append(howTo, promptEx);
+    header.append(headerLinks);
     panel.append(header);
 
     /**

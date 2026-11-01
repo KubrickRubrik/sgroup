@@ -328,6 +328,8 @@ type IncomingMessage =
   | { type: 'reviewLoadOlder'; pageId: string }
   | { type: 'reviewLoadNewer'; pageId: string }
   | { type: 'reviewLoadThread'; pageId: string; messageId: string }
+  | { type: 'reviewExpandPlain'; pageId: string; messageId: string }
+  | { type: 'reviewOpenPromptExample' }
   | { type: 'reviewClearFocus'; pageId: string }
   | {
       type: 'reviewCreateMr';
@@ -663,6 +665,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         delete: async () => undefined,
         onDidChange: () => ({ dispose() {} }),
       },
+      () => this.store.activeReviewPaths(),
     );
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
@@ -1950,6 +1953,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         webview,
         await this.review.loadMoreThread(message.pageId, message.messageId),
       );
+      return;
+    }
+    if (message.type === 'reviewExpandPlain') {
+      await this.pushReviewState(
+        webview,
+        await this.review.expandPlainThread(message.pageId, message.messageId),
+      );
+      return;
+    }
+    if (message.type === 'reviewOpenPromptExample') {
+      const doc = vscode.Uri.joinPath(this.extensionUri, 'docs', 'review-prompt-template.md');
+      try {
+        await vscode.window.showTextDocument(doc, { preview: true });
+      } catch {
+        await vscode.window.showErrorMessage('Could not open review prompt template');
+      }
       return;
     }
     if (message.type === 'reviewClearFocus') {

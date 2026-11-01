@@ -137,6 +137,12 @@ export interface StyleProfile {
   name: string;
   /** SHA-256 hashes of machine ids currently bound to this profile. */
   sProfileIds: string[];
+  /** Absolute or workspace-relative path to the review skill. */
+  reviewSkillPath?: string;
+  /** Absolute or workspace-relative directory for temporary review files. */
+  reviewDirPath?: string;
+  /** Optional Cursor Agent `--model` value. Empty → CLI default. */
+  reviewModel?: string;
 }
 
 /** Profile row for UI — no machine hashes. */
@@ -145,6 +151,9 @@ export interface StyleProfileInfo {
   name: string;
   /** How many machines are bound to this profile (`sProfileIds.length`). */
   boundCount: number;
+  reviewSkillPath: string;
+  reviewDirPath: string;
+  reviewModel: string;
 }
 
 /** Map font scales, card paint, and Explorer label saturation, stored per profile in styles.json. */
@@ -774,11 +783,49 @@ export class MarkerStore implements vscode.Disposable {
 
   /** Profiles in creation order. «Общий» is always first. Machine hashes stay private. */
   profiles(): StyleProfileInfo[] {
-    return this.profilesData.profiles.map(({ id, name, sProfileIds }) => ({
-      id,
-      name,
-      boundCount: sProfileIds.length,
+    return this.profilesData.profiles.map((p) => ({
+      id: p.id,
+      name: p.name,
+      boundCount: p.sProfileIds.length,
+      reviewSkillPath: p.reviewSkillPath ?? '',
+      reviewDirPath: p.reviewDirPath ?? '',
+      reviewModel: p.reviewModel ?? '',
     }));
+  }
+
+  /** Review skill / dir / model of the active profile. */
+  activeReviewPaths(): { skillPath: string; dirPath: string; model: string } {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    return {
+      skillPath: (profile?.reviewSkillPath ?? '').trim(),
+      dirPath: (profile?.reviewDirPath ?? '').trim(),
+      model: (profile?.reviewModel ?? '').trim(),
+    };
+  }
+
+  async setActiveReviewPaths(partial: {
+    reviewSkillPath?: string;
+    reviewDirPath?: string;
+    reviewModel?: string;
+  }): Promise<void> {
+    const id = this.ensureActiveProfileId();
+    const profile = this.profilesData.profiles.find((p) => p.id === id);
+    if (!profile) {
+      return;
+    }
+    if (partial.reviewSkillPath !== undefined) {
+      profile.reviewSkillPath = partial.reviewSkillPath.trim();
+    }
+    if (partial.reviewDirPath !== undefined) {
+      profile.reviewDirPath = partial.reviewDirPath.trim();
+    }
+    if (partial.reviewModel !== undefined) {
+      profile.reviewModel = partial.reviewModel.trim();
+    }
+    await this.persistProfiles();
+    this.changeEmitter.fire();
   }
 
   get activeProfileId(): string {
@@ -3680,7 +3727,14 @@ export class MarkerStore implements vscode.Disposable {
       const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
       const sProfileIds = general?.sProfileIds ?? [];
       this.profilesData.profiles = [
-        { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds },
+        {
+          id: GENERAL_PROFILE_ID,
+          name: GENERAL_PROFILE_NAME,
+          sProfileIds,
+          ...(general?.reviewSkillPath ? { reviewSkillPath: general.reviewSkillPath } : {}),
+          ...(general?.reviewDirPath ? { reviewDirPath: general.reviewDirPath } : {}),
+          ...(general?.reviewModel ? { reviewModel: general.reviewModel } : {}),
+        },
         ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
       ];
     }
@@ -3778,6 +3832,9 @@ export class MarkerStore implements vscode.Disposable {
           id: p.id,
           name: p.name,
           sProfileIds: [...p.sProfileIds],
+          ...(p.reviewSkillPath ? { reviewSkillPath: p.reviewSkillPath } : {}),
+          ...(p.reviewDirPath ? { reviewDirPath: p.reviewDirPath } : {}),
+          ...(p.reviewModel ? { reviewModel: p.reviewModel } : {}),
         })),
       };
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.profilesUri, '..'));
@@ -5861,14 +5918,35 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
         continue;
       }
-      const item = entry as { id?: unknown; name?: unknown; sProfileIds?: unknown };
+      const item = entry as {
+        id?: unknown;
+        name?: unknown;
+        sProfileIds?: unknown;
+        reviewSkillPath?: unknown;
+        reviewDirPath?: unknown;
+        reviewModel?: unknown;
+      };
       if (typeof item.id !== 'string' || !item.id.trim()) {
         continue;
       }
       const id = item.id.trim();
       const sProfileIds = normalizeSProfileIds(item.sProfileIds);
+      const reviewSkillPath =
+        typeof item.reviewSkillPath === 'string' ? item.reviewSkillPath.trim() : undefined;
+      const reviewDirPath =
+        typeof item.reviewDirPath === 'string' ? item.reviewDirPath.trim() : undefined;
+      const reviewModel =
+        typeof item.reviewModel === 'string' ? item.reviewModel.trim() : undefined;
       if (id === GENERAL_PROFILE_ID) {
         generalIds = sProfileIds;
+        result.profiles[0] = {
+          id: GENERAL_PROFILE_ID,
+          name: GENERAL_PROFILE_NAME,
+          sProfileIds: generalIds,
+          ...(reviewSkillPath ? { reviewSkillPath } : {}),
+          ...(reviewDirPath ? { reviewDirPath } : {}),
+          ...(reviewModel ? { reviewModel } : {}),
+        };
         continue;
       }
       if (seen.has(id)) {
@@ -5880,13 +5958,22 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         continue;
       }
       seen.add(id);
-      profiles.push({ id, name, sProfileIds });
+      profiles.push({
+        id,
+        name,
+        sProfileIds,
+        ...(reviewSkillPath ? { reviewSkillPath } : {}),
+        ...(reviewDirPath ? { reviewDirPath } : {}),
+        ...(reviewModel ? { reviewModel } : {}),
+      });
     }
   }
-  result.profiles = [
-    { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: generalIds },
-    ...profiles,
-  ];
+  const general = result.profiles[0] ?? {
+    id: GENERAL_PROFILE_ID,
+    name: GENERAL_PROFILE_NAME,
+    sProfileIds: generalIds,
+  };
+  result.profiles = [general, ...profiles];
   return result;
 }
 

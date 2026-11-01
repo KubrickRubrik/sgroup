@@ -18,12 +18,14 @@ import {
 import {
   DiscordMessage,
   ensureThread,
+  fetchAttachmentText,
   findMrMessage,
   formatMrDiscordBody,
   isMrMessage,
   listChannelMessages,
   listThreadMessages,
   parseMrChip,
+  parseReviewAttachment,
   postChannelMessage,
   postMessageWithFile,
   REVIEW_PREFIX,
@@ -38,6 +40,7 @@ import {
 } from './gitOps';
 import { createMergeRequest, findOpenMrByBranch } from './gitlabApi';
 import { createPullRequest, findOpenPrByBranch } from './githubApi';
+import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import {
   detectProviderFromRepoUrl,
   mrThreadName,
@@ -45,7 +48,9 @@ import {
   ReviewHostProvider,
   ReviewMr,
 } from './reviewHost';
+import { deleteReviewFile, runReviewSkill, writeReviewFile } from './reviewAgent';
 import { ReviewKind, ReviewPendingStore } from './reviewPending';
+import * as path from 'path';
 
 export interface ReviewThreadMsg {
   id: string;
@@ -53,6 +58,10 @@ export interface ReviewThreadMsg {
   author?: string;
   timestamp: string;
   isReview: boolean;
+  /** True when attachment parsed to a review pill with H/M/L. */
+  isPill?: boolean;
+  /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | L:5`. */
+  pillLabel?: string;
   contentMissing?: boolean;
 }
 
@@ -65,9 +74,13 @@ export interface ReviewChip {
   webUrl?: string;
   title?: string;
   draft?: boolean;
+  color?: string;
   threadId?: string;
+  hasThread?: boolean;
   replies: ReviewThreadMsg[];
   repliesHasMore: boolean;
+  /** Thread replies were fetched for this parent (MR auto or plain expand). */
+  repliesLoaded?: boolean;
   contentMissing?: boolean;
 }
 
@@ -84,25 +97,34 @@ export interface ReviewPageState {
   focusMessageId?: string;
 }
 
-function toChip(msg: DiscordMessage, replies: ReviewThreadMsg[] = [], repliesHasMore = false): ReviewChip {
-  const parsed = isMrMessage(msg.content) ? parseMrChip(msg.content) : {};
+function toChip(
+  msg: DiscordMessage,
+  replies: ReviewThreadMsg[] = [],
+  repliesHasMore = false,
+  repliesLoaded = false,
+): ReviewChip {
+  const isMr = isMrMessage(msg.content);
+  const parsed = isMr ? parseMrChip(msg.content) : {};
   return {
     id: msg.id,
     content: msg.content,
     author: msg.author,
     timestamp: msg.timestamp,
-    isMr: isMrMessage(msg.content),
+    isMr,
     webUrl: parsed.webUrl,
     title: parsed.title,
     draft: parsed.draft,
+    color: parsed.color || (isMr ? LINK_PALETTE_DEFAULT : undefined),
     threadId: msg.thread?.id,
+    hasThread: !!msg.thread?.id || !!msg.hasThread,
     replies,
     repliesHasMore,
+    repliesLoaded,
     contentMissing: msg.contentMissing,
   };
 }
 
-function toReply(msg: DiscordMessage): ReviewThreadMsg {
+function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
   return {
     id: msg.id,
     content: msg.content,
@@ -121,6 +143,12 @@ const CHANNEL_PROBE = 1;
 const CHANNEL_FETCH_SIDE = CHANNEL_VISIBLE + CHANNEL_PROBE;
 /** Around-target fetch: visible + probe before + probe after. */
 const CHANNEL_FETCH_AROUND = CHANNEL_VISIBLE + 2 * CHANNEL_PROBE;
+/** Initial MR thread window. */
+const THREAD_INITIAL = 3;
+/** Thread page size when loading more / plain expand. */
+const THREAD_PAGE = 5;
+/** Extra reply fetched to know whether «load more» is needed. */
+const THREAD_PROBE = 1;
 
 type ReviewWindow = {
   messages: DiscordMessage[];
@@ -214,6 +242,12 @@ function windowAroundMessage(
   };
 }
 
+export type ReviewProfilePaths = {
+  skillPath: string;
+  dirPath: string;
+  model: string;
+};
+
 export class ReviewMapController {
   private readonly access: AccessStore;
   private readonly pending: ReviewPendingStore;
@@ -221,10 +255,19 @@ export class ReviewMapController {
   private readonly windows = new Map<string, ReviewWindow>();
   private readonly loading = new Set<string>();
   private readonly errors = new Map<string, string>();
+  /** Cached pill labels from attachment text, keyed by reply message id. */
+  private readonly replyMeta = new Map<string, { isPill: boolean; pillLabel?: string }>();
+  /** Plain parents whose thread was requested (even if empty). pageId → message ids. */
+  private readonly plainExpanded = new Map<string, Set<string>>();
 
   constructor(
     private readonly root: vscode.Uri,
     private readonly secrets: vscode.SecretStorage,
+    private readonly profilePaths: () => ReviewProfilePaths = () => ({
+      skillPath: '',
+      dirPath: '',
+      model: '',
+    }),
   ) {
     this.access = new AccessStore(root);
     this.pending = new ReviewPendingStore(root);
@@ -260,8 +303,20 @@ export class ReviewMapController {
     }
     const messages = win.messages.map((m) => {
       const thread = m.thread?.id ? win.threads.get(m.thread.id) : undefined;
-      const replies = (thread?.replies ?? []).map(toReply);
-      return toChip(m, replies, thread ? !thread.exhausted && replies.length > 0 : !!m.thread?.id || !!m.hasThread);
+      const replies = (thread?.replies ?? []).map((r) => {
+        const base = toReplyBase(r);
+        const meta = this.replyMeta.get(r.id);
+        if (!meta) {
+          return base;
+        }
+        return { ...base, isPill: meta.isPill, pillLabel: meta.pillLabel };
+      });
+      const plainLoaded = this.plainExpanded.get(pageId)?.has(m.id) === true;
+      const loaded = !!thread || plainLoaded;
+      const hasMore = thread
+        ? !thread.exhausted
+        : isMrMessage(m.content) && (!!m.thread?.id || !!m.hasThread);
+      return toChip(m, replies, hasMore, loaded);
     });
     const missingCount = messages.filter((m) => m.contentMissing).length;
     const contentBlocked =
@@ -337,29 +392,58 @@ export class ReviewMapController {
     }
   }
 
+  private async enrichReplies(token: string, replies: DiscordMessage[]): Promise<void> {
+    for (const msg of replies) {
+      if (this.replyMeta.has(msg.id)) {
+        continue;
+      }
+      if (!msg.content.trimStart().startsWith(REVIEW_PREFIX) || !msg.attachments?.length) {
+        this.replyMeta.set(msg.id, { isPill: false });
+        continue;
+      }
+      const file = await fetchAttachmentText(token, msg.attachments[0].url);
+      if (!file.ok) {
+        this.replyMeta.set(msg.id, { isPill: false });
+        continue;
+      }
+      const parsed = parseReviewAttachment(file.value);
+      if (parsed.pillLabel) {
+        this.replyMeta.set(msg.id, { isPill: true, pillLabel: parsed.pillLabel });
+      } else {
+        this.replyMeta.set(msg.id, { isPill: false });
+      }
+    }
+  }
+
   private async prefetchThreads(token: string, win: ReviewWindow): Promise<void> {
     let first = true;
     for (const msg of win.messages) {
+      // Autoload threads only for MR parents that already have a thread.
+      if (!isMrMessage(msg.content)) {
+        continue;
+      }
       const threadId = msg.thread?.id;
       if (!threadId || win.threads.has(threadId)) {
         continue;
       }
-      // Space out thread reads — Discord rate-limits bursty channel GETs.
       if (!first) {
         await new Promise((resolve) => setTimeout(resolve, 350));
       }
       first = false;
-      const replies = await listThreadMessages(token, threadId, { limit: 3 });
+      const replies = await listThreadMessages(token, threadId, {
+        limit: THREAD_INITIAL + THREAD_PROBE,
+      });
       if (!replies.ok) {
         continue;
       }
-      // Thread API returns newest first typically; sort asc then take last 3 (newest).
       const sorted = sortMessagesAsc(replies.value);
-      const last3 = sorted.slice(-3);
+      const hasMore = sorted.length > THREAD_INITIAL;
+      const last = sorted.slice(-THREAD_INITIAL);
       win.threads.set(threadId, {
-        replies: last3,
-        exhausted: sorted.length < 3,
+        replies: last,
+        exhausted: !hasMore,
       });
+      await this.enrichReplies(token, last);
     }
   }
 
@@ -427,8 +511,9 @@ export class ReviewMapController {
         win.threads.set(threadId, entry);
       }
       const before = entry.replies[0]?.id;
+      const pageSize = entry.replies.length === 0 ? THREAD_INITIAL : THREAD_PAGE;
       const result = await listThreadMessages(token, threadId, {
-        limit: entry.replies.length === 0 ? 3 : 5,
+        limit: pageSize + THREAD_PROBE,
         before,
       });
       if (!result.ok) {
@@ -436,9 +521,59 @@ export class ReviewMapController {
         return this.snapshot(pageId);
       }
       const known = new Set(entry.replies.map((m) => m.id));
-      const extra = sortMessagesAsc(result.value).filter((m) => !known.has(m.id));
-      entry.replies = sortMessagesAsc([...extra, ...entry.replies]);
-      entry.exhausted = result.value.length === 0 || (before ? result.value.length < 5 : result.value.length < 3);
+      const fetched = sortMessagesAsc(result.value).filter((m) => !known.has(m.id));
+      const hasMore = fetched.length > pageSize;
+      const toAdd = hasMore ? fetched.slice(-pageSize) : fetched;
+      entry.replies = sortMessagesAsc([...toAdd, ...entry.replies]);
+      entry.exhausted = !hasMore;
+      await this.enrichReplies(token, toAdd);
+      return this.snapshot(pageId);
+    } finally {
+      this.loading.delete(pageId);
+    }
+  }
+
+  /**
+   * Expand a plain (non-MR) channel message: ensure/load its thread (last 5 + probe).
+   */
+  async expandPlainThread(pageId: string, messageId: string): Promise<ReviewPageState> {
+    const win = this.windows.get(pageId);
+    const token = await this.discordToken();
+    if (!win || !token) {
+      return this.snapshot(pageId);
+    }
+    const parent = win.messages.find((m) => m.id === messageId);
+    if (!parent || isMrMessage(parent.content)) {
+      return this.snapshot(pageId);
+    }
+    this.loading.add(pageId);
+    this.errors.delete(pageId);
+    try {
+      const threadId = parent.thread?.id;
+      let expanded = this.plainExpanded.get(pageId);
+      if (!expanded) {
+        expanded = new Set();
+        this.plainExpanded.set(pageId, expanded);
+      }
+      expanded.add(parent.id);
+      if (!threadId) {
+        return this.snapshot(pageId);
+      }
+      if (win.threads.has(threadId)) {
+        return this.snapshot(pageId);
+      }
+      const result = await listThreadMessages(token, threadId, {
+        limit: THREAD_PAGE + THREAD_PROBE,
+      });
+      if (!result.ok) {
+        this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+        return this.snapshot(pageId);
+      }
+      const sorted = sortMessagesAsc(result.value);
+      const hasMore = sorted.length > THREAD_PAGE;
+      const last = sorted.slice(-THREAD_PAGE);
+      win.threads.set(threadId, { replies: last, exhausted: !hasMore });
+      await this.enrichReplies(token, last);
       return this.snapshot(pageId);
     } finally {
       this.loading.delete(pageId);
@@ -630,6 +765,7 @@ export class ReviewMapController {
       webUrl: mr.web_url,
       title: mr.title,
       draft: mr.draft,
+      color: randomLinkPaletteColor(),
       authorNick,
       authorName: authorPerson?.name || mr.author.name,
       reviewers: this.displayPeople(
@@ -874,12 +1010,72 @@ export class ReviewMapController {
     if (existing && existing.webUrl === parsed.webUrl) {
       return this.sendPendingReview(pageId, parent, existing.fsPath);
     }
-    if (existing && existing.webUrl !== parsed.webUrl) {
+    if (existing) {
+      await deleteReviewFile(existing.fsPath);
       await this.pending.clear();
     }
-    // Seam for the future review generator.
-    const pending = await this.pending.write(parsed.webUrl, kind);
-    return this.sendPendingReview(pageId, parent, pending.fsPath);
+
+    const paths = this.profilePaths();
+    if (!paths.skillPath) {
+      return { kind: 'error', message: 'Review skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+
+    const threadId = parent.thread?.id;
+    let reviewCount = 0;
+    if (threadId) {
+      const entry = win.threads.get(threadId);
+      if (entry) {
+        reviewCount = entry.replies.filter((r) =>
+          r.content.trimStart().startsWith(REVIEW_PREFIX),
+        ).length;
+      } else {
+        const listed = await listThreadMessages(token, threadId, { limit: 100 });
+        if (listed.ok) {
+          reviewCount = listed.value.filter((r) =>
+            r.content.trimStart().startsWith(REVIEW_PREFIX),
+          ).length;
+        }
+      }
+    }
+    const reviewNumber = reviewCount + 1;
+    const title = parsed.title || parent.content.split('\n')[2] || 'MR';
+    const dirAbs = path.isAbsolute(paths.dirPath)
+      ? paths.dirPath
+      : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.skillPath)
+      ? paths.skillPath
+      : path.join(this.cwd(), paths.skillPath);
+
+    const agent = await runReviewSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind,
+      reviewNumber,
+      title,
+      webUrl: parsed.webUrl,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    const mrIid = (() => {
+      const m = parsed.webUrl.match(/\/(?:merge_requests|pull)\/(\d+)/);
+      return m ? m[1] : '';
+    })();
+    const mrLine = [mrIid, title, parsed.webUrl].filter(Boolean).join(' ');
+    const filePath = await writeReviewFile({
+      dirPath: dirAbs,
+      reviewNumber,
+      mrLine,
+      severity: agent.severity,
+      body: agent.body,
+    });
+    await this.pending.write(parsed.webUrl, kind, filePath);
+    return this.sendPendingReview(pageId, parent, filePath);
   }
 
   async retryReviewFile(pageId: string, messageId: string): Promise<
@@ -928,20 +1124,25 @@ export class ReviewMapController {
       return { kind: 'fileFail', message: posted.message };
     }
     await this.pending.clear();
-    // Refresh thread replies for this parent.
+    await deleteReviewFile(filePath);
     const win = this.windows.get(pageId);
     if (win) {
       const idx = win.messages.findIndex((m) => m.id === parent.id);
       if (idx >= 0) {
         win.messages[idx] = { ...win.messages[idx], thread: { id: thread.value } };
       }
-      const replies = await listThreadMessages(token, thread.value, { limit: 3 });
+      const replies = await listThreadMessages(token, thread.value, {
+        limit: THREAD_INITIAL + THREAD_PROBE,
+      });
       if (replies.ok) {
         const sorted = sortMessagesAsc(replies.value);
+        const hasMore = sorted.length > THREAD_INITIAL;
+        const last = sorted.slice(-THREAD_INITIAL);
         win.threads.set(thread.value, {
-          replies: sorted.slice(-3),
-          exhausted: sorted.length < 3,
+          replies: last,
+          exhausted: !hasMore,
         });
+        await this.enrichReplies(token, last);
       }
     }
     return { kind: 'state', state: this.snapshot(pageId) };

@@ -3,7 +3,11 @@ import * as path from 'path';
 
 const API = 'https://discord.com/api/v10';
 export const MR_PREFIX = 'MR_SYN3';
+/** Draft merge-request message prefix (same chip family as MR_SYN3). */
+export const DMR_PREFIX = 'DMR_SYN3';
 export const REVIEW_PREFIX = 'R-SYN3';
+/** Severity line inside a review file / agent stdout. */
+export const REVIEW_SEVERITY_RE = /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)\s*$/i;
 
 export interface DiscordMessage {
   id: string;
@@ -184,11 +188,82 @@ export function sortMessagesAsc(messages: DiscordMessage[]): DiscordMessage[] {
 }
 
 export function isMrMessage(content: string): boolean {
-  return content.trimStart().startsWith(MR_PREFIX);
+  const head = content.trimStart();
+  return head.startsWith(MR_PREFIX) || head.startsWith(DMR_PREFIX);
+}
+
+export function isDraftMrMessage(content: string): boolean {
+  return content.trimStart().startsWith(DMR_PREFIX);
 }
 
 export function isReviewMessage(content: string): boolean {
   return content.trimStart().startsWith(REVIEW_PREFIX);
+}
+
+/** First severity line `H:n | M:n | L:n` in free text (agent stdout or file body). */
+export function findSeverityLine(text: string): string | undefined {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (REVIEW_SEVERITY_RE.test(line)) {
+      const match = line.match(REVIEW_SEVERITY_RE);
+      if (match) {
+        return `H:${match[1]} | M:${match[2]} | L:${match[3]}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Review attachment layout:
+ * 1: Ревью N
+ * 2: MR meta
+ * 3: H:N | M:N | L:N
+ * rest: body
+ */
+export function parseReviewAttachment(text: string): {
+  reviewNumber?: number;
+  severity?: string;
+  pillLabel?: string;
+} {
+  const lines = text.split(/\r?\n/).map((l) => l.trim());
+  const reviewLine = lines[0] || '';
+  const numMatch = /^Ревью\s+(\d+)\b/i.exec(reviewLine) || /^Review\s+(\d+)\b/i.exec(reviewLine);
+  const reviewNumber = numMatch ? Number(numMatch[1]) : undefined;
+  const severityRaw = lines[2] || '';
+  const sevMatch = severityRaw.match(REVIEW_SEVERITY_RE);
+  if (!sevMatch) {
+    return { reviewNumber };
+  }
+  const severity = `H:${sevMatch[1]} | M:${sevMatch[2]} | L:${sevMatch[3]}`;
+  const n = reviewNumber ?? 0;
+  return {
+    reviewNumber,
+    severity,
+    pillLabel: `Ревью ${n} | ${severity}`,
+  };
+}
+
+/** Download a Discord CDN attachment as UTF-8 text (bot token authorized). */
+export async function fetchAttachmentText(
+  token: string,
+  url: string,
+): Promise<DiscordResult<string>> {
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bot ${token}` },
+    });
+    if (!response.ok) {
+      return { ok: false, status: response.status, message: `HTTP ${response.status}` };
+    }
+    return { ok: true, value: await response.text() };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export function messageHasMrUrl(content: string, webUrl: string): boolean {
@@ -360,6 +435,7 @@ export function formatMrDiscordBody(opts: {
   webUrl: string;
   title: string;
   draft: boolean;
+  color: string;
   authorNick: string;
   authorName?: string;
   reviewers: string[];
@@ -370,10 +446,10 @@ export function formatMrDiscordBody(opts: {
       ? `${opts.authorName} (${opts.authorNick})`
       : opts.authorNick;
   const lines = [
-    MR_PREFIX,
+    opts.draft ? DMR_PREFIX : MR_PREFIX,
     opts.webUrl,
     opts.title,
-    `draft: ${opts.draft ? 'yes' : 'no'}`,
+    `color: ${opts.color}`,
     `author: ${author}`,
     `reviewers: ${opts.reviewers.length ? opts.reviewers.join(', ') : '—'}`,
     `assignees: ${opts.assignees.length ? opts.assignees.join(', ') : '—'}`,
@@ -385,14 +461,20 @@ export function parseMrChip(content: string): {
   webUrl?: string;
   title?: string;
   draft?: boolean;
+  color?: string;
 } {
   const lines = content.split(/\r?\n/).map((l) => l.trim());
-  if (!lines[0]?.startsWith(MR_PREFIX)) {
+  const head = lines[0] || '';
+  if (!head.startsWith(MR_PREFIX) && !head.startsWith(DMR_PREFIX)) {
     return {};
   }
   const webUrl = lines[1]?.startsWith('http') ? lines[1] : undefined;
   const title = lines[2] || undefined;
+  const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
+  const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
+  const color = colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
   const draftLine = lines.find((l) => l.toLowerCase().startsWith('draft:'));
-  const draft = draftLine ? /yes|true|1/i.test(draftLine.slice(6)) : undefined;
-  return { webUrl, title, draft };
+  const draftFromLine = draftLine ? /yes|true|1/i.test(draftLine.slice(6)) : undefined;
+  const draft = head.startsWith(DMR_PREFIX) || draftFromLine === true;
+  return { webUrl, title, draft, color };
 }

@@ -13,6 +13,13 @@ type IncomingMessage =
   | { type: 'ready' }
   | { type: 'setAppearance'; appearance: Partial<Appearance> }
   | {
+      type: 'setReviewPaths';
+      reviewSkillPath?: string;
+      reviewDirPath?: string;
+      reviewModel?: string;
+    }
+  | { type: 'openReviewPromptExample' }
+  | {
       type: 'profile';
       action: 'activate' | 'create' | 'rename' | 'delete' | 'syncPush' | 'syncPull';
       id?: string;
@@ -75,6 +82,23 @@ export class SettingsPanel implements vscode.Disposable {
     }
     if (message.type === 'setAppearance') {
       await this.store.setAppearance(message.appearance);
+      return;
+    }
+    if (message.type === 'setReviewPaths') {
+      await this.store.setActiveReviewPaths({
+        reviewSkillPath: message.reviewSkillPath,
+        reviewDirPath: message.reviewDirPath,
+        reviewModel: message.reviewModel,
+      });
+      return;
+    }
+    if (message.type === 'openReviewPromptExample') {
+      const doc = vscode.Uri.joinPath(this.extensionUri, 'docs', 'review-prompt-template.md');
+      try {
+        await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+      } catch {
+        await vscode.window.showErrorMessage('Could not open review prompt template');
+      }
       return;
     }
     if (message.type === 'profile') {
@@ -171,6 +195,7 @@ export class SettingsPanel implements vscode.Disposable {
     }
     const locale = this.locale();
     this.panel.title = t(locale, 'settingsTitle');
+    const reviewPaths = this.store.activeReviewPaths();
     await this.panel.webview.postMessage({
       type: 'state',
       appearance: this.store.appearance,
@@ -178,6 +203,9 @@ export class SettingsPanel implements vscode.Disposable {
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       activeProfileName: this.store.activeProfileName,
+      reviewSkillPath: reviewPaths.skillPath,
+      reviewDirPath: reviewPaths.dirPath,
+      reviewModel: reviewPaths.model,
       positionSync: this.store.positionSync(),
       locale,
       i18n: stringsFor(locale),
@@ -507,6 +535,34 @@ export class SettingsPanel implements vscode.Disposable {
       max-width: 220px;
       padding: 4px 8px;
     }
+    .row.text-row {
+      align-items: center;
+      grid-template-columns: minmax(8rem, 11rem) 1fr;
+    }
+    .row.text-row input[type="text"] {
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 2px;
+      color: var(--vscode-input-foreground);
+      font: inherit;
+      justify-self: stretch;
+      max-width: none;
+      padding: 4px 8px;
+      width: 100%;
+    }
+    button.linkish {
+      background: transparent;
+      border: none;
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+      text-align: left;
+      text-decoration: underline;
+    }
+    button.linkish:hover {
+      color: var(--vscode-textLink-activeForeground);
+    }
   </style>
 </head>
 <body>
@@ -710,6 +766,26 @@ export class SettingsPanel implements vscode.Disposable {
       </div>
       <p class="note" data-i18n="noteOpenFile"></p>
     </section>
+
+    <section>
+      <h2 data-i18n="sectionReview">Review</h2>
+      <div class="row text-row">
+        <label for="reviewSkillPath" data-i18n="labelReviewSkillPath">Review skill path</label>
+        <input id="reviewSkillPath" type="text" spellcheck="false">
+      </div>
+      <div class="row text-row">
+        <label for="reviewDirPath" data-i18n="labelReviewDirPath">Review files directory</label>
+        <input id="reviewDirPath" type="text" spellcheck="false">
+      </div>
+      <div class="row text-row">
+        <label for="reviewModel" data-i18n="labelReviewModel">Review agent model</label>
+        <input id="reviewModel" type="text" spellcheck="false" placeholder="e.g. sonnet-4-thinking">
+      </div>
+      <p class="note">
+        <button type="button" id="review-prompt-example" class="linkish" data-i18n="reviewPromptExample">Required review prompt example</button>
+      </p>
+      <p class="note" data-i18n="noteReviewPaths"></p>
+    </section>
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -757,6 +833,10 @@ export class SettingsPanel implements vscode.Disposable {
     const settingsHint = document.getElementById('settings-hint');
     const posSyncPush = document.getElementById('pos-sync-push');
     const posSyncPull = document.getElementById('pos-sync-pull');
+    const reviewSkillPath = document.getElementById('reviewSkillPath');
+    const reviewDirPath = document.getElementById('reviewDirPath');
+    const reviewModel = document.getElementById('reviewModel');
+    const reviewPromptExample = document.getElementById('review-prompt-example');
     /** @type {{ canPush?: boolean, canPull?: boolean }} */
     let positionSync = { canPush: false, canPull: false };
 
@@ -827,6 +907,24 @@ export class SettingsPanel implements vscode.Disposable {
         languageSelect.value = appearance.language === 'ru' ? 'ru' : 'en';
       }
       suppress = false;
+    }
+
+    function applyReviewPaths(skill, dir, model) {
+      suppress = true;
+      if (reviewSkillPath instanceof HTMLInputElement) reviewSkillPath.value = skill || '';
+      if (reviewDirPath instanceof HTMLInputElement) reviewDirPath.value = dir || '';
+      if (reviewModel instanceof HTMLInputElement) reviewModel.value = model || '';
+      suppress = false;
+    }
+
+    function emitReviewPaths() {
+      if (suppress) return;
+      vscode.postMessage({
+        type: 'setReviewPaths',
+        reviewSkillPath: reviewSkillPath instanceof HTMLInputElement ? reviewSkillPath.value : '',
+        reviewDirPath: reviewDirPath instanceof HTMLInputElement ? reviewDirPath.value : '',
+        reviewModel: reviewModel instanceof HTMLInputElement ? reviewModel.value : '',
+      });
     }
 
     function closeProfileMenu() {
@@ -1009,6 +1107,13 @@ export class SettingsPanel implements vscode.Disposable {
       vscode.postMessage({ type: 'profile', action: 'syncPull' });
     });
 
+    for (const input of [reviewSkillPath, reviewDirPath, reviewModel]) {
+      input?.addEventListener('change', () => emitReviewPaths());
+    }
+    reviewPromptExample?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'openReviewPromptExample' });
+    });
+
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'state') {
         if (event.data.i18n && typeof event.data.i18n === 'object') {
@@ -1019,6 +1124,7 @@ export class SettingsPanel implements vscode.Disposable {
         }
         applyLocale();
         apply(event.data.appearance);
+        applyReviewPaths(event.data.reviewSkillPath, event.data.reviewDirPath, event.data.reviewModel);
         applyPositionSync(event.data.positionSync);
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);
       }

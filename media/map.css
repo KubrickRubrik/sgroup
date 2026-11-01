@@ -3004,10 +3004,11 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .review-page {
+  --link-branch-gap: 18px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
+  padding: 12px 16px 48px;
 }
 
 .review-status,
@@ -3020,66 +3021,213 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   margin-bottom: 12px;
 }
 
-.review-list {
+.review-tree {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  padding-left: var(--link-branch-gap);
+  position: relative;
 }
 
-.review-chip-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.review-node {
+  min-width: 0;
+  position: relative;
 }
 
-.review-chip {
-  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
-  border: 1px solid var(--vscode-widget-border, transparent);
-  border-radius: 10px;
-  cursor: default;
-  padding: 8px 10px;
+.review-node.has-gap {
+  padding-top: 10px;
 }
 
-.review-chip.is-mr {
-  border-color: var(--vscode-focusBorder, #3794ff);
+.review-node.is-collapsed > .review-body > .review-children {
+  display: none;
 }
 
-.review-chip.is-focus,
-.review-chip-wrap.is-focus > .review-chip {
-  outline: 1px solid var(--vscode-focusBorder, #3794ff);
+.review-node > .link-elbow {
+  color: var(--link-color, #8e4ec6);
 }
 
-.review-chip-title {
-  font-weight: 600;
-  word-break: break-word;
+.review-node:last-child > .link-elbow .link-elbow-stem {
+  display: none;
 }
 
-.review-chip-url,
-.review-chip-body,
-.review-reply-text {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.9em;
-  margin-top: 4px;
-  word-break: break-all;
-}
-
-.review-thread {
+.review-body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-left: 14px;
-  padding-left: 8px;
-  border-left: 2px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  min-width: 0;
 }
 
-.review-reply {
-  background: color-mix(in srgb, var(--vscode-editorWidget-background) 80%, transparent);
-  border-radius: 8px;
-  padding: 6px 8px;
+.review-stamp {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.2;
+  opacity: 0.75;
 }
 
-.review-reply.is-review {
-  border: 1px solid color-mix(in srgb, var(--vscode-charts-green, #89d185) 50%, transparent);
+.review-mr-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.review-chip-wrap {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  position: relative;
+  width: fit-content;
+}
+
+.review-chip {
+  align-items: center;
+  background: color-mix(in srgb, var(--link-color, #8e4ec6) 16%, #121214);
+  border: 1px solid color-mix(in srgb, var(--link-color, #8e4ec6) 38%, transparent);
+  border-radius: 12px;
+  color: color-mix(in srgb, #fff 84%, var(--link-color, #8e4ec6));
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 13px;
+  gap: 8px;
+  height: 34px;
+  line-height: 18px;
+  max-width: 100%;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.review-chip.is-mr-pill {
+  font-size: 14px;
+  font-weight: 500;
+  height: 40px;
+  line-height: 20px;
+  padding: 0 14px;
+}
+
+.review-chip.is-review-pill {
+  color: color-mix(in srgb, #fff 68%, var(--link-color, #8e4ec6));
+  height: 34px;
+}
+
+.review-chip-badge {
+  white-space: nowrap;
+}
+
+.review-mr-title-text {
+  background: transparent;
+  border: none;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  display: -webkit-box;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  -webkit-box-orient: vertical;
+  max-width: min(420px, 100%);
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+}
+
+.review-mr-title-text.is-expanded {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+}
+
+.review-side {
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  opacity: 0.75;
+}
+
+.review-ico {
+  display: block;
+  height: 14px;
+  width: 14px;
+}
+
+.review-plain {
+  align-items: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 8px;
+  max-width: 100%;
+  padding: 2px 0;
+  text-align: left;
+}
+
+.review-plain.is-child {
+  cursor: default;
+}
+
+.review-plain-ico {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  margin-top: 2px;
+  opacity: 0.8;
+}
+
+.review-plain-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.review-plain.is-open > .review-plain-text {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+}
+
+.review-plain-text.is-missing {
+  font-style: italic;
+}
+
+.review-children {
+  margin: 0 0 0 10px;
+  position: relative;
+}
+
+.review-children-slide {
+  display: flex;
+  flex-direction: column;
+  padding-left: var(--link-branch-gap);
+  position: relative;
+}
+
+.review-reply-node {
+  min-width: 0;
+  padding-top: 8px;
+  position: relative;
+}
+
+.review-reply-node > .link-elbow {
+  color: var(--link-color, #8e4ec6);
+}
+
+.review-reply-node:last-child > .link-elbow .link-elbow-stem {
+  display: none;
+}
+
+.review-node.is-focus > .review-body .review-chip,
+.review-node.is-focus > .review-body .review-mr-title-text {
+  outline: 1px solid var(--vscode-focusBorder, #3794ff);
 }
 
 .review-load-edge,
@@ -3224,6 +3372,12 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   flex-wrap: wrap;
 }
 
+.review-create-page-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .review-howto-link {
   border: none;
   background: transparent;
@@ -3257,16 +3411,6 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   align-items: center;
 }
 
-.review-chip-author {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.85em;
-}
-
-.review-chip-title.is-missing,
-.review-reply-text.is-missing {
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
-}
 
 .review-provider-row {
   display: flex;
