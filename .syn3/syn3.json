@@ -2,7 +2,7 @@
   "version": 1,
   "pages": {
     "map": {
-      "name": "Карта",
+      "name": "Проводник",
       "kind": "files"
     },
     "page-page": {

@@ -26,8 +26,14 @@ import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
 import { ReviewKind } from './reviewPending';
-import { ReviewMapController, ReviewPageState } from './reviewMap';
+import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
+import {
+  deleteProfileHostToken,
+  readProfileHostToken,
+  writeProfileHostToken,
+} from './accessStore';
 import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
+import { listProjectDirectory } from './projectNav';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 /** Legacy workspace keys for active page per surface (migrated into syn3.json once). */
@@ -107,6 +113,7 @@ interface MapNote {
 interface MapPage {
   id: string;
   name: string;
+  description?: string;
   kind: PageKind;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -323,8 +330,18 @@ type IncomingMessage =
       id?: string;
       name?: string;
     }
+  | { type: 'profileOpenSettings'; id?: string }
+  | {
+      type: 'profileSaveSettings';
+      id?: string;
+      name: string;
+      githubNick: string;
+      gitlabNick: string;
+      githubToken: string;
+      gitlabToken: string;
+    }
   | { type: 'setAppearance'; appearance: Partial<Appearance> }
-  | { type: 'reviewLoad'; pageId: string }
+  | { type: 'reviewLoad'; pageId: string; force?: boolean }
   | { type: 'reviewLoadOlder'; pageId: string }
   | { type: 'reviewLoadNewer'; pageId: string }
   | { type: 'reviewLoadThread'; pageId: string; messageId: string }
@@ -355,12 +372,39 @@ type IncomingMessage =
       provider: ReviewHostProvider;
       channelId: string;
       repoUrl: string;
-      people: string;
+      description?: string;
       gitlabToken?: string;
       githubToken?: string;
       discordToken?: string;
     }
-  | { type: 'reviewOpenSetupDoc' };
+  | { type: 'reviewOpenPageSettings'; pageId: string }
+  | {
+      type: 'pageSaveSettings';
+      pageId?: string;
+      kind?: PageKind;
+      name: string;
+      description?: string;
+    }
+  | {
+      type: 'reviewUpdatePage';
+      pageId: string;
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      description?: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    }
+  | { type: 'reviewOpenSetupDoc' }
+  | {
+      type: 'setReviewPaths';
+      reviewSkillPath?: string;
+      reviewDirPath?: string;
+      reviewModel?: string;
+    }
+  | { type: 'listProjectDir'; seq: number; rel?: string };
 
 interface DirListingEntry {
   name: string;
@@ -641,6 +685,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Coalesces refresh bursts and lets the caller finish switching the active page first. */
   private readonly stateDelay = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
   private readonly review: ReviewMapController;
+  private readonly hostSecrets: vscode.SecretStorage;
   /** MR waiting for Discord retry after a failed post. */
   private pendingDiscordMr?: { pageId: string; mr: ReviewMr };
   /** Per-webview interval for review page Discord poll. */
@@ -657,15 +702,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
     this.ownsLanguages = !languages;
     this.languages = languages ?? new CodeLanguageService(extensionUri.fsPath);
+    this.hostSecrets = secrets ?? {
+      get: async () => undefined,
+      store: async () => undefined,
+      delete: async () => undefined,
+      onDidChange: () => ({ dispose() {} }),
+    };
     this.review = new ReviewMapController(
       store.root,
-      secrets ?? {
-        get: async () => undefined,
-        store: async () => undefined,
-        delete: async () => undefined,
-        onDidChange: () => ({ dispose() {} }),
+      this.hostSecrets,
+      () => {
+        const paths = this.store.activeReviewPaths();
+        const nicks = this.store.activeGitNicks();
+        return {
+          ...paths,
+          profileId: this.store.activeProfileId,
+          profileName: this.store.activeProfileName,
+          githubNick: nicks.githubNick,
+          gitlabNick: nicks.gitlabNick,
+        };
       },
-      () => this.store.activeReviewPaths(),
     );
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
@@ -1808,7 +1864,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.syncFocusContext();
       const readyPage = this.pageIdFor(webview);
       if (this.store.page(readyPage)?.kind === 'review') {
-        await this.pushReviewState(webview, await this.review.loadInitial(readyPage));
+        await this.showReviewPage(webview, readyPage);
       }
       this.armReviewRefresh(webview);
       return;
@@ -1823,7 +1879,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.syncFocusContext();
       // Only fetch Discord when entering a review page — state churn must not re-hit the API.
       if (switched && this.store.page(message.pageId)?.kind === 'review') {
-        await this.pushReviewState(webview, await this.review.loadInitial(message.pageId));
+        await this.showReviewPage(webview, message.pageId);
       }
       if (switched) {
         this.armReviewRefresh(webview);
@@ -1936,16 +1992,34 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.onProfile(message.action, message.id, message.name);
       return;
     }
+    if (message.type === 'profileOpenSettings') {
+      await this.postProfileSettings(webview, message.id);
+      return;
+    }
+    if (message.type === 'profileSaveSettings') {
+      await this.saveProfileSettings(webview, message);
+      return;
+    }
     if (message.type === 'reviewLoad') {
-      await this.pushReviewState(webview, await this.review.loadInitial(message.pageId));
+      if (message.force) {
+        await this.runReviewChannelLoad(webview, message.pageId, 'initial', () =>
+          this.review.loadInitial(message.pageId),
+        );
+      } else {
+        await this.showReviewPage(webview, message.pageId);
+      }
       return;
     }
     if (message.type === 'reviewLoadOlder') {
-      await this.pushReviewState(webview, await this.review.loadOlder(message.pageId));
+      await this.runReviewChannelLoad(webview, message.pageId, 'older', () =>
+        this.review.loadOlder(message.pageId),
+      );
       return;
     }
     if (message.type === 'reviewLoadNewer') {
-      await this.pushReviewState(webview, await this.review.loadNewer(message.pageId));
+      await this.runReviewChannelLoad(webview, message.pageId, 'newer', () =>
+        this.review.loadNewer(message.pageId),
+      );
       return;
     }
     if (message.type === 'reviewLoadThread') {
@@ -2023,6 +2097,31 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewCreatePage') {
       await this.createReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'pageSaveSettings') {
+      await this.savePageSettingsFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'reviewOpenPageSettings') {
+      await this.openReviewPageSettings(webview, message.pageId);
+      return;
+    }
+    if (message.type === 'reviewUpdatePage') {
+      await this.updateReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'setReviewPaths') {
+      await this.store.setActiveReviewPaths({
+        reviewSkillPath: message.reviewSkillPath,
+        reviewDirPath: message.reviewDirPath,
+        reviewModel: message.reviewModel,
+      });
+      return;
+    }
+    if (message.type === 'listProjectDir') {
+      const listed = await listProjectDirectory(this.store, message.rel);
+      await webview.postMessage({ type: 'projectDir', seq: message.seq, ...listed });
       return;
     }
     if (message.type === 'reviewOpenSetupDoc') {
@@ -2807,6 +2906,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const pages: MapPage[] = this.store.pages().map(([id, def]) => ({
       id,
       name: def.name,
+      ...(def.description ? { description: def.description } : {}),
       kind: def.kind,
       layout: def.layout,
       groupsLayout: def.groupsLayout,
@@ -3272,7 +3372,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'renamePage') {
-      await this.renamePageFlow(activePage);
+      const page = this.store.page(activePage);
+      if (!page) {
+        return;
+      }
+      if (page.kind === 'review') {
+        await this.openReviewPageSettings(webview, activePage);
+        return;
+      }
+      await webview.postMessage({
+        type: 'pageSettingsPanel',
+        mode: 'edit',
+        pageId: activePage,
+        kind: page.kind,
+        name: page.name,
+        description: page.description || '',
+      });
       return;
     }
     if (action === 'deletePage') {
@@ -3286,6 +3401,131 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (action === 'openSettings') {
       await vscode.commands.executeCommand('syn3.openSettings');
     }
+  }
+
+  /** Open the in-map profile editor. Omit id to create a profile. */
+  async showProfileSettings(profileId?: string): Promise<void> {
+    await this.ensureMapWebview();
+    const webview = this.lastFocusedWebview;
+    if (!webview) {
+      return;
+    }
+    await this.postProfileSettings(webview, profileId);
+  }
+
+  private async postProfileSettings(webview: vscode.Webview, profileId?: string): Promise<void> {
+    const profile = profileId ? this.store.profiles().find((p) => p.id === profileId) : undefined;
+    if (profileId && !profile) {
+      return;
+    }
+    const nicks = profile ? this.store.gitNicks(profile.id) : { githubNick: '', gitlabNick: '' };
+    const githubToken = profile
+      ? (await readProfileHostToken(this.hostSecrets, profile.id, 'github')) || ''
+      : '';
+    const gitlabToken = profile
+      ? (await readProfileHostToken(this.hostSecrets, profile.id, 'gitlab')) || ''
+      : '';
+    await webview.postMessage({
+      type: 'profileSettingsPanel',
+      id: profile?.id ?? '',
+      creating: !profile,
+      nameLocked: profile?.id === GENERAL_PROFILE_ID,
+      name: profile?.name ?? '',
+      githubNick: nicks.githubNick,
+      gitlabNick: nicks.gitlabNick,
+      githubToken,
+      gitlabToken,
+    });
+  }
+
+  private async saveProfileSettings(
+    webview: vscode.Webview,
+    message: {
+      id?: string;
+      name: string;
+      githubNick: string;
+      gitlabNick: string;
+      githubToken: string;
+      gitlabToken: string;
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const name = message.name.trim();
+    let id = message.id?.trim() || '';
+    if (!id) {
+      if (!name) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameEmpty'),
+        });
+        return;
+      }
+      if (!this.store.isValidProfileName(name)) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameTaken'),
+        });
+        return;
+      }
+      const created = await this.store.createProfile(name);
+      if (!created) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameTaken'),
+        });
+        return;
+      }
+      id = created;
+    } else if (id !== GENERAL_PROFILE_ID) {
+      const current = this.store.profiles().find((p) => p.id === id);
+      if (!current) {
+        return;
+      }
+      if (!name) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameEmpty'),
+        });
+        return;
+      }
+      if (current.name !== name) {
+        if (!this.store.isValidProfileName(name, id)) {
+          await webview.postMessage({
+            type: 'profileSettingsError',
+            message: t(locale, 'profileNameTaken'),
+          });
+          return;
+        }
+        const renamed = await this.store.renameProfile(id, name);
+        if (!renamed) {
+          await webview.postMessage({
+            type: 'profileSettingsError',
+            message: t(locale, 'profileNameTaken'),
+          });
+          return;
+        }
+      }
+    }
+    await this.store.setProfileGitNicks(id, {
+      githubNick: message.githubNick,
+      gitlabNick: message.gitlabNick,
+    });
+    await this.storeHostToken(id, 'github', message.githubToken);
+    await this.storeHostToken(id, 'gitlab', message.gitlabToken);
+    await webview.postMessage({ type: 'profileSettingsSaved' });
+  }
+
+  private async storeHostToken(
+    profileId: string,
+    provider: 'github' | 'gitlab',
+    token: string,
+  ): Promise<void> {
+    const trimmed = token.trim();
+    if (trimmed) {
+      await writeProfileHostToken(this.hostSecrets, profileId, provider, trimmed);
+      return;
+    }
+    await deleteProfileHostToken(this.hostSecrets, profileId, provider);
   }
 
   private async onProfile(
@@ -3386,25 +3626,53 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         hasGitlab: defaults.hasGitlab,
         hasGithub: defaults.hasGithub,
         hasDiscord: defaults.hasDiscord,
+        githubToken: defaults.githubToken,
+        gitlabToken: defaults.gitlabToken,
       });
       return;
     }
-    const locale = normalizeLocale(this.store.appearance.language);
-    const name = await vscode.window.showInputBox({
-      title: t(locale, 'menuNewPage'),
-      prompt: 'Page name',
-      placeHolder: 'e.g. Docs, Rules, Tips',
-      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
+    await webview.postMessage({
+      type: 'pageSettingsPanel',
+      mode: 'create',
+      kind: pageKind,
     });
+  }
+
+  private async savePageSettingsFromPanel(
+    webview: vscode.Webview,
+    message: { pageId?: string; kind?: PageKind; name: string; description?: string },
+  ): Promise<void> {
+    const name = message.name.trim();
+    const locale = normalizeLocale(this.store.appearance.language);
     if (!name) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: t(locale, 'profileNameEmpty'),
+      });
       return;
     }
-    const id = await this.store.createPage(name, pageKind);
-    if (id) {
-      this.activePageByWebview.set(webview, id);
-      this.persistSurfacePage(webview, id);
-      await webview.postMessage({ type: 'openPage', pageId: id });
+    if (message.pageId) {
+      if (!this.store.page(message.pageId)) {
+        return;
+      }
+      await this.store.setPageMeta(message.pageId, name, message.description);
+      return;
     }
+    if (this.store.pages().length >= MAX_PAGES) {
+      return;
+    }
+    const kind = normalizePageKind(message.kind) ?? 'files';
+    if (kind === 'review') {
+      return;
+    }
+    const id = await this.store.createPage(name, kind, message.description);
+    if (!id) {
+      return;
+    }
+    await webview.postMessage({ type: 'pageSettingsSaved' });
+    this.activePageByWebview.set(webview, id);
+    this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'openPage', pageId: id });
   }
 
   private async createReviewPageFromPanel(
@@ -3414,7 +3682,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       provider: ReviewHostProvider;
       channelId: string;
       repoUrl: string;
-      people: string;
+      description?: string;
       gitlabToken?: string;
       githubToken?: string;
       discordToken?: string;
@@ -3458,7 +3726,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       void vscode.window.showErrorMessage(`Syn3: ${secrets.message}`);
       return;
     }
-    const id = await this.store.createPage(name, 'review');
+    const id = await this.store.createPage(name, 'review', message.description);
     if (!id) {
       return;
     }
@@ -3466,18 +3734,150 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       provider,
       channelId: message.channelId.trim(),
       repoUrl: defaults.origin,
-      people: this.review.parsePeople(message.people),
     });
     this.activePageByWebview.set(webview, id);
     this.persistSurfacePage(webview, id);
     await webview.postMessage({ type: 'openPage', pageId: id });
     // Load once here. Later activePage events for the same pageId are ignored (rate limits).
-    await this.pushReviewState(webview, await this.review.loadInitial(id));
+    await this.runReviewChannelLoad(webview, id, 'initial', () => this.review.loadInitial(id));
     this.armReviewRefresh(webview);
+  }
+
+  private async openReviewPageSettings(webview: vscode.Webview, pageId: string): Promise<void> {
+    const page = this.store.page(pageId);
+    if (!page || page.kind !== 'review') {
+      return;
+    }
+    const defaults = await this.review.createPageDefaults();
+    if ('error' in defaults) {
+      void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+      return;
+    }
+    const access = await this.review.getAccess(pageId);
+    const paths = this.store.activeReviewPaths();
+    await webview.postMessage({
+      type: 'reviewPageSettingsPanel',
+      pageId,
+      name: page.name,
+      description: page.description || '',
+      origin: defaults.origin,
+      repoUrl: access?.repoUrl || defaults.origin,
+      suggestedProvider: access?.provider || defaults.suggestedProvider,
+      channelId: access?.channelId || '',
+      hasGitlab: defaults.hasGitlab,
+      hasGithub: defaults.hasGithub,
+      hasDiscord: defaults.hasDiscord,
+      githubToken: defaults.githubToken,
+      gitlabToken: defaults.gitlabToken,
+      reviewSkillPath: paths.skillPath,
+      reviewDirPath: paths.dirPath,
+      reviewModel: paths.model,
+    });
+  }
+
+  private async updateReviewPageFromPanel(
+    webview: vscode.Webview,
+    message: {
+      pageId: string;
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      description?: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    },
+  ): Promise<void> {
+    const page = this.store.page(message.pageId);
+    if (!page || page.kind !== 'review') {
+      return;
+    }
+    const name = message.name.trim();
+    if (!name) {
+      void vscode.window.showErrorMessage('Syn3: page name is required');
+      return;
+    }
+    const provider = isReviewHostProvider(message.provider) ? message.provider : undefined;
+    if (!provider) {
+      void vscode.window.showErrorMessage('Syn3: choose GitLab or GitHub');
+      return;
+    }
+    const defaults = await this.review.createPageDefaults();
+    if ('error' in defaults) {
+      void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+      return;
+    }
+    const accessError = this.review.validateCreateAccess({
+      provider,
+      channelId: message.channelId,
+      repoUrl: message.repoUrl,
+      origin: defaults.origin,
+    });
+    if (accessError) {
+      void vscode.window.showErrorMessage(`Syn3: ${accessError}`);
+      return;
+    }
+    const secrets = await this.review.applyCreatePageSecrets({
+      provider,
+      gitlabToken: message.gitlabToken,
+      githubToken: message.githubToken,
+      discordToken: message.discordToken,
+    });
+    if (!secrets.ok) {
+      void vscode.window.showErrorMessage(`Syn3: ${secrets.message}`);
+      return;
+    }
+    const previous = await this.review.getAccess(message.pageId);
+    await this.store.setPageMeta(message.pageId, name, message.description);
+    const channelId = message.channelId.trim();
+    await this.review.savePageAccess(message.pageId, {
+      provider,
+      channelId,
+      repoUrl: defaults.origin,
+    });
+    if (previous?.channelId !== channelId) {
+      this.review.dropWindow(message.pageId);
+      await this.runReviewChannelLoad(webview, message.pageId, 'initial', () =>
+        this.review.loadInitial(message.pageId),
+      );
+    }
   }
 
   private async pushReviewState(webview: vscode.Webview, state: ReviewPageState): Promise<void> {
     await webview.postMessage({ type: 'reviewState', review: state });
+  }
+
+  /**
+   * Open a review page. A window already fetched for this page is shown as-is.
+   * Discord is hit only for the first load, or when a fetch is not already running.
+   */
+  private async showReviewPage(webview: vscode.Webview, pageId: string): Promise<void> {
+    if (this.review.hasWindow(pageId)) {
+      await this.pushReviewState(webview, this.review.snapshot(pageId));
+      return;
+    }
+    if (this.review.isLoading(pageId)) {
+      return;
+    }
+    await this.runReviewChannelLoad(webview, pageId, 'initial', () =>
+      this.review.loadInitial(pageId),
+    );
+  }
+
+  /** Push a skeleton edge, run the fetch, then push the settled window. */
+  private async runReviewChannelLoad(
+    webview: vscode.Webview,
+    pageId: string,
+    edge: ReviewLoadEdge,
+    load: () => Promise<ReviewPageState>,
+  ): Promise<void> {
+    await this.pushReviewState(webview, this.review.beginLoad(pageId, edge));
+    try {
+      await load();
+    } finally {
+      await this.pushReviewState(webview, this.review.finishLoad(pageId));
+    }
   }
 
   private async handleReviewPlus(webview: vscode.Webview, pageId: string): Promise<void> {
@@ -3489,6 +3889,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         branches: result.branches,
         parent: result.parent,
         people: result.people,
+        defaultAssignee: result.defaultAssignee,
         provider: result.provider,
       });
       return;
@@ -3551,23 +3952,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     await this.pushReviewState(webview, result.state);
-  }
-
-  private async renamePageFlow(pageId: string): Promise<void> {
-    const page = this.store.page(pageId);
-    if (!page) {
-      return;
-    }
-    const name = await vscode.window.showInputBox({
-      title: 'Rename page',
-      prompt: 'Page name',
-      value: page.name,
-      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
-    });
-    if (!name || name.trim() === page.name) {
-      return;
-    }
-    await this.store.renamePage(pageId, name);
   }
 
   private async deletePageFlow(webview: vscode.Webview, pageId: string): Promise<void> {
@@ -3702,7 +4086,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       <div id="toolbar-profile-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Профили">
         <div id="toolbar-profile-list" class="toolbar-profile-list"></div>
         <div class="toolbar-profile-create">
-          <input id="toolbar-profile-name" type="text" placeholder="Новый профиль" aria-label="Имя нового профиля" maxlength="64">
           <button id="toolbar-profile-add" class="history-btn" type="button" title="Создать профиль" aria-label="Создать профиль">
             ${icon('add')}
           </button>

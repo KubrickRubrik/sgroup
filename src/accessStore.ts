@@ -13,16 +13,18 @@ export const SECRET_GITLAB = 'syn3.gitlabToken';
 export const SECRET_GITHUB = 'syn3.githubToken';
 export const SECRET_DISCORD = 'syn3.discordBotToken';
 
-export interface AccessPerson {
-  nick: string;
-  name?: string;
+export type GitHostProvider = 'github' | 'gitlab';
+
+/** Per-profile host token. The legacy keys stay global and are claimed once. */
+export function profileHostSecretKey(provider: GitHostProvider, profileId: string): string {
+  const base = provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB;
+  return `${base}.${profileId}`;
 }
 
 export interface ReviewPageAccess {
   provider: ReviewHostProvider;
   channelId: string;
   repoUrl: string;
-  people: AccessPerson[];
 }
 
 interface AccessFile {
@@ -32,19 +34,6 @@ interface AccessFile {
 
 function emptyAccess(): AccessFile {
   return { version: 1, pages: {} };
-}
-
-function normalizePerson(value: unknown): AccessPerson | undefined {
-  if (!value || typeof value !== 'object') {
-    return undefined;
-  }
-  const raw = value as Partial<AccessPerson>;
-  const nick = typeof raw.nick === 'string' ? raw.nick.trim() : '';
-  if (!nick) {
-    return undefined;
-  }
-  const name = typeof raw.name === 'string' ? raw.name.trim() : '';
-  return name ? { nick, name } : { nick };
 }
 
 function normalizePage(value: unknown): ReviewPageAccess | undefined {
@@ -60,39 +49,29 @@ function normalizePage(value: unknown): ReviewPageAccess | undefined {
   const provider: ReviewHostProvider = isReviewHostProvider(raw.provider)
     ? raw.provider
     : detectProviderFromRepoUrl(repoUrl);
-  const people = Array.isArray(raw.people)
-    ? raw.people.map(normalizePerson).filter((p): p is AccessPerson => !!p)
-    : [];
-  return { provider, channelId, repoUrl, people };
+  return { provider, channelId, repoUrl };
 }
 
-function parseAccess(raw: string): AccessFile {
+function parseAccess(raw: string): { data: AccessFile; legacyPeople: boolean } {
   try {
-    const json = JSON.parse(raw) as Partial<AccessFile>;
+    const json = JSON.parse(raw) as { pages?: Record<string, unknown> };
     const pages: Record<string, ReviewPageAccess> = {};
+    let legacyPeople = false;
     if (json.pages && typeof json.pages === 'object') {
       for (const [id, def] of Object.entries(json.pages)) {
+        if (def && typeof def === 'object' && 'people' in def) {
+          legacyPeople = true;
+        }
         const page = normalizePage(def);
         if (page) {
           pages[id] = page;
         }
       }
     }
-    return { version: 1, pages };
+    return { data: { version: 1, pages }, legacyPeople };
   } catch {
-    return emptyAccess();
+    return { data: emptyAccess(), legacyPeople: false };
   }
-}
-
-/** Display label: real name when set, otherwise nick. */
-export function personLabel(person: AccessPerson): string {
-  return person.name?.trim() || person.nick;
-}
-
-/** Resolve nick → AccessPerson from the page roster. */
-export function findPerson(people: AccessPerson[], nick: string): AccessPerson | undefined {
-  const key = nick.trim().toLowerCase();
-  return people.find((p) => p.nick.toLowerCase() === key);
 }
 
 export class AccessStore {
@@ -109,13 +88,19 @@ export class AccessStore {
     if (this.loaded) {
       return;
     }
+    let legacyPeople = false;
     try {
       const buf = await vscode.workspace.fs.readFile(this.fileUri());
-      this.data = parseAccess(Buffer.from(buf).toString('utf8'));
+      const parsed = parseAccess(Buffer.from(buf).toString('utf8'));
+      this.data = parsed.data;
+      legacyPeople = parsed.legacyPeople;
     } catch {
       this.data = emptyAccess();
     }
     this.loaded = true;
+    if (legacyPeople) {
+      await this.persist();
+    }
   }
 
   async reload(): Promise<void> {
@@ -133,9 +118,6 @@ export class AccessStore {
       provider: access.provider,
       channelId: access.channelId.trim(),
       repoUrl: access.repoUrl.trim(),
-      people: access.people
-        .map((p) => normalizePerson(p))
-        .filter((p): p is AccessPerson => !!p),
     };
     await this.persist();
   }
@@ -192,12 +174,70 @@ export async function readOriginRepoUrl(cwd: string): Promise<string | undefined
   }
 }
 
+/**
+ * Host token of one profile. A leftover global token is copied onto this
+ * profile and removed, so the next profile does not inherit it.
+ */
+export async function readProfileHostToken(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+  provider: GitHostProvider,
+): Promise<string | undefined> {
+  const scoped = await getSecret(secrets, profileHostSecretKey(provider, profileId));
+  if (scoped) {
+    return scoped;
+  }
+  const legacyKey = provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB;
+  const legacy = await getSecret(secrets, legacyKey);
+  if (!legacy) {
+    return undefined;
+  }
+  await secrets.store(profileHostSecretKey(provider, profileId), legacy);
+  await secrets.delete(legacyKey);
+  return legacy;
+}
+
+export async function writeProfileHostToken(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+  provider: GitHostProvider,
+  token: string,
+): Promise<void> {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    return;
+  }
+  await secrets.store(profileHostSecretKey(provider, profileId), trimmed);
+  const legacyKey = provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB;
+  if (await getSecret(secrets, legacyKey)) {
+    await secrets.delete(legacyKey);
+  }
+}
+
+export async function deleteProfileHostToken(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+  provider: GitHostProvider,
+): Promise<void> {
+  await secrets.delete(profileHostSecretKey(provider, profileId));
+}
+
+export async function deleteProfileHostTokens(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+): Promise<void> {
+  await deleteProfileHostToken(secrets, profileId, 'github');
+  await deleteProfileHostToken(secrets, profileId, 'gitlab');
+}
+
 export async function ensureSecrets(
   secrets: vscode.SecretStorage,
   provider: ReviewHostProvider,
+  profileId?: string,
 ): Promise<{ hostToken: string; discord: string } | undefined> {
-  const hostKey = provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB;
-  const hostToken = (await secrets.get(hostKey))?.trim() || '';
+  const hostToken = profileId
+    ? (await readProfileHostToken(secrets, profileId, provider)) || ''
+    : (await secrets.get(provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB))?.trim() || '';
   const discord = (await secrets.get(SECRET_DISCORD))?.trim() || '';
   if (!hostToken || !discord) {
     return undefined;
@@ -207,22 +247,36 @@ export async function ensureSecrets(
 
 export async function secretsStatus(
   secrets: vscode.SecretStorage,
+  profileId?: string,
 ): Promise<{ hasGitlab: boolean; hasGithub: boolean; hasDiscord: boolean }> {
-  const gitlab = (await secrets.get(SECRET_GITLAB))?.trim() || '';
-  const github = (await secrets.get(SECRET_GITHUB))?.trim() || '';
+  const gitlab = profileId
+    ? await readProfileHostToken(secrets, profileId, 'gitlab')
+    : (await secrets.get(SECRET_GITLAB))?.trim();
+  const github = profileId
+    ? await readProfileHostToken(secrets, profileId, 'github')
+    : (await secrets.get(SECRET_GITHUB))?.trim();
   const discord = (await secrets.get(SECRET_DISCORD))?.trim() || '';
   return { hasGitlab: !!gitlab, hasGithub: !!github, hasDiscord: !!discord };
 }
 
 export async function storeSecrets(
   secrets: vscode.SecretStorage,
-  opts: { gitlab?: string; github?: string; discord?: string },
+  opts: { gitlab?: string; github?: string; discord?: string; profileId?: string },
 ): Promise<void> {
-  if (opts.gitlab?.trim()) {
-    await secrets.store(SECRET_GITLAB, opts.gitlab.trim());
-  }
-  if (opts.github?.trim()) {
-    await secrets.store(SECRET_GITHUB, opts.github.trim());
+  if (opts.profileId) {
+    if (opts.gitlab?.trim()) {
+      await writeProfileHostToken(secrets, opts.profileId, 'gitlab', opts.gitlab);
+    }
+    if (opts.github?.trim()) {
+      await writeProfileHostToken(secrets, opts.profileId, 'github', opts.github);
+    }
+  } else {
+    if (opts.gitlab?.trim()) {
+      await secrets.store(SECRET_GITLAB, opts.gitlab.trim());
+    }
+    if (opts.github?.trim()) {
+      await secrets.store(SECRET_GITHUB, opts.github.trim());
+    }
   }
   if (opts.discord?.trim()) {
     await secrets.store(SECRET_DISCORD, opts.discord.trim());

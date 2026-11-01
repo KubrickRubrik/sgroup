@@ -5,9 +5,14 @@ const API = 'https://discord.com/api/v10';
 export const MR_PREFIX = 'MR_SYN3';
 /** Draft merge-request message prefix (same chip family as MR_SYN3). */
 export const DMR_PREFIX = 'DMR_SYN3';
-export const REVIEW_PREFIX = 'R-SYN3';
+/** Review message prefix in Discord threads: `(R_SYN3): Ревью N | H:…`. */
+export const REVIEW_PREFIX = 'R_SYN3';
 /** Severity line inside a review file / agent stdout. */
 export const REVIEW_SEVERITY_RE = /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)\s*$/i;
+
+const MR_HEAD_RE = /^\((MR_SYN3|DMR_SYN3)\):\s*(.*)$/;
+const REVIEW_HEAD_RE = /^\(R_SYN3\):\s*(.*)$/;
+const MD_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/;
 
 export interface DiscordMessage {
   id: string;
@@ -188,16 +193,19 @@ export function sortMessagesAsc(messages: DiscordMessage[]): DiscordMessage[] {
 }
 
 export function isMrMessage(content: string): boolean {
-  const head = content.trimStart();
-  return head.startsWith(MR_PREFIX) || head.startsWith(DMR_PREFIX);
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return MR_HEAD_RE.test(head);
 }
 
 export function isDraftMrMessage(content: string): boolean {
-  return content.trimStart().startsWith(DMR_PREFIX);
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  const match = MR_HEAD_RE.exec(head);
+  return match?.[1] === DMR_PREFIX;
 }
 
 export function isReviewMessage(content: string): boolean {
-  return content.trimStart().startsWith(REVIEW_PREFIX);
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return REVIEW_HEAD_RE.test(head);
 }
 
 /** First severity line `H:n | M:n | L:n` in free text (agent stdout or file body). */
@@ -431,28 +439,92 @@ export async function postMessageWithFile(
   return { ok: true, value: msg };
 }
 
+/** Strip `.git` and trailing slash from a repo URL. */
+export function normalizeRepoWebUrl(repoUrl: string): string {
+  return repoUrl.trim().replace(/\.git$/i, '').replace(/\/+$/, '');
+}
+
+/** Path label without host: `group/app` or `owner/repo`. */
+export function repoPathLabel(repoUrl: string): string {
+  const raw = normalizeRepoWebUrl(repoUrl);
+  const ssh = /^git@[^:]+:(.+)$/.exec(raw);
+  if (ssh) {
+    return ssh[1].replace(/\.git$/i, '');
+  }
+  const sshUrl = /^ssh:\/\/[^/]+\/(.+)$/.exec(raw);
+  if (sshUrl) {
+    return sshUrl[1].replace(/\.git$/i, '');
+  }
+  try {
+    const u = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    return u.pathname.replace(/^\/+/, '').replace(/\.git$/i, '');
+  } catch {
+    return raw;
+  }
+}
+
+function mdLink(label: string, url: string): string {
+  return `[${label}](${url})`;
+}
+
+function firstMdLinkUrl(line: string): string | undefined {
+  const match = MD_LINK_RE.exec(line);
+  return match?.[2]?.trim() || undefined;
+}
+
+function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: string): string {
+  const base = normalizeRepoWebUrl(repoUrl);
+  const encoded = branch
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+  return provider === 'github' ? `${base}/tree/${encoded}` : `${base}/-/tree/${encoded}`;
+}
+
+/**
+ * Human-readable MR/PR body for Discord. First line carries the parse marker.
+ *
+ * (MR_SYN3): Title
+ * МР: [МР !12](url)
+ * Ветка: [branch](tree-url)
+ * Репозиторий: [group/app](repo-url)
+ * Автор ревью: Profile
+ * Исполнители: A, B
+ * color: #hex
+ */
 export function formatMrDiscordBody(opts: {
   webUrl: string;
   title: string;
   draft: boolean;
   color: string;
-  authorNick: string;
-  authorName?: string;
-  reviewers: string[];
+  provider: 'gitlab' | 'github';
+  iid: number;
+  sourceBranch: string;
+  repoUrl: string;
+  reviewAuthor: string;
   assignees: string[];
 }): string {
-  const author =
-    opts.authorName && opts.authorName !== opts.authorNick
-      ? `${opts.authorName} (${opts.authorNick})`
-      : opts.authorNick;
+  const repo = normalizeRepoWebUrl(opts.repoUrl);
+  const kindLabel = opts.provider === 'github' ? 'PR' : 'МР';
+  const iidLabel =
+    opts.provider === 'github' ? `PR #${opts.iid}` : `МР !${opts.iid}`;
+  const prefix = opts.draft ? DMR_PREFIX : MR_PREFIX;
+  const assignees =
+    opts.assignees.length > 0 ? opts.assignees.join(', ') : '—';
+  const author = opts.reviewAuthor.trim() || '—';
+  const branch = opts.sourceBranch.trim() || '—';
   const lines = [
-    opts.draft ? DMR_PREFIX : MR_PREFIX,
-    opts.webUrl,
-    opts.title,
+    `(${prefix}): ${opts.title.trim() || iidLabel}`,
+    `${kindLabel}: ${mdLink(iidLabel, opts.webUrl.trim())}`,
+    `Ветка: ${
+      opts.sourceBranch.trim()
+        ? mdLink(branch, branchTreeUrl(opts.provider, repo, opts.sourceBranch.trim()))
+        : '—'
+    }`,
+    `Репозиторий: ${mdLink(repoPathLabel(repo) || repo, repo)}`,
+    `Автор ревью: ${author}`,
+    `Исполнители: ${assignees}`,
     `color: ${opts.color}`,
-    `author: ${author}`,
-    `reviewers: ${opts.reviewers.length ? opts.reviewers.join(', ') : '—'}`,
-    `assignees: ${opts.assignees.length ? opts.assignees.join(', ') : '—'}`,
   ];
   return lines.join('\n');
 }
@@ -463,18 +535,64 @@ export function parseMrChip(content: string): {
   draft?: boolean;
   color?: string;
 } {
-  const lines = content.split(/\r?\n/).map((l) => l.trim());
+  const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const head = lines[0] || '';
-  if (!head.startsWith(MR_PREFIX) && !head.startsWith(DMR_PREFIX)) {
+  const headMatch = MR_HEAD_RE.exec(head);
+  if (!headMatch) {
     return {};
   }
-  const webUrl = lines[1]?.startsWith('http') ? lines[1] : undefined;
-  const title = lines[2] || undefined;
+  const draft = headMatch[1] === DMR_PREFIX;
+  const title = (headMatch[2] || '').trim() || undefined;
+  const mrLine = lines.find((l) => /^(МР|PR)\s*:/i.test(l));
+  const webUrl = mrLine ? firstMdLinkUrl(mrLine) : undefined;
   const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
   const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
   const color = colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
-  const draftLine = lines.find((l) => l.toLowerCase().startsWith('draft:'));
-  const draftFromLine = draftLine ? /yes|true|1/i.test(draftLine.slice(6)) : undefined;
-  const draft = head.startsWith(DMR_PREFIX) || draftFromLine === true;
   return { webUrl, title, draft, color };
+}
+
+/**
+ * Discord thread message for a review file attachment.
+ *
+ * (R_SYN3): Ревью N | H:n | M:n | L:n
+ * Модель: …
+ * Скилл: …
+ */
+export function formatReviewDiscordBody(opts: {
+  reviewNumber: number;
+  severity: string;
+  model: string;
+  skillPath: string;
+}): string {
+  const severity = opts.severity.trim() || 'H:0 | M:0 | L:0';
+  const model = opts.model.trim() || '—';
+  const skill = opts.skillPath.trim() || '—';
+  return [
+    `(${REVIEW_PREFIX}): Ревью ${opts.reviewNumber} | ${severity}`,
+    `Модель: ${model}`,
+    `Скилл: ${skill}`,
+  ].join('\n');
+}
+
+/** Pill label from the first line of a review Discord message. */
+export function parseReviewMessagePill(content: string): string | undefined {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  const match = REVIEW_HEAD_RE.exec(head);
+  if (!match) {
+    return undefined;
+  }
+  const rest = (match[1] || '').trim();
+  const pill =
+    /^Ревью\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*L:\s*\d+$/i.exec(rest) ||
+    /^Review\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*L:\s*\d+$/i.exec(rest);
+  if (!pill) {
+    return undefined;
+  }
+  const normalized = rest.replace(/\s+/g, ' ');
+  const sev = normalized.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)/i);
+  const num = normalized.match(/^(?:Ревью|Review)\s+(\d+)/i);
+  if (!sev || !num) {
+    return undefined;
+  }
+  return `Ревью ${num[1]} | H:${sev[1]} | M:${sev[2]} | L:${sev[3]}`;
 }

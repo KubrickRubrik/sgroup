@@ -143,6 +143,10 @@ export interface StyleProfile {
   reviewDirPath?: string;
   /** Optional Cursor Agent `--model` value. Empty → CLI default. */
   reviewModel?: string;
+  /** GitHub login for this profile. The token is not stored here. */
+  githubNick?: string;
+  /** GitLab username for this profile. The token is not stored here. */
+  gitlabNick?: string;
 }
 
 /** Profile row for UI — no machine hashes. */
@@ -449,6 +453,8 @@ export function emptySurfaces(defaultPage = DEFAULT_PAGE_ID): SurfacesState {
 export interface PageDef {
   name: string;
   kind: PageKind;
+  /** Short description shown in the page settings panel. */
+  description?: string;
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -597,6 +603,14 @@ function emptyProfiles(): ProfilesFile {
   };
 }
 
+function normalizeGitNick(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const nick = raw.trim().replace(/^@+/, '');
+  return nick || undefined;
+}
+
 function normalizeSProfileIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -645,6 +659,7 @@ interface PageSnapshot {
   page: {
     name: string;
     kind: PageKind;
+    description?: string;
     order: number;
     layout: MapLayout;
     groupsLayout: GroupsLayout;
@@ -801,7 +816,7 @@ export class MarkerStore implements vscode.Disposable {
     return {
       skillPath: (profile?.reviewSkillPath ?? '').trim(),
       dirPath: (profile?.reviewDirPath ?? '').trim(),
-      model: (profile?.reviewModel ?? '').trim(),
+      model: (profile?.reviewModel ?? '').trim().toLowerCase(),
     };
   }
 
@@ -822,10 +837,66 @@ export class MarkerStore implements vscode.Disposable {
       profile.reviewDirPath = partial.reviewDirPath.trim();
     }
     if (partial.reviewModel !== undefined) {
-      profile.reviewModel = partial.reviewModel.trim();
+      profile.reviewModel = partial.reviewModel.trim().toLowerCase();
     }
     await this.persistProfiles();
     this.changeEmitter.fire();
+  }
+
+  /** GitHub / GitLab logins of one profile. Tokens stay in SecretStorage. */
+  gitNicks(id: string): { githubNick: string; gitlabNick: string } {
+    const profile = this.profilesData.profiles.find((p) => p.id === id);
+    return {
+      githubNick: profile?.githubNick ?? '',
+      gitlabNick: profile?.gitlabNick ?? '',
+    };
+  }
+
+  /** GitHub / GitLab logins of the active profile. Tokens stay in SecretStorage. */
+  activeGitNicks(): { githubNick: string; gitlabNick: string } {
+    return this.gitNicks(this.activeId || GENERAL_PROFILE_ID);
+  }
+
+  async setProfileGitNicks(
+    id: string,
+    nicks: { githubNick?: string; gitlabNick?: string },
+  ): Promise<void> {
+    const profile = this.profilesData.profiles.find((p) => p.id === id);
+    if (!profile) {
+      return;
+    }
+    let changed = false;
+    const apply = (key: 'githubNick' | 'gitlabNick', value: string | undefined) => {
+      if (value === undefined) {
+        return;
+      }
+      const trimmed = value.trim().replace(/^@+/, '');
+      const current = profile[key] ?? '';
+      if (current === trimmed) {
+        return;
+      }
+      if (trimmed) {
+        profile[key] = trimmed;
+      } else {
+        delete profile[key];
+      }
+      changed = true;
+    };
+    apply('githubNick', nicks.githubNick);
+    apply('gitlabNick', nicks.gitlabNick);
+    if (!changed) {
+      return;
+    }
+    await this.persistProfiles();
+    this.changeEmitter.fire();
+  }
+
+  async setActiveGitNick(provider: 'github' | 'gitlab', nick: string): Promise<void> {
+    const id = this.ensureActiveProfileId();
+    await this.setProfileGitNicks(
+      id,
+      provider === 'github' ? { githubNick: nick } : { gitlabNick: nick },
+    );
   }
 
   get activeProfileId(): string {
@@ -2079,7 +2150,7 @@ export class MarkerStore implements vscode.Disposable {
 
   // ---- pages ----
 
-  async createPage(name: string, kind: PageKind): Promise<string | undefined> {
+  async createPage(name: string, kind: PageKind, description?: string): Promise<string | undefined> {
     if (this.pages().length >= MAX_PAGES) {
       return undefined;
     }
@@ -2089,11 +2160,16 @@ export class MarkerStore implements vscode.Disposable {
     }
     const id = this.uniquePageId(trimmed);
     const maxOrder = Math.max(0, ...this.pages().map(([, p]) => p.order));
-    this.data.pages[id] = {
+    const page = {
       ...defaultPage(capitalize(trimmed)),
       kind,
       order: maxOrder + 1,
     };
+    const text = normalizeGroupDescription(description);
+    if (text) {
+      page.description = text;
+    }
+    this.data.pages[id] = page;
     if (kind === 'links') {
       this.insertLinkBranch(id, 2);
     }
@@ -2108,6 +2184,23 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     page.name = capitalize(trimmed);
+    await this.commit();
+  }
+
+  /** Name and optional description of a map page. */
+  async setPageMeta(id: string, name: string, description?: string): Promise<void> {
+    const page = this.data.pages[id];
+    const trimmed = name.trim();
+    if (!page || !trimmed) {
+      return;
+    }
+    page.name = capitalize(trimmed);
+    const text = normalizeGroupDescription(description);
+    if (text) {
+      page.description = text;
+    } else {
+      delete page.description;
+    }
     await this.commit();
   }
 
@@ -3734,6 +3827,8 @@ export class MarkerStore implements vscode.Disposable {
           ...(general?.reviewSkillPath ? { reviewSkillPath: general.reviewSkillPath } : {}),
           ...(general?.reviewDirPath ? { reviewDirPath: general.reviewDirPath } : {}),
           ...(general?.reviewModel ? { reviewModel: general.reviewModel } : {}),
+          ...(general?.githubNick ? { githubNick: general.githubNick } : {}),
+          ...(general?.gitlabNick ? { gitlabNick: general.gitlabNick } : {}),
         },
         ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
       ];
@@ -3835,6 +3930,8 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.reviewSkillPath ? { reviewSkillPath: p.reviewSkillPath } : {}),
           ...(p.reviewDirPath ? { reviewDirPath: p.reviewDirPath } : {}),
           ...(p.reviewModel ? { reviewModel: p.reviewModel } : {}),
+          ...(p.githubNick ? { githubNick: p.githubNick } : {}),
+          ...(p.gitlabNick ? { gitlabNick: p.gitlabNick } : {}),
         })),
       };
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.profilesUri, '..'));
@@ -4503,6 +4600,7 @@ export class MarkerStore implements vscode.Disposable {
       page: {
         name: def.name,
         kind: def.kind,
+        ...(def.description ? { description: def.description } : {}),
         order: def.order,
         layout: def.layout,
         groupsLayout: def.groupsLayout,
@@ -4646,6 +4744,14 @@ export class MarkerStore implements vscode.Disposable {
 
     page.name = snap.page.name;
     page.kind = normalizePageKind(snap.page.kind) ?? page.kind;
+    if ('description' in snap.page) {
+      const text = normalizeGroupDescription(snap.page.description);
+      if (text) {
+        page.description = text;
+      } else {
+        delete page.description;
+      }
+    }
     if (snap.pageOrders && typeof snap.pageOrders === 'object') {
       for (const [id, order] of Object.entries(snap.pageOrders)) {
         if (this.data.pages[id] && typeof order === 'number') {
@@ -4866,6 +4972,7 @@ export class MarkerStore implements vscode.Disposable {
       pages[id] = {
         name: def.name,
         kind: def.kind,
+        ...(def.description ? { description: def.description } : {}),
       };
     }
     const surfaces = packSurfaces(this.data.surfaces, this.data.pages, this.defaultFilesPageId());
@@ -5925,6 +6032,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewSkillPath?: unknown;
         reviewDirPath?: unknown;
         reviewModel?: unknown;
+        githubNick?: unknown;
+        gitlabNick?: unknown;
       };
       if (typeof item.id !== 'string' || !item.id.trim()) {
         continue;
@@ -5937,6 +6046,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         typeof item.reviewDirPath === 'string' ? item.reviewDirPath.trim() : undefined;
       const reviewModel =
         typeof item.reviewModel === 'string' ? item.reviewModel.trim() : undefined;
+      const githubNick = normalizeGitNick(item.githubNick);
+      const gitlabNick = normalizeGitNick(item.gitlabNick);
       if (id === GENERAL_PROFILE_ID) {
         generalIds = sProfileIds;
         result.profiles[0] = {
@@ -5946,6 +6057,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewSkillPath ? { reviewSkillPath } : {}),
           ...(reviewDirPath ? { reviewDirPath } : {}),
           ...(reviewModel ? { reviewModel } : {}),
+          ...(githubNick ? { githubNick } : {}),
+          ...(gitlabNick ? { gitlabNick } : {}),
         };
         continue;
       }
@@ -5965,6 +6078,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewSkillPath ? { reviewSkillPath } : {}),
         ...(reviewDirPath ? { reviewDirPath } : {}),
         ...(reviewModel ? { reviewModel } : {}),
+        ...(githubNick ? { githubNick } : {}),
+        ...(gitlabNick ? { gitlabNick } : {}),
       });
     }
   }
@@ -6065,9 +6180,11 @@ function normalize(raw: unknown): MarkersFile {
       const kind = normalizePageKind(def.kind) ?? 'files';
       const name =
         typeof def.name === 'string' && def.name.trim() ? capitalize(def.name.trim()) : capitalize(id);
+      const description = normalizeGroupDescription(def.description);
       result.pages[id] = {
         name,
         kind,
+        ...(description ? { description } : {}),
         order: typeof def.order === 'number' ? def.order : index,
         layout: normalizeMapLayout(def.layout),
         groupsLayout: normalizeGroupsLayout(def.groupsLayout),

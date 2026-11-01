@@ -40,7 +40,6 @@
   const toolbarProfile = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile'));
   const toolbarProfileMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-menu'));
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
-  const toolbarProfileName = /** @type {HTMLInputElement | null} */ (document.getElementById('toolbar-profile-name'));
   const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
   const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
   const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
@@ -414,13 +413,8 @@
   });
   toolbarProfileAdd?.addEventListener('click', (event) => {
     event.stopPropagation();
-    submitProfileCreate();
-  });
-  toolbarProfileName?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      submitProfileCreate();
-    }
+    closeProfileMenu();
+    vscode.postMessage({ type: 'profileOpenSettings' });
   });
   toolbarProfileList?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -429,9 +423,14 @@
       event.stopPropagation();
       const action = actionBtn.getAttribute('data-profile-action');
       const id = actionBtn.getAttribute('data-profile-id') || undefined;
-      if (action === 'rename' || action === 'delete' || action === 'syncPush' || action === 'syncPull') {
+      if (action === 'edit') {
+        vscode.postMessage({ type: 'profileOpenSettings', id });
+        closeProfileMenu();
+        return;
+      }
+      if (action === 'delete' || action === 'syncPush' || action === 'syncPull') {
         vscode.postMessage({ type: 'profile', action, id });
-        if (action === 'rename' || action === 'delete') {
+        if (action === 'delete') {
           closeProfileMenu();
         }
       }
@@ -539,6 +538,8 @@
   const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
   /** @type {string | null} */
   let pageDragId = null;
+  /** Last pager-chip click. A second press still counts after the chip is rebuilt. */
+  let pageChipClick = { id: '', at: 0 };
   let wheelLock = false;
   /** @type {any} */
   let dragPayload = null;
@@ -628,6 +629,7 @@
    * @typedef {{
    *   pageId: string,
    *   loading?: boolean,
+   *   loadingEdge?: 'initial' | 'older' | 'newer',
    *   error?: string,
    *   empty?: boolean,
    *   contentBlocked?: boolean,
@@ -664,7 +666,14 @@
    */
   /** @type {ReviewState | null} */
   let reviewState = null;
-  /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, provider: 'gitlab' | 'github' } | null} */
+  /** Optimistic channel-load edge until the host snapshot arrives. */
+  /** @type {{ pageId: string, edge: 'initial' | 'older' | 'newer' } | null} */
+  let reviewLoadPending = null;
+  /** Pages that already sent reviewLoad while the snapshot was still missing. */
+  const reviewAutoLoad = new Set();
+  /** Settled review snapshots, so switching back does not refetch. */
+  const reviewByPage = new Map();
+  /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, defaultAssignee: string, provider: 'gitlab' | 'github' } | null} */
   let reviewMrPanel = null;
   /** Collapsed MR threads (default open when hasThread). */
   const reviewCollapsed = new Set();
@@ -677,6 +686,22 @@
     const message = event.data;
     if (message.type === 'reviewState') {
       reviewState = message.review || null;
+      if (reviewState && reviewState.pageId) {
+        reviewAutoLoad.delete(reviewState.pageId);
+        if (reviewState.error || reviewState.loadingEdge === 'initial') {
+          reviewByPage.delete(reviewState.pageId);
+        } else if (!reviewState.loadingEdge) {
+          reviewByPage.set(reviewState.pageId, reviewState);
+        }
+      }
+      if (
+        reviewLoadPending &&
+        reviewState &&
+        reviewLoadPending.pageId === reviewState.pageId &&
+        (reviewState.loadingEdge || !reviewState.loading)
+      ) {
+        reviewLoadPending = null;
+      }
       if (activePage()?.kind === 'review') {
         paintReviewPage();
       }
@@ -686,9 +711,45 @@
         branches: Array.isArray(message.branches) ? message.branches : [],
         parent: typeof message.parent === 'string' ? message.parent : '',
         people: Array.isArray(message.people) ? message.people : [],
+        defaultAssignee: typeof message.defaultAssignee === 'string' ? message.defaultAssignee : '',
         provider: message.provider === 'github' ? 'github' : 'gitlab',
       };
       openReviewMrPanel();
+    } else if (message.type === 'profileSettingsPanel') {
+      openProfileSettingsPanel({
+        id: typeof message.id === 'string' ? message.id : '',
+        creating: message.creating === true,
+        nameLocked: message.nameLocked === true,
+        name: typeof message.name === 'string' ? message.name : '',
+        githubNick: typeof message.githubNick === 'string' ? message.githubNick : '',
+        gitlabNick: typeof message.gitlabNick === 'string' ? message.gitlabNick : '',
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'profileSettingsError') {
+      const error = document.querySelector('#profile-settings-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'profileSettingsSaved') {
+      closeProfileSettingsPanel();
+    } else if (message.type === 'pageSettingsPanel') {
+      openPageSettingsPanel({
+        mode: message.mode === 'edit' ? 'edit' : 'create',
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        kind: message.kind === 'notes' || message.kind === 'links' || message.kind === 'review' ? message.kind : 'files',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+      });
+    } else if (message.type === 'pageSettingsError') {
+      const error = document.querySelector('#page-settings-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'pageSettingsSaved') {
+      closePageSettingsPanel();
     } else if (message.type === 'reviewCreatePagePanel') {
       openReviewCreatePagePanel({
         origin: typeof message.origin === 'string' ? message.origin : '',
@@ -696,6 +757,26 @@
         hasGitlab: message.hasGitlab === true,
         hasGithub: message.hasGithub === true,
         hasDiscord: message.hasDiscord === true,
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'reviewPageSettingsPanel') {
+      openReviewCreatePagePanel({
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        hasGitlab: message.hasGitlab === true,
+        hasGithub: message.hasGithub === true,
+        hasDiscord: message.hasDiscord === true,
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+        reviewSkillPath: typeof message.reviewSkillPath === 'string' ? message.reviewSkillPath : '',
+        reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
+        reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
       });
     } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
@@ -967,6 +1048,7 @@
     if (samePage && !leaveProblems) {
       return;
     }
+    closeMapSettingsPanels();
     dismissLinkPreview();
     if (!samePage) {
       rememberSlide(pageId);
@@ -994,6 +1076,7 @@
     if (!showProblemsTab() || problemsPageOpen) {
       return;
     }
+    closeMapSettingsPanels();
     dismissLinkPreview();
     problemsPageOpen = true;
     closeProblemPanel();
@@ -1148,6 +1231,10 @@
     });
   }
 
+  function pageHasSettings(page) {
+    return page?.kind === 'review';
+  }
+
   function updatePageMenu() {
     const list = pages();
     const max = typeof data?.maxPages === 'number' ? data.maxPages : 6;
@@ -1159,6 +1246,10 @@
     if (deleteBtn) {
       deleteBtn.disabled = list.length <= 1;
     }
+    setMenuItemLocaleByAction(
+      'renamePage',
+      pageHasSettings(activePage()) ? 'menuPageSettings' : 'menuRenamePage',
+    );
   }
 
   /** @param {Record<string, { back?: number, forward?: number }> | undefined} history */
@@ -1191,10 +1282,6 @@
     contextMenu.setAttribute('aria-label', t('contextMenu'));
     setBtnLocale(toolbarProfile, 'toolbarProfile');
     setElLocale(toolbarProfileMenu, 'profiles', 'aria-label');
-    if (toolbarProfileName) {
-      toolbarProfileName.placeholder = t('profileNewPlaceholder');
-      toolbarProfileName.setAttribute('aria-label', t('profileNewAria'));
-    }
     setBtnLocale(toolbarProfileAdd, 'profileCreate');
     setBtnLocale(toolbarView, 'toolbarView');
     setElLocale(toolbarViewMenu, 'toolbarView', 'aria-label');
@@ -2253,26 +2340,20 @@
     toolbarProfile?.setAttribute('aria-expanded', 'false');
   }
 
-  function submitProfileCreate() {
-    const name = (toolbarProfileName?.value || '').trim();
-    if (!name || !isCreatableProfileName(name)) {
-      return;
-    }
-    vscode.postMessage({ type: 'profile', action: 'create', name });
-    if (toolbarProfileName) {
-      toolbarProfileName.value = '';
-    }
-    closeProfileMenu();
-  }
-
-  /** @param {string} name */
-  function isCreatableProfileName(name) {
+  /** @param {string} name @param {string} [exceptId] */
+  function isCreatableProfileName(name, exceptId) {
     const lower = name.toLocaleLowerCase();
     if (lower === 'общий' || lower === 'general') {
       return false;
     }
     const rows = toolbarProfileList?.querySelectorAll('[data-profile-id]') || [];
     for (const row of rows) {
+      if (!(row instanceof HTMLElement)) {
+        continue;
+      }
+      if (exceptId && row.getAttribute('data-profile-id') === exceptId) {
+        continue;
+      }
       const label = row.querySelector('.profile-name');
       if (label && label.textContent && label.textContent.toLocaleLowerCase() === lower) {
         return false;
@@ -2328,14 +2409,15 @@
         pullBtn.disabled = !canPull;
         actions.append(pushBtn, pullBtn);
       }
+      const editBtn = el('button', '');
+      editBtn.type = 'button';
+      editBtn.title = t('profileEdit');
+      editBtn.setAttribute('aria-label', t('profileEdit'));
+      editBtn.setAttribute('data-profile-action', 'edit');
+      editBtn.setAttribute('data-profile-id', profile.id);
+      editBtn.textContent = '✎';
+      actions.append(editBtn);
       if (profile.id !== 'general') {
-        const renameBtn = el('button', '');
-        renameBtn.type = 'button';
-        renameBtn.title = t('profileRename');
-        renameBtn.setAttribute('aria-label', t('profileRename'));
-        renameBtn.setAttribute('data-profile-action', 'rename');
-        renameBtn.setAttribute('data-profile-id', profile.id);
-        renameBtn.textContent = '✎';
         const deleteBtn = el('button', '');
         deleteBtn.type = 'button';
         deleteBtn.title = t('profileDelete');
@@ -2343,7 +2425,7 @@
         deleteBtn.setAttribute('data-profile-action', 'delete');
         deleteBtn.setAttribute('data-profile-id', profile.id);
         deleteBtn.textContent = '×';
-        actions.append(renameBtn, deleteBtn);
+        actions.append(deleteBtn);
       }
       if (actions.childNodes.length > 0) {
         row.append(actions);
@@ -3969,15 +4051,45 @@
     );
   }
 
+  /** Paths from assets/blog-line.svg — plain message / comment glyph. */
   function reviewCommentIcon() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('class', 'review-ico');
+    const paths = [
+      { d: 'M11 11.5H9V13.5H11V11.5Z' },
+      { d: 'M15 11.5H13V13.5H15V11.5Z' },
+      { d: 'M17 11.5H19V13.5H17V11.5Z' },
+      {
+        d: 'M11.2 19L14 22.5L16.8 19H22C22.5523 19 23 18.5523 23 18V7.10256C23 6.55028 22.5523 6.10256 22 6.10256H6C5.44772 6.10256 5 6.55028 5 7.10256V18C5 18.5523 5.44772 19 6 19H11.2ZM21 17H15.8387L14 19.2984L12.1613 17H7V8.10256H21V17Z',
+        rule: 'evenodd',
+      },
+      { d: 'M19 2H2C1.44772 2 1 2.44772 1 3V15H3V4H19V2Z' },
+    ];
+    for (const item of paths) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', item.d);
+      path.setAttribute('fill', 'currentColor');
+      if (item.rule) {
+        path.setAttribute('fill-rule', item.rule);
+        path.setAttribute('clip-rule', item.rule);
+      }
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** Path from assets/git-pull-request-fill.svg — MR chip leading glyph. */
+  function reviewPrIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-pr');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute(
       'd',
-      'M2.5 2.5h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.2L3.5 14.2V11.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z',
+      'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3.83481 15.5825 5 15.1707V8.82929Z',
     );
     path.setAttribute('fill', 'currentColor');
     svg.append(path);
@@ -3999,38 +4111,170 @@
     return svg;
   }
 
+  const REVIEW_SKELETON_PARENTS = 3;
+  const REVIEW_SKELETON_CHILDREN = 3;
+  const REVIEW_SKEL_COLOR = '#6e6e6e';
+
+  /**
+   * @param {string} pageId
+   * @returns {'initial' | 'older' | 'newer' | ''}
+   */
+  function reviewPaintEdge(pageId) {
+    if (reviewLoadPending && reviewLoadPending.pageId === pageId) {
+      return reviewLoadPending.edge;
+    }
+    if (!reviewState || reviewState.pageId !== pageId) {
+      return 'initial';
+    }
+    const marked = reviewState.loadingEdge;
+    if (marked === 'initial' || marked === 'older' || marked === 'newer') {
+      return marked;
+    }
+    if (reviewState.loading && (!reviewState.messages || reviewState.messages.length === 0)) {
+      return 'initial';
+    }
+    return '';
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {'initial' | 'older' | 'newer'} edge
+   */
+  function requestReviewChannelLoad(pageId, edge) {
+    if (reviewPaintEdge(pageId)) {
+      return;
+    }
+    reviewLoadPending = { pageId, edge };
+    const type =
+      edge === 'older' ? 'reviewLoadOlder' : edge === 'newer' ? 'reviewLoadNewer' : 'reviewLoad';
+    vscode.postMessage(edge === 'initial' ? { type, pageId, force: true } : { type, pageId });
+    paintReviewPage();
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   */
+  function reviewSkeletonBar(width, delayMs) {
+    const bar = el('span', 'review-skel-bar');
+    bar.style.width = width;
+    bar.style.animationDelay = delayMs + 'ms';
+    return bar;
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   * @param {boolean} child
+   */
+  function reviewSkeletonPlain(width, delayMs, child) {
+    const preview = el('div', 'review-plain is-skel' + (child ? ' is-child' : ''));
+    const ico = el('span', 'review-plain-ico review-skel-ico');
+    ico.style.animationDelay = delayMs + 'ms';
+    preview.append(ico, reviewSkeletonBar(width, delayMs));
+    return preview;
+  }
+
+  /** Three plain parents, each with three plain replies. */
+  function renderReviewSkeletonTree() {
+    const tree = el('div', 'review-tree review-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    const parentWidths = ['168px', '124px', '148px'];
+    const childWidths = [
+      ['96px', '72px', '88px'],
+      ['80px', '112px', '64px'],
+      ['104px', '76px', '92px'],
+    ];
+    for (let parent = 0; parent < REVIEW_SKELETON_PARENTS; parent += 1) {
+      const leadingGap = parent > 0;
+      const row = el('div', 'review-node is-plain' + (leadingGap ? ' has-gap' : ''));
+      row.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+      const nextColor = parent < REVIEW_SKELETON_PARENTS - 1 ? REVIEW_SKEL_COLOR : '';
+      row.append(
+        linkElbow(
+          reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 12 }),
+          nextColor,
+        ),
+      );
+      const body = el('div', 'review-body');
+      body.append(reviewSkeletonPlain(parentWidths[parent], parent * 90, false));
+      const children = el('div', 'review-children');
+      const slide = el('div', 'review-children-slide');
+      for (let child = 0; child < REVIEW_SKELETON_CHILDREN; child += 1) {
+        const reply = el('div', 'review-reply-node has-gap');
+        reply.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+        const childNext = child < REVIEW_SKELETON_CHILDREN - 1 ? REVIEW_SKEL_COLOR : '';
+        reply.append(
+          linkElbow(
+            reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 12 }),
+            childNext,
+          ),
+        );
+        const childBody = el('div', 'review-body');
+        childBody.append(
+          reviewSkeletonPlain(childWidths[parent][child], parent * 90 + (child + 1) * 70, true),
+        );
+        reply.append(childBody);
+        slide.append(reply);
+      }
+      children.append(slide);
+      body.append(children);
+      row.append(body);
+      tree.append(row);
+    }
+    return tree;
+  }
+
   function paintReviewPage() {
     setCollapseButton();
+    const page = activePage();
+    const pageId = page?.id || '';
+    if (pageId && (!reviewState || reviewState.pageId !== pageId)) {
+      const cached = reviewByPage.get(pageId);
+      if (cached) {
+        reviewState = cached;
+      }
+    }
+    const edge = reviewPaintEdge(pageId);
+    const samePage = !!(reviewState && reviewState.pageId === pageId);
+    const keepScroll = samePage && edge !== 'initial' ? currentDocScroll() : 0;
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page review-page';
     clearDropHighlights();
-    const page = activePage();
-    const pageId = page?.id || '';
-    if (!reviewState || reviewState.pageId !== pageId) {
-      root.append(el('div', 'review-status', '…'));
-      if (pageId) {
+    if (edge) {
+      root.setAttribute('aria-busy', 'true');
+    } else {
+      root.removeAttribute('aria-busy');
+    }
+    if (edge === 'initial') {
+      root.append(renderReviewSkeletonTree());
+      if (
+        pageId &&
+        (!reviewState || reviewState.pageId !== pageId) &&
+        !reviewAutoLoad.has(pageId)
+      ) {
+        reviewAutoLoad.add(pageId);
         vscode.postMessage({ type: 'reviewLoad', pageId });
       }
       return;
     }
-    if (reviewState.loading && (!reviewState.messages || reviewState.messages.length === 0)) {
-      root.append(el('div', 'review-status', '…'));
-      return;
-    }
-    if (reviewState.error) {
+    if (reviewState && reviewState.error) {
       const box = el('div', 'review-error');
       box.append(el('div', 'review-error-text', reviewState.error || t('reviewSyncError')));
       const retry = el('button', 'review-btn', t('reviewRetry'));
       retry.type = 'button';
       retry.addEventListener('click', () => {
-        vscode.postMessage({ type: 'reviewLoad', pageId });
+        requestReviewChannelLoad(pageId, 'initial');
       });
       box.append(retry);
       root.append(box);
+      if (keepScroll) {
+        applyDocScroll(keepScroll);
+      }
       return;
     }
-    if (reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
+    if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
       root.append(el('div', 'empty', t('reviewEmpty')));
       return;
     }
@@ -4045,20 +4289,25 @@
       const retry = el('button', 'review-btn', t('reviewRetry'));
       retry.type = 'button';
       retry.addEventListener('click', () => {
-        vscode.postMessage({ type: 'reviewLoad', pageId });
+        requestReviewChannelLoad(pageId, 'initial');
       });
       const actions = el('div', 'review-content-blocked-actions');
       actions.append(howto, retry);
       warn.append(actions);
       root.append(warn);
     }
-    if (reviewState.canLoadOlder) {
+    const busy = edge === 'older' || edge === 'newer';
+    if (reviewState.canLoadOlder && edge !== 'older') {
       const older = el('button', 'review-load-edge', t('reviewLoadOlder'));
       older.type = 'button';
+      older.disabled = busy;
       older.addEventListener('click', () => {
-        vscode.postMessage({ type: 'reviewLoadOlder', pageId });
+        requestReviewChannelLoad(pageId, 'older');
       });
       root.append(older);
+    }
+    if (edge === 'older') {
+      root.append(renderReviewSkeletonTree());
     }
     const tree = el('div', 'review-tree');
     const messages = reviewState.messages;
@@ -4068,13 +4317,20 @@
       tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
     });
     root.append(tree);
-    if (reviewState.canLoadNewer) {
+    if (edge === 'newer') {
+      root.append(renderReviewSkeletonTree());
+    }
+    if (reviewState.canLoadNewer && edge !== 'newer') {
       const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
       newer.type = 'button';
+      newer.disabled = busy;
       newer.addEventListener('click', () => {
-        vscode.postMessage({ type: 'reviewLoadNewer', pageId });
+        requestReviewChannelLoad(pageId, 'newer');
       });
       root.append(newer);
+    }
+    if (keepScroll) {
+      applyDocScroll(keepScroll);
     }
     if (reviewState.focusMessageId) {
       const focused = root.querySelector('[data-review-id="' + reviewState.focusMessageId + '"]');
@@ -4083,7 +4339,28 @@
         focused.scrollIntoView({ block: 'nearest' });
         vscode.postMessage({ type: 'reviewClearFocus', pageId });
       }
+    } else if (edge === 'older' || edge === 'newer') {
+      const skel = root.querySelector('.review-skel');
+      if (skel instanceof HTMLElement) {
+        skel.scrollIntoView({ block: 'nearest' });
+      }
     }
+  }
+
+  /** Stamp block above content (10px * 1.2) + body gap — must match .review-stamp / .review-body. */
+  const REVIEW_STAMP_BLOCK = 12;
+  const REVIEW_BODY_GAP = 4;
+
+  /**
+   * Elbow mid Y like links: padding gap + optional stamp + half of the target row.
+   * @param {{ leadingGap?: boolean, hasStamp?: boolean, contentHalf: number }} opts
+   */
+  function reviewElbowMid(opts) {
+    return (
+      (opts.leadingGap ? LINK_ROW_GAP : 0) +
+      (opts.hasStamp ? REVIEW_STAMP_BLOCK + REVIEW_BODY_GAP : 0) +
+      opts.contentHalf
+    );
   }
 
   /**
@@ -4097,6 +4374,7 @@
     const canFold = msg.isMr && !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
     const collapsed = canFold && reviewCollapsed.has(msg.id);
     const plainOpen = !msg.isMr && reviewPlainExpanded.has(msg.id);
+    const stamp = formatReviewStamp(msg.timestamp);
     const row = el(
       'div',
       'review-node' +
@@ -4107,10 +4385,18 @@
     );
     row.dataset.reviewId = msg.id;
     row.style.setProperty('--link-color', color);
-    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + 20, nextColor));
+    row.append(
+      linkElbow(
+        reviewElbowMid({
+          leadingGap,
+          hasStamp: !!stamp,
+          contentHalf: msg.isMr ? 20 : 12,
+        }),
+        nextColor,
+      ),
+    );
 
     const body = el('div', 'review-body');
-    const stamp = formatReviewStamp(msg.timestamp);
     if (stamp) {
       body.append(el('div', 'review-stamp', stamp));
     }
@@ -4119,6 +4405,7 @@
       const chipWrap = el('div', 'review-chip-wrap');
       const chip = el('button', 'review-chip is-mr-pill');
       chip.type = 'button';
+      chip.append(reviewPrIcon());
       chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
       if (canFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
@@ -4161,7 +4448,12 @@
 
       const titleText =
         msg.title ||
-        (typeof msg.content === 'string' ? msg.content.split('\n')[2] : '') ||
+        (() => {
+          const head =
+            typeof msg.content === 'string' ? msg.content.trimStart().split('\n')[0] || '' : '';
+          const match = /^\((?:MR_SYN3|DMR_SYN3)\):\s*(.*)$/.exec(head);
+          return match ? match[1].trim() : '';
+        })() ||
         t('reviewEmptyMessage');
       const title = el(
         'button',
@@ -4209,17 +4501,13 @@
       preview.addEventListener('click', () => {
         if (reviewPlainExpanded.has(msg.id)) {
           reviewPlainExpanded.delete(msg.id);
-          paintReviewPage();
-          return;
-        }
-        reviewPlainExpanded.add(msg.id);
-        if (!msg.repliesLoaded) {
-          vscode.postMessage({ type: 'reviewExpandPlain', pageId, messageId: msg.id });
+        } else {
+          reviewPlainExpanded.add(msg.id);
         }
         paintReviewPage();
       });
       body.append(preview);
-      if (plainOpen && (msg.repliesLoaded || (msg.replies && msg.replies.length) || msg.repliesHasMore)) {
+      if ((msg.replies && msg.replies.length) || msg.repliesHasMore) {
         body.append(renderReviewThread(msg, pageId, false));
       }
     }
@@ -4235,6 +4523,7 @@
   function renderReviewThread(msg, pageId, allowPills) {
     const children = el('div', 'review-children');
     const slide = el('div', 'review-children-slide');
+    const color = msg.color || '#8e4ec6';
     if (msg.repliesHasMore) {
       const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
       more.type = 'button';
@@ -4243,8 +4532,12 @@
       });
       slide.append(more);
     }
-    for (const reply of msg.replies || []) {
-      slide.append(renderReviewReply(reply, msg.color || '#8e4ec6', allowPills));
+    const replies = msg.replies || [];
+    for (let index = 0; index < replies.length; index += 1) {
+      const next = replies[index + 1];
+      slide.append(
+        renderReviewReply(replies[index], color, allowPills, true, next ? color : ''),
+      );
     }
     children.append(slide);
     return children;
@@ -4254,19 +4547,31 @@
    * @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply
    * @param {string} color
    * @param {boolean} allowPills
+   * @param {boolean} leadingGap
+   * @param {string} nextColor stem below this turn (hidden on :last-child via CSS)
    */
-  function renderReviewReply(reply, color, allowPills) {
-    const row = el('div', 'review-reply-node');
-    row.style.setProperty('--link-color', color);
-    row.append(linkElbow(16, ''));
-    const body = el('div', 'review-body');
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor) {
     const stamp = formatReviewStamp(reply.timestamp);
+    const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
+    const row = el('div', 'review-reply-node' + (leadingGap ? ' has-gap' : ''));
+    row.style.setProperty('--link-color', color);
+    row.append(
+      linkElbow(
+        reviewElbowMid({
+          leadingGap,
+          hasStamp: !!stamp,
+          contentHalf: isPill ? 17 : 12,
+        }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
     if (stamp) {
       body.append(el('div', 'review-stamp', stamp));
     }
     const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
     const replyMissing = reply.contentMissing === true || !replyText;
-    if (allowPills && reply.isPill && reply.pillLabel) {
+    if (isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill', reply.pillLabel);
       wrap.append(chip);
@@ -4282,7 +4587,7 @@
       let shown = replyMissing
         ? t('reviewEmptyMessage')
         : reply.isReview
-          ? replyText.split('\n').slice(0, 2).join('\n') || 'R-SYN3'
+          ? replyText.split('\n').slice(0, 2).join('\n') || 'R_SYN3'
           : replyText;
       plain.append(
         el('span', 'review-plain-text' + (replyMissing ? ' is-missing' : ''), shown),
@@ -4307,39 +4612,382 @@
     );
   }
 
+  function dismissReviewMrPanel() {
+    removeOverlay('review-mr-panel');
+  }
+
   function closeReviewMrPanel() {
-    document.getElementById('review-mr-panel')?.remove();
+    dismissReviewMrPanel();
     reviewMrPanel = null;
   }
 
-  function closeReviewCreatePagePanel() {
-    document.getElementById('review-create-page-panel')?.remove();
+  function removeOverlay(id) {
+    const node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    const backdrop = node.closest('.map-settings-backdrop');
+    if (backdrop) {
+      backdrop.remove();
+      return;
+    }
+    node.remove();
   }
 
   /**
-   * @param {{ origin: string, suggestedProvider: 'gitlab' | 'github', hasGitlab: boolean, hasGithub: boolean, hasDiscord: boolean }} opts
+   * @param {HTMLElement} panel
+   * @param {() => void} close
+   */
+  function mountSettingsOverlay(panel, close) {
+    const backdrop = el('div', 'map-settings-backdrop');
+    let pressed = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressed = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressed && event.target === backdrop) {
+        close();
+      }
+      pressed = false;
+    });
+    backdrop.append(panel);
+    document.body.append(backdrop);
+  }
+
+  function closeMapSettingsPanels() {
+    closeProfileSettingsPanel();
+    closePageSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+  }
+
+  function closeProfileSettingsPanel() {
+    removeOverlay('profile-settings-panel');
+  }
+
+  function closePageSettingsPanel() {
+    removeOverlay('page-settings-panel');
+  }
+
+  /**
+   * @param {{
+   *   id: string,
+   *   creating: boolean,
+   *   nameLocked: boolean,
+   *   name: string,
+   *   githubNick: string,
+   *   gitlabNick: string,
+   *   githubToken: string,
+   *   gitlabToken: string
+   * }} opts
+   */
+  function openProfileSettingsPanel(opts) {
+    closeProfileSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    const panel = el('div', 'review-mr-panel review-create-page-panel profile-settings-panel');
+    panel.id = 'profile-settings-panel';
+    panel.append(
+      el(
+        'div',
+        'review-mr-people-title',
+        t(opts.creating ? 'profileSettingsCreateTitle' : 'profileSettingsTitle'),
+      ),
+    );
+
+    /**
+     * @param {string} labelKey
+     * @param {{ value?: string, password?: boolean, disabled?: boolean, placeholderKey?: string }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = field.value || '';
+      if (field.password) {
+        input.autocomplete = 'new-password';
+      }
+      if (field.placeholderKey) {
+        input.placeholder = t(field.placeholderKey);
+      }
+      if (field.disabled) {
+        input.disabled = true;
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = fieldRow('profileFieldName', {
+      value: opts.name,
+      disabled: opts.nameLocked,
+    });
+    nameInput.maxLength = 64;
+    panel.append(el('div', 'review-mr-people-title', t('labelGithub')));
+    const githubNick = fieldRow('gitNickPlaceholder', {
+      value: opts.githubNick,
+      placeholderKey: 'gitNickPlaceholder',
+    });
+    const githubToken = fieldRow('gitTokenPlaceholder', {
+      value: opts.githubToken,
+      password: true,
+      placeholderKey: 'gitTokenPlaceholder',
+    });
+    panel.append(el('div', 'review-mr-people-title', t('labelGitlab')));
+    const gitlabNick = fieldRow('gitNickPlaceholder', {
+      value: opts.gitlabNick,
+      placeholderKey: 'gitNickPlaceholder',
+    });
+    const gitlabToken = fieldRow('gitTokenPlaceholder', {
+      value: opts.gitlabToken,
+      password: true,
+      placeholderKey: 'gitTokenPlaceholder',
+    });
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeProfileSettingsPanel());
+    const submit = el('button', 'review-btn is-primary', t('profileSettingsSave'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      error.hidden = true;
+      error.textContent = '';
+      const name = nameInput.value.trim();
+      if (!opts.nameLocked) {
+        if (!name) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+        if (!isCreatableProfileName(name, opts.creating ? undefined : opts.id)) {
+          error.textContent = t('profileNameTaken');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+      }
+      vscode.postMessage({
+        type: 'profileSaveSettings',
+        id: opts.creating ? undefined : opts.id,
+        name,
+        githubNick: githubNick.value,
+        gitlabNick: gitlabNick.value,
+        githubToken: githubToken.value,
+        gitlabToken: gitlabToken.value,
+      });
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeProfileSettingsPanel);
+    if (opts.nameLocked) {
+      githubNick.focus();
+    } else {
+      nameInput.focus();
+      nameInput.select();
+    }
+  }
+
+  /** @type {(() => void) | null} */
+  let detachReviewPathNav = null;
+
+  function closeReviewCreatePagePanel() {
+    if (detachReviewPathNav) {
+      detachReviewPathNav();
+      detachReviewPathNav = null;
+    }
+    removeOverlay('review-create-page-panel');
+  }
+
+  /**
+   * Page description: two lines tall, stretchable to three, 144 characters.
+   * @param {string} value
+   * @returns {{ label: HTMLLabelElement, input: HTMLTextAreaElement }}
+   */
+  function pageDescriptionField(value) {
+    const label = el('label', 'review-mr-field');
+    const head = el('span', 'review-desc-head');
+    head.append(document.createTextNode(t('groupDescription')));
+    const counter = el('span', 'group-panel-counter');
+    const input = document.createElement('textarea');
+    input.className = 'review-mr-title';
+    input.rows = 2;
+    input.maxLength = MAX_GROUP_DESCRIPTION_LENGTH;
+    input.value = clipGroupDescriptionInput(value || '');
+    const sync = () => {
+      const next = clipGroupDescriptionInput(input.value);
+      if (next !== input.value) {
+        const caret = input.selectionStart;
+        input.value = next;
+        if (typeof caret === 'number') {
+          const pos = Math.min(caret, next.length);
+          input.setSelectionRange(pos, pos);
+        }
+      }
+      counter.textContent = input.value.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
+    };
+    input.addEventListener('input', sync);
+    sync();
+    head.append(counter);
+    label.append(head, input);
+    return { label, input };
+  }
+
+  /**
+   * Name and description of a map page, inside the map window.
+   * @param {{
+   *   mode: 'create' | 'edit',
+   *   pageId?: string,
+   *   kind?: string,
+   *   name?: string,
+   *   description?: string
+   * }} opts
+   */
+  function openPageSettingsPanel(opts) {
+    closePageSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeProfileSettingsPanel();
+    const creating = opts.mode !== 'edit';
+    const panel = el('div', 'review-mr-panel review-create-page-panel page-settings-panel');
+    panel.id = 'page-settings-panel';
+    panel.append(
+      el('div', 'review-mr-people-title', t(creating ? 'pageSettingsCreateTitle' : 'pageSettingsTitle')),
+    );
+
+    const nameLabel = el('label', 'review-mr-field', t('reviewFieldPageName'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.maxLength = 64;
+    nameInput.value = opts.name || '';
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+
+    const pageDesc = pageDescriptionField(opts.description || '');
+    const descInput = pageDesc.input;
+    panel.append(pageDesc.label);
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    if (creating) {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => closePageSettingsPanel());
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      submit.addEventListener('click', () => {
+        error.hidden = true;
+        error.textContent = '';
+        const name = nameInput.value.trim();
+        if (!name) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+        vscode.postMessage({
+          type: 'pageSaveSettings',
+          kind: opts.kind,
+          name,
+          description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        });
+      });
+      actions.append(cancel, submit);
+      panel.append(actions);
+    } else {
+      let savedSig = JSON.stringify({
+        name: (opts.name || '').trim(),
+        description: clipGroupDescriptionInput(opts.description || '').trim(),
+      });
+      const saveEditing = () => {
+        const name = nameInput.value.trim();
+        if (!name) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          return;
+        }
+        error.hidden = true;
+        error.textContent = '';
+        const description = clipGroupDescriptionInput(descInput.value).trim();
+        const sig = JSON.stringify({ name, description });
+        if (sig === savedSig) {
+          return;
+        }
+        savedSig = sig;
+        vscode.postMessage({
+          type: 'pageSaveSettings',
+          pageId: opts.pageId,
+          name,
+          description: description || undefined,
+        });
+      };
+      nameInput.addEventListener('change', saveEditing);
+      descInput.addEventListener('change', saveEditing);
+    }
+    mountSettingsOverlay(panel, closePageSettingsPanel);
+    nameInput.focus();
+    if (!creating) {
+      nameInput.select();
+    }
+  }
+
+  /**
+   * @param {{
+   *   origin: string,
+   *   suggestedProvider: 'gitlab' | 'github',
+   *   hasGitlab: boolean,
+   *   hasGithub: boolean,
+   *   hasDiscord: boolean,
+   *   pageId?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   repoUrl?: string,
+   *   githubToken?: string,
+   *   gitlabToken?: string,
+   *   reviewSkillPath?: string,
+   *   reviewDirPath?: string,
+   *   reviewModel?: string
+   * }} opts
    */
   function openReviewCreatePagePanel(opts) {
     closeReviewCreatePagePanel();
     closeReviewMrPanel();
+    closeProfileSettingsPanel();
+    const editing = !!opts.pageId;
     const panel = el('div', 'review-mr-panel review-create-page-panel');
     panel.id = 'review-create-page-panel';
-    const header = el('div', 'review-create-page-header');
-    header.append(el('div', 'review-mr-people-title', t('reviewCreatePageTitle')));
-    const headerLinks = el('div', 'review-create-page-links');
-    const howTo = el('button', 'review-howto-link', t('reviewHowToConnect'));
-    howTo.type = 'button';
-    howTo.addEventListener('click', () => {
-      vscode.postMessage({ type: 'reviewOpenSetupDoc' });
-    });
-    const promptEx = el('button', 'review-howto-link', t('reviewPromptExample'));
-    promptEx.type = 'button';
-    promptEx.addEventListener('click', () => {
-      vscode.postMessage({ type: 'reviewOpenPromptExample' });
-    });
-    headerLinks.append(howTo, promptEx);
-    header.append(headerLinks);
-    panel.append(header);
+    if (editing) {
+      panel.append(el('div', 'review-mr-people-title', t('reviewPageSettingsTitle')));
+    } else {
+      const header = el('div', 'review-create-page-header');
+      header.append(el('div', 'review-mr-people-title', t('reviewCreatePageTitle')));
+      const headerLinks = el('div', 'review-create-page-links');
+      const howTo = el('button', 'review-howto-link', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const promptEx = el('button', 'review-howto-link', t('reviewPromptExample'));
+      promptEx.type = 'button';
+      promptEx.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenPromptExample' });
+      });
+      headerLinks.append(howTo, promptEx);
+      header.append(headerLinks);
+      panel.append(header);
+    }
 
     /**
      * @param {string} labelKey
@@ -4361,8 +5009,17 @@
       return input;
     }
 
-    const nameInput = fieldRow('reviewFieldPageName', { placeholder: 'Review' });
-    const channelInput = fieldRow('reviewFieldChannelId', { placeholder: '123456789012345678' });
+    const nameInput = fieldRow('reviewFieldPageName', {
+      placeholder: 'Review',
+      value: opts.name || '',
+    });
+    const pageDesc = pageDescriptionField(opts.description || '');
+    const descInput = pageDesc.input;
+    panel.append(pageDesc.label);
+    const channelInput = fieldRow('reviewFieldChannelId', {
+      placeholder: '123456789012345678',
+      value: opts.channelId || '',
+    });
 
     /** @type {'gitlab' | 'github'} */
     let provider = opts.suggestedProvider === 'github' ? 'github' : 'gitlab';
@@ -4380,11 +5037,18 @@
       btn.type = 'button';
       btn.dataset.provider = value;
       btn.addEventListener('click', () => {
+        if (hostTokenInput) {
+          if (provider === 'github') opts.githubToken = hostTokenInput.value;
+          else opts.gitlabToken = hostTokenInput.value;
+        }
         provider = value;
         for (const other of providerButtons) {
           other.classList.toggle('is-primary', other.dataset.provider === provider);
         }
         renderHostToken();
+        if (editing) {
+          saveEditing();
+        }
       });
       providerButtons.push(btn);
       providerChoices.append(btn);
@@ -4392,10 +5056,7 @@
     providerBox.append(providerChoices);
     panel.append(providerBox);
 
-    const repoInput = fieldRow('reviewFieldRepoUrl', { value: opts.origin });
-    const peopleInput = fieldRow('reviewFieldPeople', {
-      placeholder: 'alice, bob=Bob Smith',
-    });
+    const repoInput = fieldRow('reviewFieldRepoUrl', { value: opts.repoUrl || opts.origin });
 
     const hostTokenSlot = el('div', 'review-host-token-slot');
     panel.append(hostTokenSlot);
@@ -4405,20 +5066,20 @@
 
     function renderHostToken() {
       hostTokenSlot.replaceChildren();
-      hostTokenInput = null;
-      const saved = provider === 'github' ? opts.hasGithub : opts.hasGitlab;
       const labelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
-      if (saved) {
-        hostTokenSlot.append(el('div', 'review-token-hint', t(labelKey) + ': ' + t('reviewTokenSaved')));
-        return;
-      }
       const label = el('label', 'review-mr-field', t(labelKey));
       const input = document.createElement('input');
       input.className = 'review-mr-title';
       input.type = 'password';
+      input.spellcheck = false;
+      input.autocomplete = 'new-password';
+      input.value = provider === 'github' ? opts.githubToken || '' : opts.gitlabToken || '';
       label.append(input);
       hostTokenSlot.append(label);
       hostTokenInput = input;
+      if (editing) {
+        input.addEventListener('change', () => saveEditing());
+      }
     }
     renderHostToken();
 
@@ -4431,76 +5092,351 @@
       discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
     }
 
+    /** @type {HTMLInputElement | null} */
+    let skillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let dirInput = null;
+    /** @type {HTMLInputElement | null} */
+    let modelInput = null;
+    if (editing) {
+      /**
+       * @param {string} labelKey
+       * @param {string} value
+       * @param {'skill' | 'dir' | 'model'} kind
+       */
+      function reviewAgentField(labelKey, value, kind) {
+        const label = el('label', 'review-mr-field', t(labelKey));
+        const row = el('div', 'review-path-field');
+        const input = document.createElement('input');
+        input.className = 'review-mr-title' + (kind === 'model' ? ' review-model-input' : '');
+        input.type = 'text';
+        input.spellcheck = false;
+        input.value = value;
+        if (kind === 'model') {
+          input.autocapitalize = 'none';
+          input.autocomplete = 'off';
+          input.placeholder = 'grok-4.7-high-fast';
+          input.addEventListener('input', () => {
+            const next = input.value.toLowerCase();
+            if (next === input.value) {
+              return;
+            }
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            input.value = next;
+            if (start !== null && end !== null) {
+              input.setSelectionRange(start, end);
+            }
+          });
+        }
+        row.append(input);
+        if (kind !== 'model') {
+          const browse = el('button', 'review-btn review-path-browse', '…');
+          browse.type = 'button';
+          browse.title = t('browseProject');
+          browse.setAttribute('aria-label', t('browseProject'));
+          browse.addEventListener('click', () => openReviewPathNav(kind, input));
+          row.append(browse);
+        }
+        label.append(row);
+        panel.append(label);
+        return input;
+      }
+
+      skillInput = reviewAgentField('labelReviewSkillPath', opts.reviewSkillPath || '', 'skill');
+      dirInput = reviewAgentField('labelReviewDirPath', opts.reviewDirPath || '', 'dir');
+      modelInput = reviewAgentField('labelReviewModel', (opts.reviewModel || '').toLowerCase(), 'model');
+
+      function saveReviewPaths() {
+        if (!(skillInput instanceof HTMLInputElement) || !(dirInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const reviewSkillPath = skillInput.value.trim();
+        const reviewDirPath = dirInput.value.trim();
+        const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
+        if (
+          reviewSkillPath === (opts.reviewSkillPath || '') &&
+          reviewDirPath === (opts.reviewDirPath || '') &&
+          reviewModel === (opts.reviewModel || '').toLowerCase()
+        ) {
+          return;
+        }
+        opts.reviewSkillPath = reviewSkillPath;
+        opts.reviewDirPath = reviewDirPath;
+        opts.reviewModel = reviewModel;
+        vscode.postMessage({ type: 'setReviewPaths', reviewSkillPath, reviewDirPath, reviewModel });
+      }
+
+      for (const input of [skillInput, dirInput, modelInput]) {
+        input.addEventListener('change', () => saveReviewPaths());
+      }
+
+      /** @type {HTMLInputElement | null} */
+      let navTarget = null;
+      let browseSeq = 0;
+      let navRel = '';
+      const pathNav = el('div', 'review-path-nav');
+      pathNav.id = 'review-path-nav';
+      pathNav.hidden = true;
+      const pathPanel = el('div', 'review-path-nav-panel');
+      pathPanel.setAttribute('role', 'dialog');
+      const pathTitle = el('div', 'review-path-nav-title', '');
+      const pathBar = el('div', 'review-path-nav-bar');
+      const pathUp = el('button', 'review-path-nav-icon', '↑');
+      pathUp.type = 'button';
+      pathUp.title = t('pathNavUp');
+      const pathCrumbs = el('div', 'review-path-nav-crumbs');
+      const pathClose = el('button', 'review-path-nav-icon', '×');
+      pathClose.type = 'button';
+      pathClose.title = t('pathNavClose');
+      pathBar.append(pathUp, pathCrumbs, pathClose);
+      const pathList = el('div', 'review-path-nav-list');
+      pathList.tabIndex = -1;
+      const pathFoot = el('div', 'review-path-nav-foot');
+      const pathPick = el('button', 'review-btn', t('pathNavSelectDir'));
+      pathPick.type = 'button';
+      pathFoot.append(pathPick);
+      pathPanel.append(pathTitle, pathBar, pathList, pathFoot);
+      pathNav.append(pathPanel);
+      document.body.append(pathNav);
+
+      function closeReviewPathNav() {
+        pathNav.hidden = true;
+      }
+
+      function requestReviewDir(rel) {
+        browseSeq += 1;
+        navRel = rel || '';
+        vscode.postMessage({ type: 'listProjectDir', seq: browseSeq, rel: navRel });
+      }
+
+      function chooseReviewPath(rel) {
+        if (!(navTarget instanceof HTMLInputElement)) {
+          return;
+        }
+        navTarget.value = rel || '.';
+        closeReviewPathNav();
+        navTarget.dispatchEvent(new Event('change'));
+      }
+
+      /**
+       * @param {{ relDir?: string, entries?: Array<{ name: string, relPath: string, isDir: boolean }>, error?: string }} payload
+       */
+      function renderReviewPathNav(payload) {
+        navRel = payload && typeof payload.relDir === 'string' ? payload.relDir : '';
+        pathUp.disabled = !navRel;
+        pathCrumbs.replaceChildren();
+        const rootBtn = el('button', 'review-path-crumb', t('pathNavRoot'));
+        rootBtn.type = 'button';
+        rootBtn.addEventListener('click', () => requestReviewDir(''));
+        pathCrumbs.append(rootBtn);
+        if (navRel) {
+          let acc = '';
+          for (const part of navRel.split('/')) {
+            acc = acc ? acc + '/' + part : part;
+            pathCrumbs.append(el('span', 'review-path-crumb-sep', '/'));
+            const crumb = el('button', 'review-path-crumb', part);
+            crumb.type = 'button';
+            const target = acc;
+            crumb.addEventListener('click', () => requestReviewDir(target));
+            pathCrumbs.append(crumb);
+          }
+        }
+        pathList.replaceChildren();
+        const entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (payload && payload.error) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavUnreadable')));
+        } else if (entries.length === 0) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavEmpty')));
+        }
+        for (const entry of entries) {
+          const row = el('div', 'review-path-nav-row');
+          const open = el('button', 'review-path-nav-open');
+          open.type = 'button';
+          open.append(el('span', 'review-path-nav-mark', entry.isDir ? '▸' : ''), el('span', 'review-path-nav-name', entry.name));
+          if (entry.isDir) {
+            open.addEventListener('click', () => requestReviewDir(entry.relPath));
+            const pick = el('button', 'review-btn review-path-nav-pick', t('pathNavPick'));
+            pick.type = 'button';
+            pick.addEventListener('click', () => chooseReviewPath(entry.relPath));
+            row.append(open, pick);
+          } else {
+            open.title = t('pathNavPick');
+            open.addEventListener('click', () => chooseReviewPath(entry.relPath));
+            row.append(open);
+          }
+          pathList.append(row);
+        }
+      }
+
+      /**
+       * @param {'skill' | 'dir'} kind
+       * @param {HTMLInputElement} input
+       */
+      function openReviewPathNav(kind, input) {
+        navTarget = input;
+        pathTitle.textContent = t(kind === 'dir' ? 'labelReviewDirPath' : 'labelReviewSkillPath');
+        pathNav.hidden = false;
+        requestReviewDir(input.value);
+        pathList.focus();
+      }
+
+      pathUp.addEventListener('click', () => {
+        requestReviewDir(navRel.includes('/') ? navRel.slice(0, navRel.lastIndexOf('/')) : '');
+      });
+      pathClose.addEventListener('click', () => closeReviewPathNav());
+      pathPick.addEventListener('click', () => chooseReviewPath(navRel));
+      pathNav.addEventListener('click', (event) => {
+        if (event.target === pathNav) {
+          closeReviewPathNav();
+        }
+      });
+      function onReviewPathKey(event) {
+        if (event.key === 'Escape' && !pathNav.hidden) {
+          event.stopPropagation();
+          closeReviewPathNav();
+        }
+      }
+      function onReviewPathMessage(event) {
+        if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {
+          renderReviewPathNav(event.data);
+        }
+      }
+      document.addEventListener('keydown', onReviewPathKey, true);
+      window.addEventListener('message', onReviewPathMessage);
+      detachReviewPathNav = () => {
+        document.removeEventListener('keydown', onReviewPathKey, true);
+        window.removeEventListener('message', onReviewPathMessage);
+        pathNav.remove();
+      };
+    }
+
     const error = el('div', 'review-panel-error');
     error.hidden = true;
     panel.append(error);
 
-    const actions = el('div', 'review-mr-actions');
-    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => closeReviewCreatePagePanel());
-    const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
-    submit.type = 'button';
-    submit.addEventListener('click', () => {
-      error.hidden = true;
-      error.textContent = '';
+    /**
+     * @param {boolean | 'focus'} report
+     * @returns {Record<string, string | undefined> | null}
+     */
+    function readReviewPageForm(report) {
       const name = nameInput.value.trim();
       const channelId = channelInput.value.trim();
       const repoUrl = repoInput.value.trim();
+      const fail = (key, input) => {
+        if (report) {
+          error.textContent = t(key);
+          error.hidden = false;
+          if (report === 'focus' && input instanceof HTMLElement) {
+            input.focus();
+          }
+        }
+        return null;
+      };
       if (!name) {
-        error.textContent = t('reviewFieldPageName');
-        error.hidden = false;
-        nameInput.focus();
-        return;
+        return fail('reviewFieldPageName', nameInput);
       }
       if (!/^\d{5,}$/.test(channelId)) {
-        error.textContent = t('reviewFieldChannelId');
-        error.hidden = false;
-        channelInput.focus();
-        return;
+        return fail('reviewFieldChannelId', channelInput);
       }
       if (!repoUrl) {
-        error.textContent = t('reviewFieldRepoUrl');
-        error.hidden = false;
-        repoInput.focus();
-        return;
+        return fail('reviewFieldRepoUrl', repoInput);
       }
-      const hostSaved = provider === 'github' ? opts.hasGithub : opts.hasGitlab;
       const hostLabelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
-      if (!hostSaved && !(hostTokenInput?.value || '').trim()) {
-        error.textContent = t(hostLabelKey);
-        error.hidden = false;
-        hostTokenInput?.focus();
-        return;
+      if (!(hostTokenInput?.value || '').trim()) {
+        return fail(hostLabelKey, hostTokenInput);
       }
       if (!opts.hasDiscord && !(discordInput?.value || '').trim()) {
-        error.textContent = t('reviewFieldDiscordToken');
-        error.hidden = false;
-        discordInput?.focus();
-        return;
+        return fail('reviewFieldDiscordToken', discordInput);
       }
-      const hostToken = hostTokenInput?.value.trim() || undefined;
-      vscode.postMessage({
-        type: 'reviewCreatePage',
+      const hostToken = hostTokenInput?.value.trim() || '';
+      if (provider === 'github') opts.githubToken = hostToken;
+      else opts.gitlabToken = hostToken;
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
+      return {
         name,
         provider,
         channelId,
         repoUrl,
-        people: peopleInput.value,
-        gitlabToken: provider === 'gitlab' ? hostToken : undefined,
-        githubToken: provider === 'github' ? hostToken : undefined,
+        description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        gitlabToken: (opts.gitlabToken || '').trim() || undefined,
+        githubToken: (opts.githubToken || '').trim() || undefined,
         discordToken: discordInput?.value.trim() || undefined,
+      };
+    }
+
+    let savedSig = '';
+
+    function saveEditing() {
+      if (!editing) {
+        return;
+      }
+      const fields = readReviewPageForm(true);
+      if (!fields) {
+        return;
+      }
+      const sig = JSON.stringify(fields);
+      if (sig === savedSig) {
+        return;
+      }
+      savedSig = sig;
+      vscode.postMessage({
+        type: 'reviewUpdatePage',
+        pageId: opts.pageId,
+        ...fields,
       });
-      closeReviewCreatePagePanel();
-    });
-    actions.append(cancel, submit);
-    panel.append(actions);
-    document.body.append(panel);
+    }
+
+    if (editing) {
+      const initial = readReviewPageForm(false);
+      savedSig = initial ? JSON.stringify(initial) : '';
+      for (const input of [nameInput, descInput, channelInput, repoInput, discordInput]) {
+        input?.addEventListener('change', () => saveEditing());
+      }
+      const docs = el('div', 'review-settings-docs');
+      const howTo = el('button', 'review-btn', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const promptEx = el('button', 'review-btn', t('reviewPromptExample'));
+      promptEx.type = 'button';
+      promptEx.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenPromptExample' });
+      });
+      docs.append(howTo, promptEx);
+      panel.append(docs);
+    } else {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => closeReviewCreatePagePanel());
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      submit.addEventListener('click', () => {
+        const fields = readReviewPageForm('focus');
+        if (!fields) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'reviewCreatePage',
+          ...fields,
+        });
+        closeReviewCreatePagePanel();
+      });
+      actions.append(cancel, submit);
+      panel.append(actions);
+    }
+    mountSettingsOverlay(panel, closeReviewCreatePagePanel);
     nameInput.focus();
   }
 
   function openReviewMrPanel() {
-    closeReviewMrPanel();
+    dismissReviewMrPanel();
+    closeProfileSettingsPanel();
     if (!reviewMrPanel) {
       return;
     }
@@ -4509,14 +5445,13 @@
     const panel = el('div', 'review-mr-panel');
     panel.id = 'review-mr-panel';
     const titleRow = el('div', 'review-mr-title-row');
-    const draftChip = el('button', 'review-draft-chip', 'Draft');
+    const draftChip = el('button', 'review-btn review-draft-chip is-primary', 'Draft');
     draftChip.type = 'button';
     draftChip.dataset.on = '1';
-    draftChip.classList.add('is-on');
     draftChip.addEventListener('click', () => {
       const on = draftChip.dataset.on === '1';
       draftChip.dataset.on = on ? '0' : '1';
-      draftChip.classList.toggle('is-on', !on);
+      draftChip.classList.toggle('is-primary', !on);
     });
     const titleInput = document.createElement('input');
     titleInput.className = 'review-mr-title';
@@ -4550,6 +5485,9 @@
     const reviewers = new Set();
     /** @type {Set<string>} */
     const assignees = new Set();
+    if (reviewMrPanel.defaultAssignee) {
+      assignees.add(reviewMrPanel.defaultAssignee);
+    }
     const peopleBox = el('div', 'review-mr-people');
     peopleBox.append(el('div', 'review-mr-people-title', 'Reviewers / Assignees'));
     for (const person of reviewMrPanel.people) {
@@ -4571,6 +5509,9 @@
       const asg = el('button', 'review-person-toggle', 'A');
       asg.type = 'button';
       asg.title = 'Assignee';
+      if (assignees.has(person.nick)) {
+        asg.classList.add('is-on');
+      }
       asg.addEventListener('click', () => {
         if (assignees.has(person.nick)) {
           assignees.delete(person.nick);
@@ -4583,7 +5524,9 @@
       row.append(rev, asg);
       peopleBox.append(row);
     }
-    panel.append(peopleBox);
+    if (reviewMrPanel.people.length) {
+      panel.append(peopleBox);
+    }
 
     const squash = document.createElement('input');
     squash.type = 'checkbox';
@@ -4624,7 +5567,7 @@
     });
     actions.append(cancel, submit);
     panel.append(actions);
-    document.body.append(panel);
+    mountSettingsOverlay(panel, closeReviewMrPanel);
     titleInput.focus();
   }
 
@@ -5598,6 +6541,25 @@
     el.style.opacity = '';
   }
 
+  /**
+   * Same editor the page menu uses: review pages open host settings,
+   * other pages open the name and description panel.
+   * @param {{ id: string, kind?: string, name?: string, description?: string }} page
+   */
+  function openPageChipSettings(page) {
+    if (page.kind === 'review') {
+      vscode.postMessage({ type: 'reviewOpenPageSettings', pageId: page.id });
+      return;
+    }
+    openPageSettingsPanel({
+      mode: 'edit',
+      pageId: page.id,
+      kind: page.kind,
+      name: page.name,
+      description: page.description || '',
+    });
+  }
+
   function renderPager() {
     if (!pager) {
       return;
@@ -5636,7 +6598,18 @@
             : page.kind === 'notes'
               ? page.name + ' (' + t('pageKindNotes') + ')'
               : page.name + ' (' + t('pageKindFiles') + ')';
-      chip.addEventListener('click', () => setActivePage(page.id));
+      chip.addEventListener('click', (event) => {
+        const now = Date.now();
+        const again = pageChipClick.id === page.id && now - pageChipClick.at < 500;
+        pageChipClick = again ? { id: '', at: 0 } : { id: page.id, at: now };
+        setActivePage(page.id);
+        if (!again) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openPageChipSettings(page);
+      });
       chip.addEventListener('dragstart', (event) => {
         pageDragId = page.id;
         event.dataTransfer?.setData(PAGE_MIME, page.id);

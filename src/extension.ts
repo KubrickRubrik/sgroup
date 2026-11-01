@@ -84,7 +84,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     languages,
     context.secrets,
   );
-  const settings = new SettingsPanel(store, context.extensionUri);
+  const settings = new SettingsPanel(store, context.extensionUri, context.secrets, (profileId) => {
+    void map.showProfileSettings(profileId);
+  });
 
   context.subscriptions.push(
     store,

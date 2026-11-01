@@ -58,7 +58,7 @@ Fine-grained тоже можно: доступ к репозиторию + Pull 
 
 | Данные | Где |
 | --- | --- |
-| channelId, provider, repoUrl, people | `.syn3/access.json` (можно коммитить) |
+| channelId, provider, repoUrl | `.syn3/access.json` (можно коммитить) |
 | токен GitLab / GitHub / Discord bot | секреты редактора VS Code / Cursor (не в репозиторий) |
 
 Интервал автообновления страницы ревью задаётся в **Syn3 Settings** (по умолчанию 60 с, диапазон 30–3600).

@@ -1,34 +1,30 @@
 import * as vscode from 'vscode';
 import {
-  AccessPerson,
   AccessStore,
   ensureSecrets,
-  findPerson,
   getSecret,
-  personLabel,
   readOriginRepoUrl,
+  readProfileHostToken,
   repoUrlsMatch,
   ReviewPageAccess,
   SECRET_DISCORD,
-  SECRET_GITHUB,
-  SECRET_GITLAB,
-  secretsStatus,
   storeSecrets,
 } from './accessStore';
 import {
   DiscordMessage,
   ensureThread,
-  fetchAttachmentText,
   findMrMessage,
   formatMrDiscordBody,
+  formatReviewDiscordBody,
   isMrMessage,
+  isReviewMessage,
   listChannelMessages,
   listThreadMessages,
   parseMrChip,
   parseReviewAttachment,
+  parseReviewMessagePill,
   postChannelMessage,
   postMessageWithFile,
-  REVIEW_PREFIX,
   sortMessagesAsc,
 } from './discordApi';
 import {
@@ -50,6 +46,7 @@ import {
 } from './reviewHost';
 import { deleteReviewFile, runReviewSkill, writeReviewFile } from './reviewAgent';
 import { ReviewKind, ReviewPendingStore } from './reviewPending';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 
 export interface ReviewThreadMsg {
@@ -79,14 +76,19 @@ export interface ReviewChip {
   hasThread?: boolean;
   replies: ReviewThreadMsg[];
   repliesHasMore: boolean;
-  /** Thread replies were fetched for this parent (MR auto or plain expand). */
+  /** Thread replies were fetched for this parent. */
   repliesLoaded?: boolean;
   contentMissing?: boolean;
 }
 
+/** Where a channel fetch is painting placeholder threads. */
+export type ReviewLoadEdge = 'initial' | 'older' | 'newer';
+
 export interface ReviewPageState {
   pageId: string;
   loading: boolean;
+  /** Set only while a channel fetch is in flight, so the map can place skeletons. */
+  loadingEdge?: ReviewLoadEdge;
   error?: string;
   empty?: boolean;
   /** Most channel texts came back empty — usually Message Content Intent is off. */
@@ -130,7 +132,7 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
     content: msg.content,
     author: msg.author,
     timestamp: msg.timestamp,
-    isReview: msg.content.trimStart().startsWith(REVIEW_PREFIX),
+    isReview: isReviewMessage(msg.content),
     contentMissing: msg.contentMissing,
   };
 }
@@ -248,29 +250,45 @@ export type ReviewProfilePaths = {
   model: string;
 };
 
+export type ReviewProfileContext = ReviewProfilePaths & {
+  profileId: string;
+  profileName: string;
+  githubNick: string;
+  gitlabNick: string;
+};
+
 export class ReviewMapController {
   private readonly access: AccessStore;
   private readonly pending: ReviewPendingStore;
   /** In-memory channel window per page. */
   private readonly windows = new Map<string, ReviewWindow>();
   private readonly loading = new Set<string>();
+  /** Channel fetch the map should show as skeletons. Depth covers overlapping loads. */
+  private readonly loadEdge = new Map<string, { edge: ReviewLoadEdge; depth: number }>();
   private readonly errors = new Map<string, string>();
-  /** Cached pill labels from attachment text, keyed by reply message id. */
+  /** Cached pill labels from message text, keyed by reply message id. */
   private readonly replyMeta = new Map<string, { isPill: boolean; pillLabel?: string }>();
-  /** Plain parents whose thread was requested (even if empty). pageId → message ids. */
-  private readonly plainExpanded = new Map<string, Set<string>>();
 
   constructor(
     private readonly root: vscode.Uri,
     private readonly secrets: vscode.SecretStorage,
-    private readonly profilePaths: () => ReviewProfilePaths = () => ({
+    private readonly profileContext: () => ReviewProfileContext = () => ({
       skillPath: '',
       dirPath: '',
       model: '',
+      profileId: 'general',
+      profileName: '',
+      githubNick: '',
+      gitlabNick: '',
     }),
   ) {
     this.access = new AccessStore(root);
     this.pending = new ReviewPendingStore(root);
+  }
+
+  private profilePaths(): ReviewProfilePaths {
+    const ctx = this.profileContext();
+    return { skillPath: ctx.skillPath, dirPath: ctx.dirPath, model: ctx.model };
   }
 
   accessStore(): AccessStore {
@@ -286,14 +304,62 @@ export class ReviewMapController {
     return this.access.page(pageId);
   }
 
+  /**
+   * Mark a channel fetch before the Discord round-trip so the map can paint skeletons.
+   * Pair with finishLoad. Does not clear the current window.
+   */
+  beginLoad(pageId: string, edge: ReviewLoadEdge): ReviewPageState {
+    const current = this.loadEdge.get(pageId);
+    if (current) {
+      current.depth += 1;
+      current.edge = edge;
+    } else {
+      this.loadEdge.set(pageId, { edge, depth: 1 });
+    }
+    this.loading.add(pageId);
+    this.errors.delete(pageId);
+    return this.snapshot(pageId);
+  }
+
+  /** Drop one skeleton edge after the channel fetch settles. */
+  finishLoad(pageId: string): ReviewPageState {
+    const current = this.loadEdge.get(pageId);
+    if (current) {
+      current.depth -= 1;
+      if (current.depth <= 0) {
+        this.loadEdge.delete(pageId);
+      }
+    }
+    if (!this.loadEdge.has(pageId)) {
+      this.loading.delete(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
+  hasWindow(pageId: string): boolean {
+    return this.windows.has(pageId);
+  }
+
+  /** Forget a channel window so the next open fetches again. */
+  dropWindow(pageId: string): void {
+    this.windows.delete(pageId);
+    this.errors.delete(pageId);
+  }
+
+  isLoading(pageId: string): boolean {
+    return this.loading.has(pageId);
+  }
+
   snapshot(pageId: string): ReviewPageState {
     const win = this.windows.get(pageId);
     const loading = this.loading.has(pageId);
+    const loadingEdge = this.loadEdge.get(pageId)?.edge;
     const error = this.errors.get(pageId);
     if (!win) {
       return {
         pageId,
         loading,
+        loadingEdge,
         error,
         empty: !loading && !error,
         messages: [],
@@ -311,11 +377,10 @@ export class ReviewMapController {
         }
         return { ...base, isPill: meta.isPill, pillLabel: meta.pillLabel };
       });
-      const plainLoaded = this.plainExpanded.get(pageId)?.has(m.id) === true;
-      const loaded = !!thread || plainLoaded;
+      const loaded = !!thread;
       const hasMore = thread
         ? !thread.exhausted
-        : isMrMessage(m.content) && (!!m.thread?.id || !!m.hasThread);
+        : !!(m.thread?.id || m.hasThread);
       return toChip(m, replies, hasMore, loaded);
     });
     const missingCount = messages.filter((m) => m.contentMissing).length;
@@ -324,6 +389,7 @@ export class ReviewMapController {
     return {
       pageId,
       loading,
+      loadingEdge,
       error,
       empty: !loading && !error && messages.length === 0,
       contentBlocked,
@@ -338,8 +404,18 @@ export class ReviewMapController {
     return getSecret(this.secrets, SECRET_DISCORD);
   }
 
+  private profileId(): string {
+    return this.profileContext().profileId || 'general';
+  }
+
   private async hostToken(provider: ReviewHostProvider): Promise<string | undefined> {
-    return getSecret(this.secrets, provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB);
+    return readProfileHostToken(this.secrets, this.profileId(), provider);
+  }
+
+  /** Login from the active profile binding for this host. */
+  private hostNick(provider: ReviewHostProvider): string {
+    const ctx = this.profileContext();
+    return (provider === 'github' ? ctx.githubNick : ctx.gitlabNick).trim().replace(/^@+/, '');
   }
 
   private async findOpenByBranch(
@@ -362,53 +438,42 @@ export class ReviewMapController {
       if (!access) {
         this.errors.set(pageId, 'Review page access is not configured');
         this.windows.delete(pageId);
-        return this.snapshot(pageId);
-      }
-      if (!token) {
+      } else if (!token) {
         this.errors.set(pageId, 'Discord bot token is missing');
         this.windows.delete(pageId);
-        return this.snapshot(pageId);
+      } else {
+        // Tip: visible + 1 older probe. No newer probe — we are at the channel tip.
+        const result = await listChannelMessages(token, access.channelId, {
+          limit: CHANNEL_FETCH_SIDE,
+        });
+        if (!result.ok) {
+          this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+          this.windows.delete(pageId);
+        } else {
+          const sliced = windowFromChannelTip(result.value);
+          const win: ReviewWindow = {
+            ...sliced,
+            threads: new Map<string, { replies: DiscordMessage[]; exhausted: boolean }>(),
+            focusMessageId: undefined,
+          };
+          this.windows.set(pageId, win);
+          await this.prefetchThreads(token, win);
+        }
       }
-      // Tip: visible + 1 older probe. No newer probe — we are at the channel tip.
-      const result = await listChannelMessages(token, access.channelId, {
-        limit: CHANNEL_FETCH_SIDE,
-      });
-      if (!result.ok) {
-        this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
-        this.windows.delete(pageId);
-        return this.snapshot(pageId);
-      }
-      const sliced = windowFromChannelTip(result.value);
-      const win: ReviewWindow = {
-        ...sliced,
-        threads: new Map<string, { replies: DiscordMessage[]; exhausted: boolean }>(),
-        focusMessageId: undefined,
-      };
-      this.windows.set(pageId, win);
-      await this.prefetchThreads(token, win);
-      return this.snapshot(pageId);
     } finally {
       this.loading.delete(pageId);
     }
+    return this.snapshot(pageId);
   }
 
-  private async enrichReplies(token: string, replies: DiscordMessage[]): Promise<void> {
+  private async enrichReplies(_token: string, replies: DiscordMessage[]): Promise<void> {
     for (const msg of replies) {
       if (this.replyMeta.has(msg.id)) {
         continue;
       }
-      if (!msg.content.trimStart().startsWith(REVIEW_PREFIX) || !msg.attachments?.length) {
-        this.replyMeta.set(msg.id, { isPill: false });
-        continue;
-      }
-      const file = await fetchAttachmentText(token, msg.attachments[0].url);
-      if (!file.ok) {
-        this.replyMeta.set(msg.id, { isPill: false });
-        continue;
-      }
-      const parsed = parseReviewAttachment(file.value);
-      if (parsed.pillLabel) {
-        this.replyMeta.set(msg.id, { isPill: true, pillLabel: parsed.pillLabel });
+      const pillLabel = parseReviewMessagePill(msg.content);
+      if (pillLabel) {
+        this.replyMeta.set(msg.id, { isPill: true, pillLabel });
       } else {
         this.replyMeta.set(msg.id, { isPill: false });
       }
@@ -418,10 +483,7 @@ export class ReviewMapController {
   private async prefetchThreads(token: string, win: ReviewWindow): Promise<void> {
     let first = true;
     for (const msg of win.messages) {
-      // Autoload threads only for MR parents that already have a thread.
-      if (!isMrMessage(msg.content)) {
-        continue;
-      }
+      // Autoload last THREAD_INITIAL replies for any parent that already has a thread.
       const threadId = msg.thread?.id;
       if (!threadId || win.threads.has(threadId)) {
         continue;
@@ -472,24 +534,24 @@ export class ReviewMapController {
       });
       if (!result.ok) {
         this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
-        return this.snapshot(pageId);
-      }
-      const known = new Set(win.messages.map((m) => m.id));
-      const batch = sortMessagesAsc(result.value.filter((m) => !known.has(m.id)));
-      if (direction === 'older') {
-        const { toAdd, canLoadOlder } = takeOlderPage(batch);
-        win.messages = sortMessagesAsc([...toAdd, ...win.messages]);
-        win.canLoadOlder = canLoadOlder;
       } else {
-        const { toAdd, canLoadNewer } = takeNewerPage(batch);
-        win.messages = sortMessagesAsc([...win.messages, ...toAdd]);
-        win.canLoadNewer = canLoadNewer;
+        const known = new Set(win.messages.map((m) => m.id));
+        const batch = sortMessagesAsc(result.value.filter((m) => !known.has(m.id)));
+        if (direction === 'older') {
+          const { toAdd, canLoadOlder } = takeOlderPage(batch);
+          win.messages = sortMessagesAsc([...toAdd, ...win.messages]);
+          win.canLoadOlder = canLoadOlder;
+        } else {
+          const { toAdd, canLoadNewer } = takeNewerPage(batch);
+          win.messages = sortMessagesAsc([...win.messages, ...toAdd]);
+          win.canLoadNewer = canLoadNewer;
+        }
+        await this.prefetchThreads(token, win);
       }
-      await this.prefetchThreads(token, win);
-      return this.snapshot(pageId);
     } finally {
       this.loading.delete(pageId);
     }
+    return this.snapshot(pageId);
   }
 
   async loadMoreThread(pageId: string, messageId: string): Promise<ReviewPageState> {
@@ -518,23 +580,24 @@ export class ReviewMapController {
       });
       if (!result.ok) {
         this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
-        return this.snapshot(pageId);
+      } else {
+        const known = new Set(entry.replies.map((m) => m.id));
+        const fetched = sortMessagesAsc(result.value).filter((m) => !known.has(m.id));
+        const hasMore = fetched.length > pageSize;
+        const toAdd = hasMore ? fetched.slice(-pageSize) : fetched;
+        entry.replies = sortMessagesAsc([...toAdd, ...entry.replies]);
+        entry.exhausted = !hasMore;
+        await this.enrichReplies(token, toAdd);
       }
-      const known = new Set(entry.replies.map((m) => m.id));
-      const fetched = sortMessagesAsc(result.value).filter((m) => !known.has(m.id));
-      const hasMore = fetched.length > pageSize;
-      const toAdd = hasMore ? fetched.slice(-pageSize) : fetched;
-      entry.replies = sortMessagesAsc([...toAdd, ...entry.replies]);
-      entry.exhausted = !hasMore;
-      await this.enrichReplies(token, toAdd);
-      return this.snapshot(pageId);
     } finally {
       this.loading.delete(pageId);
     }
+    return this.snapshot(pageId);
   }
 
   /**
-   * Expand a plain (non-MR) channel message: ensure/load its thread (last 5 + probe).
+   * Expand a plain (non-MR) channel message: ensure/load its thread (last 3 + probe).
+   * Kept for late-created threads; initial load already prefetches all parents.
    */
   async expandPlainThread(pageId: string, messageId: string): Promise<ReviewPageState> {
     const win = this.windows.get(pageId);
@@ -550,34 +613,24 @@ export class ReviewMapController {
     this.errors.delete(pageId);
     try {
       const threadId = parent.thread?.id;
-      let expanded = this.plainExpanded.get(pageId);
-      if (!expanded) {
-        expanded = new Set();
-        this.plainExpanded.set(pageId, expanded);
+      if (threadId && !win.threads.has(threadId)) {
+        const result = await listThreadMessages(token, threadId, {
+          limit: THREAD_INITIAL + THREAD_PROBE,
+        });
+        if (!result.ok) {
+          this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+        } else {
+          const sorted = sortMessagesAsc(result.value);
+          const hasMore = sorted.length > THREAD_INITIAL;
+          const last = sorted.slice(-THREAD_INITIAL);
+          win.threads.set(threadId, { replies: last, exhausted: !hasMore });
+          await this.enrichReplies(token, last);
+        }
       }
-      expanded.add(parent.id);
-      if (!threadId) {
-        return this.snapshot(pageId);
-      }
-      if (win.threads.has(threadId)) {
-        return this.snapshot(pageId);
-      }
-      const result = await listThreadMessages(token, threadId, {
-        limit: THREAD_PAGE + THREAD_PROBE,
-      });
-      if (!result.ok) {
-        this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
-        return this.snapshot(pageId);
-      }
-      const sorted = sortMessagesAsc(result.value);
-      const hasMore = sorted.length > THREAD_PAGE;
-      const last = sorted.slice(-THREAD_PAGE);
-      win.threads.set(threadId, { replies: last, exhausted: !hasMore });
-      await this.enrichReplies(token, last);
-      return this.snapshot(pageId);
     } finally {
       this.loading.delete(pageId);
     }
+    return this.snapshot(pageId);
   }
 
   async jumpAroundMessage(pageId: string, messageId: string): Promise<ReviewPageState> {
@@ -596,20 +649,20 @@ export class ReviewMapController {
       });
       if (!result.ok) {
         this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
-        return this.snapshot(pageId);
+      } else {
+        const sliced = windowAroundMessage(result.value, messageId);
+        const win: ReviewWindow = {
+          ...sliced,
+          threads: new Map<string, { replies: DiscordMessage[]; exhausted: boolean }>(),
+          focusMessageId: messageId,
+        };
+        this.windows.set(pageId, win);
+        await this.prefetchThreads(token, win);
       }
-      const sliced = windowAroundMessage(result.value, messageId);
-      const win: ReviewWindow = {
-        ...sliced,
-        threads: new Map<string, { replies: DiscordMessage[]; exhausted: boolean }>(),
-        focusMessageId: messageId,
-      };
-      this.windows.set(pageId, win);
-      await this.prefetchThreads(token, win);
-      return this.snapshot(pageId);
     } finally {
       this.loading.delete(pageId);
     }
+    return this.snapshot(pageId);
   }
 
   clearFocus(pageId: string): void {
@@ -643,6 +696,8 @@ export class ReviewMapController {
         hasGitlab: boolean;
         hasGithub: boolean;
         hasDiscord: boolean;
+        githubToken: string;
+        gitlabToken: string;
       }
     | { error: string }
   > {
@@ -650,32 +705,19 @@ export class ReviewMapController {
     if (!origin) {
       return { error: 'git remote origin not found' };
     }
-    const status = await secretsStatus(this.secrets);
+    const profileId = this.profileId();
+    const githubToken = (await readProfileHostToken(this.secrets, profileId, 'github')) || '';
+    const gitlabToken = (await readProfileHostToken(this.secrets, profileId, 'gitlab')) || '';
+    const discord = (await this.discordToken()) || '';
     return {
       origin,
       suggestedProvider: detectProviderFromRepoUrl(origin),
-      hasGitlab: status.hasGitlab,
-      hasGithub: status.hasGithub,
-      hasDiscord: status.hasDiscord,
+      hasGitlab: !!gitlabToken,
+      hasGithub: !!githubToken,
+      hasDiscord: !!discord,
+      githubToken,
+      gitlabToken,
     };
-  }
-
-  parsePeople(raw: string): AccessPerson[] {
-    return raw
-      .split(',')
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const eq = part.indexOf('=');
-        if (eq === -1) {
-          return { nick: part.replace(/^@/, '') };
-        }
-        return {
-          nick: part.slice(0, eq).trim().replace(/^@/, ''),
-          name: part.slice(eq + 1).trim() || undefined,
-        };
-      })
-      .filter((p) => p.nick);
   }
 
   async applyCreatePageSecrets(opts: {
@@ -684,12 +726,14 @@ export class ReviewMapController {
     githubToken?: string;
     discordToken?: string;
   }): Promise<{ ok: true } | { ok: false; message: string }> {
+    const profileId = this.profileId();
     await storeSecrets(this.secrets, {
+      profileId,
       gitlab: opts.gitlabToken,
       github: opts.githubToken,
       discord: opts.discordToken,
     });
-    const tokens = await ensureSecrets(this.secrets, opts.provider);
+    const tokens = await ensureSecrets(this.secrets, opts.provider, profileId);
     if (!tokens) {
       const hostLabel = opts.provider === 'github' ? 'GitHub' : 'GitLab';
       return {
@@ -744,13 +788,6 @@ export class ReviewMapController {
     return { current: branch.value, parent, branches };
   }
 
-  private displayPeople(nicks: string[], roster: AccessPerson[]): string[] {
-    return nicks.map((nick) => {
-      const person = findPerson(roster, nick);
-      return person ? personLabel(person) : nick;
-    });
-  }
-
   private async postMrToDiscord(
     access: ReviewPageAccess,
     mr: ReviewMr,
@@ -759,23 +796,17 @@ export class ReviewMapController {
     if (!token) {
       return { ok: false, message: 'Discord bot token is missing' };
     }
-    const authorNick = mr.author.username;
-    const authorPerson = findPerson(access.people, authorNick);
     const body = formatMrDiscordBody({
       webUrl: mr.web_url,
       title: mr.title,
       draft: mr.draft,
       color: randomLinkPaletteColor(),
-      authorNick,
-      authorName: authorPerson?.name || mr.author.name,
-      reviewers: this.displayPeople(
-        mr.reviewers.map((r) => r.username),
-        access.people,
-      ),
-      assignees: this.displayPeople(
-        mr.assignees.map((a) => a.username),
-        access.people,
-      ),
+      provider: access.provider,
+      iid: mr.iid,
+      sourceBranch: mr.source_branch,
+      repoUrl: access.repoUrl,
+      reviewAuthor: this.profileContext().profileName,
+      assignees: mr.assignees.map((a) => a.username),
     });
     const posted = await postChannelMessage(token, access.channelId, body);
     if (!posted.ok) {
@@ -804,7 +835,8 @@ export class ReviewMapController {
         kind: 'needPanel';
         branches: string[];
         parent: string;
-        people: AccessPerson[];
+        people: Array<{ nick: string; name?: string }>;
+        defaultAssignee: string;
         provider: ReviewHostProvider;
       }
     | { kind: 'discordFail'; mr: ReviewMr; message: string }
@@ -833,11 +865,13 @@ export class ReviewMapController {
     if (!existing.value) {
       const parent = (await detectParentBranch(this.cwd())) || 'development';
       const branches = await collectMrTargetBranches(this.cwd(), branch.value, parent);
+      const nick = this.hostNick(access.provider);
       return {
         kind: 'needPanel',
         branches,
         parent,
-        people: access.people,
+        people: nick ? [{ nick }] : [],
+        defaultAssignee: nick,
         provider: access.provider,
       };
     }
@@ -1028,20 +1062,16 @@ export class ReviewMapController {
     if (threadId) {
       const entry = win.threads.get(threadId);
       if (entry) {
-        reviewCount = entry.replies.filter((r) =>
-          r.content.trimStart().startsWith(REVIEW_PREFIX),
-        ).length;
+        reviewCount = entry.replies.filter((r) => isReviewMessage(r.content)).length;
       } else {
         const listed = await listThreadMessages(token, threadId, { limit: 100 });
         if (listed.ok) {
-          reviewCount = listed.value.filter((r) =>
-            r.content.trimStart().startsWith(REVIEW_PREFIX),
-          ).length;
+          reviewCount = listed.value.filter((r) => isReviewMessage(r.content)).length;
         }
       }
     }
     const reviewNumber = reviewCount + 1;
-    const title = parsed.title || parent.content.split('\n')[2] || 'MR';
+    const title = parsed.title || 'MR';
     const dirAbs = path.isAbsolute(paths.dirPath)
       ? paths.dirPath
       : path.join(this.cwd(), paths.dirPath);
@@ -1114,12 +1144,28 @@ export class ReviewMapController {
       return { kind: 'fileFail', message: thread.message };
     }
     parent.thread = { id: thread.value };
-    const posted = await postMessageWithFile(
-      token,
-      thread.value,
-      `${REVIEW_PREFIX}\n`,
-      filePath,
-    );
+    const paths = this.profilePaths();
+    let reviewNumber = 1;
+    let severity = 'H:0 | M:0 | L:0';
+    try {
+      const fileText = await fs.readFile(filePath, 'utf8');
+      const parsedFile = parseReviewAttachment(fileText);
+      if (parsedFile.reviewNumber) {
+        reviewNumber = parsedFile.reviewNumber;
+      }
+      if (parsedFile.severity) {
+        severity = parsedFile.severity;
+      }
+    } catch {
+      // keep defaults
+    }
+    const content = formatReviewDiscordBody({
+      reviewNumber,
+      severity,
+      model: paths.model,
+      skillPath: paths.skillPath,
+    });
+    const posted = await postMessageWithFile(token, thread.value, content, filePath);
     if (!posted.ok) {
       return { kind: 'fileFail', message: posted.message };
     }
