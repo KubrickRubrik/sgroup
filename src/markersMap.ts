@@ -358,6 +358,13 @@ type IncomingMessage =
       assignees: string[];
       squash: boolean;
     }
+  | {
+      type: 'reviewUpdateMr';
+      pageId: string;
+      messageId: string;
+      title?: string;
+      draft?: boolean;
+    }
   | { type: 'reviewDiscordRefresh'; pageId: string; webUrl: string; sourceBranch: string }
   | {
       type: 'reviewStart';
@@ -2060,6 +2067,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         squash: message.squash,
       });
       await this.handleReviewMrResult(webview, message.pageId, result);
+      return;
+    }
+    if (message.type === 'reviewUpdateMr') {
+      const result = await this.review.updateMrChip(message.pageId, message.messageId, {
+        title: message.title,
+        draft: message.draft,
+      });
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
       return;
     }
     if (message.type === 'reviewDiscordRefresh') {

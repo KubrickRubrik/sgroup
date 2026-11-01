@@ -1462,7 +1462,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewEdit?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1477,6 +1477,9 @@
     }
     if (attrs.review) {
       button.dataset.review = attrs.review;
+    }
+    if (attrs.reviewEdit) {
+      button.dataset.reviewEdit = attrs.reviewEdit;
     }
     if (attrs.pageId) {
       button.dataset.pageId = attrs.pageId;
@@ -1654,6 +1657,8 @@
     if (section === 'reviewMr') {
       const pageId = String(ctx.reviewPageId || '');
       const messageId = String(ctx.reviewMessageId || '');
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const isPr = typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl);
       scroller.append(
         menuActionChoice(t('reviewBranch'), {
           review: 'branch',
@@ -1664,6 +1669,20 @@
       scroller.append(
         menuActionChoice(t('reviewChanges'), {
           review: 'changes',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(isPr ? 'reviewRenamePr' : 'reviewRenameMr'), {
+          reviewEdit: 'rename',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.draft ? 'reviewClearDraft' : 'reviewSetDraft'), {
+          reviewEdit: 'draft',
           pageId,
           messageId,
         }),
@@ -1995,6 +2014,29 @@
         messageId: button.dataset.messageId || '',
         kind: button.dataset.review,
       });
+      return;
+    }
+
+    if (button.dataset.reviewEdit) {
+      closeContextMenu();
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      if (button.dataset.reviewEdit === 'rename') {
+        openReviewRenamePanel({
+          pageId,
+          messageId,
+          title: chip?.title || '',
+          isPr: typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl),
+        });
+      } else {
+        vscode.postMessage({
+          type: 'reviewUpdateMr',
+          pageId,
+          messageId,
+          draft: chip?.draft !== true,
+        });
+      }
       return;
     }
 
@@ -4451,7 +4493,7 @@
         (() => {
           const head =
             typeof msg.content === 'string' ? msg.content.trimStart().split('\n')[0] || '' : '';
-          const match = /^\((?:MR_SYN3|DMR_SYN3)\):\s*(.*)$/.exec(head);
+          const match = /^\(?(?:MR_SYN3|DMR_SYN3)\)?:\s*(.*)$/.exec(head);
           return match ? match[1].trim() : '';
         })() ||
         t('reviewEmptyMessage');
@@ -4659,6 +4701,67 @@
     closePageSettingsPanel();
     closeReviewCreatePagePanel();
     closeReviewMrPanel();
+    closeReviewRenamePanel();
+  }
+
+  function closeReviewRenamePanel() {
+    removeOverlay('review-rename-panel');
+  }
+
+  /**
+   * @param {{ pageId: string, messageId: string, title: string, isPr: boolean }} opts
+   */
+  function openReviewRenamePanel(opts) {
+    closeReviewRenamePanel();
+    closeReviewCreatePagePanel();
+    closePageSettingsPanel();
+    closeProfileSettingsPanel();
+    dismissReviewMrPanel();
+    const panel = el('div', 'review-mr-panel');
+    panel.id = 'review-rename-panel';
+    panel.append(
+      el('div', 'review-mr-people-title', t(opts.isPr ? 'reviewRenamePr' : 'reviewRenameMr')),
+    );
+    const nameLabel = el('label', 'review-mr-field', t('reviewRenameTitle'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.maxLength = 200;
+    nameInput.value = opts.title || '';
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewRenamePanel());
+    const submit = el('button', 'review-btn is-primary', t('reviewRenameTitle'));
+    submit.type = 'button';
+    const send = () => {
+      const title = nameInput.value.trim();
+      if (!title) {
+        nameInput.focus();
+        return;
+      }
+      vscode.postMessage({
+        type: 'reviewUpdateMr',
+        pageId: opts.pageId,
+        messageId: opts.messageId,
+        title,
+      });
+      closeReviewRenamePanel();
+    };
+    submit.addEventListener('click', send);
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        send();
+      }
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeReviewRenamePanel);
+    nameInput.focus();
+    nameInput.select();
   }
 
   function closeProfileSettingsPanel() {

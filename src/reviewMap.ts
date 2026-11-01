@@ -12,10 +12,12 @@ import {
 } from './accessStore';
 import {
   DiscordMessage,
+  editChannelMessage,
   ensureThread,
   findMrMessage,
   formatMrDiscordBody,
   formatReviewDiscordBody,
+  getChannelMessage,
   isMrMessage,
   isReviewMessage,
   listChannelMessages,
@@ -25,6 +27,7 @@ import {
   parseReviewMessagePill,
   postChannelMessage,
   postMessageWithFile,
+  replaceMrDiscordHead,
   sortMessagesAsc,
 } from './discordApi';
 import {
@@ -34,12 +37,11 @@ import {
   ensureBranchPushed,
   ensureCommittedBeforeMr,
 } from './gitOps';
-import { createMergeRequest, findOpenMrByBranch } from './gitlabApi';
-import { createPullRequest, findOpenPrByBranch } from './githubApi';
+import { createMergeRequest, findOpenMrByBranch, updateMergeRequest } from './gitlabApi';
+import { createPullRequest, findOpenPrByBranch, updatePullRequest } from './githubApi';
 import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import {
   detectProviderFromRepoUrl,
-  mrThreadName,
   providerMatchesRepo,
   ReviewHostProvider,
   ReviewMr,
@@ -224,6 +226,13 @@ function takeNewerPage(batchAsc: DiscordMessage[]): {
  * Jump window: up to 2 before + target + 2 after. Probes beyond that in the
  * same fetch tell whether load-older / load-newer buttons are needed.
  */
+function mrIidFromWebUrl(webUrl: string): number | undefined {
+  const match = /\/merge_requests\/(\d+)\b|\/pull\/(\d+)\b/.exec(webUrl);
+  const raw = match?.[1] || match?.[2];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 function windowAroundMessage(
   fetchedAsc: DiscordMessage[],
   messageId: string,
@@ -812,18 +821,47 @@ export class ReviewMapController {
     if (!posted.ok) {
       return { ok: false, message: posted.message };
     }
-    const thread = await ensureThread(
-      token,
-      access.channelId,
-      posted.value,
-      mrThreadName(access.provider, mr.iid),
-    );
-    if (!thread.ok) {
-      // Message exists; still treat post as success for chip, but surface thread error softly.
-      return { ok: true, message: posted.value };
-    }
-    posted.value.thread = { id: thread.value };
     return { ok: true, message: posted.value };
+  }
+
+  /**
+   * Put a message Discord just accepted at the end of the open channel window.
+   * Re-reads it from Discord so the list matches the stored text.
+   */
+  private async appendPostedMessage(pageId: string, channelId: string, posted: DiscordMessage): Promise<void> {
+    const token = await this.discordToken();
+    let message = posted;
+    if (token) {
+      const fresh = await getChannelMessage(token, channelId, posted.id);
+      if (fresh.ok) {
+        message = fresh.value;
+      }
+    }
+    let win = this.windows.get(pageId);
+    if (!win || win.canLoadNewer) {
+      await this.loadInitial(pageId);
+      win = this.windows.get(pageId);
+    }
+    if (!win) {
+      return;
+    }
+    const idx = win.messages.findIndex((item) => item.id === message.id);
+    if (idx >= 0) {
+      const prev = win.messages[idx];
+      win.messages[idx] = {
+        ...message,
+        thread: message.thread ?? prev.thread,
+        hasThread: message.hasThread || prev.hasThread,
+      };
+    } else {
+      win.messages = sortMessagesAsc([...win.messages, message]);
+      if (win.messages.length > CHANNEL_VISIBLE) {
+        win.messages = win.messages.slice(-CHANNEL_VISIBLE);
+        win.canLoadOlder = true;
+      }
+      win.canLoadNewer = false;
+    }
+    win.focusMessageId = message.id;
   }
 
   /**
@@ -913,15 +951,7 @@ export class ReviewMapController {
     if (!posted.ok) {
       return { kind: 'discordFail', mr, message: posted.message };
     }
-    await this.loadInitial(pageId);
-    const win = this.windows.get(pageId);
-    if (win) {
-      win.focusMessageId = posted.message.id;
-      // If the new message is not in the last 5, jump to it.
-      if (!win.messages.some((m) => m.id === posted.message.id)) {
-        return { kind: 'state', state: await this.jumpAroundMessage(pageId, posted.message.id) };
-      }
-    }
+    await this.appendPostedMessage(pageId, access.channelId, posted.message);
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
@@ -1005,13 +1035,73 @@ export class ReviewMapController {
     if (!posted.ok) {
       return { kind: 'discordFail', mr: target, message: posted.message };
     }
-    await this.loadInitial(pageId);
+    await this.appendPostedMessage(pageId, access.channelId, posted.message);
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Rename or toggle draft on the host MR/PR, then rewrite the Discord chip.
+   */
+  async updateMrChip(
+    pageId: string,
+    messageId: string,
+    patch: { title?: string; draft?: boolean },
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
     const win = this.windows.get(pageId);
-    if (win) {
-      win.focusMessageId = posted.message.id;
-      if (!win.messages.some((m) => m.id === posted.message.id)) {
-        return { kind: 'state', state: await this.jumpAroundMessage(pageId, posted.message.id) };
+    const access = await this.getAccess(pageId);
+    const discord = await this.discordToken();
+    const parent = win?.messages.find((item) => item.id === messageId);
+    if (!win || !access || !discord || !parent) {
+      return { kind: 'error', message: 'MR message not found on the map' };
+    }
+    if (!isMrMessage(parent.content)) {
+      return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    }
+    const parsed = parseMrChip(parent.content);
+    if (!parsed.webUrl) {
+      return { kind: 'error', message: 'MR link is missing in the Discord message' };
+    }
+    const iid = mrIidFromWebUrl(parsed.webUrl);
+    if (!iid) {
+      return { kind: 'error', message: 'Could not read the MR number from the link' };
+    }
+    const host = await this.hostToken(access.provider);
+    if (!host) {
+      const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
+      return { kind: 'error', message: `${label} token is missing` };
+    }
+    const apiPatch: { title?: string; draft?: boolean } = {};
+    if (patch.title !== undefined) {
+      const title = patch.title.trim();
+      if (!title) {
+        return { kind: 'error', message: 'Title is empty' };
       }
+      apiPatch.title = title;
+      apiPatch.draft = patch.draft !== undefined ? patch.draft : !!parsed.draft;
+    } else if (patch.draft !== undefined) {
+      apiPatch.draft = patch.draft;
+    } else {
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    const updated =
+      access.provider === 'github'
+        ? await updatePullRequest(access.repoUrl, host, iid, apiPatch)
+        : await updateMergeRequest(access.repoUrl, host, iid, apiPatch);
+    if (!updated.ok) {
+      return { kind: 'error', message: updated.message };
+    }
+    const nextContent = replaceMrDiscordHead(parent.content, updated.value.draft, updated.value.title);
+    const edited = await editChannelMessage(discord, access.channelId, parent.id, nextContent);
+    if (!edited.ok) {
+      return { kind: 'error', message: edited.message };
+    }
+    const idx = win.messages.findIndex((item) => item.id === parent.id);
+    if (idx >= 0) {
+      win.messages[idx] = {
+        ...edited.value,
+        thread: edited.value.thread ?? parent.thread,
+        hasThread: edited.value.hasThread || parent.hasThread,
+      };
     }
     return { kind: 'state', state: this.snapshot(pageId) };
   }
@@ -1097,15 +1187,27 @@ export class ReviewMapController {
       return m ? m[1] : '';
     })();
     const mrLine = [mrIid, title, parsed.webUrl].filter(Boolean).join(' ');
-    const filePath = await writeReviewFile({
-      dirPath: dirAbs,
-      reviewNumber,
-      mrLine,
-      severity: agent.severity,
-      body: agent.body,
-    });
-    await this.pending.write(parsed.webUrl, kind, filePath);
-    return this.sendPendingReview(pageId, parent, filePath);
+    try {
+      const filePath = await writeReviewFile({
+        dirPath: dirAbs,
+        reviewNumber,
+        mrLine,
+        severity: agent.severity,
+        body: agent.body,
+      });
+      await this.pending.write(parsed.webUrl, kind, filePath);
+      const sent = await this.sendPendingReview(pageId, parent, filePath);
+      if (sent.kind === 'state') {
+        agent.report('Сообщение опубликовано в треде.', true);
+      } else {
+        agent.report(sent.message, false);
+      }
+      return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
   }
 
   async retryReviewFile(pageId: string, messageId: string): Promise<
@@ -1175,21 +1277,26 @@ export class ReviewMapController {
     if (win) {
       const idx = win.messages.findIndex((m) => m.id === parent.id);
       if (idx >= 0) {
-        win.messages[idx] = { ...win.messages[idx], thread: { id: thread.value } };
+        win.messages[idx] = {
+          ...win.messages[idx],
+          thread: { id: thread.value },
+          hasThread: true,
+        };
       }
-      const replies = await listThreadMessages(token, thread.value, {
+      const listed = await listThreadMessages(token, thread.value, {
         limit: THREAD_INITIAL + THREAD_PROBE,
       });
-      if (replies.ok) {
-        const sorted = sortMessagesAsc(replies.value);
-        const hasMore = sorted.length > THREAD_INITIAL;
-        const last = sorted.slice(-THREAD_INITIAL);
-        win.threads.set(thread.value, {
-          replies: last,
-          exhausted: !hasMore,
-        });
-        await this.enrichReplies(token, last);
+      let replies = listed.ok ? sortMessagesAsc(listed.value) : [];
+      if (!replies.some((item) => item.id === posted.value.id)) {
+        replies = [...replies, posted.value];
       }
+      const hasMore = replies.length > THREAD_INITIAL;
+      const last = replies.slice(-THREAD_INITIAL);
+      win.threads.set(thread.value, {
+        replies: last,
+        exhausted: !hasMore,
+      });
+      await this.enrichReplies(token, last);
     }
     return { kind: 'state', state: this.snapshot(pageId) };
   }

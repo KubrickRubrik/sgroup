@@ -213,3 +213,74 @@ export async function createPullRequest(
   }
   return { ok: true, value: pr };
 }
+
+function graphqlError(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as { errors?: unknown }).errors)) {
+    return undefined;
+  }
+  const errors = (value as { errors: Array<{ message?: unknown }> }).errors;
+  const text = errors
+    .map((entry) => (typeof entry.message === 'string' ? entry.message : ''))
+    .filter(Boolean)
+    .join('; ');
+  return text || undefined;
+}
+
+/** Title via REST. Draft via GraphQL — the pulls API does not change draft on update. */
+export async function updatePullRequest(
+  repoUrl: string,
+  token: string,
+  number: number,
+  patch: { title?: string; draft?: boolean },
+): Promise<GithubResult<ReviewMr>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const route = `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/pulls/${number}`;
+  const current = await githubFetch(token, 'GET', route);
+  if (!current.ok) {
+    return current;
+  }
+  const nodeId =
+    current.value &&
+    typeof current.value === 'object' &&
+    typeof (current.value as { node_id?: unknown }).node_id === 'string'
+      ? (current.value as { node_id: string }).node_id
+      : undefined;
+  const currentPr = asPr(current.value);
+  if (!currentPr || !nodeId) {
+    return { ok: false, message: 'Invalid GitHub PR response' };
+  }
+  if (patch.draft !== undefined && patch.draft !== currentPr.draft) {
+    const query = patch.draft
+      ? 'mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ pullRequest { number } } }'
+      : 'mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { number } } }';
+    const mutated = await githubFetch(token, 'POST', '/graphql', {
+      query,
+      variables: { id: nodeId },
+    });
+    if (!mutated.ok) {
+      return mutated;
+    }
+    const failed = graphqlError(mutated.value);
+    if (failed) {
+      return { ok: false, message: failed };
+    }
+  }
+  if (patch.title !== undefined && patch.title !== currentPr.title) {
+    const titled = await githubFetch(token, 'PATCH', route, { title: patch.title });
+    if (!titled.ok) {
+      return titled;
+    }
+  }
+  const refreshedAfter = await githubFetch(token, 'GET', route);
+  if (!refreshedAfter.ok) {
+    return refreshedAfter;
+  }
+  const next = asPr(refreshedAfter.value);
+  if (!next) {
+    return { ok: false, message: 'Invalid GitHub PR response' };
+  }
+  return { ok: true, value: next };
+}

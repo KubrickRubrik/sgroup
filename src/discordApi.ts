@@ -10,9 +10,15 @@ export const REVIEW_PREFIX = 'R_SYN3';
 /** Severity line inside a review file / agent stdout. */
 export const REVIEW_SEVERITY_RE = /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)\s*$/i;
 
-const MR_HEAD_RE = /^\((MR_SYN3|DMR_SYN3)\):\s*(.*)$/;
+const MR_HEAD_RE = /^\(?((?:MR_SYN3|DMR_SYN3))\)?:\s*(.*)$/;
 const REVIEW_HEAD_RE = /^\(R_SYN3\):\s*(.*)$/;
 const MD_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/;
+/** Discord message flag: do not unfurl links into embed previews. */
+const SUPPRESS_EMBEDS = 1 << 2;
+
+function messagePayload(content: string): { content: string; flags: number } {
+  return { content, flags: SUPPRESS_EMBEDS };
+}
 
 export interface DiscordMessage {
   id: string;
@@ -351,6 +357,53 @@ export async function findMrMessage(
   return { ok: true, value: undefined };
 }
 
+export async function getChannelMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+): Promise<DiscordResult<DiscordMessage>> {
+  const result = await discordFetch(token, 'GET', `/channels/${channelId}/messages/${messageId}`);
+  if (!result.ok) {
+    return result;
+  }
+  const msg = asMessage(result.value);
+  if (!msg) {
+    return { ok: false, status: 0, message: 'Invalid Discord message response' };
+  }
+  return { ok: true, value: msg };
+}
+
+export async function editChannelMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+): Promise<DiscordResult<DiscordMessage>> {
+  const result = await discordFetch(
+    token,
+    'PATCH',
+    `/channels/${channelId}/messages/${messageId}`,
+    JSON.stringify({ content }),
+    'application/json',
+  );
+  if (!result.ok) {
+    return result;
+  }
+  const msg = asMessage(result.value);
+  if (!msg) {
+    return { ok: false, status: 0, message: 'Invalid Discord message response' };
+  }
+  return { ok: true, value: msg };
+}
+
+/** Replace the first line with `MR_SYN3:` / `DMR_SYN3:` and the host title. */
+export function replaceMrDiscordHead(content: string, draft: boolean, title: string): string {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const prefix = draft ? DMR_PREFIX : MR_PREFIX;
+  lines[0] = `${prefix}: ${title.trim()}`;
+  return lines.join('\n');
+}
+
 export async function postChannelMessage(
   token: string,
   channelId: string,
@@ -360,7 +413,7 @@ export async function postChannelMessage(
     token,
     'POST',
     `/channels/${channelId}/messages`,
-    JSON.stringify({ content }),
+    JSON.stringify(messagePayload(content)),
     'application/json',
   );
   if (!result.ok) {
@@ -426,7 +479,7 @@ export async function postMessageWithFile(
   const filename = path.basename(filePath);
   const bytes = await fs.readFile(filePath);
   const form = new FormData();
-  form.append('payload_json', JSON.stringify({ content }));
+  form.append('payload_json', JSON.stringify(messagePayload(content)));
   form.append('files[0]', new Blob([new Uint8Array(bytes)]), filename);
   const result = await discordFetch(token, 'POST', `/channels/${channelId}/messages`, form);
   if (!result.ok) {
@@ -484,7 +537,7 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
 /**
  * Human-readable MR/PR body for Discord. First line carries the parse marker.
  *
- * (MR_SYN3): Title
+ * DMR_SYN3: Title
  * МР: [МР !12](url)
  * Ветка: [branch](tree-url)
  * Репозиторий: [group/app](repo-url)
@@ -514,7 +567,7 @@ export function formatMrDiscordBody(opts: {
   const author = opts.reviewAuthor.trim() || '—';
   const branch = opts.sourceBranch.trim() || '—';
   const lines = [
-    `(${prefix}): ${opts.title.trim() || iidLabel}`,
+    `${prefix}: ${opts.title.trim() || iidLabel}`,
     `${kindLabel}: ${mdLink(iidLabel, opts.webUrl.trim())}`,
     `Ветка: ${
       opts.sourceBranch.trim()

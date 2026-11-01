@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -6,7 +6,13 @@ import { findSeverityLine } from './discordApi';
 import { ReviewKind } from './reviewPending';
 
 export type ReviewAgentResult =
-  | { ok: true; severity: string; body: string }
+  | {
+      ok: true;
+      severity: string;
+      body: string;
+      /** Write a line to the review terminal. Close it only after Discord accepts the file. */
+      report: (line: string, close: boolean) => void;
+    }
   | { ok: false; message: string };
 
 function probeBin(bin: string, args: string[]): Promise<boolean> {
@@ -47,8 +53,155 @@ function buildPrompt(opts: {
   ].join('\n');
 }
 
+type AgentStream = {
+  buf: string;
+  deltas: string;
+  plain: string;
+  resultText: string;
+  finalFlush: string;
+  sawDelta: boolean;
+};
+
+function assistantText(message: unknown): string {
+  if (!message || typeof message !== 'object') {
+    return '';
+  }
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part) => {
+      if (part && typeof part === 'object' && (part as { type?: string }).type === 'text') {
+        return String((part as { text?: string }).text ?? '');
+      }
+      return '';
+    })
+    .join('');
+}
+
+function toolLabel(toolCall: Record<string, unknown>): string {
+  const key = Object.keys(toolCall)[0];
+  if (!key) {
+    return 'шаг';
+  }
+  const raw = toolCall[key];
+  const args =
+    raw && typeof raw === 'object'
+      ? ((raw as { args?: Record<string, unknown> }).args ?? {})
+      : {};
+  const detail = ['command', 'cmd', 'path', 'pattern', 'glob_pattern', 'query']
+    .map((name) => args[name])
+    .find((value) => typeof value === 'string' && value.trim());
+  const name = key.replace(/ToolCall$/, '');
+  const short =
+    typeof detail === 'string' ? detail.replace(/\s+/g, ' ').trim().slice(0, 140) : '';
+  return short ? `${name}: ${short}` : name;
+}
+
+function takeStreamLines(state: AgentStream, chunk: string, emit: (text: string) => void): void {
+  state.buf += chunk;
+  let nl = state.buf.indexOf('\n');
+  while (nl >= 0) {
+    const line = state.buf.slice(0, nl).replace(/\r$/, '');
+    state.buf = state.buf.slice(nl + 1);
+    if (line.trim()) {
+      emitStreamLine(state, line, emit);
+    }
+    nl = state.buf.indexOf('\n');
+  }
+}
+
+function emitStreamLine(state: AgentStream, line: string, emit: (text: string) => void): void {
+  let event: Record<string, unknown>;
+  try {
+    event = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    state.plain += `${line}\n`;
+    emit(`${line}\r\n`);
+    return;
+  }
+  if (typeof event.type !== 'string') {
+    state.plain += `${line}\n`;
+    emit(`${line}\r\n`);
+    return;
+  }
+  if (event.type === 'system' && event.subtype === 'init') {
+    const model = typeof event.model === 'string' ? event.model : '';
+    emit(model ? `модель: ${model}\r\n` : 'сессия начата\r\n');
+    return;
+  }
+  if (
+    event.type === 'tool_call' &&
+    event.subtype === 'started' &&
+    event.tool_call &&
+    typeof event.tool_call === 'object'
+  ) {
+    emit(`→ ${toolLabel(event.tool_call as Record<string, unknown>)}\r\n`);
+    return;
+  }
+  if (event.type === 'assistant') {
+    const hasTs = event.timestamp_ms != null;
+    const hasModel = event.model_call_id != null;
+    const text = assistantText(event.message);
+    if (hasTs && !hasModel) {
+      state.sawDelta = true;
+      state.deltas += text;
+      if (text) {
+        emit(text.replace(/\n/g, '\r\n'));
+      }
+    } else if (!hasTs && !hasModel && text.trim()) {
+      state.finalFlush = text;
+      if (!state.sawDelta) {
+        state.deltas += `${state.deltas ? '\n' : ''}${text}`;
+        emit(`\r\n${text.replace(/\n/g, '\r\n')}\r\n`);
+      }
+    }
+    return;
+  }
+  if (event.type === 'result') {
+    if (typeof event.result === 'string') {
+      state.resultText = event.result;
+    }
+    if (event.is_error === true && typeof event.result === 'string' && event.result.trim()) {
+      emit(`\r\n${event.result.replace(/\n/g, '\r\n')}\r\n`);
+    }
+  }
+}
+
+function pickAnswer(state: AgentStream): string {
+  const candidates = [state.finalFlush, state.resultText, state.deltas, state.plain];
+  for (const text of candidates) {
+    if (text && findSeverityLine(text)) {
+      return text.trim();
+    }
+  }
+  return (state.resultText || state.finalFlush || state.deltas || state.plain).trim();
+}
+
+function reviewBody(stdout: string): { severity: string; body: string } | undefined {
+  const severity = findSeverityLine(stdout);
+  if (!severity) {
+    return undefined;
+  }
+  const lines = stdout.split(/\r?\n/);
+  const bodyLines: string[] = [];
+  let seen = false;
+  for (const line of lines) {
+    if (!seen) {
+      if (findSeverityLine(line)) {
+        seen = true;
+      }
+      continue;
+    }
+    bodyLines.push(line);
+  }
+  return { severity, body: bodyLines.join('\n').trim() };
+}
+
 /**
  * Run `agent --print --mode ask` in a visible VS Code terminal and capture stdout.
+ * stream-json is required: text mode stays silent until the whole review is done.
  */
 export async function runReviewSkill(opts: {
   cwd: string;
@@ -68,8 +221,12 @@ export async function runReviewSkill(opts: {
     ...resolved.prefix,
     '--print',
     '--trust',
+    '--force',
     '--mode',
     'ask',
+    '--output-format',
+    'stream-json',
+    '--stream-partial-output',
     '--workspace',
     opts.cwd,
   ];
@@ -80,73 +237,99 @@ export async function runReviewSkill(opts: {
 
   const writeEmitter = new vscode.EventEmitter<string>();
   let closed = false;
+  let child: ChildProcess | undefined;
+  const started = Date.now();
   const pty: vscode.Pseudoterminal = {
     onDidWrite: writeEmitter.event,
     open: () => {
-      writeEmitter.fire(`$ ${resolved.bin} ${args.filter((a) => a !== prompt).join(' ')} «prompt»\r\n\r\n`);
+      writeEmitter.fire(
+        `$ ${resolved.bin} ${args.filter((a) => a !== prompt).join(' ')} «prompt»\r\n\r\n`,
+      );
+      writeEmitter.fire('агент запущен, шаги появятся ниже\r\n');
     },
     close: () => {
       closed = true;
+      child?.kill();
     },
   };
   const term = vscode.window.createTerminal({ name: 'Syn3 Review', pty });
   term.show(true);
 
   return new Promise((resolve) => {
-    const child = spawn(resolved.bin, args, {
+    const stream: AgentStream = {
+      buf: '',
+      deltas: '',
+      plain: '',
+      resultText: '',
+      finalFlush: '',
+      sawDelta: false,
+    };
+    let stderr = '';
+    let settled = false;
+    let lastEmit = Date.now();
+    const emit = (text: string) => {
+      lastEmit = Date.now();
+      if (!closed) {
+        writeEmitter.fire(text);
+      }
+    };
+    const timer = setInterval(() => {
+      if (closed || Date.now() - lastEmit < 20_000) {
+        return;
+      }
+      emit(`… ждём модель, ${Math.round((Date.now() - started) / 1000)} с\r\n`);
+    }, 5_000);
+    child = spawn(resolved.bin, args, {
       cwd: opts.cwd,
       env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf8');
-      stdout += text;
-      if (!closed) {
-        writeEmitter.fire(text.replace(/\n/g, '\r\n'));
-      }
+    child.stdout?.on('data', (chunk: Buffer) => {
+      takeStreamLines(stream, chunk.toString('utf8'), emit);
     });
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
       stderr += text;
-      if (!closed) {
-        writeEmitter.fire(text.replace(/\n/g, '\r\n'));
-      }
+      emit(text.replace(/\n/g, '\r\n'));
     });
+    const report = (line: string, closeTerminal: boolean) => {
+      emit(`\r\n${line}\r\n`);
+      if (closeTerminal) {
+        setTimeout(() => term.dispose(), 1200);
+      }
+    };
+    const finish = (result: ReviewAgentResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(timer);
+      resolve(result);
+    };
     child.on('error', (error) => {
-      writeEmitter.fire(`\r\n${error.message}\r\n`);
-      setTimeout(() => term.dispose(), 800);
-      resolve({ ok: false, message: error.message });
+      emit(`\r\n${error.message}\r\n`);
+      finish({ ok: false, message: error.message });
     });
     child.on('close', (code) => {
-      writeEmitter.fire(`\r\n[exit ${code ?? '?'}]\r\n`);
-      setTimeout(() => term.dispose(), 1200);
-      if (code !== 0) {
-        resolve({
-          ok: false,
-          message: (stderr || stdout || `agent exited with ${code}`).trim().slice(0, 400),
-        });
+      if (stream.buf.trim()) {
+        emitStreamLine(stream, stream.buf, emit);
+      }
+      emit(`\r\n[exit ${code ?? '?'}]\r\n`);
+      const parsed = reviewBody(pickAnswer(stream));
+      if (parsed) {
+        emit('ревью собрано, публикую в тред\r\n');
+        finish({ ok: true, ...parsed, report });
         return;
       }
-      const severity = findSeverityLine(stdout);
-      if (!severity) {
-        resolve({
-          ok: false,
-          message: 'Review output has no H:N | M:N | L:N line',
-        });
-        return;
-      }
-      const lines = stdout.split(/\r?\n/);
-      const bodyLines: string[] = [];
-      let skipped = false;
-      for (const line of lines) {
-        if (!skipped && findSeverityLine(line)) {
-          skipped = true;
-          continue;
-        }
-        bodyLines.push(line);
-      }
-      resolve({ ok: true, severity, body: bodyLines.join('\n').trim() });
+      const stdout = pickAnswer(stream);
+      const message =
+        !stdout && closed
+          ? 'Review agent cancelled'
+          : stdout
+            ? 'В ответе агента нет строки H:N | M:N | L:N'
+            : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
+      emit(`\r\n${message}\r\n`);
+      finish({ ok: false, message });
     });
   });
 }

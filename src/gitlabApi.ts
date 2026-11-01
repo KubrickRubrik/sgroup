@@ -201,3 +201,38 @@ export async function createMergeRequest(
   }
   return { ok: true, value: mr };
 }
+
+/** Title and draft on an open merge request. */
+export async function updateMergeRequest(
+  repoUrl: string,
+  token: string,
+  iid: number,
+  patch: { title?: string; draft?: boolean },
+): Promise<GitlabResult<ReviewMr>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const body: { title?: string; draft?: boolean } = {};
+  if (patch.title !== undefined) {
+    body.title = patch.title;
+  }
+  if (patch.draft !== undefined) {
+    body.draft = patch.draft;
+  }
+  const result = await gitlabFetch(
+    loc.host,
+    token,
+    'PUT',
+    `/projects/${encodePath(loc.projectPath)}/merge_requests/${iid}`,
+    body,
+  );
+  if (!result.ok) {
+    return result;
+  }
+  const mr = asMr(result.value);
+  if (!mr) {
+    return { ok: false, message: 'Invalid GitLab MR response' };
+  }
+  return { ok: true, value: mr };
+}
