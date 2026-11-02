@@ -1141,6 +1141,60 @@ html::-webkit-scrollbar {
   pointer-events: none;
 }
 
+.map-page.is-page-skeleton {
+  pointer-events: none;
+}
+
+.pager-chip.is-load-locked {
+  pointer-events: none;
+}
+
+.page-skel-group,
+.page-skel-note,
+.page-skel-files {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.page-skel-group,
+.page-skel-note {
+  margin: 0 0 14px;
+  padding: 8px 0 2px;
+}
+
+.page-skel-files {
+  padding-left: 16px;
+}
+
+.page-skel-bar {
+  animation: review-skel-shimmer 1.35s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--vscode-descriptionForeground) 16%, transparent) 0%,
+    color-mix(in srgb, var(--vscode-foreground) 32%, transparent) 45%,
+    color-mix(in srgb, var(--vscode-descriptionForeground) 16%, transparent) 100%
+  );
+  background-size: 220% 100%;
+  border-radius: 5px;
+  display: block;
+  height: 10px;
+  max-width: 100%;
+}
+
+.page-skel-bar.is-long {
+  width: 100%;
+}
+
+.page-skel-bar.is-half {
+  width: 50%;
+}
+
+.page-skel .link-chip {
+  cursor: default;
+}
+
 .page-leaving,
 .map-page.page-entering {
   transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -1149,7 +1203,9 @@ html::-webkit-scrollbar {
 @media (prefers-reduced-motion: reduce) {
   .page-leaving,
   .map-page.page-entering,
-  .chevron {
+  .chevron,
+  .page-skel-bar {
+    animation: none;
     transition: none;
   }
 }

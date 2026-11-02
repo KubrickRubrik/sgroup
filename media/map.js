@@ -1359,20 +1359,22 @@
     const pageHistory = history && pageId ? history[pageId] : undefined;
     const back = pageHistory && pageHistory.back ? pageHistory.back : 0;
     const forward = pageHistory && pageHistory.forward ? pageHistory.forward : 0;
+    const pageLoading = pageSkeletonKind() !== '';
     if (historyBack) {
-      historyBack.disabled = back === 0;
+      historyBack.disabled = pageLoading || back === 0;
       const backLabel = t('toolbarBack');
       historyBack.title = back ? backLabel + ' (' + back + ')' : backLabel;
       historyBack.setAttribute('aria-label', historyBack.title);
     }
     if (historyForward) {
-      historyForward.disabled = forward === 0;
+      historyForward.disabled = pageLoading || forward === 0;
       const forwardLabel = t('toolbarForward');
       historyForward.title = forward ? forwardLabel + ' (' + forward + ')' : forwardLabel;
       historyForward.setAttribute('aria-label', historyForward.title);
     }
     if (historyAccept) {
       historyAccept.hidden = back + forward === 0;
+      historyAccept.disabled = pageLoading;
       historyAccept.title = t('toolbarDone');
       historyAccept.setAttribute('aria-label', historyAccept.title);
     }
@@ -2764,6 +2766,9 @@
   }
 
   function applyPageChrome() {
+    if (pageSkeletonKind()) {
+      return;
+    }
     const page = activePage();
     const layout = page?.layout || data?.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
@@ -2969,7 +2974,7 @@
     const collapsed = groups.length > 0 && groups.every((group) => isCollapsed(group.id));
     const mode = collapsed ? 'expand' : 'collapse';
     if (toolbarCollapse) {
-      toolbarCollapse.disabled = groups.length === 0;
+      toolbarCollapse.disabled = groups.length === 0 || pageSkeletonKind() !== '';
       toolbarCollapse.title = collapsed ? t('toolbarExpand') : t('toolbarCollapse');
       toolbarCollapse.setAttribute('aria-label', toolbarCollapse.title);
       toolbarCollapse.querySelectorAll('.tool-icon').forEach((img) => {
@@ -3413,34 +3418,93 @@
     return !!page && data.contentPageId === page.id;
   }
 
-  function render() {
-    if (!data) {
-      return;
+  /** files / notes / links with no cached body. Review keeps the dimmed wait. */
+  function pageSkeletonKind() {
+    if (!data || isProblemsPageOpen() || pageContentReady()) {
+      return '';
     }
-    if (!pageContentReady()) {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && root.contains(active)) {
-        active.blur();
-      }
-      root.classList.add('is-page-loading');
-      root.setAttribute('aria-busy', 'true');
-      return;
+    const page = activePage();
+    if (!page || page.kind === 'review') {
+      return '';
     }
-    root.classList.remove('is-page-loading');
-    root.removeAttribute('aria-busy');
-    const direction = consumeSlideDirection();
-    if (isSliding && direction === 0) {
-      renderDeferred = true;
-      setCollapseButton();
-      return;
+    if (page.kind === 'notes' || page.kind === 'links') {
+      return page.kind;
     }
-    if (isFolding && direction === 0 && !renderFromToggle) {
-      renderDeferred = true;
-      setCollapseButton();
-      return;
-    }
-    renderDeferred = false;
+    return 'files';
+  }
 
+  function clearPageSkeletonMark() {
+    delete root.dataset.skeletonKind;
+    delete root.dataset.skeletonPageId;
+  }
+
+  /** Content buttons wait. More-menu and profile stay. Leave only via another chip. */
+  function syncPageLoadingChrome() {
+    const locked = pageSkeletonKind() !== '';
+    if (locked) {
+      closeToolbarViewMenu();
+      closeToolbarCreateMenu();
+      closeFormatMenu();
+      if (toolbarPanelsMenu) {
+        toolbarPanelsMenu.hidden = true;
+      }
+      toolbarPanels?.setAttribute('aria-expanded', 'false');
+    }
+    const contentButtons = [
+      toolbarView,
+      toolbarCreate,
+      toolbarCollapse,
+      toolbarFormat,
+      toolbarReviewTab,
+      toolbarPanels,
+      panelToggleBottom,
+      panelToggleLeft,
+      panelToggleRight,
+    ];
+    if (locked) {
+      for (const button of contentButtons) {
+        if (button) {
+          button.disabled = true;
+        }
+      }
+      if (historyBack) {
+        historyBack.disabled = true;
+      }
+      if (historyForward) {
+        historyForward.disabled = true;
+      }
+      if (historyAccept) {
+        historyAccept.disabled = true;
+      }
+    } else {
+      for (const button of contentButtons) {
+        if (button && button !== toolbarCollapse) {
+          button.disabled = false;
+        }
+      }
+      setHistoryButtons(data && data.history);
+      setCollapseButton();
+    }
+    if (!pager) {
+      return;
+    }
+    for (const node of pager.querySelectorAll('.pager-chip')) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      const current = node.classList.contains('active') && !node.classList.contains('problems-tab');
+      if (node.dataset.pageId) {
+        node.draggable = !locked;
+      }
+      node.classList.toggle('is-load-locked', locked && current);
+    }
+  }
+
+  /**
+   * @param {() => void} paint
+   * @param {number} direction
+   */
+  function commitPagePaint(paint, direction) {
     /** @type {HTMLElement | null} */
     let leaving = null;
     let oldHeight = 0;
@@ -3457,7 +3521,7 @@
         leaving.inert = true;
         stage.append(leaving);
       }
-      paintPage();
+      paint();
       if (leaving && stage) {
         stage.classList.add('is-sliding');
         stage.style.height = Math.max(oldHeight, root.offsetHeight) + 'px';
@@ -3519,6 +3583,236 @@
     outgoing.style.transition = slideTiming;
     root.style.transform = 'translateX(0)';
     outgoing.style.transform = 'translateX(' + leaveTo + ')';
+  }
+
+  function render() {
+    if (!data) {
+      return;
+    }
+    const skeletonKind = pageSkeletonKind();
+    if (!pageContentReady() && !skeletonKind) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      root.classList.add('is-page-loading');
+      root.setAttribute('aria-busy', 'true');
+      syncPageLoadingChrome();
+      return;
+    }
+    if (skeletonKind) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      const direction = consumeSlideDirection();
+      const page = activePage();
+      const sameSkeleton =
+        root.classList.contains('is-page-skeleton') &&
+        root.dataset.skeletonKind === skeletonKind &&
+        root.dataset.skeletonPageId === page?.id;
+      if (sameSkeleton && direction === 0) {
+        syncPageLoadingChrome();
+        return;
+      }
+      root.classList.remove('is-page-loading');
+      commitPagePaint(() => paintPageSkeleton(skeletonKind), direction);
+      syncPageLoadingChrome();
+      return;
+    }
+
+    const arrivedOnSkeleton =
+      root.classList.contains('is-page-skeleton') &&
+      root.dataset.skeletonPageId === activePage()?.id;
+    root.classList.remove('is-page-loading');
+    root.removeAttribute('aria-busy');
+    if (arrivedOnSkeleton) {
+      pendingSlide = 0;
+      preservingPageScroll(() => {
+        cancelSlide();
+        clearPageSkeletonMark();
+        paintPage();
+      });
+      syncPageLoadingChrome();
+      return;
+    }
+
+    clearPageSkeletonMark();
+    const direction = consumeSlideDirection();
+    if (isSliding && direction === 0) {
+      renderDeferred = true;
+      setCollapseButton();
+      syncPageLoadingChrome();
+      return;
+    }
+    if (isFolding && direction === 0 && !renderFromToggle) {
+      renderDeferred = true;
+      setCollapseButton();
+      syncPageLoadingChrome();
+      return;
+    }
+    renderDeferred = false;
+    commitPagePaint(paintPage, direction);
+    syncPageLoadingChrome();
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   */
+  function pageSkelBar(width, delayMs) {
+    const bar = el('span', 'page-skel-bar');
+    if (width) {
+      bar.style.width = width;
+    }
+    bar.style.animationDelay = delayMs + 'ms';
+    return bar;
+  }
+
+  /** @param {'files' | 'notes' | 'links'} kind */
+  function paintPageSkeleton(kind) {
+    closeContextMenu();
+    dismissLinkPreview();
+    closeGroupPanel(false);
+    openLinkPanelId = null;
+    const page = activePage();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page is-page-skeleton' + (kind === 'links' ? ' links-page' : '');
+    root.dataset.skeletonKind = kind;
+    root.dataset.skeletonPageId = page ? page.id : '';
+    root.setAttribute('aria-busy', 'true');
+    clearDropHighlights();
+    if (kind === 'links') {
+      paintLinksSkeleton();
+      return;
+    }
+    if (kind === 'notes') {
+      paintNotesSkeleton();
+      return;
+    }
+    paintFilesSkeleton();
+  }
+
+  function paintFilesSkeleton() {
+    const widths = ['180px', '140px', '100px'];
+    let delay = 0;
+    for (let groupIndex = 0; groupIndex < 3; groupIndex += 1) {
+      const group = el('section', 'page-skel-group');
+      group.setAttribute('aria-hidden', 'true');
+      group.append(pageSkelBar('120px', delay));
+      delay += 40;
+      const files = el('div', 'page-skel-files');
+      for (const width of widths) {
+        files.append(pageSkelBar(width, delay));
+        delay += 40;
+      }
+      group.append(files);
+      root.append(group);
+    }
+  }
+
+  function paintNotesSkeleton() {
+    for (let noteIndex = 0; noteIndex < 3; noteIndex += 1) {
+      const note = el('section', 'page-skel-note');
+      note.setAttribute('aria-hidden', 'true');
+      const long = pageSkelBar('', noteIndex * 80);
+      long.classList.add('is-long');
+      const half = pageSkelBar('', noteIndex * 80 + 40);
+      half.classList.add('is-half');
+      note.append(long, half);
+      root.append(note);
+    }
+  }
+
+  /** Distinct root hues from the link palette, shuffled. */
+  function pageSkelParentColors(count) {
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    /** @type {string[]} */
+    const hues = [];
+    for (const column of columns) {
+      const tone = Array.isArray(column.tones) ? column.tones[0] : '';
+      if (tone) {
+        hues.push(String(tone));
+      }
+    }
+    if (hues.length < count) {
+      hues.push('#d65156', '#f46d34', '#52be37', '#37beb0', '#5173d6', '#9760c7', '#d651b3');
+    }
+    for (let i = hues.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = hues[i];
+      hues[i] = hues[j];
+      hues[j] = swap;
+    }
+    return hues.slice(0, count);
+  }
+
+  /**
+   * @param {{ depth: number, layout: boolean, leadingGap: boolean, width: string, delay: number, color: string, nextColor: string, children: number }} opts
+   */
+  function pageSkelLinkNode(opts) {
+    const row = el(
+      'div',
+      'link-node depth-' +
+        opts.depth +
+        (opts.leadingGap ? ' has-gap' : '') +
+        (opts.layout ? ' is-layout' : ' is-component'),
+    );
+    row.style.setProperty('--link-color', opts.color);
+    const half = linkChipHalf(opts.depth);
+    row.append(linkElbow((opts.leadingGap ? LINK_ROW_GAP : 0) + half, opts.nextColor));
+    const body = el('div', 'link-body');
+    const chipWrap = el('div', 'link-chip-wrap');
+    const chip = el('span', 'link-chip');
+    chip.append(pageSkelBar(opts.width, opts.delay));
+    chipWrap.append(chip);
+    body.append(chipWrap);
+    if (opts.children > 0) {
+      const kids = el('div', 'link-children');
+      const clip = el('div', 'link-children-clip');
+      const slide = el('div', 'link-children-slide');
+      for (let child = 0; child < opts.children; child += 1) {
+        slide.append(
+          pageSkelLinkNode({
+            depth: opts.depth + 1,
+            layout: false,
+            leadingGap: true,
+            width: '100px',
+            delay: opts.delay + 40 + child * 40,
+            color: opts.color,
+            nextColor: child < opts.children - 1 ? opts.color : '',
+            children: 0,
+          }),
+        );
+      }
+      clip.append(slide);
+      kids.append(clip);
+      body.append(kids);
+    }
+    row.append(body);
+    return row;
+  }
+
+  function paintLinksSkeleton() {
+    const colors = pageSkelParentColors(3);
+    const tree = el('div', 'links-tree page-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    for (let parent = 0; parent < 3; parent += 1) {
+      tree.append(
+        pageSkelLinkNode({
+          depth: 0,
+          layout: true,
+          leadingGap: parent > 0,
+          width: '150px',
+          delay: parent * 90,
+          color: colors[parent] || '#6e6e6e',
+          nextColor: parent < 2 ? colors[parent + 1] || '' : '',
+          children: 3,
+        }),
+      );
+    }
+    root.append(tree);
   }
 
   /** @type {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' } | null} */
@@ -6462,7 +6756,14 @@
     const links = pageLinks();
     const key = linkStructureKey(links);
     const tree = root.querySelector(':scope > .links-tree');
-    if (key === linksStructureKey && tree && root.classList.contains('links-page') && !data?.error) {
+    if (
+      key === linksStructureKey &&
+      tree &&
+      !tree.classList.contains('page-skel') &&
+      !root.classList.contains('is-page-skeleton') &&
+      root.classList.contains('links-page') &&
+      !data?.error
+    ) {
       syncLinkCollapsed();
       setCollapseButton();
       mountLinkPanel(links);
@@ -7490,6 +7791,11 @@
               ? page.name + ' (' + t('pageKindNotes') + ')'
               : page.name + ' (' + t('pageKindFiles') + ')';
       chip.addEventListener('click', (event) => {
+        if (pageSkeletonKind() && page.id === uiState.activePageId) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         const now = Date.now();
         const again = pageChipClick.id === page.id && now - pageChipClick.at < 500;
         pageChipClick = again ? { id: '', at: 0 } : { id: page.id, at: now };
@@ -7502,6 +7808,10 @@
         openPageChipSettings(page);
       });
       chip.addEventListener('dragstart', (event) => {
+        if (pageSkeletonKind()) {
+          event.preventDefault();
+          return;
+        }
         pageDragId = page.id;
         event.dataTransfer?.setData(PAGE_MIME, page.id);
         if (event.dataTransfer) {
@@ -7515,7 +7825,7 @@
         pager.querySelectorAll('.pager-chip').forEach((node) => node.classList.remove('drop-before', 'drop-after'));
       });
       chip.addEventListener('dragover', (event) => {
-        if (!pageDragId || pageDragId === page.id) {
+        if (pageSkeletonKind() || !pageDragId || pageDragId === page.id) {
           return;
         }
         event.preventDefault();
@@ -7530,6 +7840,9 @@
       chip.addEventListener('drop', (event) => {
         event.preventDefault();
         chip.classList.remove('drop-before', 'drop-after');
+        if (pageSkeletonKind()) {
+          return;
+        }
         const from = pageDragId || event.dataTransfer?.getData(PAGE_MIME);
         if (!from || from === page.id) {
           return;
