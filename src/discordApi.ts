@@ -5,13 +5,13 @@ const API = 'https://discord.com/api/v10';
 export const MR_PREFIX = 'MR_SYN3';
 /** Draft merge-request message prefix (same chip family as MR_SYN3). */
 export const DMR_PREFIX = 'DMR_SYN3';
-/** Review message prefix in Discord threads: `(R_SYN3): Ревью N | H:…`. */
+/** Review message prefix in Discord threads: `R_SYN3: Ревью N | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
 /** Severity line inside a review file / agent stdout. */
 export const REVIEW_SEVERITY_RE = /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)\s*$/i;
 
 const MR_HEAD_RE = /^\(?((?:MR_SYN3|DMR_SYN3))\)?:\s*(.*)$/;
-const REVIEW_HEAD_RE = /^\(R_SYN3\):\s*(.*)$/;
+const REVIEW_HEAD_RE = /^\(?R_SYN3\)?:\s*(.*)$/;
 const MD_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/;
 /** Discord message flag: do not unfurl links into embed previews. */
 const SUPPRESS_EMBEDS = 1 << 2;
@@ -404,17 +404,37 @@ export function replaceMrDiscordHead(content: string, draft: boolean, title: str
   return lines.join('\n');
 }
 
-/** Set or append the `color: #rrggbb` line. Other lines stay as they are. */
-export function replaceMrDiscordColor(content: string, color: string): string {
+/** Set or append a `key: value` line. Other lines stay as they are. */
+export function replaceDiscordMetaLine(content: string, key: string, value: string): string {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const next = `color: ${color}`;
-  const idx = lines.findIndex((line) => line.trim().toLowerCase().startsWith('color:'));
+  const needle = `${key.toLowerCase()}:`;
+  const next = `${key}: ${value}`;
+  const idx = lines.findIndex((line) => line.trim().toLowerCase().startsWith(needle));
   if (idx >= 0) {
     lines[idx] = next;
   } else {
     lines.push(next);
   }
   return lines.join('\n');
+}
+
+/** Set or append the `color: #rrggbb` line. Other lines stay as they are. */
+export function replaceMrDiscordColor(content: string, color: string): string {
+  return replaceDiscordMetaLine(content, 'color', color);
+}
+
+export type MrDiscordStatus = 'open' | 'closed';
+
+/** Set or append `status: open|closed` on an MR/PR Discord message. */
+export function replaceMrDiscordStatus(content: string, status: MrDiscordStatus): string {
+  return replaceDiscordMetaLine(content, 'status', status);
+}
+
+export type ReviewChipStatus = 'inProgress' | 'done';
+
+/** Set or append `status: -|inProgress|done` on an R_SYN3 message. */
+export function replaceReviewDiscordStatus(content: string, status: ReviewChipStatus | '-'): string {
+  return replaceDiscordMetaLine(content, 'status', status);
 }
 
 export async function postChannelMessage(
@@ -437,6 +457,22 @@ export async function postChannelMessage(
     return { ok: false, status: 0, message: 'Invalid Discord message response' };
   }
   return { ok: true, value: msg };
+}
+
+export async function deleteChannelMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+): Promise<DiscordResult<void>> {
+  const result = await discordFetch(
+    token,
+    'DELETE',
+    `/channels/${channelId}/messages/${messageId}`,
+  );
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, value: undefined };
 }
 
 export async function startThread(
@@ -557,6 +593,7 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
  * Автор ревью: Profile
  * Исполнители: A, B
  * color: #hex
+ * status: open|closed
  */
 export function formatMrDiscordBody(opts: {
   webUrl: string;
@@ -591,6 +628,7 @@ export function formatMrDiscordBody(opts: {
     `Автор ревью: ${author}`,
     `Исполнители: ${assignees}`,
     `color: ${opts.color}`,
+    'status: open',
   ];
   return lines.join('\n');
 }
@@ -600,6 +638,8 @@ export function parseMrChip(content: string): {
   title?: string;
   draft?: boolean;
   color?: string;
+  /** Missing `status:` means open. */
+  status?: MrDiscordStatus;
 } {
   const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const head = lines[0] || '';
@@ -614,15 +654,19 @@ export function parseMrChip(content: string): {
   const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
   const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
   const color = colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
-  return { webUrl, title, draft, color };
+  const statusLine = lines.find((l) => l.toLowerCase().startsWith('status:'));
+  const statusRaw = statusLine ? statusLine.slice(7).trim().toLowerCase() : '';
+  const status: MrDiscordStatus = statusRaw === 'closed' ? 'closed' : 'open';
+  return { webUrl, title, draft, color, status };
 }
 
 /**
  * Discord thread message for a review file attachment.
  *
- * (R_SYN3): Ревью N | H:n | M:n | L:n
+ * R_SYN3: Ревью N | H:n | M:n | L:n
  * Модель: …
  * Скилл: …
+ * status: -|inProgress|done
  */
 export function formatReviewDiscordBody(opts: {
   reviewNumber: number;
@@ -634,10 +678,25 @@ export function formatReviewDiscordBody(opts: {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
   return [
-    `(${REVIEW_PREFIX}): Ревью ${opts.reviewNumber} | ${severity}`,
+    `${REVIEW_PREFIX}: Ревью ${opts.reviewNumber} | ${severity}`,
     `Модель: ${model}`,
     `Скилл: ${skill}`,
+    'status: -',
   ].join('\n');
+}
+
+/** `status:` on an R_SYN3 message. `-` and a missing line are the empty default. */
+export function parseReviewStatus(content: string): ReviewChipStatus | undefined {
+  const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const statusLine = lines.find((l) => l.toLowerCase().startsWith('status:'));
+  const raw = statusLine ? statusLine.slice(7).trim().toLowerCase() : '';
+  if (raw === 'inprogress') {
+    return 'inProgress';
+  }
+  if (raw === 'done') {
+    return 'done';
+  }
+  return undefined;
 }
 
 /** Pill label from the first line of a review Discord message. */

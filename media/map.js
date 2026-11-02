@@ -61,9 +61,11 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   const MENU_CLOSE_MS = 300;
+  /** Pointer travel from the click before an unentered context menu dismisses. */
+  const CONTEXT_AWAY_PX = 24;
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const menuCloseTimers = new Map();
 
@@ -468,6 +470,65 @@
 
   /** Skip leave-close while the context menu DOM is rebuilt (toggle/highlight). */
   let ignoreContextLeave = false;
+  /** @type {((event: PointerEvent) => void) | null} */
+  let contextDismissMove = null;
+
+  /**
+   * @param {HTMLElement | null} menu
+   * @param {number} x
+   * @param {number} y
+   */
+  function menuBoxContains(menu, x, y) {
+    if (!menu || menu.hidden) {
+      return false;
+    }
+    const rect = menu.getBoundingClientRect();
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+  }
+
+  function clearContextDismissMove() {
+    if (!contextDismissMove) {
+      return;
+    }
+    document.removeEventListener('pointermove', contextDismissMove, true);
+    contextDismissMove = null;
+  }
+
+  /**
+   * replaceChildren can synthesize mouseleave. Ignore that until the pointer
+   * actually moves — mouseenter never fires if the menu opened off the cursor
+   * (flipped above the click), so the first real move must both unlock leave
+   * and dismiss when the pointer stays outside.
+   */
+  function armContextMenuDismiss() {
+    ignoreContextLeave = true;
+    clearContextDismissMove();
+    const originX = openMenuState?.x ?? 0;
+    const originY = openMenuState?.y ?? 0;
+    contextDismissMove = (event) => {
+      if (contextMenu.hidden) {
+        clearContextDismissMove();
+        ignoreContextLeave = false;
+        return;
+      }
+      ignoreContextLeave = false;
+      if (
+        menuBoxContains(contextMenu, event.clientX, event.clientY) ||
+        menuBoxContains(reviewDepthMenu, event.clientX, event.clientY)
+      ) {
+        clearContextDismissMove();
+        return;
+      }
+      const dx = event.clientX - originX;
+      const dy = event.clientY - originY;
+      if (dx * dx + dy * dy < CONTEXT_AWAY_PX * CONTEXT_AWAY_PX) {
+        return;
+      }
+      clearContextDismissMove();
+      scheduleMenuClose('context', () => closeContextMenu());
+    };
+    document.addEventListener('pointermove', contextDismissMove, true);
+  }
 
   contextMenu.addEventListener('mouseenter', () => {
     ignoreContextLeave = false;
@@ -697,6 +758,8 @@
   let reviewMrPanel = null;
   /** Collapsed MR threads (default open when hasThread). */
   const reviewCollapsed = new Set();
+  /** Last closed flag per MR, so a closed thread folds once on load and on close. */
+  const reviewClosedSeen = new Map();
   /** MR titles expanded past one line. */
   const reviewTitleExpanded = new Set();
   /** Plain parents with expanded body + thread. */
@@ -1548,6 +1611,9 @@
 
   function closeContextMenu() {
     cancelMenuClose('context');
+    clearContextDismissMove();
+    // Hiding and replaceChildren can synthesize mouseleave; don't re-arm a close.
+    ignoreContextLeave = true;
     clearReviewDepthMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
@@ -1555,6 +1621,7 @@
     chrome.scroller.replaceChildren();
     chrome.scroller.scrollTop = 0;
     chrome.bar.hidden = true;
+    ignoreContextLeave = false;
     if (openMenuState?.kind === 'context') {
       openMenuState = null;
     }
@@ -1648,6 +1715,7 @@
       deleteExpanded: false,
       reviewExpanded: false,
       reviewScope: '',
+      reviewStatusExpanded: false,
       ctx,
       x,
       y,
@@ -1715,6 +1783,42 @@
     caret.textContent = '▸';
     caret.setAttribute('aria-hidden', 'true');
     row.append(title, caret);
+    nest.append(row);
+  }
+
+  /**
+   * @param {string} messageId
+   */
+  function findReviewReply(messageId) {
+    for (const msg of reviewState?.messages || []) {
+      const reply = (msg.replies || []).find((item) => item.id === messageId);
+      if (reply) {
+        return reply;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * @param {HTMLElement} nest
+   * @param {'inProgress' | 'done'} status
+   * @param {string} label
+   * @param {boolean} active
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function appendReviewStatusChoice(nest, status, label, active, pageId, messageId) {
+    const row = menuAction('', active ? 'is-active' : '');
+    row.dataset.reviewStatus = status;
+    row.dataset.pageId = pageId;
+    row.dataset.messageId = messageId;
+    const ico = document.createElement('span');
+    ico.className = 'syn3-menu-item-ico';
+    ico.append(status === 'done' ? reviewDoneIcon() : reviewProgressIcon());
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    row.append(ico, title);
     nest.append(row);
   }
 
@@ -1802,7 +1906,7 @@
     const section = String(ctx.webviewSection || '');
     const depth = Number(ctx.depth) || 0;
     // replaceChildren can synthesize mouseleave; ignore it until the pointer moves again.
-    ignoreContextLeave = true;
+    armContextMenuDismiss();
     cancelMenuClose('context');
     clearReviewDepthMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
@@ -1841,6 +1945,78 @@
           reviewEdit: 'color',
           pageId,
           messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(isPr ? 'reviewClosePr' : 'reviewCloseMr'), {
+          reviewEdit: 'close',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      if (chip?.status === 'closed') {
+        scroller.querySelectorAll('button').forEach((button) => {
+          if (button.dataset.reviewEdit === 'delete') {
+            return;
+          }
+          button.disabled = true;
+        });
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewPill') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const status = reply?.status || '';
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewStatus'),
+        !!openMenuState.reviewStatusExpanded,
+        'toggleReviewStatus',
+        (nest) => {
+          appendReviewStatusChoice(
+            nest,
+            'inProgress',
+            t('reviewStatusProgress'),
+            status === 'inProgress',
+            pageId,
+            messageId,
+          );
+          appendReviewStatusChoice(
+            nest,
+            'done',
+            t('reviewStatusDone'),
+            status === 'done',
+            pageId,
+            messageId,
+          );
+        },
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewMsg') {
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId: String(ctx.reviewPageId || ''),
+          messageId: String(ctx.reviewMessageId || ''),
         }),
       );
       updateMenuScrollbar(contextMenu);
@@ -2151,6 +2327,9 @@
       return;
     }
     event.stopPropagation();
+    if (button.disabled) {
+      return;
+    }
     // Rebuilds replace DOM and can fire mouseleave — keep the menu open.
     if (source === 'context') {
       cancelMenuClose('context');
@@ -2185,6 +2364,25 @@
       return;
     }
 
+    if (button.dataset.reviewStatus) {
+      closeContextMenu();
+      vscode.postMessage({
+        type: 'reviewSetStatus',
+        pageId: button.dataset.pageId || '',
+        messageId: button.dataset.messageId || '',
+        status: button.dataset.reviewStatus,
+      });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReviewStatus') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.reviewStatusExpanded = !openMenuState.reviewStatusExpanded;
+        rerenderContextMenu();
+      }
+      return;
+    }
+
     if (button.dataset.menuAction === 'toggleReviewScope') {
       if (openMenuState?.kind === 'context') {
         const scope = button.dataset.reviewScope || '';
@@ -2214,6 +2412,18 @@
           pageId,
           currentHex: chip?.color || '',
           allowNone: false,
+        });
+      } else if (button.dataset.reviewEdit === 'close') {
+        vscode.postMessage({
+          type: 'reviewCloseMr',
+          pageId,
+          messageId,
+        });
+      } else if (button.dataset.reviewEdit === 'delete') {
+        vscode.postMessage({
+          type: 'reviewDeleteReview',
+          pageId,
+          messageId,
         });
       } else {
         vscode.postMessage({
@@ -4345,6 +4555,84 @@
     return svg;
   }
 
+  /**
+   * @param {string} className
+   * @param {string} d
+   */
+  function reviewSvgIcon(className, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico ' + className);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /** assets/fragment.svg — closed MR chip. */
+  function reviewClosedIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-closed');
+    const specs = [
+      {
+        d: 'M12 9C12.5521 9 12.9997 9.44796 13 10V11H11V10C11.0003 9.44796 11.4479 9 12 9Z',
+      },
+      {
+        d: 'M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM12 7C10.3432 7 9.00023 8.34329 9 10V11H8V16H16V11H15V10C14.9998 8.34329 13.6568 7 12 7Z',
+        rule: 'evenodd',
+      },
+    ];
+    for (const spec of specs) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', spec.d);
+      path.setAttribute('fill', 'currentColor');
+      if (spec.rule) {
+        path.setAttribute('fill-rule', spec.rule);
+        path.setAttribute('clip-rule', spec.rule);
+      }
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** assets/bolt.svg — review chip with empty status. */
+  function reviewBoltIcon() {
+    return reviewSvgIcon('review-ico-bolt', 'M13 10H20L11 23V14H4L13 1V10Z');
+  }
+
+  /** assets/loader-2-fill.svg — review status in progress. */
+  function reviewProgressIcon() {
+    return reviewSvgIcon(
+      'review-ico-progress',
+      'M12 2C12.5523 2 13 2.44772 13 3V6C13 6.55228 12.5523 7 12 7C11.4477 7 11 6.55228 11 6V3C11 2.44772 11.4477 2 12 2ZM12 17C12.5523 17 13 17.4477 13 18V21C13 21.5523 12.5523 22 12 22C11.4477 22 11 21.5523 11 21V18C11 17.4477 11.4477 17 12 17ZM22 12C22 12.5523 21.5523 13 21 13H18C17.4477 13 17 12.5523 17 12C17 11.4477 17.4477 11 18 11H21C21.5523 11 22 11.4477 22 12ZM7 12C7 12.5523 6.55228 13 6 13H3C2.44772 13 2 12.5523 2 12C2 11.4477 2.44772 11 3 11H6C6.55228 11 7 11.4477 7 12ZM19.0711 19.0711C18.6805 19.4616 18.0474 19.4616 17.6569 19.0711L15.5355 16.9497C15.145 16.5592 15.145 15.9261 15.5355 15.5355C15.9261 15.145 16.5592 15.145 16.9497 15.5355L19.0711 17.6569C19.4616 18.0474 19.4616 18.6805 19.0711 19.0711ZM8.46447 8.46447C8.07394 8.85499 7.44078 8.85499 7.05025 8.46447L4.92893 6.34315C4.53841 5.95262 4.53841 5.31946 4.92893 4.92893C5.31946 4.53841 5.95262 4.53841 6.34315 4.92893L8.46447 7.05025C8.85499 7.44078 8.85499 8.07394 8.46447 8.46447ZM4.92893 19.0711C4.53841 18.6805 4.53841 18.0474 4.92893 17.6569L7.05025 15.5355C7.44078 15.145 8.07394 15.145 8.46447 15.5355C8.85499 15.9261 8.85499 16.5592 8.46447 16.9497L6.34315 19.0711C5.95262 19.4616 5.31946 19.4616 4.92893 19.0711ZM15.5355 8.46447C15.145 8.07394 15.145 7.44078 15.5355 7.05025L17.6569 4.92893C18.0474 4.53841 18.6805 4.53841 19.0711 4.92893C19.4616 5.31946 19.4616 5.95262 19.0711 6.34315L16.9497 8.46447C16.5592 8.85499 15.9261 8.85499 15.5355 8.46447Z',
+    );
+  }
+
+  /** assets/check-double-fill.svg — review status done. */
+  function reviewDoneIcon() {
+    return reviewSvgIcon(
+      'review-ico-done',
+      'M11.602 13.7599L13.014 15.1719L21.4795 6.7063L22.8938 8.12051L13.014 18.0003L6.65 11.6363L8.06421 10.2221L10.189 12.3469L11.602 13.7599ZM11.6037 10.9322L16.5563 5.97949L17.9666 7.38977L13.014 12.3424L11.6037 10.9322ZM8.77698 16.5873L7.36396 18.0003L1 11.6363L2.41421 10.2221L3.82723 11.6352L3.82604 11.6363L8.77698 16.5873Z',
+    );
+  }
+
+  /**
+   * @param {string | undefined} status
+   */
+  function reviewStatusIcon(status) {
+    if (status === 'inProgress') {
+      return reviewProgressIcon();
+    }
+    if (status === 'done') {
+      return reviewDoneIcon();
+    }
+    return reviewBoltIcon();
+  }
+
   function reviewPersonIcon() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 16 16');
@@ -4474,6 +4762,33 @@
     return tree;
   }
 
+  /** Fold a closed MR the first time it is seen, and again when it becomes closed. */
+  function applyClosedMrFolds() {
+    const pageId = activePage()?.id || '';
+    if (!reviewState || reviewState.pageId !== pageId) {
+      return;
+    }
+    for (const msg of reviewState.messages || []) {
+      if (!msg.isMr) {
+        continue;
+      }
+      const closed = msg.status === 'closed';
+      const prev = reviewClosedSeen.get(msg.id);
+      reviewClosedSeen.set(msg.id, closed);
+      if (closed && prev !== true) {
+        reviewCollapsed.add(msg.id);
+      }
+    }
+  }
+
+  function dismissMissingReviewFile() {
+    if (!reviewFileView || findReviewReply(reviewFileView.messageId)) {
+      return;
+    }
+    reviewFileView = null;
+    mountReviewFile();
+  }
+
   function paintReviewPage() {
     setCollapseButton();
     const page = activePage();
@@ -4484,6 +4799,8 @@
         reviewState = cached;
       }
     }
+    applyClosedMrFolds();
+    dismissMissingReviewFile();
     const edge = reviewPaintEdge(pageId);
     const samePage = !!(reviewState && reviewState.pageId === pageId);
     const keepScroll = samePage && edge !== 'initial' ? currentDocScroll() : 0;
@@ -4638,6 +4955,7 @@
         msg.color || '',
         msg.title || '',
         msg.draft ? 'd' : '',
+        msg.status || '',
         msg.timestamp || '',
         msg.hasThread ? 't' : '',
         msg.repliesHasMore ? 'm' : '',
@@ -4648,6 +4966,7 @@
         chunks.push(
           reply.id,
           reply.pillLabel || '',
+          reply.status || '-',
           reply.isPill ? 'p' : '',
           reply.timestamp || '',
           reply.hasFile ? 'f' : '',
@@ -4742,7 +5061,7 @@
       const chipWrap = el('div', 'review-chip-wrap');
       const chip = el('button', 'review-chip is-mr-pill');
       chip.type = 'button';
-      chip.append(reviewPrIcon());
+      chip.append(msg.status === 'closed' ? reviewClosedIcon() : reviewPrIcon());
       chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
       if (canFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
@@ -4807,6 +5126,11 @@
         }
         paintReviewPage();
       });
+      title.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
       if (msg.webUrl) {
         title.title = msg.webUrl;
         title.addEventListener('dblclick', (event) => {
@@ -4842,6 +5166,11 @@
           reviewPlainExpanded.add(msg.id);
         }
         paintReviewPage();
+      });
+      preview.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, msg.id);
       });
       body.append(preview);
       if ((msg.replies && msg.replies.length) || msg.repliesHasMore) {
@@ -4914,7 +5243,14 @@
     const replyMissing = reply.contentMissing === true || !replyText;
     if (isPill) {
       const wrap = el('div', 'review-chip-wrap');
-      const chip = el('div', 'review-chip is-review-pill', reply.pillLabel);
+      const chip = el('div', 'review-chip is-review-pill');
+      chip.append(reviewStatusIcon(reply.status));
+      chip.append(el('span', 'review-chip-label', reply.pillLabel || ''));
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewPillContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
       chip.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -4938,6 +5274,11 @@
       plain.append(
         el('span', 'review-plain-text' + (replyMissing ? ' is-missing' : ''), shown),
       );
+      plain.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
       body.append(plain);
     }
     row.append(body);
@@ -5064,6 +5405,34 @@
   function openReviewContextMenu(x, y, pageId, messageId) {
     openContextMenu(
       { webviewSection: 'reviewMr', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewPillContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewPill', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewMessageContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewMsg', reviewPageId: pageId, reviewMessageId: messageId },
       x,
       y,
     );

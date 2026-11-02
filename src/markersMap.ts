@@ -25,6 +25,7 @@ import { normalizeLocale, stringsFor, t } from './i18n';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
+import { ReviewChipStatus } from './discordApi';
 import { ReviewDepth, ReviewKind } from './reviewPending';
 import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
 import {
@@ -365,6 +366,14 @@ type IncomingMessage =
       title?: string;
       draft?: boolean;
       color?: string;
+    }
+  | { type: 'reviewCloseMr'; pageId: string; messageId: string }
+  | { type: 'reviewDeleteReview'; pageId: string; messageId: string }
+  | {
+      type: 'reviewSetStatus';
+      pageId: string;
+      messageId: string;
+      status: ReviewChipStatus;
     }
   | { type: 'reviewDiscordRefresh'; pageId: string; webUrl: string; sourceBranch: string }
   | {
@@ -2079,6 +2088,37 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         draft: message.draft,
         color: message.color,
       });
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewCloseMr') {
+      const result = await this.review.closeMr(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewDeleteReview') {
+      const result = await this.review.deleteReviewMessage(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewSetStatus') {
+      const status = message.status === 'inProgress' || message.status === 'done' ? message.status : undefined;
+      if (!status) {
+        return;
+      }
+      const result = await this.review.setReviewStatus(message.pageId, message.messageId, status);
       if (result.kind === 'error') {
         void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
         return;

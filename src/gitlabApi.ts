@@ -236,3 +236,26 @@ export async function updateMergeRequest(
   }
   return { ok: true, value: mr };
 }
+
+/** Close an open merge request. An already-closed request stays closed. */
+export async function closeMergeRequest(
+  repoUrl: string,
+  token: string,
+  iid: number,
+): Promise<GitlabResult<void>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const result = await gitlabFetch(
+    loc.host,
+    token,
+    'PUT',
+    `/projects/${encodePath(loc.projectPath)}/merge_requests/${iid}`,
+    { state_event: 'close' },
+  );
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, value: undefined };
+}

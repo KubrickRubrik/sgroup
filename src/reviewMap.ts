@@ -25,11 +25,16 @@ import {
   parseMrChip,
   parseReviewAttachment,
   parseReviewMessagePill,
+  deleteChannelMessage,
+  parseReviewStatus,
   fetchAttachmentText,
   postChannelMessage,
   postMessageWithFile,
   replaceMrDiscordColor,
   replaceMrDiscordHead,
+  replaceMrDiscordStatus,
+  replaceReviewDiscordStatus,
+  ReviewChipStatus,
   sortMessagesAsc,
 } from './discordApi';
 import {
@@ -39,8 +44,8 @@ import {
   ensureBranchPushed,
   ensureCommittedBeforeMr,
 } from './gitOps';
-import { createMergeRequest, findOpenMrByBranch, updateMergeRequest } from './gitlabApi';
-import { createPullRequest, findOpenPrByBranch, updatePullRequest } from './githubApi';
+import { closeMergeRequest, createMergeRequest, findOpenMrByBranch, updateMergeRequest } from './gitlabApi';
+import { closePullRequest, createPullRequest, findOpenPrByBranch, updatePullRequest } from './githubApi';
 import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { normalizeHex } from './palette';
 import {
@@ -65,6 +70,8 @@ export interface ReviewThreadMsg {
   isPill?: boolean;
   /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | L:5`. */
   pillLabel?: string;
+  /** Empty when Discord `status` is `-` or missing. */
+  status?: ReviewChipStatus;
   /** Discord attachment on this message. The CDN url stays on the host. */
   hasFile?: boolean;
   filename?: string;
@@ -81,6 +88,8 @@ export interface ReviewChip {
   title?: string;
   draft?: boolean;
   color?: string;
+  /** `status: closed` on the Discord MR message. Missing line stays open. */
+  status?: 'open' | 'closed';
   threadId?: string;
   hasThread?: boolean;
   replies: ReviewThreadMsg[];
@@ -126,6 +135,7 @@ function toChip(
     title: parsed.title,
     draft: parsed.draft,
     color: parsed.color || (isMr ? LINK_PALETTE_DEFAULT : undefined),
+    status: isMr ? (parsed.status === 'closed' ? 'closed' : 'open') : undefined,
     threadId: msg.thread?.id,
     hasThread: !!msg.thread?.id || !!msg.hasThread,
     replies,
@@ -148,6 +158,7 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
     author: msg.author,
     timestamp: msg.timestamp,
     isReview: isReviewMessage(msg.content),
+    status: isReviewMessage(msg.content) ? parseReviewStatus(msg.content) : undefined,
     hasFile: !!file,
     filename: file?.filename,
     contentMissing: msg.contentMissing,
@@ -1075,6 +1086,9 @@ export class ReviewMapController {
     if (!isMrMessage(parent.content)) {
       return { kind: 'error', message: 'Select an MR_SYN3 chip' };
     }
+    if (parseMrChip(parent.content).status === 'closed') {
+      return { kind: 'error', message: 'MR is closed' };
+    }
     if (patch.color !== undefined && patch.title === undefined && patch.draft === undefined) {
       return this.recolorMrChip(pageId, win, access.channelId, discord, parent, patch.color);
     }
@@ -1164,6 +1178,180 @@ export class ReviewMapController {
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
+  /** Close the host MR/PR, then set Discord `status: closed`. */
+  async closeMr(
+    pageId: string,
+    messageId: string,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const win = this.windows.get(pageId);
+    const access = await this.getAccess(pageId);
+    const discord = await this.discordToken();
+    const parent = win?.messages.find((item) => item.id === messageId);
+    if (!win || !access || !discord || !parent) {
+      return { kind: 'error', message: 'MR message not found on the map' };
+    }
+    if (!isMrMessage(parent.content)) {
+      return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    }
+    const parsed = parseMrChip(parent.content);
+    if (parsed.status === 'closed') {
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    if (!parsed.webUrl) {
+      return { kind: 'error', message: 'MR link is missing in the Discord message' };
+    }
+    const iid = mrIidFromWebUrl(parsed.webUrl);
+    if (!iid) {
+      return { kind: 'error', message: 'Could not read the MR number from the link' };
+    }
+    const host = await this.hostToken(access.provider);
+    if (!host) {
+      const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
+      return { kind: 'error', message: `${label} token is missing` };
+    }
+    const closed =
+      access.provider === 'github'
+        ? await closePullRequest(access.repoUrl, host, iid)
+        : await closeMergeRequest(access.repoUrl, host, iid);
+    if (!closed.ok) {
+      return { kind: 'error', message: closed.message };
+    }
+    const edited = await editChannelMessage(
+      discord,
+      access.channelId,
+      parent.id,
+      replaceMrDiscordStatus(parent.content, 'closed'),
+    );
+    if (!edited.ok) {
+      return { kind: 'error', message: edited.message };
+    }
+    const idx = win.messages.findIndex((item) => item.id === parent.id);
+    if (idx >= 0) {
+      win.messages[idx] = {
+        ...edited.value,
+        thread: edited.value.thread ?? parent.thread,
+        hasThread: edited.value.hasThread || parent.hasThread,
+      };
+    }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /** Set `status:` on an R_SYN3 thread message. */
+  async setReviewStatus(
+    pageId: string,
+    messageId: string,
+    status: ReviewChipStatus,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const win = this.windows.get(pageId);
+    const token = await this.discordToken();
+    if (!win || !token) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
+    let threadId = '';
+    let found: DiscordMessage | undefined;
+    for (const [id, bucket] of win.threads) {
+      found = bucket.replies.find((item) => item.id === messageId);
+      if (found) {
+        threadId = id;
+        break;
+      }
+    }
+    if (!found || !threadId) {
+      return { kind: 'error', message: 'Review message not found on the map' };
+    }
+    if (!isReviewMessage(found.content)) {
+      return { kind: 'error', message: 'Select an R_SYN3 chip' };
+    }
+    if (parseReviewStatus(found.content) === status) {
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    const edited = await editChannelMessage(
+      token,
+      threadId,
+      found.id,
+      replaceReviewDiscordStatus(found.content, status),
+    );
+    if (!edited.ok) {
+      return { kind: 'error', message: edited.message };
+    }
+    const bucket = win.threads.get(threadId);
+    if (bucket) {
+      const idx = bucket.replies.findIndex((item) => item.id === found.id);
+      if (idx >= 0) {
+        const prev = bucket.replies[idx];
+        bucket.replies[idx] = {
+          ...edited.value,
+          attachments: edited.value.attachments?.length ? edited.value.attachments : prev.attachments,
+        };
+      }
+    }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Delete one Discord message shown on the map: a channel parent or a thread reply.
+   * The host MR and any local review file stay.
+   */
+  async deleteReviewMessage(
+    pageId: string,
+    messageId: string,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const win = this.windows.get(pageId);
+    const token = await this.discordToken();
+    if (!win || !token) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
+    const parent = win.messages.find((item) => item.id === messageId);
+    if (parent) {
+      const access = await this.getAccess(pageId);
+      if (!access?.channelId) {
+        return { kind: 'error', message: 'Review page is not ready' };
+      }
+      const removed = await deleteChannelMessage(token, access.channelId, parent.id);
+      if (!removed.ok) {
+        return { kind: 'error', message: removed.message };
+      }
+      win.messages = win.messages.filter((item) => item.id !== parent.id);
+      const threadId = parent.thread?.id;
+      if (threadId) {
+        const bucket = win.threads.get(threadId);
+        if (bucket) {
+          for (const reply of bucket.replies) {
+            this.replyMeta.delete(reply.id);
+            this.fileCache.delete(reply.id);
+          }
+        }
+        win.threads.delete(threadId);
+      }
+      this.replyMeta.delete(parent.id);
+      this.fileCache.delete(parent.id);
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    let threadId = '';
+    let found: DiscordMessage | undefined;
+    for (const [id, bucket] of win.threads) {
+      found = bucket.replies.find((item) => item.id === messageId);
+      if (found) {
+        threadId = id;
+        break;
+      }
+    }
+    if (!found || !threadId) {
+      return { kind: 'error', message: 'Review message not found on the map' };
+    }
+    const removed = await deleteChannelMessage(token, threadId, found.id);
+    if (!removed.ok) {
+      return { kind: 'error', message: removed.message };
+    }
+    const bucket = win.threads.get(threadId);
+    if (bucket) {
+      bucket.replies = bucket.replies.filter((item) => item.id !== found.id);
+    }
+    this.replyMeta.delete(found.id);
+    this.fileCache.delete(found.id);
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
   /**
    * Download the review attachment for a thread message.
    * The Discord body has no file URL; the file is `attachments[0]`.
@@ -1242,6 +1430,9 @@ export class ReviewMapController {
     const parent = win.messages.find((m) => m.id === messageId);
     if (!parent || !isMrMessage(parent.content)) {
       return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    }
+    if (parseMrChip(parent.content).status === 'closed') {
+      return { kind: 'error', message: 'MR is closed' };
     }
     const parsed = parseMrChip(parent.content);
     if (!parsed.webUrl) {

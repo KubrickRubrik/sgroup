@@ -222,6 +222,28 @@ html::-webkit-scrollbar {
   background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
 }
 
+.syn3-menu-item:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.syn3-menu-item:disabled:hover {
+  background: transparent;
+}
+
+.syn3-menu-item-ico {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 14px;
+  width: 14px;
+}
+
+.syn3-menu-item-ico .review-ico {
+  height: 14px;
+  width: 14px;
+}
+
 .syn3-menu-item.is-active {
   background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)) 55%, transparent);
 }
@@ -3143,8 +3165,24 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   height: 34px;
 }
 
-.review-chip-badge {
+.review-chip-badge,
+.review-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.review-ico-closed {
+  color: #e5484d;
+}
+
+.review-ico-progress {
+  color: #f5c400;
+}
+
+.review-ico-done {
+  color: #8fd14f;
 }
 
 .review-mr-title-text {
@@ -3187,7 +3225,8 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   width: 14px;
 }
 
-.review-chip.is-mr-pill > .review-ico-pr {
+.review-chip.is-mr-pill > .review-ico-pr,
+.review-chip.is-mr-pill > .review-ico-closed {
   height: 16px;
   margin-right: 2px;
   width: 16px;

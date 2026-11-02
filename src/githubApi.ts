@@ -284,3 +284,25 @@ export async function updatePullRequest(
   }
   return { ok: true, value: next };
 }
+
+/** Close an open pull request. An already-closed request stays closed. */
+export async function closePullRequest(
+  repoUrl: string,
+  token: string,
+  number: number,
+): Promise<GithubResult<void>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const result = await githubFetch(
+    token,
+    'PATCH',
+    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/pulls/${number}`,
+    { state: 'closed' },
+  );
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, value: undefined };
+}
