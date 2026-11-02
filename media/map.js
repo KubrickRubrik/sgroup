@@ -61,7 +61,7 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   const MENU_CLOSE_MS = 300;
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
@@ -1500,7 +1500,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewEdit?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewEdit?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1515,6 +1515,9 @@
     }
     if (attrs.review) {
       button.dataset.review = attrs.review;
+    }
+    if (attrs.reviewDepth) {
+      button.dataset.reviewDepth = attrs.reviewDepth;
     }
     if (attrs.reviewEdit) {
       button.dataset.reviewEdit = attrs.reviewEdit;
@@ -1545,6 +1548,7 @@
 
   function closeContextMenu() {
     cancelMenuClose('context');
+    clearReviewDepthMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
     const chrome = ensureMenuChrome(contextMenu);
@@ -1642,6 +1646,8 @@
       viewExpanded: false,
       createExpanded: false,
       deleteExpanded: false,
+      reviewExpanded: false,
+      reviewScope: '',
       ctx,
       x,
       y,
@@ -1680,6 +1686,114 @@
     scroller.append(block);
   }
 
+  /** @type {HTMLElement | null} */
+  let reviewDepthMenu = null;
+
+  function clearReviewDepthMenu() {
+    reviewDepthMenu?.remove();
+    reviewDepthMenu = null;
+  }
+
+  /**
+   * Scope row inside «Ревью». Click opens the depth submenu.
+   * @param {HTMLElement} nest
+   * @param {'branch' | 'changes'} scope
+   * @param {string} label
+   */
+  function appendReviewScopeRow(nest, scope, label) {
+    const expanded = openMenuState?.reviewScope === scope;
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleReviewScope';
+    row.dataset.reviewScope = scope;
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    nest.append(row);
+  }
+
+  /**
+   * Depth flyout for the open scope. Lives on document.body so the context
+   * menu's overflow does not clip it.
+   * @param {'branch' | 'changes'} scope
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function mountReviewDepthMenu(scope, pageId, messageId) {
+    clearReviewDepthMenu();
+    const anchor = contextMenu.querySelector('[data-review-scope="' + scope + '"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      fly.append(
+        menuActionChoice(t(key), {
+          review: scope,
+          reviewDepth: depth,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    reviewDepthMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  function rerenderContextMenu() {
+    if (!openMenuState || openMenuState.kind !== 'context') {
+      return;
+    }
+    renderContextMenu();
+    cancelMenuClose('context');
+    positionMenu(contextMenu, {
+      left: openMenuState.x ?? 0,
+      top: openMenuState.y ?? 0,
+      preferBelow: true,
+    });
+    if (openMenuState.reviewExpanded && openMenuState.reviewScope && openMenuState.ctx) {
+      mountReviewDepthMenu(
+        openMenuState.reviewScope,
+        String(openMenuState.ctx.reviewPageId || ''),
+        String(openMenuState.ctx.reviewMessageId || ''),
+      );
+    }
+  }
+
   function renderContextMenu() {
     if (!openMenuState || openMenuState.kind !== 'context' || !openMenuState.ctx) {
       return;
@@ -1690,6 +1804,7 @@
     // replaceChildren can synthesize mouseleave; ignore it until the pointer moves again.
     ignoreContextLeave = true;
     cancelMenuClose('context');
+    clearReviewDepthMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
     if (section === 'reviewMr') {
@@ -1697,19 +1812,15 @@
       const messageId = String(ctx.reviewMessageId || '');
       const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
       const isPr = typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl);
-      scroller.append(
-        menuActionChoice(t('reviewBranch'), {
-          review: 'branch',
-          pageId,
-          messageId,
-        }),
-      );
-      scroller.append(
-        menuActionChoice(t('reviewChanges'), {
-          review: 'changes',
-          pageId,
-          messageId,
-        }),
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewMenu'),
+        !!openMenuState.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
       );
       scroller.append(
         menuActionChoice(t(isPr ? 'reviewRenamePr' : 'reviewRenameMr'), {
@@ -2058,7 +2169,29 @@
         pageId: button.dataset.pageId || '',
         messageId: button.dataset.messageId || '',
         kind: button.dataset.review,
+        depth: button.dataset.reviewDepth || 'medium',
       });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReview') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
+        if (!openMenuState.reviewExpanded) {
+          openMenuState.reviewScope = '';
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReviewScope') {
+      if (openMenuState?.kind === 'context') {
+        const scope = button.dataset.reviewScope || '';
+        openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
+        openMenuState.reviewExpanded = true;
+        rerenderContextMenu();
+      }
       return;
     }
 

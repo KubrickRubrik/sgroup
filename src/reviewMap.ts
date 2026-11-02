@@ -50,7 +50,7 @@ import {
   ReviewMr,
 } from './reviewHost';
 import { deleteReviewFile, runReviewSkill, writeReviewFile } from './reviewAgent';
-import { ReviewKind, ReviewPendingStore } from './reviewPending';
+import { parseReviewDepth, ReviewDepth, ReviewKind, ReviewPendingStore } from './reviewPending';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -1227,6 +1227,7 @@ export class ReviewMapController {
     pageId: string,
     messageId: string,
     kind: ReviewKind,
+    depth?: ReviewDepth,
   ): Promise<
     | { kind: 'state'; state: ReviewPageState }
     | { kind: 'fileFail'; message: string }
@@ -1291,6 +1292,7 @@ export class ReviewMapController {
       skillPath: skillAbs,
       model: paths.model,
       kind,
+      depth: parseReviewDepth(depth),
       reviewNumber,
       title,
       webUrl: parsed.webUrl,

@@ -25,7 +25,7 @@ import { normalizeLocale, stringsFor, t } from './i18n';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
-import { ReviewKind } from './reviewPending';
+import { ReviewDepth, ReviewKind } from './reviewPending';
 import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
 import {
   deleteProfileHostToken,
@@ -372,6 +372,7 @@ type IncomingMessage =
       pageId: string;
       messageId: string;
       kind: ReviewKind;
+      depth?: ReviewDepth;
     }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFile'; pageId: string; messageId: string }
@@ -2105,10 +2106,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewStart') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
       const result = await this.review.startOrSendReview(
         message.pageId,
         message.messageId,
-        message.kind,
+        kind,
+        message.depth,
       );
       await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
       return;

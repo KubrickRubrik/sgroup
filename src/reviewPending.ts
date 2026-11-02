@@ -4,6 +4,26 @@ export const REVIEW_PENDING_REL = '.syn3/review-pending.md';
 
 export type ReviewKind = 'branch' | 'changes';
 
+/** Context-menu depth. Shallow `/rs`, medium `/rm`, deep `/rd`. */
+export type ReviewDepth = 'shallow' | 'medium' | 'deep';
+
+export function reviewDepthCommand(depth: ReviewDepth): '/rs' | '/rm' | '/rd' {
+  if (depth === 'shallow') {
+    return '/rs';
+  }
+  if (depth === 'deep') {
+    return '/rd';
+  }
+  return '/rm';
+}
+
+export function parseReviewDepth(raw: unknown): ReviewDepth {
+  if (raw === 'shallow' || raw === 'medium' || raw === 'deep') {
+    return raw;
+  }
+  return 'medium';
+}
+
 export interface PendingReview {
   webUrl: string;
   kind: ReviewKind;

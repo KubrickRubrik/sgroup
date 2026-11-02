@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { findSeverityLine } from './discordApi';
-import { ReviewKind } from './reviewPending';
+import { ReviewDepth, ReviewKind, reviewDepthCommand } from './reviewPending';
 
 export type ReviewAgentResult =
   | {
@@ -36,13 +36,16 @@ async function resolveAgentBin(): Promise<{ bin: string; prefix: string[] } | un
 function buildPrompt(opts: {
   skillPath: string;
   kind: ReviewKind;
+  depth: ReviewDepth;
   reviewNumber: number;
   title: string;
   webUrl: string;
 }): string {
   const kindLabel = opts.kind === 'branch' ? 'ревью ветки' : 'ревью изменений';
+  const command = reviewDepthCommand(opts.depth);
   return [
     `Follow the skill at: ${opts.skillPath}`,
+    command,
     `Task: ${kindLabel} for merge request.`,
     `Review number: ${opts.reviewNumber}`,
     `MR title: ${opts.title}`,
@@ -208,6 +211,7 @@ export async function runReviewSkill(opts: {
   skillPath: string;
   model?: string;
   kind: ReviewKind;
+  depth: ReviewDepth;
   reviewNumber: number;
   title: string;
   webUrl: string;
