@@ -328,17 +328,7 @@
   });
   toolbarPanels?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarPanelsMenu) {
-      return;
-    }
-    const open = toolbarPanelsMenu.hidden;
-    cancelMenuClose();
-    closeToolbarMenus();
-    closeContextMenu();
-    if (open) {
-      toolbarPanelsMenu.hidden = false;
-      toolbarPanels?.setAttribute('aria-expanded', 'true');
-    }
+    openToolbarPanelsMenu();
   });
   toolbarPanelsMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -352,7 +342,7 @@
     postToolbar(action);
   });
   toolbarPanelsWrap?.addEventListener('mouseenter', () => {
-    cancelMenuClose('toolbar-panels');
+    openToolbarPanelsMenu();
   });
   toolbarPanelsWrap?.addEventListener('mouseleave', () => {
     if (toolbarPanelsMenu && !toolbarPanelsMenu.hidden) {
@@ -366,16 +356,7 @@
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarMenu) {
-      return;
-    }
-    const open = toolbarMenu.hidden;
-    cancelMenuClose();
-    closeToolbarMenus();
-    closeContextMenu();
-    if (open) {
-      toolbarMenu.hidden = false;
-    }
+    openToolbarMoreMenu();
   });
   toolbarMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -407,7 +388,7 @@
     postToolbar(action);
   });
   toolbarMoreWrap?.addEventListener('mouseenter', () => {
-    cancelMenuClose('toolbar-more');
+    openToolbarMoreMenu();
   });
   toolbarMoreWrap?.addEventListener('mouseleave', () => {
     if (toolbarMenu && !toolbarMenu.hidden) {
@@ -756,7 +737,7 @@
   const reviewByPage = new Map();
   /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, defaultAssignee: string, provider: 'gitlab' | 'github' } | null} */
   let reviewMrPanel = null;
-  /** Collapsed MR threads (default open when hasThread). */
+  /** Collapsed review threads (MR chips and plain messages). Default open. */
   const reviewCollapsed = new Set();
   /** Last closed flag per MR, so a closed thread folds once on load and on close. */
   const reviewClosedSeen = new Map();
@@ -1056,6 +1037,13 @@
   });
 
   function postToolbar(action) {
+    if (action === 'refresh') {
+      const page = activePage();
+      if (page && page.kind === 'review') {
+        requestReviewChannelLoad(page.id, 'initial');
+        return;
+      }
+    }
     vscode.postMessage({ type: 'toolbar', action, pageId: uiState.activePageId });
   }
 
@@ -1502,6 +1490,27 @@
     if (caret) {
       button.append(caret);
     }
+  }
+
+  function openToolbarPanelsMenu() {
+    if (!toolbarPanelsMenu || toolbarPanels?.disabled) {
+      return;
+    }
+    cancelMenuClose('toolbar-panels');
+    closeToolbarMenus();
+    closeContextMenu();
+    toolbarPanelsMenu.hidden = false;
+    toolbarPanels?.setAttribute('aria-expanded', 'true');
+  }
+
+  function openToolbarMoreMenu() {
+    if (!toolbarMenu) {
+      return;
+    }
+    cancelMenuClose('toolbar-more');
+    closeToolbarMenus();
+    closeContextMenu();
+    toolbarMenu.hidden = false;
   }
 
   function closeToolbarMenus() {
@@ -2960,11 +2969,12 @@
   }
 
   function syncToolbarView() {
-    const onLinks = !isProblemsPageOpen() && activePage()?.kind === 'links';
+    const kind = activePage()?.kind;
+    const hide = !isProblemsPageOpen() && (kind === 'links' || kind === 'review');
     if (toolbarViewWrap) {
-      toolbarViewWrap.hidden = onLinks;
+      toolbarViewWrap.hidden = hide;
     }
-    if (onLinks) {
+    if (hide) {
       closeToolbarViewMenu();
     }
   }
@@ -5273,6 +5283,16 @@
     return chunks.join('\u001f');
   }
 
+  /** @param {string} messageId */
+  function toggleReviewCollapsed(messageId) {
+    if (reviewCollapsed.has(messageId)) {
+      reviewCollapsed.delete(messageId);
+    } else {
+      reviewCollapsed.add(messageId);
+    }
+    paintReviewPage();
+  }
+
   function syncReviewCollapsed() {
     root.querySelectorAll('.review-node[data-review-id]').forEach((node) => {
       if (!(node instanceof HTMLElement)) {
@@ -5280,7 +5300,9 @@
       }
       const collapsed = reviewCollapsed.has(node.dataset.reviewId || '');
       node.classList.toggle('is-collapsed', collapsed);
-      const tri = node.querySelector('.review-mr-head .link-chip-tri');
+      const tri = node.querySelector(
+        ':scope > .review-body > .review-mr-head .link-chip-tri, :scope > .review-body > .review-plain > .link-chip-tri',
+      );
       if (tri) {
         tri.classList.toggle('is-collapsed', collapsed);
       }
@@ -5321,7 +5343,9 @@
    */
   function renderReviewNode(msg, pageId, leadingGap, nextColor) {
     const color = msg.color || (msg.isMr ? '#8e4ec6' : '#6e6e6e');
-    const canFold = msg.isMr && !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    const mrCanFold = msg.isMr && !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    const plainCanFold = !msg.isMr && !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
+    const canFold = mrCanFold || plainCanFold;
     const collapsed = canFold && reviewCollapsed.has(msg.id);
     const plainOpen = !msg.isMr && reviewPlainExpanded.has(msg.id);
     const stamp = formatReviewStamp(msg.timestamp);
@@ -5363,12 +5387,7 @@
         tri.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
-          if (reviewCollapsed.has(msg.id)) {
-            reviewCollapsed.delete(msg.id);
-          } else {
-            reviewCollapsed.add(msg.id);
-          }
-          paintReviewPage();
+          toggleReviewCollapsed(msg.id);
         });
         chip.append(tri);
       }
@@ -5376,15 +5395,10 @@
         if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
           return;
         }
-        if (!canFold) {
+        if (!mrCanFold) {
           return;
         }
-        if (reviewCollapsed.has(msg.id)) {
-          reviewCollapsed.delete(msg.id);
-        } else {
-          reviewCollapsed.add(msg.id);
-        }
-        paintReviewPage();
+        toggleReviewCollapsed(msg.id);
       });
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
@@ -5446,7 +5460,24 @@
       preview.type = 'button';
       const ico = el('span', 'review-plain-ico');
       ico.append(reviewCommentIcon());
+      if (plainCanFold) {
+        ico.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+      }
       preview.append(ico);
+      if (plainCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        preview.append(tri);
+      }
       const text = el(
         'span',
         'review-plain-text' + (missing ? ' is-missing' : ''),

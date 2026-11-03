@@ -20,14 +20,28 @@ function messagePayload(content: string): { content: string; flags: number } {
   return { content, flags: SUPPRESS_EMBEDS };
 }
 
+/** Placeholder that points at the parent message. Not counted in `message_count`. */
+export const THREAD_STARTER_MESSAGE = 21;
+
+export interface DiscordThreadRef {
+  id: string;
+  /**
+   * Discord `message_count`: messages in the thread, excluding the starter
+   * and deleted messages.
+   */
+  messageCount?: number;
+}
+
 export interface DiscordMessage {
   id: string;
   content: string;
   /** Discord username when present (not a substitute for message text). */
   author?: string;
   timestamp: string;
+  /** Discord message type. `21` is the thread starter placeholder. */
+  type?: number;
   /** Present when the message starts a thread. */
-  thread?: { id: string };
+  thread?: DiscordThreadRef;
   attachments?: Array<{ id: string; filename: string; url: string }>;
   /** True when this message has a thread (from has_thread or thread object). */
   hasThread?: boolean;
@@ -129,6 +143,25 @@ function embedFallback(embeds: unknown): string {
   return parts.join(' · ');
 }
 
+function readMessageCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+function asThreadRef(raw: unknown): DiscordThreadRef | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const thread = raw as { id?: unknown; message_count?: unknown };
+  if (typeof thread.id !== 'string') {
+    return undefined;
+  }
+  const messageCount = readMessageCount(thread.message_count);
+  return messageCount === undefined ? { id: thread.id } : { id: thread.id, messageCount };
+}
+
 function asMessage(raw: unknown): DiscordMessage | undefined {
   if (!raw || typeof raw !== 'object') {
     return undefined;
@@ -137,10 +170,7 @@ function asMessage(raw: unknown): DiscordMessage | undefined {
   if (typeof m.id !== 'string') {
     return undefined;
   }
-  const thread =
-    m.thread && typeof m.thread === 'object' && typeof (m.thread as { id?: unknown }).id === 'string'
-      ? { id: (m.thread as { id: string }).id }
-      : undefined;
+  const thread = asThreadRef(m.thread);
   const attachments = Array.isArray(m.attachments)
     ? m.attachments
         .filter(
@@ -174,6 +204,7 @@ function asMessage(raw: unknown): DiscordMessage | undefined {
     content,
     author: author || undefined,
     timestamp: typeof m.timestamp === 'string' ? m.timestamp : '',
+    type: typeof m.type === 'number' ? m.type : undefined,
     thread,
     attachments,
     hasThread: !!thread || m.has_thread === true,
@@ -480,7 +511,7 @@ export async function startThread(
   channelId: string,
   messageId: string,
   name: string,
-): Promise<DiscordResult<{ id: string }>> {
+): Promise<DiscordResult<DiscordThreadRef>> {
   const safeName = name.replace(/[^\w\s\-./]/gu, '').trim().slice(0, 100) || 'MR review';
   const result = await discordFetch(
     token,
@@ -492,31 +523,24 @@ export async function startThread(
   if (!result.ok) {
     return result;
   }
-  const id =
-    result.value && typeof result.value === 'object' && typeof (result.value as { id?: unknown }).id === 'string'
-      ? (result.value as { id: string }).id
-      : undefined;
-  if (!id) {
+  const thread = asThreadRef(result.value);
+  if (!thread) {
     return { ok: false, status: 0, message: 'Invalid Discord thread response' };
   }
-  return { ok: true, value: { id } };
+  return { ok: true, value: thread };
 }
 
-/** Ensure the parent message has a thread; return thread id. */
+/** Ensure the parent message has a thread; return its id and message count. */
 export async function ensureThread(
   token: string,
   channelId: string,
   message: DiscordMessage,
   threadName: string,
-): Promise<DiscordResult<string>> {
+): Promise<DiscordResult<DiscordThreadRef>> {
   if (message.thread?.id) {
-    return { ok: true, value: message.thread.id };
+    return { ok: true, value: message.thread };
   }
-  const created = await startThread(token, channelId, message.id, threadName);
-  if (!created.ok) {
-    return created;
-  }
-  return { ok: true, value: created.value.id };
+  return startThread(token, channelId, message.id, threadName);
 }
 
 export async function postMessageWithFile(

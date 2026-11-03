@@ -282,7 +282,8 @@ html::-webkit-scrollbar {
   padding: 4px;
   position: absolute;
   right: 0;
-  top: calc(100% + 2px);
+  /* Flush with the button so the pointer does not fall through a gap on the way in. */
+  top: 100%;
   z-index: 40;
 }
 
@@ -3313,6 +3314,14 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   flex: 0 0 auto;
   margin-top: 2px;
   opacity: 0.8;
+}
+
+.review-plain > .link-chip-tri {
+  margin-top: 2px;
+}
+
+.review-plain > .link-chip-tri::before {
+  inset: -6px -4px;
 }
 
 .review-plain-text {

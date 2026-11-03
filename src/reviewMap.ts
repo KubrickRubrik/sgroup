@@ -36,6 +36,7 @@ import {
   replaceReviewDiscordStatus,
   ReviewChipStatus,
   sortMessagesAsc,
+  THREAD_STARTER_MESSAGE,
 } from './discordApi';
 import {
   collectMrTargetBranches,
@@ -177,18 +178,67 @@ const CHANNEL_FETCH_AROUND = CHANNEL_VISIBLE + 2 * CHANNEL_PROBE;
 const THREAD_INITIAL = 3;
 /** Thread page size when loading more / plain expand. */
 const THREAD_PAGE = 5;
-/** Extra reply fetched to know whether «load more» is needed. */
+/** Extra slot so the type-21 starter can sit in the page without hiding a real reply. */
 const THREAD_PROBE = 1;
+
+type ThreadBucket = {
+  replies: DiscordMessage[];
+  /** Discord `message_count` for this thread, when the channel payload included it. */
+  messageCount?: number;
+  exhausted: boolean;
+};
 
 type ReviewWindow = {
   messages: DiscordMessage[];
-  threads: Map<string, { replies: DiscordMessage[]; exhausted: boolean }>;
+  threads: Map<string, ThreadBucket>;
   focusMessageId?: string;
   /** More history exists before the oldest message in the window. */
   canLoadOlder: boolean;
   /** More messages exist after the newest message in the window. */
   canLoadNewer: boolean;
 };
+
+/** Discord includes this placeholder in the thread listing; `message_count` does not. */
+function isThreadStarter(msg: DiscordMessage): boolean {
+  return msg.type === THREAD_STARTER_MESSAGE;
+}
+
+/**
+ * Newest `pageSize` real replies. «Load more» follows `message_count` when Discord
+ * sent it. A short page means the listing is finished even if the count is higher.
+ */
+function takeThreadPage(
+  fetchedAsc: DiscordMessage[],
+  pageSize: number,
+  messageCount: number | undefined,
+  already: DiscordMessage[],
+): { toAdd: DiscordMessage[]; exhausted: boolean; messageCount: number | undefined } {
+  const known = new Set(already.map((msg) => msg.id));
+  const real = fetchedAsc.filter((msg) => !isThreadStarter(msg) && !known.has(msg.id));
+  const overflow = real.length > pageSize;
+  const toAdd = overflow ? real.slice(-pageSize) : real;
+  const loaded = already.length + toAdd.length;
+  const shortPage = fetchedAsc.length < pageSize + THREAD_PROBE;
+  if (typeof messageCount === 'number') {
+    return {
+      toAdd,
+      exhausted: loaded >= messageCount || shortPage,
+      messageCount: shortPage ? Math.min(messageCount, loaded) : messageCount,
+    };
+  }
+  return { toAdd, exhausted: !overflow, messageCount: undefined };
+}
+
+function threadHasMore(parent: DiscordMessage, bucket: ThreadBucket | undefined): boolean {
+  if (!bucket) {
+    return !!(parent.thread?.id || parent.hasThread);
+  }
+  const count = bucket.messageCount ?? parent.thread?.messageCount;
+  if (typeof count === 'number') {
+    return bucket.replies.length < count;
+  }
+  return !bucket.exhausted;
+}
 
 /**
  * Tip of the channel: newest messages. Fetch visible+1; drop the oldest as older-probe.
@@ -415,9 +465,7 @@ export class ReviewMapController {
         return { ...base, isPill: meta.isPill, pillLabel: meta.pillLabel };
       });
       const loaded = !!thread;
-      const hasMore = thread
-        ? !thread.exhausted
-        : !!(m.thread?.id || m.hasThread);
+      const hasMore = threadHasMore(m, thread);
       return toChip(m, replies, hasMore, loaded);
     });
     const missingCount = messages.filter((m) => m.contentMissing).length;
@@ -490,7 +538,7 @@ export class ReviewMapController {
           const sliced = windowFromChannelTip(result.value);
           const win: ReviewWindow = {
             ...sliced,
-            threads: new Map<string, { replies: DiscordMessage[]; exhausted: boolean }>(),
+            threads: new Map<string, ThreadBucket>(),
             focusMessageId: undefined,
           };
           this.windows.set(pageId, win);
@@ -535,14 +583,18 @@ export class ReviewMapController {
       if (!replies.ok) {
         continue;
       }
-      const sorted = sortMessagesAsc(replies.value);
-      const hasMore = sorted.length > THREAD_INITIAL;
-      const last = sorted.slice(-THREAD_INITIAL);
+      const page = takeThreadPage(
+        sortMessagesAsc(replies.value),
+        THREAD_INITIAL,
+        msg.thread?.messageCount,
+        [],
+      );
       win.threads.set(threadId, {
-        replies: last,
-        exhausted: !hasMore,
+        replies: page.toAdd,
+        messageCount: page.messageCount,
+        exhausted: page.exhausted,
       });
-      await this.enrichReplies(token, last);
+      await this.enrichReplies(token, page.toAdd);
     }
   }
 
@@ -606,8 +658,10 @@ export class ReviewMapController {
     try {
       let entry = win.threads.get(threadId);
       if (!entry) {
-        entry = { replies: [], exhausted: false };
+        entry = { replies: [], messageCount: parent.thread?.messageCount, exhausted: false };
         win.threads.set(threadId, entry);
+      } else if (entry.messageCount === undefined && parent.thread?.messageCount !== undefined) {
+        entry.messageCount = parent.thread.messageCount;
       }
       const before = entry.replies[0]?.id;
       const pageSize = entry.replies.length === 0 ? THREAD_INITIAL : THREAD_PAGE;
@@ -618,13 +672,16 @@ export class ReviewMapController {
       if (!result.ok) {
         this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
       } else {
-        const known = new Set(entry.replies.map((m) => m.id));
-        const fetched = sortMessagesAsc(result.value).filter((m) => !known.has(m.id));
-        const hasMore = fetched.length > pageSize;
-        const toAdd = hasMore ? fetched.slice(-pageSize) : fetched;
-        entry.replies = sortMessagesAsc([...toAdd, ...entry.replies]);
-        entry.exhausted = !hasMore;
-        await this.enrichReplies(token, toAdd);
+        const page = takeThreadPage(
+          sortMessagesAsc(result.value),
+          pageSize,
+          entry.messageCount,
+          entry.replies,
+        );
+        entry.replies = sortMessagesAsc([...page.toAdd, ...entry.replies]);
+        entry.messageCount = page.messageCount ?? entry.messageCount;
+        entry.exhausted = page.exhausted;
+        await this.enrichReplies(token, page.toAdd);
       }
     } finally {
       this.loading.delete(pageId);
@@ -657,11 +714,18 @@ export class ReviewMapController {
         if (!result.ok) {
           this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
         } else {
-          const sorted = sortMessagesAsc(result.value);
-          const hasMore = sorted.length > THREAD_INITIAL;
-          const last = sorted.slice(-THREAD_INITIAL);
-          win.threads.set(threadId, { replies: last, exhausted: !hasMore });
-          await this.enrichReplies(token, last);
+          const page = takeThreadPage(
+            sortMessagesAsc(result.value),
+            THREAD_INITIAL,
+            parent.thread?.messageCount,
+            [],
+          );
+          win.threads.set(threadId, {
+            replies: page.toAdd,
+            messageCount: page.messageCount,
+            exhausted: page.exhausted,
+          });
+          await this.enrichReplies(token, page.toAdd);
         }
       }
     } finally {
@@ -690,7 +754,7 @@ export class ReviewMapController {
         const sliced = windowAroundMessage(result.value, messageId);
         const win: ReviewWindow = {
           ...sliced,
-          threads: new Map<string, { replies: DiscordMessage[]; exhausted: boolean }>(),
+          threads: new Map<string, ThreadBucket>(),
           focusMessageId: messageId,
         };
         this.windows.set(pageId, win);
@@ -1346,6 +1410,16 @@ export class ReviewMapController {
     const bucket = win.threads.get(threadId);
     if (bucket) {
       bucket.replies = bucket.replies.filter((item) => item.id !== found.id);
+      if (typeof bucket.messageCount === 'number') {
+        bucket.messageCount = Math.max(0, bucket.messageCount - 1);
+      }
+    }
+    const threadParent = win.messages.find((item) => item.thread?.id === threadId);
+    if (threadParent?.thread && typeof threadParent.thread.messageCount === 'number') {
+      threadParent.thread = {
+        ...threadParent.thread,
+        messageCount: Math.max(0, threadParent.thread.messageCount - 1),
+      };
     }
     this.replyMeta.delete(found.id);
     this.fileCache.delete(found.id);
@@ -1555,7 +1629,7 @@ export class ReviewMapController {
     if (!thread.ok) {
       return { kind: 'fileFail', message: thread.message };
     }
-    parent.thread = { id: thread.value };
+    parent.thread = { id: thread.value.id, messageCount: thread.value.messageCount };
     const paths = this.profilePaths();
     let reviewNumber = 1;
     let severity = 'H:0 | M:0 | L:0';
@@ -1577,10 +1651,13 @@ export class ReviewMapController {
       model: paths.model,
       skillPath: paths.skillPath,
     });
-    const posted = await postMessageWithFile(token, thread.value, content, filePath);
+    const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
       return { kind: 'fileFail', message: posted.message };
     }
+    const postedCount =
+      typeof thread.value.messageCount === 'number' ? thread.value.messageCount + 1 : undefined;
+    parent.thread = { id: thread.value.id, messageCount: postedCount };
     await this.pending.clear();
     await deleteReviewFile(filePath);
     const win = this.windows.get(pageId);
@@ -1589,24 +1666,24 @@ export class ReviewMapController {
       if (idx >= 0) {
         win.messages[idx] = {
           ...win.messages[idx],
-          thread: { id: thread.value },
+          thread: { id: thread.value.id, messageCount: postedCount },
           hasThread: true,
         };
       }
-      const listed = await listThreadMessages(token, thread.value, {
+      const listed = await listThreadMessages(token, thread.value.id, {
         limit: THREAD_INITIAL + THREAD_PROBE,
       });
       let replies = listed.ok ? sortMessagesAsc(listed.value) : [];
       if (!replies.some((item) => item.id === posted.value.id)) {
         replies = [...replies, posted.value];
       }
-      const hasMore = replies.length > THREAD_INITIAL;
-      const last = replies.slice(-THREAD_INITIAL);
-      win.threads.set(thread.value, {
-        replies: last,
-        exhausted: !hasMore,
+      const page = takeThreadPage(replies, THREAD_INITIAL, postedCount, []);
+      win.threads.set(thread.value.id, {
+        replies: page.toAdd,
+        messageCount: page.messageCount,
+        exhausted: page.exhausted,
       });
-      await this.enrichReplies(token, last);
+      await this.enrichReplies(token, page.toAdd);
     }
     return { kind: 'state', state: this.snapshot(pageId) };
   }
