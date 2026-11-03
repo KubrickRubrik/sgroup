@@ -729,7 +729,10 @@
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
-   *   focusMessageId?: string
+   *   focusMessageId?: string,
+   *   pendingMr?: { title: string, draft?: boolean },
+   *   pendingReviewId?: string,
+   *   skeletonSeq?: number
    * }} ReviewState
    */
   /** @type {ReviewState | null} */
@@ -737,6 +740,22 @@
   /** Optimistic channel-load edge until the host snapshot arrives. */
   /** @type {{ pageId: string, edge: 'initial' | 'older' | 'newer' } | null} */
   let reviewLoadPending = null;
+  /**
+   * MR chip drawn before the host snapshot. Cleared once that snapshot carries
+   * the same title. A newer skeletonSeq from another operation leaves it up.
+   * @type {{ pageId: string, title: string, draft: boolean } | null}
+   */
+  let localPendingMr = null;
+  /**
+   * Review pill drawn in a thread before the Discord reply is in the snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingReview = null;
+  /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
+  const reviewSkeletonSeq = new Map();
+  /** Last placeholder scrolled into view, so later paints do not jump. */
+  let reviewSkelShown = '';
   /** Pages that already sent reviewLoad while the snapshot was still missing. */
   const reviewAutoLoad = new Set();
   /** Settled review snapshots, so switching back does not refetch. */
@@ -773,8 +792,34 @@
     if (message.type === 'reviewFile') {
       onReviewFileResult(message);
     } else if (message.type === 'reviewState') {
-      reviewState = message.review || null;
+      const incoming = message.review || null;
+      const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
+      if (
+        incoming &&
+        incoming.pageId &&
+        incomingSeq < (reviewSkeletonSeq.get(incoming.pageId) || 0)
+      ) {
+        return;
+      }
+      reviewState = incoming;
       if (reviewState && reviewState.pageId) {
+        if (incomingSeq > (reviewSkeletonSeq.get(reviewState.pageId) || 0)) {
+          reviewSkeletonSeq.set(reviewState.pageId, incomingSeq);
+        }
+        if (localPendingMr && localPendingMr.pageId === reviewState.pageId) {
+          const hostMr = reviewState.pendingMr;
+          if (hostMr && hostMr.title === localPendingMr.title) {
+            localPendingMr = null;
+          }
+        }
+        if (localPendingReview && localPendingReview.pageId === reviewState.pageId) {
+          if (reviewState.pendingReviewId === localPendingReview.messageId) {
+            localPendingReview = null;
+          }
+        }
+        if (reviewState.pendingReviewId) {
+          reviewCollapsed.delete(reviewState.pendingReviewId);
+        }
         reviewAutoLoad.delete(reviewState.pageId);
         if (reviewState.error || reviewState.loadingEdge === 'initial') {
           reviewByPage.delete(reviewState.pageId);
@@ -2397,10 +2442,13 @@
 
     if (button.dataset.review) {
       closeContextMenu();
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      beginLocalReviewSkeleton(pageId, messageId);
       vscode.postMessage({
         type: 'reviewStart',
-        pageId: button.dataset.pageId || '',
-        messageId: button.dataset.messageId || '',
+        pageId,
+        messageId,
         kind: button.dataset.review,
         depth: button.dataset.reviewDepth || 'medium',
       });
@@ -3025,6 +3073,10 @@
   function reviewMessageCanFold(msg) {
     if (!msg) {
       return false;
+    }
+    const pageId = activePage()?.id || '';
+    if (msg.isMr && activePendingReviewId(pageId) === msg.id) {
+      return true;
     }
     if (msg.isMr) {
       return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
@@ -5101,6 +5153,127 @@
     return preview;
   }
 
+  /**
+   * @param {string} pageId
+   * @returns {{ title: string, draft?: boolean } | null}
+   */
+  function activePendingMr(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingMr && reviewState.pendingMr.title) {
+      return reviewState.pendingMr;
+    }
+    if (localPendingMr && localPendingMr.pageId === pageId) {
+      return localPendingMr;
+    }
+    return null;
+  }
+
+  /** @param {string} pageId */
+  function activePendingReviewId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingReviewId) {
+      return reviewState.pendingReviewId;
+    }
+    if (localPendingReview && localPendingReview.pageId === pageId) {
+      return localPendingReview.messageId;
+    }
+    return '';
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} title
+   * @param {boolean} draft
+   */
+  function beginLocalMrSkeleton(pageId, title, draft) {
+    localPendingMr = {
+      pageId,
+      title,
+      draft: !!draft,
+    };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function beginLocalReviewSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingReview = {
+      pageId,
+      messageId,
+    };
+    reviewCollapsed.delete(messageId);
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /** @param {'mr' | 'review'} kind */
+  function noteReviewSkeletonScroll(kind) {
+    const pageId = activePage()?.id || '';
+    const token =
+      kind === 'review'
+        ? 'review:' + activePendingReviewId(pageId)
+        : 'mr:' + (activePendingMr(pageId)?.title || '');
+    if (!token || token === reviewSkelShown) {
+      return;
+    }
+    reviewSkelShown = token;
+    const node = root.querySelector('[data-review-skel="' + kind + '"]');
+    if (node instanceof HTMLElement) {
+      node.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /**
+   * @param {{ title: string, draft?: boolean }} pending
+   * @param {boolean} leadingGap
+   */
+  function renderReviewMrSkeleton(pending, leadingGap) {
+    const row = el('div', 'review-node is-mr is-skel' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewSkel = 'mr';
+    row.style.setProperty('--link-color', '#8e4ec6');
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 20 }), ''),
+    );
+    const chip = el('div', 'review-chip is-mr-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar(pending.draft ? '52px' : '36px', 0));
+    const side = el('div', 'review-side is-skel');
+    side.append(el('span', 'review-skel-ico'));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip, side);
+    const title = reviewSkeletonBar('180px', 80);
+    title.classList.add('review-skel-title');
+    const head = el('div', 'review-mr-head');
+    head.append(chipWrap, title);
+    const body = el('div', 'review-body');
+    body.append(head);
+    row.append(body);
+    return row;
+  }
+
+  /** @param {string} color */
+  function renderReviewReplySkeleton(color) {
+    const row = el('div', 'review-reply-node has-gap is-skel');
+    row.dataset.reviewSkel = 'review';
+    row.style.setProperty('--link-color', color || '#8e4ec6');
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), ''),
+    );
+    const chip = el('div', 'review-chip is-review-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('132px', 40));
+    const body = el('div', 'review-body');
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
   /** Three plain parents, each with three plain replies. */
   function renderReviewSkeletonTree() {
     const tree = el('div', 'review-tree review-skel');
@@ -5188,6 +5361,14 @@
       }
     }
     applyClosedMrFolds();
+    const pendingReviewId = activePendingReviewId(pageId);
+    if (pendingReviewId) {
+      reviewCollapsed.delete(pendingReviewId);
+    }
+    const pendingMr = activePendingMr(pageId);
+    if (!pendingMr && !pendingReviewId) {
+      reviewSkelShown = '';
+    }
     setCollapseButton();
     dismissMissingReviewFile();
     const edge = reviewPaintEdge(pageId);
@@ -5209,7 +5390,7 @@
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page review-page';
     clearDropHighlights();
-    if (edge) {
+    if (edge || pendingMr || pendingReviewId) {
       root.setAttribute('aria-busy', 'true');
     } else {
       root.removeAttribute('aria-busy');
@@ -5242,7 +5423,14 @@
       return;
     }
     if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
-      root.append(el('div', 'empty', t('reviewEmpty')));
+      if (!pendingMr) {
+        root.append(el('div', 'empty', t('reviewEmpty')));
+        return;
+      }
+      const tree = el('div', 'review-tree');
+      tree.append(renderReviewMrSkeleton(pendingMr, false));
+      root.append(tree);
+      noteReviewSkeletonScroll('mr');
       return;
     }
     if (reviewState.contentBlocked) {
@@ -5280,9 +5468,16 @@
     const messages = reviewState.messages;
     messages.forEach((msg, index) => {
       const next = messages[index + 1];
-      const nextColor = next ? next.color || (next.isMr ? '#8e4ec6' : '#6e6e6e') : '';
+      const nextColor = next
+        ? next.color || (next.isMr ? '#8e4ec6' : '#6e6e6e')
+        : pendingMr
+          ? '#8e4ec6'
+          : '';
       tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
     });
+    if (pendingMr) {
+      tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
+    }
     root.append(tree);
     if (edge === 'newer') {
       root.append(renderReviewSkeletonTree());
@@ -5311,6 +5506,8 @@
       if (skel instanceof HTMLElement) {
         skel.scrollIntoView({ block: 'nearest' });
       }
+    } else if (pendingReviewId || pendingMr) {
+      noteReviewSkeletonScroll(pendingReviewId ? 'review' : 'mr');
     }
     syncReviewFileMark();
   }
@@ -5337,6 +5534,11 @@
       state.focusMessageId || '',
       [...reviewTitleExpanded].sort().join(','),
       [...reviewPlainExpanded].sort().join(','),
+      activePendingReviewId(pageId),
+      (() => {
+        const pending = activePendingMr(pageId);
+        return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
+      })(),
     ];
     for (const msg of state.messages || []) {
       chunks.push(
@@ -5462,6 +5664,7 @@
    */
   function renderReviewNode(msg, pageId, leadingGap, nextColor) {
     const color = msg.color || (msg.isMr ? '#8e4ec6' : '#6e6e6e');
+    const showReviewSkeleton = !!msg.isMr && activePendingReviewId(pageId) === msg.id;
     const canFold = reviewMessageCanFold(msg);
     const mrCanFold = !!msg.isMr && canFold;
     const plainCanFold = !msg.isMr && canFold;
@@ -5578,7 +5781,7 @@
       body.append(head);
 
       if (canFold) {
-        body.append(renderReviewThread(msg, pageId, true));
+        body.append(renderReviewThread(msg, pageId, true, showReviewSkeleton));
       }
     } else {
       const raw = reviewDisplayText(msg.content);
@@ -5644,8 +5847,9 @@
    * @param {NonNullable<ReviewState['messages']>[number]} msg
    * @param {string} pageId
    * @param {boolean} allowPills
+   * @param {boolean} [withReviewSkeleton]
    */
-  function renderReviewThread(msg, pageId, allowPills) {
+  function renderReviewThread(msg, pageId, allowPills, withReviewSkeleton) {
     const children = el('div', 'review-children');
     const clip = el('div', 'review-children-clip');
     const slide = el('div', 'review-children-slide');
@@ -5666,9 +5870,13 @@
     const replies = msg.replies || [];
     for (let index = 0; index < replies.length; index += 1) {
       const next = replies[index + 1];
+      const hasNext = !!next || !!withReviewSkeleton;
       slide.append(
-        renderReviewReply(replies[index], color, allowPills, true, next ? color : '', pageId),
+        renderReviewReply(replies[index], color, allowPills, true, hasNext ? color : '', pageId),
       );
+    }
+    if (withReviewSkeleton) {
+      slide.append(renderReviewReplySkeleton(color));
     }
     clip.append(slide);
     children.append(clip);
@@ -6904,6 +7112,7 @@
       if (!pageId) {
         return;
       }
+      beginLocalMrSkeleton(pageId, title, draftChip.dataset.on === '1');
       vscode.postMessage({
         type: 'reviewCreateMr',
         pageId,

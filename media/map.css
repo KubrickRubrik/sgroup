@@ -3419,6 +3419,35 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   max-width: 168px;
 }
 
+.review-node.is-skel,
+.review-reply-node.is-skel {
+  pointer-events: none;
+  user-select: none;
+}
+
+.review-chip.is-skel {
+  cursor: default;
+}
+
+.review-chip.is-mr-pill.is-skel {
+  min-width: 92px;
+}
+
+.review-chip.is-review-pill.is-skel {
+  min-width: 168px;
+}
+
+.review-skel-title {
+  flex: 0 1 220px;
+  height: 12px;
+  max-width: 220px;
+  width: 180px;
+}
+
+.review-side.is-skel {
+  opacity: 1;
+}
+
 .review-load-edge:disabled {
   cursor: default;
   opacity: 0.45;

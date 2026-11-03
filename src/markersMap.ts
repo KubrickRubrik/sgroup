@@ -2072,14 +2072,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewCreateMr') {
-      const result = await this.review.createMrFromPanel(message.pageId, {
-        title: message.title,
-        draft: message.draft,
-        targetBranch: message.targetBranch,
-        reviewers: message.reviewers,
-        assignees: message.assignees,
-        squash: message.squash,
-      });
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginMrSkeleton(message.pageId, message.title, message.draft === true),
+        () => this.review.endMrSkeleton(message.pageId, message.title),
+        () =>
+          this.review.createMrFromPanel(message.pageId, {
+            title: message.title,
+            draft: message.draft,
+            targetBranch: message.targetBranch,
+            reviewers: message.reviewers,
+            assignees: message.assignees,
+            squash: message.squash,
+          }),
+      );
       await this.handleReviewMrResult(webview, message.pageId, result);
       return;
     }
@@ -2155,7 +2161,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
               assignees: [],
               reviewers: [],
             } satisfies ReviewMr);
-      const result = await this.review.retryDiscordPost(message.pageId, mr);
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginMrSkeleton(message.pageId, mr.title, mr.draft),
+        () => this.review.endMrSkeleton(message.pageId, mr.title),
+        () => this.review.retryDiscordPost(message.pageId, mr),
+      );
       await this.handleReviewMrResult(webview, message.pageId, result);
       return;
     }
@@ -2164,17 +2175,28 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!kind) {
         return;
       }
-      const result = await this.review.startOrSendReview(
-        message.pageId,
-        message.messageId,
-        kind,
-        message.depth,
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginReviewSkeleton(message.pageId, message.messageId),
+        () => this.review.endReviewSkeleton(message.pageId, message.messageId),
+        () =>
+          this.review.startOrSendReview(
+            message.pageId,
+            message.messageId,
+            kind,
+            message.depth,
+          ),
       );
       await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
       return;
     }
     if (message.type === 'reviewRetryFile') {
-      const result = await this.review.retryReviewFile(message.pageId, message.messageId);
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginReviewSkeleton(message.pageId, message.messageId),
+        () => this.review.endReviewSkeleton(message.pageId, message.messageId),
+        () => this.review.retryReviewFile(message.pageId, message.messageId),
+      );
       await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
       return;
     }
@@ -3968,6 +3990,32 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     );
   }
 
+  /**
+   * Paint a placeholder, run git/Discord work, then replace the placeholder
+   * with the settled snapshot. A failed attempt pushes the cleared page itself.
+   */
+  private async withReviewPlaceholder<T extends { kind: string; state?: ReviewPageState }>(
+    webview: vscode.Webview,
+    begin: () => ReviewPageState,
+    end: () => ReviewPageState,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    let result: T;
+    try {
+      await this.pushReviewState(webview, begin());
+      result = await run();
+    } catch (error) {
+      await this.pushReviewState(webview, end());
+      throw error;
+    }
+    const state = end();
+    if (result.kind === 'state') {
+      return { ...result, state };
+    }
+    await this.pushReviewState(webview, state);
+    return result;
+  }
+
   /** Push a skeleton edge, run the fetch, then push the settled window. */
   private async runReviewChannelLoad(
     webview: vscode.Webview,
@@ -4020,7 +4068,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         t(locale, 'reviewRefresh'),
       );
       if (choice === t(locale, 'reviewRefresh')) {
-        const retry = await this.review.retryDiscordPost(pageId, result.mr);
+        const retry = await this.withReviewPlaceholder(
+          webview,
+          () => this.review.beginMrSkeleton(pageId, result.mr.title, result.mr.draft),
+          () => this.review.endMrSkeleton(pageId, result.mr.title),
+          () => this.review.retryDiscordPost(pageId, result.mr),
+        );
         await this.handleReviewMrResult(webview, pageId, retry);
       }
       return;
@@ -4049,7 +4102,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         t(locale, 'reviewRetry'),
       );
       if (choice === t(locale, 'reviewRetry')) {
-        const retry = await this.review.retryReviewFile(pageId, messageId);
+        const retry = await this.withReviewPlaceholder(
+          webview,
+          () => this.review.beginReviewSkeleton(pageId, messageId),
+          () => this.review.endReviewSkeleton(pageId, messageId),
+          () => this.review.retryReviewFile(pageId, messageId),
+        );
         await this.handleReviewFileResult(webview, pageId, messageId, retry);
       }
       return;
@@ -4237,7 +4295,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </button>
       <div class="toolbar-panels">
         <button id="toolbar-panels" class="history-btn" type="button" title="Toggle panels" aria-label="Toggle panels" aria-haspopup="true" aria-expanded="false">
-          ${icon('menu')}
+          ${icon('dashboard-horizontal-fill')}
         </button>
         <div id="toolbar-panels-menu" class="toolbar-panels-menu" hidden role="group" aria-label="Panel toggles">
           <button type="button" id="panel-toggle-bottom" class="history-btn" data-action="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="false">

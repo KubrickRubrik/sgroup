@@ -121,6 +121,12 @@ export interface ReviewPageState {
   canLoadOlder: boolean;
   canLoadNewer: boolean;
   focusMessageId?: string;
+  /** Placeholder MR chip while the host request and the Discord post are in flight. */
+  pendingMr?: { title: string; draft: boolean };
+  /** Parent message whose thread shows a review pill until Discord posts it. */
+  pendingReviewId?: string;
+  /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
+  skeletonSeq?: number;
 }
 
 function toChip(
@@ -362,6 +368,12 @@ export class ReviewMapController {
   /** Channel fetch the map should show as skeletons. Depth covers overlapping loads. */
   private readonly loadEdge = new Map<string, { edge: ReviewLoadEdge; depth: number }>();
   private readonly errors = new Map<string, string>();
+  /** MR chip placeholder for a page, while git and Discord are in flight. */
+  private readonly mrSkeleton = new Map<string, { title: string; draft: boolean }>();
+  /** Review pill placeholder: page id → parent Discord message id. */
+  private readonly reviewSkeleton = new Map<string, string>();
+  /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
+  private readonly skeletonSeq = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
   private readonly replyMeta = new Map<string, { isPill: boolean; pillLabel?: string }>();
   /** Downloaded review attachments, keyed by Discord message id. */
@@ -434,6 +446,61 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
+  /** Show an MR chip placeholder before the host request and the Discord post. */
+  beginMrSkeleton(pageId: string, title: string, draft: boolean): ReviewPageState {
+    this.mrSkeleton.set(pageId, { title: this.mrSkeletonTitle(title), draft: !!draft });
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  /**
+   * Drop this operation's MR placeholder. A newer skeleton on the same page
+   * keeps its chip and its sequence.
+   */
+  endMrSkeleton(pageId: string, title: string): ReviewPageState {
+    const current = this.mrSkeleton.get(pageId);
+    if (current && current.title === this.mrSkeletonTitle(title)) {
+      this.mrSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
+  /** Show a review pill in this parent's thread until the Discord reply arrives. */
+  beginReviewSkeleton(pageId: string, messageId: string): ReviewPageState {
+    this.reviewSkeleton.set(pageId, messageId);
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  /**
+   * Drop this operation's review pill. A newer messageId on the same page
+   * keeps its pill and its sequence.
+   */
+  endReviewSkeleton(pageId: string, messageId: string): ReviewPageState {
+    if (messageId && this.reviewSkeleton.get(pageId) === messageId) {
+      this.reviewSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
+  private mrSkeletonTitle(title: string): string {
+    return title.trim() || 'MR';
+  }
+
+  private bumpSkeleton(pageId: string): void {
+    this.skeletonSeq.set(pageId, (this.skeletonSeq.get(pageId) ?? 0) + 1);
+  }
+
+  private skeletonFields(pageId: string): Pick<ReviewPageState, 'pendingMr' | 'pendingReviewId' | 'skeletonSeq'> {
+    return {
+      pendingMr: this.mrSkeleton.get(pageId),
+      pendingReviewId: this.reviewSkeleton.get(pageId),
+      skeletonSeq: this.skeletonSeq.get(pageId) ?? 0,
+    };
+  }
+
   hasWindow(pageId: string): boolean {
     return this.windows.has(pageId);
   }
@@ -463,6 +530,7 @@ export class ReviewMapController {
         messages: [],
         canLoadOlder: false,
         canLoadNewer: false,
+        ...this.skeletonFields(pageId),
       };
     }
     const messages = win.messages.filter((m) => !isDiscordSystemNotice(m)).map((m) => {
@@ -493,6 +561,7 @@ export class ReviewMapController {
       canLoadOlder: win.canLoadOlder,
       canLoadNewer: win.canLoadNewer,
       focusMessageId: win.focusMessageId,
+      ...this.skeletonFields(pageId),
     };
   }
 
