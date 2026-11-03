@@ -58,7 +58,13 @@ import {
   ReviewHostProvider,
   ReviewMr,
 } from './reviewHost';
-import { deleteReviewFile, runReviewSkill, writeReviewFile } from './reviewAgent';
+import {
+  deleteReviewFile,
+  parseReviewFixGroups,
+  runNeuroFixSkill,
+  runReviewSkill,
+  writeReviewFile,
+} from './reviewAgent';
 import { parseReviewDepth, ReviewDepth, ReviewKind, ReviewPendingStore } from './reviewPending';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -70,9 +76,9 @@ export interface ReviewThreadMsg {
   author?: string;
   timestamp: string;
   isReview: boolean;
-  /** True when attachment parsed to a review pill with H/M/L. */
+  /** True when attachment parsed to a review pill with H/M/S. */
   isPill?: boolean;
-  /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | L:5`. */
+  /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | S:5`. */
   pillLabel?: string;
   /** Empty when Discord `status` is `-` or missing. */
   status?: ReviewChipStatus;
@@ -350,7 +356,10 @@ export type ReviewProfilePaths = {
   skillPath: string;
   dirPath: string;
   model: string;
+  fixModel: string;
 };
+
+export type NeuroFixScope = 'H' | 'M' | 'S' | 'all';
 
 export type ReviewProfileContext = ReviewProfilePaths & {
   profileId: string;
@@ -386,6 +395,7 @@ export class ReviewMapController {
       skillPath: '',
       dirPath: '',
       model: '',
+      fixModel: '',
       profileId: 'general',
       profileName: '',
       githubNick: '',
@@ -398,7 +408,12 @@ export class ReviewMapController {
 
   private profilePaths(): ReviewProfilePaths {
     const ctx = this.profileContext();
-    return { skillPath: ctx.skillPath, dirPath: ctx.dirPath, model: ctx.model };
+    return {
+      skillPath: ctx.skillPath,
+      dirPath: ctx.dirPath,
+      model: ctx.model,
+      fixModel: ctx.fixModel,
+    };
   }
 
   accessStore(): AccessStore {
@@ -1616,6 +1631,61 @@ export class ReviewMapController {
     return { ok: true };
   }
 
+  /**
+   * Run the Neurofix agent against the review attachment for the chosen severity scope.
+   * Local edits only: no commit, push, Discord status, or Discord message.
+   */
+  async runNeuroFix(
+    pageId: string,
+    messageId: string,
+    scope: NeuroFixScope,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const paths = this.profilePaths();
+    const fail = async (message: string) => {
+      await runNeuroFixSkill({ cwd: this.cwd(), model: paths.fixModel, prompt: '', failMessage: message });
+      return { ok: false as const, message };
+    };
+    const read = await this.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      return fail(read.message);
+    }
+    const parsed = parseReviewFixGroups(read.text);
+    if (!parsed.ok) {
+      return fail(parsed.message);
+    }
+    const letters: Array<'H' | 'M' | 'S'> = scope === 'all' ? ['H', 'M', 'S'] : [scope];
+    const sections: string[] = [];
+    for (const letter of letters) {
+      const items = parsed.groups[letter];
+      if (!items.length) {
+        continue;
+      }
+      sections.push([letter, ...items.map((item) => `- ${item}`)].join('\n'));
+    }
+    if (!sections.length) {
+      return fail('Нет замечаний для выбранного scope');
+    }
+    const scopeLabel =
+      scope === 'all' ? 'H, M и S' : scope === 'H' ? 'High' : scope === 'M' ? 'Medium' : 'Simple';
+    const prompt = [
+      'Исправь замечания код-ревью в рабочей копии.',
+      `Scope: ${scopeLabel}.`,
+      'Прави только файлы, нужные для этих пунктов.',
+      'Не делай коммит, пуш и не пиши в Discord.',
+      'Не меняй несвязанный код.',
+      '',
+      'Замечания:',
+      '',
+      sections.join('\n\n'),
+    ].join('\n');
+    const agent = await runNeuroFixSkill({
+      cwd: this.cwd(),
+      model: paths.fixModel,
+      prompt,
+    });
+    return agent.ok ? { ok: true } : { ok: false, message: agent.message };
+  }
+
   async startOrSendReview(
     pageId: string,
     messageId: string,
@@ -1763,7 +1833,7 @@ export class ReviewMapController {
     parent.thread = { id: thread.value.id, messageCount: thread.value.messageCount };
     const paths = this.profilePaths();
     let reviewNumber = 1;
-    let severity = 'H:0 | M:0 | L:0';
+    let severity = 'H:0 | M:0 | S:0';
     try {
       const fileText = await fs.readFile(filePath, 'utf8');
       const parsedFile = parseReviewAttachment(fileText);

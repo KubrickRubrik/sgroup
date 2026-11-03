@@ -910,6 +910,7 @@
         reviewSkillPath: typeof message.reviewSkillPath === 'string' ? message.reviewSkillPath : '',
         reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
         reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
+        reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
       });
     } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
@@ -1625,7 +1626,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewEdit?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1646,6 +1647,9 @@
     }
     if (attrs.reviewEdit) {
       button.dataset.reviewEdit = attrs.reviewEdit;
+    }
+    if (attrs.neuroFix) {
+      button.dataset.neuroFix = attrs.neuroFix;
     }
     if (attrs.pageId) {
       button.dataset.pageId = attrs.pageId;
@@ -2096,6 +2100,39 @@
       updateMenuScrollbar(contextMenu);
       return;
     }
+    if (section === 'reviewNeurofix') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const counts = parsePillSeverityCounts(reply?.pillLabel);
+      if (counts) {
+        /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
+        const items = [
+          { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
+          { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
+          { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
+          {
+            scope: 'all',
+            label: t('neurofixAll'),
+            show: counts.H > 0 || counts.M > 0 || counts.S > 0,
+          },
+        ];
+        for (const item of items) {
+          if (!item.show) {
+            continue;
+          }
+          scroller.append(
+            menuActionChoice(item.label, {
+              neuroFix: item.scope,
+              pageId,
+              messageId,
+            }),
+          );
+        }
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
     if (section === 'reviewMsg') {
       const pageId = String(ctx.reviewPageId || '');
       const messageId = String(ctx.reviewMessageId || '');
@@ -2492,6 +2529,17 @@
         openMenuState.reviewExpanded = true;
         rerenderContextMenu();
       }
+      return;
+    }
+
+    if (button.dataset.neuroFix) {
+      closeContextMenu();
+      vscode.postMessage({
+        type: 'reviewNeurofix',
+        pageId: button.dataset.pageId || '',
+        messageId: button.dataset.messageId || '',
+        scope: button.dataset.neuroFix,
+      });
       return;
     }
 
@@ -4951,6 +4999,22 @@
     );
   }
 
+  /** Paths from assets/sparkling-2-fill.svg — Neurofix trigger next to review pill. */
+  function reviewSparkleIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-sparkle');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M17.0007 1.20825L18.3195 3.68108L20.7923 4.99992L18.3195 6.31876L17.0007 8.79159L15.6818 6.31876L13.209 4.99992L15.6818 3.68108L17.0007 1.20825ZM8.00065 4.33325L10.6673 9.33325L15.6673 11.9999L10.6673 14.6666L8.00065 19.6666L5.33398 14.6666L0.333984 11.9999L5.33398 9.33325L8.00065 4.33325ZM19.6673 16.3333L18.0007 13.2083L16.334 16.3333L13.209 17.9999L16.334 19.6666L18.0007 22.7916L19.6673 19.6666L22.7923 17.9999L19.6673 16.3333Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
   /** Paths from assets/blog-line.svg — plain message / comment glyph. */
   function reviewCommentIcon() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -5929,8 +5993,16 @@
         openReviewFileView(pageId || '', reply);
       });
       wrap.append(chip);
-      const side = el('div', 'review-side');
-      side.append(reviewCommentIcon());
+      const side = el('button', 'review-side review-neurofix-btn');
+      side.type = 'button';
+      side.title = t('neurofix');
+      side.setAttribute('aria-label', t('neurofix'));
+      side.append(reviewSparkleIcon());
+      side.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openNeuroFixMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
       wrap.append(side);
       body.append(wrap);
     } else {
@@ -6094,6 +6166,36 @@
       x,
       y,
     );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openNeuroFixMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewNeurofix', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * Counts from a normalized pill label `Ревью N | H:n | M:n | S:n`.
+   * @param {string | undefined} pillLabel
+   * @returns {{ H: number, M: number, S: number } | undefined}
+   */
+  function parsePillSeverityCounts(pillLabel) {
+    if (!pillLabel) {
+      return undefined;
+    }
+    const match = pillLabel.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*S:\s*(\d+)/i);
+    if (!match) {
+      return undefined;
+    }
+    return { H: Number(match[1]), M: Number(match[2]), S: Number(match[3]) };
   }
 
   /**
@@ -6517,7 +6619,8 @@
    *   gitlabToken?: string,
    *   reviewSkillPath?: string,
    *   reviewDirPath?: string,
-   *   reviewModel?: string
+   *   reviewModel?: string,
+   *   reviewFixModel?: string
    * }} opts
    */
   function openReviewCreatePagePanel(opts) {
@@ -6657,6 +6760,8 @@
     let dirInput = null;
     /** @type {HTMLInputElement | null} */
     let modelInput = null;
+    /** @type {HTMLInputElement | null} */
+    let fixModelInput = null;
     if (editing) {
       /**
        * @param {string} labelKey
@@ -6705,6 +6810,11 @@
       skillInput = reviewAgentField('labelReviewSkillPath', opts.reviewSkillPath || '', 'skill');
       dirInput = reviewAgentField('labelReviewDirPath', opts.reviewDirPath || '', 'dir');
       modelInput = reviewAgentField('labelReviewModel', (opts.reviewModel || '').toLowerCase(), 'model');
+      fixModelInput = reviewAgentField(
+        'labelReviewFixModel',
+        (opts.reviewFixModel || '').toLowerCase(),
+        'model',
+      );
 
       function saveReviewPaths() {
         if (!(skillInput instanceof HTMLInputElement) || !(dirInput instanceof HTMLInputElement)) {
@@ -6713,20 +6823,30 @@
         const reviewSkillPath = skillInput.value.trim();
         const reviewDirPath = dirInput.value.trim();
         const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
+        const reviewFixModel =
+          fixModelInput instanceof HTMLInputElement ? fixModelInput.value.trim().toLowerCase() : '';
         if (
           reviewSkillPath === (opts.reviewSkillPath || '') &&
           reviewDirPath === (opts.reviewDirPath || '') &&
-          reviewModel === (opts.reviewModel || '').toLowerCase()
+          reviewModel === (opts.reviewModel || '').toLowerCase() &&
+          reviewFixModel === (opts.reviewFixModel || '').toLowerCase()
         ) {
           return;
         }
         opts.reviewSkillPath = reviewSkillPath;
         opts.reviewDirPath = reviewDirPath;
         opts.reviewModel = reviewModel;
-        vscode.postMessage({ type: 'setReviewPaths', reviewSkillPath, reviewDirPath, reviewModel });
+        opts.reviewFixModel = reviewFixModel;
+        vscode.postMessage({
+          type: 'setReviewPaths',
+          reviewSkillPath,
+          reviewDirPath,
+          reviewModel,
+          reviewFixModel,
+        });
       }
 
-      for (const input of [skillInput, dirInput, modelInput]) {
+      for (const input of [skillInput, dirInput, modelInput, fixModelInput]) {
         input.addEventListener('change', () => saveReviewPaths());
       }
 
@@ -8525,18 +8645,26 @@
 
   /**
    * Closed-lock glyph in front of a fixed review parent name.
+   * A click writes `lock: false` on that Discord parent.
    * @param {string} messageId
    * @param {string} pageId
    */
   function reviewLockMark(messageId, pageId) {
     const mark = el('span', 'review-lock');
     mark.dataset.reviewLock = messageId;
-    mark.title = t('locked');
+    mark.title = t('reviewUnlock');
+    mark.setAttribute('role', 'button');
+    mark.setAttribute('aria-label', mark.title);
     mark.append(lockClosedIcon());
     mark.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      flashReviewLock(messageId);
+      vscode.postMessage({
+        type: 'reviewSetLock',
+        pageId,
+        messageId,
+        locked: false,
+      });
     });
     mark.addEventListener('contextmenu', (event) => {
       event.preventDefault();

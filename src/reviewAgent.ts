@@ -2,8 +2,71 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { findSeverityLine } from './discordApi';
+import { findSeverityLine, REVIEW_SEVERITY_RE } from './discordApi';
 import { ReviewDepth, ReviewKind, reviewDepthCommand } from './reviewPending';
+
+export type ReviewFixGroups = {
+  counts: { H: number; M: number; S: number };
+  groups: { H: string[]; M: string[]; S: string[] };
+};
+
+/** Parse review attachment body into H/M/S groups. Legacy L headers map to S. */
+export function parseReviewFixGroups(
+  text: string,
+): { ok: true; counts: ReviewFixGroups['counts']; groups: ReviewFixGroups['groups'] } | { ok: false; message: string } {
+  const lines = text.split(/\r?\n/);
+  const severityRaw = (lines[2] || '').trim();
+  const sevMatch = severityRaw.match(REVIEW_SEVERITY_RE);
+  if (!sevMatch) {
+    return { ok: false, message: 'В файле ревью нет строки H:N | M:N | S:N' };
+  }
+  const counts = {
+    H: Number(sevMatch[1]),
+    M: Number(sevMatch[2]),
+    S: Number(sevMatch[4]),
+  };
+  const groups: ReviewFixGroups['groups'] = { H: [], M: [], S: [] };
+  const seen = new Set<'H' | 'M' | 'S'>();
+  let current: 'H' | 'M' | 'S' | undefined;
+  for (const raw of lines.slice(3)) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const header = /^([HMLS])\s*$/i.exec(trimmed);
+    if (header) {
+      const letter = header[1].toUpperCase() === 'L' ? 'S' : (header[1].toUpperCase() as 'H' | 'M' | 'S');
+      if (seen.has(letter)) {
+        return { ok: false, message: `Повтор заголовка группы ${letter} в файле ревью` };
+      }
+      seen.add(letter);
+      current = letter;
+      continue;
+    }
+    if (/^-\s+/.test(trimmed)) {
+      if (!current) {
+        return { ok: false, message: 'Пункт ревью вне группы H/M/S' };
+      }
+      groups[current].push(trimmed.replace(/^-\s+/, '').trim());
+      continue;
+    }
+    // Ignore non-bullet prose after severity.
+  }
+  for (const letter of ['H', 'M', 'S'] as const) {
+    const expected = counts[letter];
+    const actual = groups[letter].length;
+    if (expected === 0 && actual === 0) {
+      continue;
+    }
+    if (expected !== actual) {
+      return {
+        ok: false,
+        message: `Группа ${letter}: в строке severity ${expected}, в теле ${actual}`,
+      };
+    }
+  }
+  return { ok: true, counts, groups };
+}
 
 export type ReviewAgentResult =
   | {
@@ -51,7 +114,7 @@ function buildPrompt(opts: {
     `MR title: ${opts.title}`,
     `MR URL: ${opts.webUrl}`,
     'Answer in ask mode. Put the severity line first in the form exactly:',
-    'H:N | M:N | L:N',
+    'H:N | M:N | S:N',
     'Then write the review body.',
   ].join('\n');
 }
@@ -330,8 +393,150 @@ export async function runReviewSkill(opts: {
         !stdout && closed
           ? 'Review agent cancelled'
           : stdout
-            ? 'В ответе агента нет строки H:N | M:N | L:N'
+            ? 'В ответе агента нет строки H:N | M:N | S:N'
             : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
+      emit(`\r\n${message}\r\n`);
+      finish({ ok: false, message });
+    });
+  });
+}
+
+export type NeuroFixAgentResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * Run `agent --print --mode agent` for Neurofix, or open a terminal with an error.
+ * Success is exit code 0. No Discord post, no severity parse.
+ */
+export async function runNeuroFixSkill(opts: {
+  cwd: string;
+  model?: string;
+  prompt: string;
+  failMessage?: string;
+}): Promise<NeuroFixAgentResult> {
+  if (opts.failMessage) {
+    const writeEmitter = new vscode.EventEmitter<string>();
+    const pty: vscode.Pseudoterminal = {
+      onDidWrite: writeEmitter.event,
+      open: () => {
+        writeEmitter.fire(`${opts.failMessage}\r\n`);
+        setTimeout(() => term.dispose(), 1500);
+      },
+      close: () => undefined,
+    };
+    const term = vscode.window.createTerminal({ name: 'Syn3 Neurofix', pty });
+    term.show(true);
+    return { ok: false, message: opts.failMessage };
+  }
+
+  const resolved = await resolveAgentBin();
+  if (!resolved) {
+    return runNeuroFixSkill({
+      ...opts,
+      failMessage: 'Cursor Agent CLI not found (agent / cursor agent)',
+    });
+  }
+  const args = [
+    ...resolved.prefix,
+    '--print',
+    '--trust',
+    '--force',
+    '--mode',
+    'agent',
+    '--output-format',
+    'stream-json',
+    '--stream-partial-output',
+    '--workspace',
+    opts.cwd,
+  ];
+  if (opts.model && opts.model.trim()) {
+    args.push('--model', opts.model.trim());
+  }
+  args.push(opts.prompt);
+
+  const writeEmitter = new vscode.EventEmitter<string>();
+  let closed = false;
+  let child: ChildProcess | undefined;
+  const started = Date.now();
+  const pty: vscode.Pseudoterminal = {
+    onDidWrite: writeEmitter.event,
+    open: () => {
+      writeEmitter.fire(
+        `$ ${resolved.bin} ${args.filter((a) => a !== opts.prompt).join(' ')} «prompt»\r\n\r\n`,
+      );
+      writeEmitter.fire('нейрофикс запущен, шаги появятся ниже\r\n');
+    },
+    close: () => {
+      closed = true;
+      child?.kill();
+    },
+  };
+  const term = vscode.window.createTerminal({ name: 'Syn3 Neurofix', pty });
+  term.show(true);
+
+  return new Promise((resolve) => {
+    const stream: AgentStream = {
+      buf: '',
+      deltas: '',
+      plain: '',
+      resultText: '',
+      finalFlush: '',
+      sawDelta: false,
+    };
+    let stderr = '';
+    let settled = false;
+    let lastEmit = Date.now();
+    const emit = (text: string) => {
+      lastEmit = Date.now();
+      if (!closed) {
+        writeEmitter.fire(text);
+      }
+    };
+    const timer = setInterval(() => {
+      if (closed || Date.now() - lastEmit < 20_000) {
+        return;
+      }
+      emit(`… ждём модель, ${Math.round((Date.now() - started) / 1000)} с\r\n`);
+    }, 5_000);
+    child = spawn(resolved.bin, args, {
+      cwd: opts.cwd,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      takeStreamLines(stream, chunk.toString('utf8'), emit);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      emit(text.replace(/\n/g, '\r\n'));
+    });
+    const finish = (result: NeuroFixAgentResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(timer);
+      setTimeout(() => term.dispose(), 1200);
+      resolve(result);
+    };
+    child.on('error', (error) => {
+      emit(`\r\n${error.message}\r\n`);
+      finish({ ok: false, message: error.message });
+    });
+    child.on('close', (code) => {
+      if (stream.buf.trim()) {
+        emitStreamLine(stream, stream.buf, emit);
+      }
+      emit(`\r\n[exit ${code ?? '?'}]\r\n`);
+      if (code === 0) {
+        emit('нейрофикс завершён\r\n');
+        finish({ ok: true });
+        return;
+      }
+      const message =
+        closed
+          ? 'Neurofix cancelled'
+          : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
       emit(`\r\n${message}\r\n`);
       finish({ ok: false, message });
     });

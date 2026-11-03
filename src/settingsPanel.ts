@@ -25,6 +25,7 @@ type IncomingMessage =
       reviewSkillPath?: string;
       reviewDirPath?: string;
       reviewModel?: string;
+      reviewFixModel?: string;
     }
   | { type: 'openReviewPromptExample' }
   | { type: 'listProjectDir'; seq: number; rel?: string }
@@ -113,6 +114,7 @@ export class SettingsPanel implements vscode.Disposable {
         reviewSkillPath: message.reviewSkillPath,
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
+        reviewFixModel: message.reviewFixModel,
       });
       return;
     }
@@ -286,6 +288,7 @@ export class SettingsPanel implements vscode.Disposable {
       reviewSkillPath: reviewPaths.skillPath,
       reviewDirPath: reviewPaths.dirPath,
       reviewModel: reviewPaths.model,
+      reviewFixModel: reviewPaths.fixModel,
       positionSync: this.store.positionSync(),
       locale,
       i18n: stringsFor(locale),
@@ -637,7 +640,8 @@ export class SettingsPanel implements vscode.Disposable {
       padding: 4px 8px;
       width: 100%;
     }
-    #reviewModel {
+    #reviewModel,
+    #reviewFixModel {
       text-transform: lowercase;
     }
     .row.bind-row {
@@ -1127,6 +1131,10 @@ export class SettingsPanel implements vscode.Disposable {
         <label for="reviewModel" data-i18n="labelReviewModel">Review agent model</label>
         <input id="reviewModel" type="text" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="e.g. sonnet-4-thinking">
       </div>
+      <div class="row text-row">
+        <label for="reviewFixModel" data-i18n="labelReviewFixModel">Fix agent model</label>
+        <input id="reviewFixModel" type="text" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="e.g. sonnet-4-thinking">
+      </div>
       <button type="button" id="review-prompt-example" class="review-example" data-i18n="reviewPromptExample">Required review prompt example</button>
       <p class="note" data-i18n="noteReviewPaths"></p>
     </section>
@@ -1193,6 +1201,7 @@ export class SettingsPanel implements vscode.Disposable {
     const reviewSkillPath = document.getElementById('reviewSkillPath');
     const reviewDirPath = document.getElementById('reviewDirPath');
     const reviewModel = document.getElementById('reviewModel');
+    const reviewFixModel = document.getElementById('reviewFixModel');
     const reviewPromptExample = document.getElementById('review-prompt-example');
     const browseReviewSkill = document.getElementById('browse-review-skill');
     const browseReviewDir = document.getElementById('browse-review-dir');
@@ -1292,11 +1301,12 @@ export class SettingsPanel implements vscode.Disposable {
       suppress = false;
     }
 
-    function applyReviewPaths(skill, dir, model) {
+    function applyReviewPaths(skill, dir, model, fixModel) {
       suppress = true;
       if (reviewSkillPath instanceof HTMLInputElement) reviewSkillPath.value = skill || '';
       if (reviewDirPath instanceof HTMLInputElement) reviewDirPath.value = dir || '';
       if (reviewModel instanceof HTMLInputElement) reviewModel.value = (model || '').toLowerCase();
+      if (reviewFixModel instanceof HTMLInputElement) reviewFixModel.value = (fixModel || '').toLowerCase();
       suppress = false;
     }
 
@@ -1347,6 +1357,7 @@ export class SettingsPanel implements vscode.Disposable {
         reviewSkillPath: reviewSkillPath instanceof HTMLInputElement ? reviewSkillPath.value : '',
         reviewDirPath: reviewDirPath instanceof HTMLInputElement ? reviewDirPath.value : '',
         reviewModel: reviewModel instanceof HTMLInputElement ? reviewModel.value.toLowerCase() : '',
+        reviewFixModel: reviewFixModel instanceof HTMLInputElement ? reviewFixModel.value.toLowerCase() : '',
       });
     }
 
@@ -1513,18 +1524,20 @@ export class SettingsPanel implements vscode.Disposable {
       vscode.postMessage({ type: 'profile', action: 'syncPull' });
     });
 
-    for (const input of [reviewSkillPath, reviewDirPath, reviewModel]) {
+    for (const input of [reviewSkillPath, reviewDirPath, reviewModel, reviewFixModel]) {
       input?.addEventListener('change', () => emitReviewPaths());
     }
-    reviewModel?.addEventListener('input', () => {
-      if (!(reviewModel instanceof HTMLInputElement)) return;
-      const next = reviewModel.value.toLowerCase();
-      if (next === reviewModel.value) return;
-      const start = reviewModel.selectionStart;
-      const end = reviewModel.selectionEnd;
-      reviewModel.value = next;
-      if (start !== null && end !== null) reviewModel.setSelectionRange(start, end);
-    });
+    function lowerModelInput(input) {
+      if (!(input instanceof HTMLInputElement)) return;
+      const next = input.value.toLowerCase();
+      if (next === input.value) return;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      input.value = next;
+      if (start !== null && end !== null) input.setSelectionRange(start, end);
+    }
+    reviewModel?.addEventListener('input', () => lowerModelInput(reviewModel));
+    reviewFixModel?.addEventListener('input', () => lowerModelInput(reviewFixModel));
     githubNick?.addEventListener('change', () => emitGitNick('github', githubNick));
     gitlabNick?.addEventListener('change', () => emitGitNick('gitlab', gitlabNick));
     githubToken?.addEventListener('change', () => emitGitToken('github', githubToken));
@@ -1670,7 +1683,12 @@ export class SettingsPanel implements vscode.Disposable {
         }
         applyLocale();
         apply(event.data.appearance);
-        applyReviewPaths(event.data.reviewSkillPath, event.data.reviewDirPath, event.data.reviewModel);
+        applyReviewPaths(
+          event.data.reviewSkillPath,
+          event.data.reviewDirPath,
+          event.data.reviewModel,
+          event.data.reviewFixModel,
+        );
         applyGitBindings(event.data.activeProfileId, event.data.gitBindings);
         applyPositionSync(event.data.positionSync);
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);

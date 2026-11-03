@@ -3245,10 +3245,17 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 .review-lock {
   align-items: center;
+  border-radius: 3px;
   color: var(--vscode-descriptionForeground);
+  cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
   opacity: 0.9;
+}
+
+.review-lock:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  opacity: 1;
 }
 
 .review-plain > .review-lock {
@@ -3308,6 +3315,19 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   flex: 0 0 auto;
   gap: 4px;
   opacity: 0.75;
+}
+
+button.review-neurofix-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  margin: 0;
+  padding: 2px;
+}
+
+button.review-neurofix-btn:hover {
+  color: var(--vscode-foreground);
+  opacity: 1;
 }
 
 .review-ico {

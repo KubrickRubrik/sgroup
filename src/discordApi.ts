@@ -7,8 +7,22 @@ export const MR_PREFIX = 'MR_SYN3';
 export const DMR_PREFIX = 'DMR_SYN3';
 /** Review message prefix in Discord threads: `R_SYN3: Ревью N | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
-/** Severity line inside a review file / agent stdout. */
-export const REVIEW_SEVERITY_RE = /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)\s*$/i;
+/**
+ * Severity line inside a review file / agent stdout.
+ * Canonical form is `H:n | M:n | S:n`. Legacy `L` (former low) maps to `S`.
+ */
+export const REVIEW_SEVERITY_RE =
+  /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i;
+
+/** Format a normalized severity line. Legacy L counts become S. */
+export function formatSeverityLine(h: string | number, m: string | number, s: string | number): string {
+  return `H:${h} | M:${m} | S:${s}`;
+}
+
+/** Match a severity line and return the canonical `H:n | M:n | S:n` form. */
+export function normalizeSeverityMatch(match: RegExpMatchArray): string {
+  return formatSeverityLine(match[1], match[2], match[4]);
+}
 
 const MR_HEAD_RE = /^\(?((?:MR_SYN3|DMR_SYN3))\)?:\s*(.*)$/;
 const REVIEW_HEAD_RE = /^\(?R_SYN3\)?:\s*(.*)$/;
@@ -255,15 +269,13 @@ export function isReviewMessage(content: string): boolean {
   return REVIEW_HEAD_RE.test(head);
 }
 
-/** First severity line `H:n | M:n | L:n` in free text (agent stdout or file body). */
+/** First severity line `H:n | M:n | S:n` in free text (agent stdout or file body). Legacy L → S. */
 export function findSeverityLine(text: string): string | undefined {
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (REVIEW_SEVERITY_RE.test(line)) {
-      const match = line.match(REVIEW_SEVERITY_RE);
-      if (match) {
-        return `H:${match[1]} | M:${match[2]} | L:${match[3]}`;
-      }
+    const match = line.match(REVIEW_SEVERITY_RE);
+    if (match) {
+      return normalizeSeverityMatch(match);
     }
   }
   return undefined;
@@ -273,7 +285,7 @@ export function findSeverityLine(text: string): string | undefined {
  * Review attachment layout:
  * 1: Ревью N
  * 2: MR meta
- * 3: H:N | M:N | L:N
+ * 3: H:N | M:N | S:N
  * rest: body
  */
 export function parseReviewAttachment(text: string): {
@@ -290,7 +302,7 @@ export function parseReviewAttachment(text: string): {
   if (!sevMatch) {
     return { reviewNumber };
   }
-  const severity = `H:${sevMatch[1]} | M:${sevMatch[2]} | L:${sevMatch[3]}`;
+  const severity = normalizeSeverityMatch(sevMatch);
   const n = reviewNumber ?? 0;
   return {
     reviewNumber,
@@ -718,7 +730,7 @@ export function parseMrChip(content: string): {
 /**
  * Discord thread message for a review file attachment.
  *
- * R_SYN3: Ревью N | H:n | M:n | L:n
+ * R_SYN3: Ревью N | H:n | M:n | S:n
  * Модель: …
  * Скилл: …
  * status: -|inProgress|done
@@ -729,7 +741,9 @@ export function formatReviewDiscordBody(opts: {
   model: string;
   skillPath: string;
 }): string {
-  const severity = opts.severity.trim() || 'H:0 | M:0 | L:0';
+  const raw = opts.severity.trim();
+  const matched = raw.match(REVIEW_SEVERITY_RE);
+  const severity = matched ? normalizeSeverityMatch(matched) : formatSeverityLine(0, 0, 0);
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
   return [
@@ -763,16 +777,16 @@ export function parseReviewMessagePill(content: string): string | undefined {
   }
   const rest = (match[1] || '').trim();
   const pill =
-    /^Ревью\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*L:\s*\d+$/i.exec(rest) ||
-    /^Review\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*L:\s*\d+$/i.exec(rest);
+    /^Ревью\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+$/i.exec(rest) ||
+    /^Review\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+$/i.exec(rest);
   if (!pill) {
     return undefined;
   }
   const normalized = rest.replace(/\s+/g, ' ');
-  const sev = normalized.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*L:\s*(\d+)/i);
+  const sev = normalized.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)/i);
   const num = normalized.match(/^(?:Ревью|Review)\s+(\d+)/i);
   if (!sev || !num) {
     return undefined;
   }
-  return `Ревью ${num[1]} | H:${sev[1]} | M:${sev[2]} | L:${sev[3]}`;
+  return `Ревью ${num[1]} | ${normalizeSeverityMatch(sev)}`;
 }

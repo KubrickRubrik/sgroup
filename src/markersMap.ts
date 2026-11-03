@@ -424,6 +424,13 @@ type IncomingMessage =
       reviewSkillPath?: string;
       reviewDirPath?: string;
       reviewModel?: string;
+      reviewFixModel?: string;
+    }
+  | {
+      type: 'reviewNeurofix';
+      pageId: string;
+      messageId: string;
+      scope: string;
     }
   | { type: 'listProjectDir'; seq: number; rel?: string };
 
@@ -2241,7 +2248,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         reviewSkillPath: message.reviewSkillPath,
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
+        reviewFixModel: message.reviewFixModel,
       });
+      return;
+    }
+    if (message.type === 'reviewNeurofix') {
+      const scope = message.scope;
+      if (scope === 'H' || scope === 'M' || scope === 'S' || scope === 'all') {
+        await this.review.runNeuroFix(message.pageId, message.messageId, scope);
+      }
       return;
     }
     if (message.type === 'listProjectDir') {
@@ -3897,6 +3912,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       reviewSkillPath: paths.skillPath,
       reviewDirPath: paths.dirPath,
       reviewModel: paths.model,
+      reviewFixModel: paths.fixModel,
     });
   }
 
@@ -4295,7 +4311,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </button>
       <div class="toolbar-panels">
         <button id="toolbar-panels" class="history-btn" type="button" title="Toggle panels" aria-label="Toggle panels" aria-haspopup="true" aria-expanded="false">
-          ${icon('dashboard-horizontal-fill')}
+          ${icon('dashboard-horizontal-line')}
         </button>
         <div id="toolbar-panels-menu" class="toolbar-panels-menu" hidden role="group" aria-label="Panel toggles">
           <button type="button" id="panel-toggle-bottom" class="history-btn" data-action="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="false">
