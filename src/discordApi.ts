@@ -461,6 +461,25 @@ export function replaceMrDiscordStatus(content: string, status: MrDiscordStatus)
   return replaceDiscordMetaLine(content, 'status', status);
 }
 
+const LOCK_LINE_RE = /^lock:\s*(true|false)\s*$/i;
+
+/** `lock: true` fixes the parent. A missing line or `lock: false` stays open. */
+export function parseDiscordLock(content: string): boolean {
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const match = LOCK_LINE_RE.exec(line.trim());
+    if (match) {
+      return match[1].toLowerCase() === 'true';
+    }
+  }
+  return false;
+}
+
+/** Set or append `lock: true|false`. Other lines stay as they are. */
+export function replaceDiscordLock(content: string, locked: boolean): string {
+  return replaceDiscordMetaLine(content, 'lock', locked ? 'true' : 'false');
+}
+
 export type ReviewChipStatus = 'inProgress' | 'done';
 
 /** Set or append `status: -|inProgress|done` on an R_SYN3 message. */
@@ -618,6 +637,7 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
  * Исполнители: A, B
  * color: #hex
  * status: open|closed
+ * lock: true|false
  */
 export function formatMrDiscordBody(opts: {
   webUrl: string;
@@ -653,6 +673,7 @@ export function formatMrDiscordBody(opts: {
     `Исполнители: ${assignees}`,
     `color: ${opts.color}`,
     'status: open',
+    'lock: false',
   ];
   return lines.join('\n');
 }

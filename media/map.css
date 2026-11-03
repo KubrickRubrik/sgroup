@@ -3242,6 +3242,36 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   color: #8fd14f;
 }
 
+.review-lock {
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  opacity: 0.9;
+}
+
+.review-plain > .review-lock {
+  margin-top: 2px;
+}
+
+.review-lock .lock-icon {
+  display: block;
+  height: 14px;
+  width: 14px;
+}
+
+.review-lock.is-denied {
+  animation: lock-denied-blink 0.4s linear 7.5;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-lock.is-denied {
+    animation: none;
+    color: var(--vscode-errorForeground);
+  }
+}
+
 .review-mr-title-text {
   background: transparent;
   border: none;

@@ -368,6 +368,7 @@ type IncomingMessage =
       color?: string;
     }
   | { type: 'reviewCloseMr'; pageId: string; messageId: string }
+  | { type: 'reviewSetLock'; pageId: string; messageId: string; locked: boolean }
   | { type: 'reviewDeleteReview'; pageId: string; messageId: string }
   | {
       type: 'reviewSetStatus';
@@ -2088,6 +2089,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         draft: message.draft,
         color: message.color,
       });
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewSetLock') {
+      const result = await this.review.setParentLock(
+        message.pageId,
+        message.messageId,
+        message.locked === true,
+      );
       if (result.kind === 'error') {
         void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
         return;

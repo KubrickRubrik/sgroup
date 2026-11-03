@@ -22,6 +22,7 @@ import {
   isReviewMessage,
   listChannelMessages,
   listThreadMessages,
+  parseDiscordLock,
   parseMrChip,
   parseReviewAttachment,
   parseReviewMessagePill,
@@ -30,6 +31,7 @@ import {
   fetchAttachmentText,
   postChannelMessage,
   postMessageWithFile,
+  replaceDiscordLock,
   replaceMrDiscordColor,
   replaceMrDiscordHead,
   replaceMrDiscordStatus,
@@ -91,6 +93,8 @@ export interface ReviewChip {
   color?: string;
   /** `status: closed` on the Discord MR message. Missing line stays open. */
   status?: 'open' | 'closed';
+  /** `lock: true` on the parent Discord message. Missing line stays open. */
+  locked?: boolean;
   threadId?: string;
   hasThread?: boolean;
   replies: ReviewThreadMsg[];
@@ -137,6 +141,7 @@ function toChip(
     draft: parsed.draft,
     color: parsed.color || (isMr ? LINK_PALETTE_DEFAULT : undefined),
     status: isMr ? (parsed.status === 'closed' ? 'closed' : 'open') : undefined,
+    locked: parseDiscordLock(msg.content),
     threadId: msg.thread?.id,
     hasThread: !!msg.thread?.id || !!msg.hasThread,
     replies,
@@ -651,7 +656,7 @@ export class ReviewMapController {
     }
     const parent = win.messages.find((m) => m.id === messageId);
     const threadId = parent?.thread?.id;
-    if (!threadId) {
+    if (!parent || !threadId || parseDiscordLock(parent.content)) {
       return this.snapshot(pageId);
     }
     this.loading.add(pageId);
@@ -700,7 +705,7 @@ export class ReviewMapController {
       return this.snapshot(pageId);
     }
     const parent = win.messages.find((m) => m.id === messageId);
-    if (!parent || isMrMessage(parent.content)) {
+    if (!parent || isMrMessage(parent.content) || parseDiscordLock(parent.content)) {
       return this.snapshot(pageId);
     }
     this.loading.add(pageId);
@@ -1150,6 +1155,9 @@ export class ReviewMapController {
     if (!isMrMessage(parent.content)) {
       return { kind: 'error', message: 'Select an MR_SYN3 chip' };
     }
+    if (parseDiscordLock(parent.content)) {
+      return { kind: 'error', message: 'Entity is locked' };
+    }
     if (parseMrChip(parent.content).status === 'closed') {
       return { kind: 'error', message: 'MR is closed' };
     }
@@ -1242,6 +1250,48 @@ export class ReviewMapController {
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
+  /** Write `lock: true|false` on a channel parent. Replies are not lockable. */
+  async setParentLock(
+    pageId: string,
+    messageId: string,
+    locked: boolean,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const win = this.windows.get(pageId);
+    const access = await this.getAccess(pageId);
+    const discord = await this.discordToken();
+    const parent = win?.messages.find((item) => item.id === messageId);
+    if (!win || !access || !discord || !parent) {
+      return { kind: 'error', message: 'Message not found on the map' };
+    }
+    if (parseDiscordLock(parent.content) === locked) {
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    const edited = await editChannelMessage(
+      discord,
+      access.channelId,
+      parent.id,
+      replaceDiscordLock(parent.content, locked),
+    );
+    if (!edited.ok) {
+      return {
+        kind: 'error',
+        message:
+          edited.status === 403
+            ? 'The bot can only edit its own messages'
+            : edited.message,
+      };
+    }
+    const idx = win.messages.findIndex((item) => item.id === parent.id);
+    if (idx >= 0) {
+      win.messages[idx] = {
+        ...edited.value,
+        thread: edited.value.thread ?? parent.thread,
+        hasThread: edited.value.hasThread || parent.hasThread,
+      };
+    }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
   /** Close the host MR/PR, then set Discord `status: closed`. */
   async closeMr(
     pageId: string,
@@ -1256,6 +1306,9 @@ export class ReviewMapController {
     }
     if (!isMrMessage(parent.content)) {
       return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    }
+    if (parseDiscordLock(parent.content)) {
+      return { kind: 'error', message: 'Entity is locked' };
     }
     const parsed = parseMrChip(parent.content);
     if (parsed.status === 'closed') {
@@ -1367,6 +1420,9 @@ export class ReviewMapController {
     }
     const parent = win.messages.find((item) => item.id === messageId);
     if (parent) {
+      if (parseDiscordLock(parent.content)) {
+        return { kind: 'error', message: 'Entity is locked' };
+      }
       const access = await this.getAccess(pageId);
       if (!access?.channelId) {
         return { kind: 'error', message: 'Review page is not ready' };

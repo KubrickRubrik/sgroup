@@ -311,6 +311,10 @@
     cancelMenuClose();
     closeToolbarMenus();
     closeContextMenu();
+    if (activePage()?.kind === 'review') {
+      setAllReviewCollapsed(!allTopCollapsed());
+      return;
+    }
     postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
   });
   toolbarReviewTab?.addEventListener('click', () => {
@@ -703,6 +707,8 @@
    *     title?: string,
    *     draft?: boolean,
    *     color?: string,
+   *     status?: 'open' | 'closed',
+   *     locked?: boolean,
    *     threadId?: string,
    *     hasThread?: boolean,
    *     replies: Array<{
@@ -1972,9 +1978,28 @@
           messageId,
         }),
       );
-      if (chip?.status === 'closed') {
+      scroller.append(
+        menuActionChoice(t(chip?.locked ? 'reviewUnlock' : 'reviewLock'), {
+          reviewEdit: 'lock',
+          pageId,
+          messageId,
+        }),
+      );
+      if (chip?.status === 'closed' || chip?.locked) {
+        const reviewStays = !!chip?.locked && chip?.status !== 'closed';
         scroller.querySelectorAll('button').forEach((button) => {
-          if (button.dataset.reviewEdit === 'delete') {
+          if (button.dataset.reviewEdit === 'lock') {
+            return;
+          }
+          if (chip?.status === 'closed' && !chip?.locked && button.dataset.reviewEdit === 'delete') {
+            return;
+          }
+          // A lock freezes edits. Starting a review on an open MR stays available.
+          if (
+            reviewStays &&
+            (button.dataset.menuAction === 'toggleReview' ||
+              button.dataset.menuAction === 'toggleReviewScope')
+          ) {
             return;
           }
           button.disabled = true;
@@ -2023,13 +2048,27 @@
       return;
     }
     if (section === 'reviewMsg') {
-      scroller.append(
-        menuActionChoice(t('menuDelete'), {
-          reviewEdit: 'delete',
-          pageId: String(ctx.reviewPageId || ''),
-          messageId: String(ctx.reviewMessageId || ''),
-        }),
-      );
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const del = menuActionChoice(t('menuDelete'), {
+        reviewEdit: 'delete',
+        pageId,
+        messageId,
+      });
+      if (parent?.locked) {
+        del.disabled = true;
+      }
+      scroller.append(del);
+      if (parent) {
+        scroller.append(
+          menuActionChoice(t(parent.locked ? 'reviewUnlock' : 'reviewLock'), {
+            reviewEdit: 'lock',
+            pageId,
+            messageId,
+          }),
+        );
+      }
       updateMenuScrollbar(contextMenu);
       return;
     }
@@ -2408,7 +2447,22 @@
       closeContextMenu();
       const pageId = button.dataset.pageId || '';
       const messageId = button.dataset.messageId || '';
-      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const chip = parent;
+      if (button.dataset.reviewEdit === 'lock') {
+        if (parent) {
+          vscode.postMessage({
+            type: 'reviewSetLock',
+            pageId,
+            messageId,
+            locked: parent.locked !== true,
+          });
+        }
+        return;
+      }
+      if (parent?.locked) {
+        return;
+      }
       if (button.dataset.reviewEdit === 'rename') {
         openReviewRenamePanel({
           pageId,
@@ -2963,7 +3017,33 @@
     return [...groups, ...notes];
   }
 
+  /** MR chips and plain messages whose thread can fold. */
+  function reviewMessageCanFold(msg) {
+    if (!msg) {
+      return false;
+    }
+    if (msg.isMr) {
+      return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    }
+    return !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
+  }
+
+  function foldableReviewMessages() {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || !reviewState || reviewState.pageId !== page.id) {
+      return [];
+    }
+    if (reviewPaintEdge(page.id) === 'initial') {
+      return [];
+    }
+    return (reviewState.messages || []).filter((msg) => reviewMessageCanFold(msg) && !msg.locked);
+  }
+
   function allTopCollapsed() {
+    if (activePage()?.kind === 'review') {
+      const items = foldableReviewMessages();
+      return items.length > 0 && items.every((msg) => reviewCollapsed.has(msg.id));
+    }
     const groups = collapsibleTopGroups();
     return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
@@ -2980,8 +3060,9 @@
   }
 
   function setCollapseButton() {
-    const groups = collapsibleTopGroups();
-    const collapsed = groups.length > 0 && groups.every((group) => isCollapsed(group.id));
+    const review = activePage()?.kind === 'review';
+    const groups = review ? foldableReviewMessages() : collapsibleTopGroups();
+    const collapsed = allTopCollapsed();
     const mode = collapsed ? 'expand' : 'collapse';
     if (toolbarCollapse) {
       toolbarCollapse.disabled = groups.length === 0 || pageSkeletonKind() !== '';
@@ -5094,7 +5175,6 @@
   }
 
   function paintReviewPage() {
-    setCollapseButton();
     const page = activePage();
     const pageId = page?.id || '';
     if (pageId && (!reviewState || reviewState.pageId !== pageId)) {
@@ -5104,6 +5184,7 @@
       }
     }
     applyClosedMrFolds();
+    setCollapseButton();
     dismissMissingReviewFile();
     const edge = reviewPaintEdge(pageId);
     const samePage = !!(reviewState && reviewState.pageId === pageId);
@@ -5260,6 +5341,7 @@
         msg.title || '',
         msg.draft ? 'd' : '',
         msg.status || '',
+        msg.locked ? 'L' : '',
         msg.timestamp || '',
         msg.hasThread ? 't' : '',
         msg.repliesHasMore ? 'm' : '',
@@ -5283,8 +5365,41 @@
     return chunks.join('\u001f');
   }
 
+  /** Fold or open every review thread that has a caret. */
+  function setAllReviewCollapsed(collapsed) {
+    const items = foldableReviewMessages();
+    if (items.length === 0) {
+      return;
+    }
+    for (const msg of items) {
+      if (collapsed) {
+        reviewCollapsed.add(msg.id);
+      } else {
+        reviewCollapsed.delete(msg.id);
+      }
+    }
+    paintReviewPage();
+  }
+
+  /** Parent body without the `lock:` meta line. */
+  function reviewDisplayText(content) {
+    if (typeof content !== 'string') {
+      return '';
+    }
+    return content
+      .split(/\r?\n/)
+      .filter((line) => !/^lock:\s*(true|false)\s*$/i.test(line.trim()))
+      .join('\n')
+      .trim();
+  }
+
   /** @param {string} messageId */
   function toggleReviewCollapsed(messageId) {
+    const msg = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (msg?.locked) {
+      flashReviewLock(messageId);
+      return;
+    }
     if (reviewCollapsed.has(messageId)) {
       reviewCollapsed.delete(messageId);
     } else {
@@ -5343,9 +5458,9 @@
    */
   function renderReviewNode(msg, pageId, leadingGap, nextColor) {
     const color = msg.color || (msg.isMr ? '#8e4ec6' : '#6e6e6e');
-    const mrCanFold = msg.isMr && !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
-    const plainCanFold = !msg.isMr && !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
-    const canFold = mrCanFold || plainCanFold;
+    const canFold = reviewMessageCanFold(msg);
+    const mrCanFold = !!msg.isMr && canFold;
+    const plainCanFold = !msg.isMr && canFold;
     const collapsed = canFold && reviewCollapsed.has(msg.id);
     const plainOpen = !msg.isMr && reviewPlainExpanded.has(msg.id);
     const stamp = formatReviewStamp(msg.timestamp);
@@ -5427,6 +5542,10 @@
       title.type = 'button';
       title.addEventListener('click', (event) => {
         event.stopPropagation();
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
         if (reviewTitleExpanded.has(msg.id)) {
           reviewTitleExpanded.delete(msg.id);
         } else {
@@ -5447,14 +5566,18 @@
         });
       }
       const head = el('div', 'review-mr-head');
-      head.append(chipWrap, title);
+      head.append(chipWrap);
+      if (msg.locked) {
+        head.append(reviewLockMark(msg.id, pageId));
+      }
+      head.append(title);
       body.append(head);
 
       if (canFold) {
         body.append(renderReviewThread(msg, pageId, true));
       }
     } else {
-      const raw = typeof msg.content === 'string' ? msg.content.trim() : '';
+      const raw = reviewDisplayText(msg.content);
       const missing = msg.contentMissing === true || !raw;
       const preview = el('button', 'review-plain' + (plainOpen ? ' is-open' : ''));
       preview.type = 'button';
@@ -5478,6 +5601,9 @@
         });
         preview.append(tri);
       }
+      if (msg.locked) {
+        preview.append(reviewLockMark(msg.id, pageId));
+      }
       const text = el(
         'span',
         'review-plain-text' + (missing ? ' is-missing' : ''),
@@ -5485,6 +5611,10 @@
       );
       preview.append(text);
       preview.addEventListener('click', () => {
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
         if (reviewPlainExpanded.has(msg.id)) {
           reviewPlainExpanded.delete(msg.id);
         } else {
@@ -5519,7 +5649,12 @@
     if (msg.repliesHasMore) {
       const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
       more.type = 'button';
+      more.disabled = !!msg.locked;
       more.addEventListener('click', () => {
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
         vscode.postMessage({ type: 'reviewLoadThread', pageId, messageId: msg.id });
       });
       slide.append(more);
@@ -8142,6 +8277,65 @@
         button.classList.remove('is-denied');
       }
     }, LOCK_DENY_MS);
+  }
+
+  /**
+   * Blink the review lock for 3s. Repeat clicks on that parent are dropped.
+   * @param {string} messageId
+   */
+  function flashReviewLock(messageId) {
+    const now = Date.now();
+    const until = lockDenyUntil.get(messageId) ?? 0;
+    if (now < until) {
+      return;
+    }
+    const mark = root.querySelector(
+      '.review-lock[data-review-lock="' + CSS.escape(messageId) + '"]',
+    );
+    if (!(mark instanceof HTMLElement)) {
+      return;
+    }
+    const ends = now + LOCK_DENY_MS;
+    lockDenyUntil.set(messageId, ends);
+    mark.dataset.denyToken = String(ends);
+    mark.classList.add('is-denied');
+    setTimeout(() => {
+      if (lockDenyUntil.get(messageId) === ends) {
+        lockDenyUntil.delete(messageId);
+      }
+      if (mark.dataset.denyToken === String(ends)) {
+        delete mark.dataset.denyToken;
+        mark.classList.remove('is-denied');
+      }
+    }, LOCK_DENY_MS);
+  }
+
+  /**
+   * Closed-lock glyph in front of a fixed review parent name.
+   * @param {string} messageId
+   * @param {string} pageId
+   */
+  function reviewLockMark(messageId, pageId) {
+    const mark = el('span', 'review-lock');
+    mark.dataset.reviewLock = messageId;
+    mark.title = t('locked');
+    mark.append(lockClosedIcon());
+    mark.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      flashReviewLock(messageId);
+    });
+    mark.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      if (parent?.isMr) {
+        openReviewContextMenu(event.clientX, event.clientY, pageId, messageId);
+      } else {
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, messageId);
+      }
+    });
+    return mark;
   }
 
   function lockButton(group) {
