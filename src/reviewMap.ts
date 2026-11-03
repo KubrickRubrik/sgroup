@@ -18,6 +18,7 @@ import {
   formatMrDiscordBody,
   formatReviewDiscordBody,
   getChannelMessage,
+  isDiscordSystemNotice,
   isMrMessage,
   isReviewMessage,
   listChannelMessages,
@@ -219,7 +220,9 @@ function takeThreadPage(
   already: DiscordMessage[],
 ): { toAdd: DiscordMessage[]; exhausted: boolean; messageCount: number | undefined } {
   const known = new Set(already.map((msg) => msg.id));
-  const real = fetchedAsc.filter((msg) => !isThreadStarter(msg) && !known.has(msg.id));
+  const real = fetchedAsc.filter(
+    (msg) => !isThreadStarter(msg) && !isDiscordSystemNotice(msg) && !known.has(msg.id),
+  );
   const overflow = real.length > pageSize;
   const toAdd = overflow ? real.slice(-pageSize) : real;
   const loaded = already.length + toAdd.length;
@@ -254,15 +257,16 @@ function windowFromChannelTip(fetchedAsc: DiscordMessage[]): Pick<
   'messages' | 'canLoadOlder' | 'canLoadNewer'
 > {
   const sorted = sortMessagesAsc(fetchedAsc);
+  const visible = sorted.filter((msg) => !isDiscordSystemNotice(msg));
   if (sorted.length > CHANNEL_VISIBLE) {
     return {
-      messages: sorted.slice(-CHANNEL_VISIBLE),
+      messages: visible.slice(-CHANNEL_VISIBLE),
       canLoadOlder: true,
       canLoadNewer: false,
     };
   }
   return {
-    messages: sorted,
+    messages: visible,
     canLoadOlder: false,
     canLoadNewer: false,
   };
@@ -277,13 +281,14 @@ function takeOlderPage(batchAsc: DiscordMessage[]): {
   toAdd: DiscordMessage[];
   canLoadOlder: boolean;
 } {
+  const visible = batchAsc.filter((msg) => !isDiscordSystemNotice(msg));
   if (batchAsc.length > CHANNEL_VISIBLE) {
     return {
-      toAdd: batchAsc.slice(-CHANNEL_VISIBLE),
+      toAdd: visible.slice(-CHANNEL_VISIBLE),
       canLoadOlder: true,
     };
   }
-  return { toAdd: batchAsc, canLoadOlder: false };
+  return { toAdd: visible, canLoadOlder: false };
 }
 
 /**
@@ -294,13 +299,14 @@ function takeNewerPage(batchAsc: DiscordMessage[]): {
   toAdd: DiscordMessage[];
   canLoadNewer: boolean;
 } {
+  const visible = batchAsc.filter((msg) => !isDiscordSystemNotice(msg));
   if (batchAsc.length > CHANNEL_VISIBLE) {
     return {
-      toAdd: batchAsc.slice(0, CHANNEL_VISIBLE),
+      toAdd: visible.slice(0, CHANNEL_VISIBLE),
       canLoadNewer: true,
     };
   }
-  return { toAdd: batchAsc, canLoadNewer: false };
+  return { toAdd: visible, canLoadNewer: false };
 }
 
 /**
@@ -328,7 +334,7 @@ function windowAroundMessage(
   const showBefore = beforeAll.slice(-2);
   const showAfter = afterAll.slice(0, 2);
   return {
-    messages: [...showBefore, sorted[idx], ...showAfter],
+    messages: [...showBefore, sorted[idx], ...showAfter].filter((msg) => !isDiscordSystemNotice(msg)),
     canLoadOlder: beforeAll.length > showBefore.length,
     canLoadNewer: afterAll.length > showAfter.length,
   };
@@ -459,9 +465,9 @@ export class ReviewMapController {
         canLoadNewer: false,
       };
     }
-    const messages = win.messages.map((m) => {
+    const messages = win.messages.filter((m) => !isDiscordSystemNotice(m)).map((m) => {
       const thread = m.thread?.id ? win.threads.get(m.thread.id) : undefined;
-      const replies = (thread?.replies ?? []).map((r) => {
+      const replies = (thread?.replies ?? []).filter((r) => !isDiscordSystemNotice(r)).map((r) => {
         const base = toReplyBase(r);
         const meta = this.replyMeta.get(r.id);
         if (!meta) {

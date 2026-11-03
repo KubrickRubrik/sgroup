@@ -23,6 +23,16 @@ function messagePayload(content: string): { content: string; flags: number } {
 /** Placeholder that points at the parent message. Not counted in `message_count`. */
 export const THREAD_STARTER_MESSAGE = 21;
 
+/**
+ * Types that carry a person's text. Everything else is a Discord client notice
+ * (`THREAD_CREATED` is «начинает ветку», and its content is only the thread name).
+ */
+const DISCORD_USER_MESSAGE_TYPES = new Set([0, 19, 20, 23]);
+
+export function isDiscordSystemNotice(msg: { type?: number }): boolean {
+  return typeof msg.type === 'number' && !DISCORD_USER_MESSAGE_TYPES.has(msg.type);
+}
+
 export interface DiscordThreadRef {
   id: string;
   /**

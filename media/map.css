@@ -3177,7 +3177,7 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 .review-mr-head {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   min-width: 0;
 }
@@ -3185,6 +3185,7 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 .review-chip-wrap {
   align-items: center;
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
   max-width: 100%;
   position: relative;
@@ -3277,22 +3278,26 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   border: none;
   color: var(--vscode-foreground);
   cursor: pointer;
-  display: -webkit-box;
+  display: block;
+  flex: 1 1 auto;
   font: inherit;
   font-size: 14px;
   font-weight: 500;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  -webkit-box-orient: vertical;
   max-width: min(420px, 100%);
+  min-width: 0;
   overflow: hidden;
   padding: 0;
   text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-mr-title-text.is-expanded {
+  display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
+  -webkit-box-orient: vertical;
+  text-overflow: unset;
   white-space: normal;
 }
 

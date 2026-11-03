@@ -1899,12 +1899,16 @@
     if (!openMenuState || openMenuState.kind !== 'context') {
       return;
     }
+    // Keep the open menu where it is. Re-anchoring to the original click
+    // flips a taller menu above the pointer, and the next move closes it.
+    const placedLeft = parseFloat(contextMenu.style.left);
+    const placedTop = parseFloat(contextMenu.style.top);
     renderContextMenu();
     cancelMenuClose('context');
     positionMenu(contextMenu, {
-      left: openMenuState.x ?? 0,
-      top: openMenuState.y ?? 0,
-      preferBelow: true,
+      left: Number.isFinite(placedLeft) ? placedLeft : (openMenuState.x ?? 0),
+      top: Number.isFinite(placedTop) ? placedTop : (openMenuState.y ?? 0),
+      keepPosition: true,
     });
     if (openMenuState.reviewExpanded && openMenuState.reviewScope && openMenuState.ctx) {
       mountReviewDepthMenu(
