@@ -112,6 +112,10 @@ export class AccessStore {
     return this.data.pages[pageId];
   }
 
+  entries(): Record<string, ReviewPageAccess> {
+    return { ...this.data.pages };
+  }
+
   async setPage(pageId: string, access: ReviewPageAccess): Promise<void> {
     await this.ensureLoaded();
     this.data.pages[pageId] = {

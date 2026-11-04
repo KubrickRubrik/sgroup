@@ -31,6 +31,8 @@ import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMa
 import {
   deleteProfileHostToken,
   readProfileHostToken,
+  secretsStatus,
+  storeSecrets,
   writeProfileHostToken,
 } from './accessStore';
 import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
@@ -331,6 +333,10 @@ type IncomingMessage =
       id?: string;
       name?: string;
     }
+  | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
+  | { type: 'pageCloud'; action: 'pushAll' }
+  | { type: 'pageCloud'; action: 'pullAll' }
+  | { type: 'setPagesFixed'; fixed: boolean }
   | { type: 'profileOpenSettings'; id?: string }
   | {
       type: 'profileSaveSettings';
@@ -399,12 +405,15 @@ type IncomingMessage =
       discordToken?: string;
     }
   | { type: 'reviewOpenPageSettings'; pageId: string }
+  | { type: 'pageOpenSettings'; pageId: string }
   | {
       type: 'pageSaveSettings';
       pageId?: string;
       kind?: PageKind;
       name: string;
       description?: string;
+      channelId?: string;
+      discordToken?: string;
     }
   | {
       type: 'reviewUpdatePage';
@@ -669,6 +678,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
   private lastFocusedWebview?: vscode.Webview;
+  /** Batch push/pull of page configs is in flight. */
+  private pageCloudBatch = false;
   /** Explorer «New marker» draft: resolve with created id or undefined on cancel. */
   private readonly pendingGroupDrafts = new Map<
     string,
@@ -794,6 +805,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Cmd/Ctrl+C while a text editor is focused. */
   copyFromEditor(): Thenable<void> {
     return this.languages.copyFromEditor();
+  }
+
+  /** Shared access.json store used by review pages and Discord config sync. */
+  reviewAccessStore() {
+    return this.review.accessStore();
   }
 
   dispose(): void {
@@ -1319,6 +1335,23 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     void vscode.window.showWarningMessage('Syn3: заметка закрыта');
     return true;
+  }
+
+  private formatCloudFailures(message: string): string {
+    const locale = normalizeLocale(this.store.appearance.language);
+    return message
+      .split('\n')
+      .map((line) => {
+        const split = line.indexOf('\t');
+        if (split < 0) {
+          return line === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : line;
+        }
+        const name = line.slice(0, split);
+        const code = line.slice(split + 1);
+        const detail = code === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : code;
+        return `${name}: ${detail}`;
+      })
+      .join('; ');
   }
 
   /** CSS color for a note card: own color, else parent note / group / root slate. */
@@ -1882,6 +1915,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async onMessage(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
+    if (message.type === 'setPagesFixed') {
+      await this.store.setPagesFixed(message.fixed === true);
+      return;
+    }
     if (message.type === 'ready') {
       this.readyWebviews.add(webview);
       this.rememberFocus(webview, message.pageId);
@@ -2018,6 +2055,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'profile') {
       await this.onProfile(message.action, message.id, message.name);
+      return;
+    }
+    if (message.type === 'pageCloud') {
+      if (message.action === 'pushAll') {
+        await this.onPageCloudPushAll(webview);
+        return;
+      }
+      if (message.action === 'pullAll') {
+        await this.onPageCloudPullAll(webview);
+        return;
+      }
+      await this.onPageCloud(message.action, message.pageId);
       return;
     }
     if (message.type === 'profileOpenSettings') {
@@ -2233,6 +2282,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'pageSaveSettings') {
       await this.savePageSettingsFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'pageOpenSettings') {
+      await this.openMapPageSettings(webview, message.pageId);
       return;
     }
     if (message.type === 'reviewOpenPageSettings') {
@@ -3088,6 +3141,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       positionSync: this.store.positionSync(),
+      pageConfigSync: this.store.allPageConfigSync(),
+      pagesFixed: this.store.pagesFixed(),
+      pagesFixedSent: this.store.pagesFixedSent(),
+      pageDrafts: Object.fromEntries(
+        this.store.pages().map(([id]) => [id, this.store.pageDraftIds(id)]),
+      ),
+      catalogChannels: this.store.catalogChannels(),
       focus: this.store.workingFocus ?? null,
       active: this.activeRelPath(),
       ...this.tabSnapshot(),
@@ -3520,8 +3580,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         await this.openReviewPageSettings(webview, activePage);
         return;
       }
-      await webview.postMessage({
-        type: 'pageSettingsPanel',
+      await this.postPageSettingsPanel(webview, {
         mode: 'edit',
         pageId: activePage,
         kind: page.kind,
@@ -3740,11 +3799,87 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'syncPush') {
-      await this.store.syncPositionsLocalToRemote();
+      const result = await this.store.pushProfileConfig();
+      if (!result.ok && result.message) {
+        const locale = normalizeLocale(this.store.appearance.language);
+        const text =
+          result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      }
       return;
     }
     if (action === 'syncPull') {
-      await this.store.syncPositionsRemoteToLocal();
+      const result = await this.store.pullProfileConfig();
+      if (!result.ok && result.message) {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
+    }
+  }
+
+  private async onPageCloud(
+    action: 'push' | 'pull',
+    pageId: string | undefined,
+  ): Promise<void> {
+    if (!pageId || !this.store.page(pageId)) {
+      return;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    if (action === 'pull') {
+      this.bodyCache.clear();
+      this.bodyFlight.clear();
+      this.bodyGen += 1;
+      this.scheduleAll();
+    }
+    const result =
+      action === 'push'
+        ? await this.store.pushPageConfig(pageId)
+        : await this.store.pullPageConfig(pageId);
+    if (!result.ok && result.message) {
+      const text =
+        result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
+      void vscode.window.showErrorMessage(`Syn3: ${text}`);
+    }
+  }
+
+  /** Send pages that differ from Discord. The lock is one of those differences. */
+  private async onPageCloudPushAll(webview: vscode.Webview): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    this.pageCloudBatch = true;
+    let pushed = 0;
+    let ok = false;
+    try {
+      const result = await this.store.pushDirtyPageConfigs();
+      pushed = result.pushed;
+      ok = result.ok;
+      if (!result.ok && result.message) {
+        void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+      }
+    } finally {
+      this.pageCloudBatch = false;
+      void webview.postMessage({ type: 'pageCloudBusy', busy: false, pushed, ok });
+    }
+  }
+
+  /** Pull every page that has a newer cloud config. */
+  private async onPageCloudPullAll(webview: vscode.Webview): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    this.pageCloudBatch = true;
+    this.bodyCache.clear();
+    this.bodyFlight.clear();
+    this.bodyGen += 1;
+    this.scheduleAll();
+    try {
+      const result = await this.store.pullNewerPageConfigs();
+      if (!result.ok && result.message) {
+        void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+      }
+    } finally {
+      this.pageCloudBatch = false;
+      void webview.postMessage({ type: 'pageCloudBusy', busy: false });
     }
   }
 
@@ -3771,16 +3906,96 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    await this.postPageSettingsPanel(webview, { mode: 'create', kind: pageKind });
+  }
+
+  private mapKindChannelKey(kind: PageKind): 'explorer' | 'notes' | 'links' | undefined {
+    if (kind === 'files') {
+      return 'explorer';
+    }
+    if (kind === 'notes') {
+      return 'notes';
+    }
+    if (kind === 'links') {
+      return 'links';
+    }
+    return undefined;
+  }
+
+  private catalogChannelForPageKind(kind: PageKind): string {
+    const key = this.mapKindChannelKey(kind);
+    if (!key) {
+      return '';
+    }
+    return this.store.catalogChannels()[key] || '';
+  }
+
+  private async postPageSettingsPanel(
+    webview: vscode.Webview,
+    opts: {
+      mode: 'create' | 'edit';
+      pageId?: string;
+      kind: PageKind;
+      name?: string;
+      description?: string;
+    },
+  ): Promise<void> {
+    const status = await secretsStatus(this.hostSecrets);
     await webview.postMessage({
       type: 'pageSettingsPanel',
-      mode: 'create',
-      kind: pageKind,
+      mode: opts.mode,
+      pageId: opts.pageId || '',
+      kind: opts.kind,
+      name: opts.name || '',
+      description: opts.description || '',
+      channelId: this.catalogChannelForPageKind(opts.kind),
+      hasDiscord: status.hasDiscord,
     });
+  }
+
+  private async openMapPageSettings(webview: vscode.Webview, pageId: string): Promise<void> {
+    const page = this.store.page(pageId);
+    if (!page) {
+      return;
+    }
+    if (page.kind === 'review') {
+      await this.openReviewPageSettings(webview, pageId);
+      return;
+    }
+    await this.postPageSettingsPanel(webview, {
+      mode: 'edit',
+      pageId,
+      kind: page.kind,
+      name: page.name,
+      description: page.description || '',
+    });
+  }
+
+  private async savePageDiscordAndChannel(
+    kind: PageKind,
+    channelId: string | undefined,
+    discordToken: string | undefined,
+  ): Promise<void> {
+    if (discordToken?.trim()) {
+      await storeSecrets(this.hostSecrets, { discord: discordToken });
+    }
+    const key = this.mapKindChannelKey(kind);
+    if (!key || channelId === undefined) {
+      return;
+    }
+    await this.store.setCatalogChannels({ [key]: channelId.trim() });
   }
 
   private async savePageSettingsFromPanel(
     webview: vscode.Webview,
-    message: { pageId?: string; kind?: PageKind; name: string; description?: string },
+    message: {
+      pageId?: string;
+      kind?: PageKind;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+    },
   ): Promise<void> {
     const name = message.name.trim();
     const locale = normalizeLocale(this.store.appearance.language);
@@ -3791,11 +4006,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    const channelId = typeof message.channelId === 'string' ? message.channelId.trim() : undefined;
+    if (channelId !== undefined && channelId && !/^\d{5,}$/.test(channelId)) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: t(locale, 'reviewFieldChannelId'),
+      });
+      return;
+    }
     if (message.pageId) {
-      if (!this.store.page(message.pageId)) {
+      const page = this.store.page(message.pageId);
+      if (!page) {
         return;
       }
       await this.store.setPageMeta(message.pageId, name, message.description);
+      await this.savePageDiscordAndChannel(page.kind, channelId, message.discordToken);
       return;
     }
     if (this.store.pages().length >= MAX_PAGES) {
@@ -3809,6 +4034,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!id) {
       return;
     }
+    await this.savePageDiscordAndChannel(kind, channelId, message.discordToken);
     await webview.postMessage({ type: 'pageSettingsSaved' });
     this.activePageByWebview.set(webview, id);
     this.persistSurfacePage(webview, id);
@@ -3875,6 +4101,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       channelId: message.channelId.trim(),
       repoUrl: defaults.origin,
     });
+    await this.store.touchPageConfig(id);
     this.activePageByWebview.set(webview, id);
     this.persistSurfacePage(webview, id);
     await webview.postMessage({ type: 'openPage', pageId: id });
@@ -3977,6 +4204,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       channelId,
       repoUrl: defaults.origin,
     });
+    await this.store.touchPageConfig(message.pageId);
     if (previous?.channelId !== channelId) {
       this.review.dropWindow(message.pageId);
       await this.runReviewChannelLoad(webview, message.pageId, 'initial', () =>
@@ -4136,9 +4364,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const page = this.store.page(pageId);
-    if (page?.kind === 'review') {
-      await this.review.deletePageAccess(pageId);
-    }
     if (!page) {
       return;
     }
@@ -4333,7 +4558,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           <div class="toolbar-menu-flyout" id="menu-create-page-wrap">
             <button type="button" class="toolbar-menu-parent" role="menuitem" id="menu-create-page" aria-haspopup="menu" aria-expanded="false"><span data-i18n="menuNewPage">Create page</span><span class="toolbar-menu-caret" aria-hidden="true">▸</span></button>
             <div id="menu-create-page-sub" class="toolbar-menu-sub" hidden role="menu">
-              <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Groups</span></button>
+              <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Explorer</span></button>
               <button type="button" data-action="createPageNotes" role="menuitem"><span data-i18n="menuNewPageNotes">Notes</span></button>
               <button type="button" data-action="createPageLinks" role="menuitem"><span data-i18n="menuNewPageLinks">Links</span></button>
               <button type="button" data-action="createPageReview" role="menuitem"><span data-i18n="menuNewPageReview">Review</span></button>

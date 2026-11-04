@@ -11,6 +11,7 @@ import {
   storeSecrets,
 } from './accessStore';
 import {
+  DiscordError,
   DiscordMessage,
   editChannelMessage,
   ensureThread,
@@ -18,6 +19,7 @@ import {
   formatMrDiscordBody,
   formatReviewDiscordBody,
   getChannelMessage,
+  isConfigMessage,
   isDiscordSystemNotice,
   isMrMessage,
   isReviewMessage,
@@ -216,6 +218,11 @@ type ReviewWindow = {
   canLoadNewer: boolean;
 };
 
+/** Config snapshots share the channel with MR chips — hide them from the tree. */
+function isReviewChannelNoise(msg: DiscordMessage): boolean {
+  return isDiscordSystemNotice(msg) || isConfigMessage(msg.content);
+}
+
 /** Discord includes this placeholder in the thread listing; `message_count` does not. */
 function isThreadStarter(msg: DiscordMessage): boolean {
   return msg.type === THREAD_STARTER_MESSAGE;
@@ -233,7 +240,7 @@ function takeThreadPage(
 ): { toAdd: DiscordMessage[]; exhausted: boolean; messageCount: number | undefined } {
   const known = new Set(already.map((msg) => msg.id));
   const real = fetchedAsc.filter(
-    (msg) => !isThreadStarter(msg) && !isDiscordSystemNotice(msg) && !known.has(msg.id),
+    (msg) => !isThreadStarter(msg) && !isReviewChannelNoise(msg) && !known.has(msg.id),
   );
   const overflow = real.length > pageSize;
   const toAdd = overflow ? real.slice(-pageSize) : real;
@@ -269,7 +276,7 @@ function windowFromChannelTip(fetchedAsc: DiscordMessage[]): Pick<
   'messages' | 'canLoadOlder' | 'canLoadNewer'
 > {
   const sorted = sortMessagesAsc(fetchedAsc);
-  const visible = sorted.filter((msg) => !isDiscordSystemNotice(msg));
+  const visible = sorted.filter((msg) => !isReviewChannelNoise(msg));
   if (sorted.length > CHANNEL_VISIBLE) {
     return {
       messages: visible.slice(-CHANNEL_VISIBLE),
@@ -293,7 +300,7 @@ function takeOlderPage(batchAsc: DiscordMessage[]): {
   toAdd: DiscordMessage[];
   canLoadOlder: boolean;
 } {
-  const visible = batchAsc.filter((msg) => !isDiscordSystemNotice(msg));
+  const visible = batchAsc.filter((msg) => !isReviewChannelNoise(msg));
   if (batchAsc.length > CHANNEL_VISIBLE) {
     return {
       toAdd: visible.slice(-CHANNEL_VISIBLE),
@@ -311,7 +318,7 @@ function takeNewerPage(batchAsc: DiscordMessage[]): {
   toAdd: DiscordMessage[];
   canLoadNewer: boolean;
 } {
-  const visible = batchAsc.filter((msg) => !isDiscordSystemNotice(msg));
+  const visible = batchAsc.filter((msg) => !isReviewChannelNoise(msg));
   if (batchAsc.length > CHANNEL_VISIBLE) {
     return {
       toAdd: visible.slice(0, CHANNEL_VISIBLE),
@@ -346,7 +353,7 @@ function windowAroundMessage(
   const showBefore = beforeAll.slice(-2);
   const showAfter = afterAll.slice(0, 2);
   return {
-    messages: [...showBefore, sorted[idx], ...showAfter].filter((msg) => !isDiscordSystemNotice(msg)),
+    messages: [...showBefore, sorted[idx], ...showAfter].filter((msg) => !isReviewChannelNoise(msg)),
     canLoadOlder: beforeAll.length > showBefore.length,
     canLoadNewer: afterAll.length > showAfter.length,
   };
@@ -548,9 +555,9 @@ export class ReviewMapController {
         ...this.skeletonFields(pageId),
       };
     }
-    const messages = win.messages.filter((m) => !isDiscordSystemNotice(m)).map((m) => {
+    const messages = win.messages.filter((m) => !isReviewChannelNoise(m)).map((m) => {
       const thread = m.thread?.id ? win.threads.get(m.thread.id) : undefined;
-      const replies = (thread?.replies ?? []).filter((r) => !isDiscordSystemNotice(r)).map((r) => {
+      const replies = (thread?.replies ?? []).filter((r) => !isReviewChannelNoise(r)).map((r) => {
         const base = toReplyBase(r);
         const meta = this.replyMeta.get(r.id);
         if (!meta) {
@@ -609,6 +616,28 @@ export class ReviewMapController {
     return findOpenMrByBranch(access.repoUrl, token, sourceBranch);
   }
 
+  /**
+   * A channel is already on screen. A later fetch that never left the machine
+   * (no network) must not replace that window with the fetch error.
+   */
+  private hasLoadedContent(pageId: string): boolean {
+    const win = this.windows.get(pageId);
+    if (!win) {
+      return false;
+    }
+    return win.messages.some((message) => !isReviewChannelNoise(message));
+  }
+
+  private noteChannelError(pageId: string, result: DiscordError, dropWindow: boolean): void {
+    if (result.status === 0 && this.hasLoadedContent(pageId)) {
+      return;
+    }
+    this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+    if (dropWindow) {
+      this.windows.delete(pageId);
+    }
+  }
+
   async loadInitial(pageId: string): Promise<ReviewPageState> {
     this.loading.add(pageId);
     this.errors.delete(pageId);
@@ -627,8 +656,7 @@ export class ReviewMapController {
           limit: CHANNEL_FETCH_SIDE,
         });
         if (!result.ok) {
-          this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
-          this.windows.delete(pageId);
+          this.noteChannelError(pageId, result, true);
         } else {
           const sliced = windowFromChannelTip(result.value);
           const win: ReviewWindow = {
@@ -717,7 +745,7 @@ export class ReviewMapController {
         ...(direction === 'older' ? { before: edge.id } : { after: edge.id }),
       });
       if (!result.ok) {
-        this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+        this.noteChannelError(pageId, result, false);
       } else {
         const known = new Set(win.messages.map((m) => m.id));
         const batch = sortMessagesAsc(result.value.filter((m) => !known.has(m.id)));
@@ -765,7 +793,7 @@ export class ReviewMapController {
         before,
       });
       if (!result.ok) {
-        this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+        this.noteChannelError(pageId, result, false);
       } else {
         const page = takeThreadPage(
           sortMessagesAsc(result.value),
@@ -807,7 +835,7 @@ export class ReviewMapController {
           limit: THREAD_INITIAL + THREAD_PROBE,
         });
         if (!result.ok) {
-          this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+          this.noteChannelError(pageId, result, false);
         } else {
           const page = takeThreadPage(
             sortMessagesAsc(result.value),
@@ -844,7 +872,7 @@ export class ReviewMapController {
         limit: CHANNEL_FETCH_AROUND,
       });
       if (!result.ok) {
-        this.errors.set(pageId, result.message || 'ошибка синхронизации с discord');
+        this.noteChannelError(pageId, result, false);
       } else {
         const sliced = windowAroundMessage(result.value, messageId);
         const win: ReviewWindow = {

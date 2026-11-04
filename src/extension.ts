@@ -183,6 +183,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
+  store.bindCloud(map.reviewAccessStore(), context.secrets);
+
   await map.syncGroupsLayoutContext();
   await map.syncTopCollapsedContext(false);
   await store.init();

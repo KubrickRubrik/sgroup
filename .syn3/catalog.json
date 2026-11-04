@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "pages": {
+    "map": {
+      "name": "Карта",
+      "kind": "files",
+      "order": 1
+    },
+    "page-2": {
+      "name": "Тест проводника 2",
+      "kind": "files",
+      "order": 2
+    },
+    "page-page": {
+      "name": "Проводник",
+      "kind": "files",
+      "order": 3
+    },
+    "page-3": {
+      "name": "Тест проводника 3",
+      "kind": "files",
+      "order": 4
+    }
+  },
+  "channels": {
+    "profile": "1567423304115953664",
+    "explorer": "1567455453481541652"
+  }
+}

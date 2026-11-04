@@ -45,6 +45,26 @@ export interface WorkingFocus {
   id: string;
 }
 
+/** Local queue: tell the page channel this page was removed. */
+export interface PageTombstone {
+  kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
+  channelId: string;
+  name: string;
+  pageKind: 'files' | 'notes' | 'links' | 'review';
+  order: number;
+  number: number;
+  headerDate: string;
+  messageId: string;
+}
+
+/** Active map page per surface — local-only, not in Discord configs. */
+export interface LocalSurfaces {
+  explorer: { page: string };
+  bottom: { page: string };
+  left: { page: string };
+  right: { page: string };
+}
+
 export interface PositionsFile {
   version: 1;
   profiles: Record<string, ProfileLayout>;
@@ -53,6 +73,21 @@ export interface PositionsFile {
    * ProfileLayout / pos_remote fingerprints.
    */
   focus?: Record<string, WorkingFocus>;
+  /** Entity ids under the draft divider, per page. Cleared after a successful push. */
+  drafts?: Record<string, string[]>;
+  /** Fingerprint of the last pushed or pulled page snapshot. A mismatch means the page can be sent. */
+  pageClean?: Record<string, string>;
+  /**
+   * Pages removed locally whose Discord message still exists.
+   * Retried until the channel accepts a deleted page config.
+   */
+  pageTombstones?: Record<string, PageTombstone>;
+  /** Active page per panel. */
+  surfaces?: LocalSurfaces;
+  /** Lock shown on every page tab. A difference from pagesFixedSent is a pending send. */
+  pagesFixed?: true;
+  /** Lock value last published to Discord. Absent means the sent pages were unlocked. */
+  pagesFixedSent?: true;
 }
 
 function emptyCollapsedLocal(): SurfaceCollapsed {
@@ -368,6 +403,98 @@ export function normalizeProfileLayout(raw: unknown): ProfileLayout {
 /**
  * @param options.focus — keep the local-only working-card map (pos_local only).
  */
+export function normalizeDrafts(raw: unknown): Record<string, string[]> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const result: Record<string, string[]> = {};
+  for (const [pageId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    const ids = value.filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (ids.length > 0) {
+      result[pageId] = ids;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/** Last synced page fingerprints. Local-only, same lifetime as drafts. */
+export function normalizePageClean(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  for (const [pageId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim()) {
+      result[pageId] = value.trim();
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizePageTombstones(raw: unknown): Record<string, PageTombstone> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const result: Record<string, PageTombstone> = {};
+  for (const [pageId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const item = value as Partial<PageTombstone>;
+    const kind = item.kind;
+    const pageKind = item.pageKind;
+    const channelId = typeof item.channelId === 'string' ? item.channelId.trim() : '';
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    if (
+      (kind !== 'EXPLORER' && kind !== 'NOTES' && kind !== 'LINKS' && kind !== 'REVIEW') ||
+      (pageKind !== 'files' && pageKind !== 'notes' && pageKind !== 'links' && pageKind !== 'review') ||
+      !channelId ||
+      !name
+    ) {
+      continue;
+    }
+    result[pageId] = {
+      kind,
+      channelId,
+      name,
+      pageKind,
+      order: typeof item.order === 'number' ? item.order : 0,
+      number: typeof item.number === 'number' ? item.number : 0,
+      headerDate: typeof item.headerDate === 'string' ? item.headerDate : '',
+      messageId: typeof item.messageId === 'string' ? item.messageId : '',
+    };
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+export function normalizeLocalSurfaces(raw: unknown): LocalSurfaces | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const source = raw as Partial<LocalSurfaces>;
+  const pick = (key: keyof LocalSurfaces): { page: string } | undefined => {
+    const entry = source[key];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return undefined;
+    }
+    const page = typeof (entry as { page?: unknown }).page === 'string'
+      ? (entry as { page: string }).page.trim()
+      : '';
+    return page ? { page } : undefined;
+  };
+  const explorer = pick('explorer');
+  const bottom = pick('bottom');
+  const left = pick('left');
+  const right = pick('right');
+  if (!explorer || !bottom || !left || !right) {
+    return undefined;
+  }
+  return { explorer, bottom, left, right };
+}
+
 export function normalizePositions(
   raw: unknown,
   options?: { focus?: boolean },
@@ -376,7 +503,16 @@ export function normalizePositions(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return result;
   }
-  const source = raw as { profiles?: unknown; focus?: unknown };
+  const source = raw as {
+    profiles?: unknown;
+    focus?: unknown;
+    drafts?: unknown;
+    pageClean?: unknown;
+    pageTombstones?: unknown;
+    surfaces?: unknown;
+    pagesFixed?: unknown;
+    pagesFixedSent?: unknown;
+  };
   if (!source.profiles || typeof source.profiles !== 'object' || Array.isArray(source.profiles)) {
     return result;
   }
@@ -387,6 +523,28 @@ export function normalizePositions(
     const focus = normalizeFocus(source.focus);
     if (focus) {
       result.focus = focus;
+    }
+    const drafts = normalizeDrafts(source.drafts);
+    if (drafts) {
+      result.drafts = drafts;
+    }
+    const pageClean = normalizePageClean(source.pageClean);
+    if (pageClean) {
+      result.pageClean = pageClean;
+    }
+    const pageTombstones = normalizePageTombstones(source.pageTombstones);
+    if (pageTombstones) {
+      result.pageTombstones = pageTombstones;
+    }
+    const surfaces = normalizeLocalSurfaces(source.surfaces);
+    if (surfaces) {
+      result.surfaces = surfaces;
+    }
+    if (source.pagesFixed === true) {
+      result.pagesFixed = true;
+    }
+    if (source.pagesFixedSent === true) {
+      result.pagesFixedSent = true;
     }
   }
   return result;

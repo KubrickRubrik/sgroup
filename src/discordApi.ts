@@ -7,6 +7,16 @@ export const MR_PREFIX = 'MR_SYN3';
 export const DMR_PREFIX = 'DMR_SYN3';
 /** Review message prefix in Discord threads: `R_SYN3: Ревью N | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
+export {
+  PROFILE_CONFIG_PREFIX,
+  EXPLORER_CONFIG_PREFIX,
+  NOTES_CONFIG_PREFIX,
+  LINKS_CONFIG_PREFIX,
+  REVIEW_CONFIG_PREFIX,
+  isConfigMessage,
+  parseConfigHeader,
+  formatConfigHeader,
+} from './configFormat';
 /**
  * Severity line inside a review file / agent stdout.
  * Canonical form is `H:n | M:n | S:n`. Legacy `L` (former low) maps to `S`.
@@ -592,6 +602,17 @@ export async function postMessageWithFile(
 ): Promise<DiscordResult<DiscordMessage>> {
   const filename = path.basename(filePath);
   const bytes = await fs.readFile(filePath);
+  return postMessageWithAttachment(token, channelId, content, filename, bytes);
+}
+
+/** Post a channel message with an in-memory attachment. */
+export async function postMessageWithAttachment(
+  token: string,
+  channelId: string,
+  content: string,
+  filename: string,
+  bytes: Uint8Array | Buffer,
+): Promise<DiscordResult<DiscordMessage>> {
   const form = new FormData();
   form.append('payload_json', JSON.stringify(messagePayload(content)));
   form.append('files[0]', new Blob([new Uint8Array(bytes)]), filename);

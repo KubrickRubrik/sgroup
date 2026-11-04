@@ -14,7 +14,8 @@
       ],
       "reviewSkillPath": ".cursor/review/SKILL.md",
       "reviewDirPath": ".syn3/review",
-      "reviewModel": "grok-4.7-high-fast"
+      "reviewModel": "grok-4.7-high-fast",
+      "reviewFixModel": "grok-4.7-high"
     }
   ]
 }

@@ -5,6 +5,8 @@ import {
   deleteProfileHostTokens,
   GitHostProvider,
   readProfileHostToken,
+  secretsStatus,
+  storeSecrets,
   writeProfileHostToken,
 } from './accessStore';
 import { normalizeLocale, stringsFor, t, Syn3Locale } from './i18n';
@@ -35,6 +37,14 @@ type IncomingMessage =
       nick?: string;
       token?: string;
       clearToken?: boolean;
+    }
+  | {
+      type: 'setCatalogChannels';
+      channelProfile?: string;
+      channelExplorer?: string;
+      channelNotes?: string;
+      channelLinks?: string;
+      discordToken?: string;
     }
   | {
       type: 'profile';
@@ -120,6 +130,10 @@ export class SettingsPanel implements vscode.Disposable {
     }
     if (message.type === 'setGitBinding') {
       await this.onGitBinding(message);
+      return;
+    }
+    if (message.type === 'setCatalogChannels') {
+      await this.onCatalogChannels(message);
       return;
     }
     if (message.type === 'listProjectDir') {
@@ -218,11 +232,26 @@ export class SettingsPanel implements vscode.Disposable {
       return;
     }
     if (action === 'syncPush') {
-      await this.store.syncPositionsLocalToRemote();
+      const profileChannel = this.store.catalogChannels().profile?.trim() || '';
+      if (!profileChannel) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'channelProfileRequired')}`);
+        return;
+      }
+      const result = await this.store.pushProfileConfig();
+      if (!result.ok && result.message) {
+        const text =
+          result.message === 'cloudPullFirst'
+            ? t(this.locale(), 'cloudPullFirst')
+            : result.message;
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      }
       return;
     }
     if (action === 'syncPull') {
-      await this.store.syncPositionsRemoteToLocal();
+      const result = await this.store.pullProfileConfig();
+      if (!result.ok && result.message) {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
     }
   }
 
@@ -242,6 +271,38 @@ export class SettingsPanel implements vscode.Disposable {
     } else if (message.token?.trim()) {
       await writeProfileHostToken(this.secrets, profileId, provider, message.token);
     }
+    await this.postState();
+  }
+
+  private async onCatalogChannels(message: {
+    channelProfile?: string;
+    channelExplorer?: string;
+    channelNotes?: string;
+    channelLinks?: string;
+    discordToken?: string;
+  }): Promise<void> {
+    const values = [
+      message.channelProfile,
+      message.channelExplorer,
+      message.channelNotes,
+      message.channelLinks,
+    ];
+    for (const value of values) {
+      const trimmed = (value ?? '').trim();
+      if (trimmed && !/^\d{5,}$/.test(trimmed)) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'reviewFieldChannelId')}`);
+        return;
+      }
+    }
+    if (message.discordToken?.trim()) {
+      await storeSecrets(this.secrets, { discord: message.discordToken });
+    }
+    await this.store.setCatalogChannels({
+      profile: message.channelProfile ?? '',
+      explorer: message.channelExplorer ?? '',
+      notes: message.channelNotes ?? '',
+      links: message.channelLinks ?? '',
+    });
     await this.postState();
   }
 
@@ -272,6 +333,8 @@ export class SettingsPanel implements vscode.Disposable {
     const profileId = this.store.activeProfileId;
     const githubToken = (await readProfileHostToken(this.secrets, profileId, 'github')) || '';
     const gitlabToken = (await readProfileHostToken(this.secrets, profileId, 'gitlab')) || '';
+    const channels = this.store.catalogChannels();
+    const secrets = await secretsStatus(this.secrets);
     await this.panel.webview.postMessage({
       type: 'state',
       appearance: this.store.appearance,
@@ -290,6 +353,13 @@ export class SettingsPanel implements vscode.Disposable {
       reviewModel: reviewPaths.model,
       reviewFixModel: reviewPaths.fixModel,
       positionSync: this.store.positionSync(),
+      catalogChannels: {
+        profile: channels.profile || '',
+        explorer: channels.explorer || '',
+        notes: channels.notes || '',
+        links: channels.links || '',
+      },
+      hasDiscord: secrets.hasDiscord,
       locale,
       i18n: stringsFor(locale),
       stylesPath: STYLES_PATH,
@@ -327,16 +397,17 @@ export class SettingsPanel implements vscode.Disposable {
       padding: 20px 24px 40px;
     }
     .title-row {
-      align-items: flex-start;
+      align-items: center;
       display: flex;
-      gap: 16px;
+      flex-wrap: wrap;
+      gap: 10px 16px;
       justify-content: space-between;
       margin: 0 0 6px;
     }
     h1 {
       font-size: 1.35em;
       font-weight: 600;
-      margin: 0;
+      margin: 0 0 12px;
     }
     .profile-switch {
       position: relative;
@@ -490,7 +561,7 @@ export class SettingsPanel implements vscode.Disposable {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      margin: 10px 0 0;
+      margin: 0;
     }
     .sync-actions button {
       align-items: center;
@@ -629,7 +700,8 @@ export class SettingsPanel implements vscode.Disposable {
       align-items: center;
       grid-template-columns: minmax(8rem, 11rem) 1fr;
     }
-    .row.text-row input[type="text"] {
+    .row.text-row input[type="text"],
+    .row.text-row input[type="password"] {
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border, transparent);
       border-radius: 2px;
@@ -639,6 +711,12 @@ export class SettingsPanel implements vscode.Disposable {
       max-width: none;
       padding: 4px 8px;
       width: 100%;
+    }
+    .channels {
+      margin-bottom: 20px;
+    }
+    .channels > .note[data-i18n="noteChannels"] {
+      margin-bottom: 14px;
     }
     #reviewModel,
     #reviewFixModel {
@@ -893,8 +971,33 @@ export class SettingsPanel implements vscode.Disposable {
 </head>
 <body>
   <main>
+    <h1 data-i18n="settingsTitle">Syn3 Settings</h1>
+    <section class="channels">
+      <h2 data-i18n="sectionChannels">Discord channels</h2>
+      <p class="note" data-i18n="noteChannels"></p>
+      <div class="row text-row">
+        <label for="channelProfile" data-i18n="labelChannelProfile">Profile channel</label>
+        <input id="channelProfile" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
+      </div>
+      <div class="row text-row">
+        <label for="channelExplorer" data-i18n="labelChannelExplorer">Explorer channel</label>
+        <input id="channelExplorer" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
+      </div>
+      <div class="row text-row">
+        <label for="channelNotes" data-i18n="labelChannelNotes">Notes maps</label>
+        <input id="channelNotes" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
+      </div>
+      <div class="row text-row">
+        <label for="channelLinks" data-i18n="labelChannelLinks">Links maps</label>
+        <input id="channelLinks" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
+      </div>
+      <div class="row text-row" id="discord-token-row">
+        <label for="discordToken" data-i18n="reviewFieldDiscordToken">Discord bot token</label>
+        <input id="discordToken" type="password" spellcheck="false" autocomplete="new-password">
+      </div>
+      <p class="note" id="discord-token-saved" hidden></p>
+    </section>
     <div class="title-row">
-      <h1 data-i18n="settingsTitle">Syn3 Settings</h1>
       <div class="profile-switch" id="profile-switch">
         <button type="button" class="profile-switch-btn" id="profile-switch-btn" aria-haspopup="menu" aria-expanded="false">
           <span class="profile-switch-text">
@@ -913,7 +1016,18 @@ export class SettingsPanel implements vscode.Disposable {
           </div>
         </div>
       </div>
+      <div class="sync-actions">
+        <button type="button" id="pos-sync-pull" data-i18n-title="profileSyncPull" data-i18n-aria="profileSyncPull">
+          <span class="sync-arrow" aria-hidden="true">↓</span>
+          <span data-i18n="labelPositionsPull">Pull</span>
+        </button>
+        <button type="button" id="pos-sync-push" data-i18n-title="profileSyncPush" data-i18n-aria="profileSyncPush">
+          <span class="sync-arrow" aria-hidden="true">↑</span>
+          <span data-i18n="labelPositionsPush">Send</span>
+        </button>
+      </div>
     </div>
+    <p class="note" data-i18n="notePositions"></p>
     <section class="bindings">
       <h2 data-i18n="sectionBindings">Accounts</h2>
       <div class="row bind-row">
@@ -969,21 +1083,6 @@ export class SettingsPanel implements vscode.Disposable {
         <span class="value" data-for="reviewRefreshSec"></span>
       </div>
       <p class="note" data-i18n="noteReviewRefresh"></p>
-    </section>
-
-    <section>
-      <h2 data-i18n="sectionPositions">Card positions</h2>
-      <p class="note" data-i18n="notePositions"></p>
-      <div class="sync-actions">
-        <button type="button" id="pos-sync-push" data-i18n-title="profileSyncPush" data-i18n-aria="profileSyncPush">
-          <span class="sync-arrow" aria-hidden="true">↑</span>
-          <span data-i18n="labelPositionsPush">To remote</span>
-        </button>
-        <button type="button" id="pos-sync-pull" data-i18n-title="profileSyncPull" data-i18n-aria="profileSyncPull">
-          <span class="sync-arrow" aria-hidden="true">↓</span>
-          <span data-i18n="labelPositionsPull">From remote</span>
-        </button>
-      </div>
     </section>
 
     <section>
@@ -1198,6 +1297,13 @@ export class SettingsPanel implements vscode.Disposable {
     const settingsHint = document.getElementById('settings-hint');
     const posSyncPush = document.getElementById('pos-sync-push');
     const posSyncPull = document.getElementById('pos-sync-pull');
+    const channelProfile = document.getElementById('channelProfile');
+    const channelExplorer = document.getElementById('channelExplorer');
+    const channelNotes = document.getElementById('channelNotes');
+    const channelLinks = document.getElementById('channelLinks');
+    const discordToken = document.getElementById('discordToken');
+    const discordTokenRow = document.getElementById('discord-token-row');
+    const discordTokenSaved = document.getElementById('discord-token-saved');
     const reviewSkillPath = document.getElementById('reviewSkillPath');
     const reviewDirPath = document.getElementById('reviewDirPath');
     const reviewModel = document.getElementById('reviewModel');
@@ -1230,6 +1336,37 @@ export class SettingsPanel implements vscode.Disposable {
 
     function tr(key) {
       return i18n[key] || key;
+    }
+
+    function applyCatalogChannels(channels, hasDiscord) {
+      const next = channels && typeof channels === 'object' ? channels : {};
+      if (channelProfile instanceof HTMLInputElement) channelProfile.value = next.profile || '';
+      if (channelExplorer instanceof HTMLInputElement) channelExplorer.value = next.explorer || '';
+      if (channelNotes instanceof HTMLInputElement) channelNotes.value = next.notes || '';
+      if (channelLinks instanceof HTMLInputElement) channelLinks.value = next.links || '';
+      const saved = hasDiscord === true;
+      if (discordTokenRow) discordTokenRow.hidden = saved;
+      if (discordTokenSaved) {
+        discordTokenSaved.hidden = !saved;
+        discordTokenSaved.textContent = saved
+          ? tr('reviewFieldDiscordToken') + ': ' + tr('reviewTokenSaved')
+          : '';
+      }
+      if (!saved && discordToken instanceof HTMLInputElement) {
+        discordToken.value = '';
+      }
+    }
+
+    function emitCatalogChannels() {
+      if (suppress) return;
+      vscode.postMessage({
+        type: 'setCatalogChannels',
+        channelProfile: channelProfile instanceof HTMLInputElement ? channelProfile.value : '',
+        channelExplorer: channelExplorer instanceof HTMLInputElement ? channelExplorer.value : '',
+        channelNotes: channelNotes instanceof HTMLInputElement ? channelNotes.value : '',
+        channelLinks: channelLinks instanceof HTMLInputElement ? channelLinks.value : '',
+        discordToken: discordToken instanceof HTMLInputElement ? discordToken.value : undefined,
+      });
     }
 
     function applyPositionSync(sync) {
@@ -1395,25 +1532,6 @@ export class SettingsPanel implements vscode.Disposable {
         }
         const actions = document.createElement('span');
         actions.className = 'profile-actions';
-        if (profile.id === activeId) {
-          const pushBtn = document.createElement('button');
-          pushBtn.type = 'button';
-          pushBtn.title = tr('profileSyncPush');
-          pushBtn.setAttribute('aria-label', tr('profileSyncPush'));
-          pushBtn.setAttribute('data-profile-action', 'syncPush');
-          pushBtn.setAttribute('data-profile-id', profile.id);
-          pushBtn.textContent = '↑';
-          pushBtn.disabled = !positionSync.canPush;
-          const pullBtn = document.createElement('button');
-          pullBtn.type = 'button';
-          pullBtn.title = tr('profileSyncPull');
-          pullBtn.setAttribute('aria-label', tr('profileSyncPull'));
-          pullBtn.setAttribute('data-profile-action', 'syncPull');
-          pullBtn.setAttribute('data-profile-id', profile.id);
-          pullBtn.textContent = '↓';
-          pullBtn.disabled = !positionSync.canPull;
-          actions.append(pushBtn, pullBtn);
-        }
         if (profile.id !== GENERAL_ID) {
           const renameBtn = document.createElement('button');
           renameBtn.type = 'button';
@@ -1523,6 +1641,10 @@ export class SettingsPanel implements vscode.Disposable {
     posSyncPull?.addEventListener('click', () => {
       vscode.postMessage({ type: 'profile', action: 'syncPull' });
     });
+
+    for (const input of [channelProfile, channelExplorer, channelNotes, channelLinks, discordToken]) {
+      input?.addEventListener('change', () => emitCatalogChannels());
+    }
 
     for (const input of [reviewSkillPath, reviewDirPath, reviewModel, reviewFixModel]) {
       input?.addEventListener('change', () => emitReviewPaths());
@@ -1690,6 +1812,7 @@ export class SettingsPanel implements vscode.Disposable {
           event.data.reviewFixModel,
         );
         applyGitBindings(event.data.activeProfileId, event.data.gitBindings);
+        applyCatalogChannels(event.data.catalogChannels, event.data.hasDiscord);
         applyPositionSync(event.data.positionSync);
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);
       }
