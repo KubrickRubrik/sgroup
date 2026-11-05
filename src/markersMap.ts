@@ -3965,6 +3965,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (action === 'openSettings') {
       await vscode.commands.executeCommand('syn3.openSettings');
+      return;
+    }
+    if (action === 'whySyn3') {
+      await this.openInstruction('why-syn3.md');
     }
   }
 
@@ -4935,6 +4939,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
           <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>
           <button type="button" data-action="openSettings" role="menuitem">${icon('gear')}Settings</button>
+          <div class="toolbar-menu-sep" role="separator"></div>
+          <button type="button" data-action="whySyn3" role="menuitem" id="menu-why">${icon('bill')}<span data-i18n="menuWhy">Why Syn3</span></button>
         </div>
       </div>
     </div>

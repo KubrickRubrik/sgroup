@@ -1547,6 +1547,7 @@
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
     setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
+    setMenuItemLocaleByAction('whySyn3', 'menuWhy');
     setCollapseButton();
   }
 
