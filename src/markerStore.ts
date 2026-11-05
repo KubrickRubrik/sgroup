@@ -801,6 +801,10 @@ export class MarkerStore implements vscode.Disposable {
   private profileDirty = false;
   private pageCloudNewer: Record<string, boolean> = {};
   private profileCloudNewer = false;
+  /** Remote pages found in Discord that are not local yet. Applied on pull. */
+  private pendingRemote: Record<string, { file: PageConfigFile; stamp: CloudStamp }> = {};
+  /** Shared Discord channel scan; concurrent callers await the same run. */
+  private cloudHintFlight: Promise<string[]> | undefined;
   private accessStore?: AccessStore;
   private secrets?: vscode.SecretStorage;
 
@@ -1097,6 +1101,40 @@ export class MarkerStore implements vscode.Disposable {
     return result;
   }
 
+  /** How many Discord pages are waiting to be created by pull. */
+  pendingRemoteCount(): number {
+    return Object.keys(this.pendingRemote).length;
+  }
+
+  /** True when any catalog or review-page channel id is set. */
+  hasConfigChannel(): boolean {
+    const channels = this.catalog.channels;
+    if (
+      channels.profile?.trim() ||
+      channels.explorer?.trim() ||
+      channels.notes?.trim() ||
+      channels.links?.trim() ||
+      channels.review?.trim()
+    ) {
+      return true;
+    }
+    for (const access of Object.values(this.accessStore?.entries() ?? {})) {
+      if (access.channelId?.trim()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Manual Discord scan from the pager reload button. */
+  async checkCloud(): Promise<{ ok: boolean; message?: string }> {
+    const errors = await this.refreshCloudHints();
+    if (errors.length === 0) {
+      return { ok: true };
+    }
+    return { ok: false, message: errors.join('\n') };
+  }
+
   /** Page tabs show the fixed mark. The mark itself is a pending change until it is sent. */
   pagesFixed(): boolean {
     return this.posLocal.pagesFixed === true;
@@ -1202,6 +1240,7 @@ export class MarkerStore implements vscode.Disposable {
       this.pageCloud = {};
       this.dirtyPages.clear();
       this.pageCloudNewer = {};
+      this.pendingRemote = {};
       this.profileDirty = false;
       this.profileCloudNewer = false;
       this.profilesData = emptyProfiles();
@@ -3910,6 +3949,7 @@ export class MarkerStore implements vscode.Disposable {
       this.data = emptyData();
       this.catalog = buildCatalogFromPages(this.data.pages, { profile: '' });
       this.pageCloud = {};
+      this.pendingRemote = {};
       this.surfacesNeedLegacyHydration = true;
       this.lastError = undefined;
       await this.persistSplitConfig();
@@ -4160,16 +4200,34 @@ export class MarkerStore implements vscode.Disposable {
     return getSecret(this.secrets, SECRET_DISCORD);
   }
 
-  private async refreshCloudHints(): Promise<void> {
+  private async refreshCloudHints(): Promise<string[]> {
+    if (this.cloudHintFlight) {
+      return this.cloudHintFlight;
+    }
+    this.cloudHintFlight = this.refreshCloudHintsNow().finally(() => {
+      this.cloudHintFlight = undefined;
+    });
+    return this.cloudHintFlight;
+  }
+
+  private async refreshCloudHintsNow(): Promise<string[]> {
+    const errors: string[] = [];
+    const previousPending = Object.keys(this.pendingRemote).sort().join('\0');
+    this.pendingRemote = {};
     const token = await this.discordToken();
     if (!token) {
-      return;
+      if (previousPending) {
+        this.changeEmitter.fire();
+      }
+      return ['Discord token is not set'];
     }
     let changed = false;
     const profileChannel = resolveConfigChannel(this.catalog.channels, 'PROFILE');
     if (profileChannel) {
       const latest = await findLatestConfigMessage(token, profileChannel, 'PROFILE', undefined);
-      if (latest.ok && latest.value) {
+      if (!latest.ok) {
+        errors.push(latest.message);
+      } else if (latest.value) {
         const newer = latestIsNewer(latest.value, this.catalog.cloud);
         if (this.profileCloudNewer !== newer) {
           this.profileCloudNewer = newer;
@@ -4191,6 +4249,7 @@ export class MarkerStore implements vscode.Disposable {
         this.pageIdsInChannel(kind, channel),
       );
       if (!listed.ok) {
+        errors.push(listed.message);
         return;
       }
       for (const latest of listed.value) {
@@ -4201,18 +4260,23 @@ export class MarkerStore implements vscode.Disposable {
         if (!this.data.pages[pageId]) {
           const downloaded = await downloadConfigAttachment(token, latest.attachmentUrl);
           if (!downloaded.ok) {
+            errors.push(downloaded.message);
             continue;
           }
           let remoteFile: PageConfigFile;
           try {
             remoteFile = normalizePageConfig(JSON.parse(downloaded.value));
-          } catch {
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : String(error));
             continue;
           }
           if (remoteFile.deleted || (remoteFile.pageId && remoteFile.pageId !== pageId)) {
             continue;
           }
-          await this.adoptRemotePage(pageId, remoteFile, stampFromLatest(latest));
+          this.pendingRemote[pageId] = {
+            file: remoteFile,
+            stamp: stampFromLatest(latest),
+          };
           continue;
         }
         const newer = latestIsNewer(latest, this.pageCloud[pageId]);
@@ -4237,9 +4301,11 @@ export class MarkerStore implements vscode.Disposable {
     for (const [pageId, tomb] of Object.entries(pending)) {
       await this.postPageTombstone(pageId, tomb);
     }
-    if (changed) {
+    const nextPending = Object.keys(this.pendingRemote).sort().join('\0');
+    if (changed || previousPending !== nextPending) {
       this.changeEmitter.fire();
     }
+    return errors;
   }
 
   /** Local pages of this kind whose messages are posted to `channel`. */
@@ -4271,18 +4337,26 @@ export class MarkerStore implements vscode.Disposable {
     stamp: CloudStamp,
   ): Promise<void> {
     await this.enqueue(async () => {
-      if (this.data.pages[pageId] || remoteFile.deleted) {
-        return;
-      }
-      await this.applyRemotePageFile(pageId, remoteFile, stamp, []);
-      this.present = this.capture();
-      this.pagePresent = this.captureAllPageSnapshots();
-      this.dirtyPages.delete(pageId);
-      this.pageCloudNewer[pageId] = false;
-      this.rememberPageClean(pageId);
-      await this.persistPosLocal();
-      this.changeEmitter.fire();
+      await this.adoptRemotePageNow(pageId, remoteFile, stamp);
     });
+  }
+
+  private async adoptRemotePageNow(
+    pageId: string,
+    remoteFile: PageConfigFile,
+    stamp: CloudStamp,
+  ): Promise<void> {
+    if (this.data.pages[pageId] || remoteFile.deleted) {
+      return;
+    }
+    await this.applyRemotePageFile(pageId, remoteFile, stamp, []);
+    this.present = this.capture();
+    this.pagePresent = this.captureAllPageSnapshots();
+    this.dirtyPages.delete(pageId);
+    this.pageCloudNewer[pageId] = false;
+    this.rememberPageClean(pageId);
+    await this.persistPosLocal();
+    this.changeEmitter.fire();
   }
 
   private async postPageTombstone(pageId: string, tomb: PageTombstone): Promise<void> {
@@ -4475,6 +4549,21 @@ export class MarkerStore implements vscode.Disposable {
       }
       const name = this.data.pages[id]?.name?.trim() || id;
       lines.push(`${name}\t${result.message}`);
+    }
+    const pendingIds = Object.keys(this.pendingRemote);
+    for (const pageId of pendingIds) {
+      const pending = this.pendingRemote[pageId];
+      if (!pending) {
+        continue;
+      }
+      try {
+        await this.adoptRemotePageNow(pageId, pending.file, pending.stamp);
+        delete this.pendingRemote[pageId];
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const name = pending.file.page?.name?.trim() || pageId;
+        lines.push(`${name}\t${detail}`);
+      }
     }
     if (lines.length === 0) {
       return { ok: true };

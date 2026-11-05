@@ -36,6 +36,7 @@
   const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
   const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
   const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
+  const toolbarExplorer = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-explorer'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
   const toolbarMoreWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-more'));
@@ -223,6 +224,12 @@
   });
   toolbarViewWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-view');
+    if (!toolbarViewMenu || !toolbarViewMenu.hidden) {
+      return;
+    }
+    closeToolbarMenus();
+    closeContextMenu();
+    openToolbarViewMenu();
   });
   toolbarViewWrap?.addEventListener('mouseleave', () => {
     if (toolbarViewMenu && !toolbarViewMenu.hidden) {
@@ -251,6 +258,15 @@
   });
   toolbarCreateWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-create');
+    if (activePage()?.kind === 'links') {
+      return;
+    }
+    if (!toolbarCreateMenu || !toolbarCreateMenu.hidden) {
+      return;
+    }
+    closeToolbarMenus();
+    closeContextMenu();
+    openToolbarCreateMenu();
   });
   toolbarCreateWrap?.addEventListener('mouseleave', () => {
     if (toolbarCreateMenu && !toolbarCreateMenu.hidden) {
@@ -329,6 +345,12 @@
   });
   reviewFileClose?.addEventListener('click', () => {
     closeReviewFileView();
+  });
+  toolbarExplorer?.addEventListener('click', () => {
+    cancelMenuClose();
+    closeToolbarMenus();
+    closeContextMenu();
+    postToolbar('toggleExplorer');
   });
   toolbarPanels?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -609,6 +631,13 @@
   /** Path from assets/upload-cloud-2-fill.svg */
   const CLOUD_UPLOAD_D =
     'M12 12.5858L16.2426 16.8284L14.8284 18.2426L13 16.415V22H11V16.413L9.17157 18.2426L7.75736 16.8284L12 12.5858ZM12 2C15.5934 2 18.5544 4.70761 18.9541 8.19395C21.2858 8.83154 23 10.9656 23 13.5C23 16.3688 20.8036 18.7246 18.0006 18.9776L18 17C18 13.6863 15.3137 11 12 11C8.7616 11 6.12243 13.5656 6.00414 16.7751L6 17L6.00039 18.9776C3.19696 18.7252 1 16.3692 1 13.5C1 10.9656 2.71424 8.83154 5.04648 8.19411C5.44561 4.70761 8.40661 2 12 2Z';
+  /** Path from assets/reload.svg */
+  const CLOUD_RELOAD_D =
+    'M12 4C14.5905 4 16.8939 5.23053 18.3573 7.14274L16 9.5H22V3.5L19.7814 5.71863C17.9494 3.452 15.1444 2 12 2C6.47715 2 2 6.47715 2 12H4C4 7.58172 7.58172 4 12 4ZM20 12C20 16.4183 16.4183 20 12 20C9.40951 20 7.10605 18.7695 5.64274 16.8573L8 14.5H2V20.5L4.21863 18.2814C6.05062 20.548 8.85557 22 12 22C17.5228 22 22 17.5228 22 12H20Z';
+  /** Discord pages waiting to be created by pull. */
+  let pendingRemoteCount = 0;
+  /** At least one Discord config channel is configured. */
+  let hasConfigChannel = false;
   /** Drops a state push that lost the race with a newer one. */
   let stateSeq = 0;
   /** Bumped when map data changes. Same revision means a visited page can be shown from cache. */
@@ -1049,6 +1078,11 @@
         message.pageConfigSync && typeof message.pageConfigSync === 'object'
           ? message.pageConfigSync
           : {};
+      pendingRemoteCount =
+        typeof message.pendingRemoteCount === 'number' && message.pendingRemoteCount > 0
+          ? message.pendingRemoteCount
+          : 0;
+      hasConfigChannel = message.hasConfigChannel === true;
       pageDrafts =
         message.pageDrafts && typeof message.pageDrafts === 'object' ? message.pageDrafts : {};
       renderProfiles(message.profiles, message.activeProfileId, message.positionSync);
@@ -1482,14 +1516,6 @@
     if (deleteBtn) {
       deleteBtn.disabled = list.length <= 1;
     }
-    const renameBtn = toolbarMenu?.querySelector('[data-action="renamePage"]');
-    if (renameBtn instanceof HTMLButtonElement) {
-      renameBtn.disabled = false;
-    }
-    setMenuItemLocaleByAction(
-      'renamePage',
-      pageHasSettings(activePage()) ? 'menuPageSettings' : 'menuRenamePage',
-    );
   }
 
   /** @param {Record<string, { back?: number, forward?: number }> | undefined} history */
@@ -1537,15 +1563,14 @@
     setBtnLocale(panelToggleBottom, 'toolbarPanelBottom');
     setBtnLocale(panelToggleLeft, 'toolbarPanelLeft');
     setBtnLocale(panelToggleRight, 'toolbarPanelRight');
+    setBtnLocale(toolbarExplorer, 'toolbarExplorer');
     setBtnLocale(toolbarMore, 'toolbarMore');
     setMenuItemLocale('menu-create-page', 'menuNewPage');
     setMenuItemLocaleByAction('createPageFiles', 'menuNewPageGroups');
     setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
     setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
     setMenuItemLocaleByAction('createPageReview', 'menuNewPageReview');
-    setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
-    setMenuItemLocaleByAction('refresh', 'menuRefresh');
     setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
     setMenuItemLocaleByAction('whySyn3', 'menuWhy');
     setCollapseButton();
@@ -8932,7 +8957,8 @@
     const problemsOpen = isProblemsPageOpen();
     if (list.length > 0) {
       const pushCount = countPush(list);
-      const pullCount = list.filter((page) => pageConfigSync[page.id]?.canPull).length;
+      const pullCount =
+        list.filter((page) => pageConfigSync[page.id]?.canPull).length + pendingRemoteCount;
       const pushAll = el('button', 'pager-sync pager-sync-push');
       pushAll.type = 'button';
       pushAll.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
@@ -8985,6 +9011,23 @@
         }
         vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
       });
+      const checkBtn = el('button', 'pager-sync pager-sync-check');
+      checkBtn.type = 'button';
+      checkBtn.hidden = !hasConfigChannel;
+      checkBtn.disabled = pageCloudBusy || !hasConfigChannel;
+      checkBtn.title = t('pageCloudCheck');
+      checkBtn.setAttribute('aria-label', checkBtn.title);
+      checkBtn.append(cloudSvgIcon('cloud-ico-reload', CLOUD_RELOAD_D));
+      checkBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pageCloudBusy || !hasConfigChannel) {
+          return;
+        }
+        pageCloudBusy = true;
+        renderPager();
+        vscode.postMessage({ type: 'pageCloud', action: 'check' });
+      });
       const pullAll = el('button', 'pager-sync pager-sync-pull');
       pullAll.type = 'button';
       pullAll.disabled = pageCloudBusy || pullCount === 0;
@@ -9005,7 +9048,7 @@
         vscode.postMessage({ type: 'pageCloud', action: 'pullAll' });
       });
       const tools = el('div', 'pager-tools');
-      tools.append(pullAll, lockBtn, pushAll);
+      tools.append(checkBtn, pullAll, lockBtn, pushAll);
       if (pageCloudBusy) {
         const loader = el('span', 'pager-cloud-loader');
         loader.title = t('pageCloudWorking');

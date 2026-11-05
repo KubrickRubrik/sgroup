@@ -33,9 +33,9 @@
         "reviewRefreshSec": 60
       },
       "open": {
-        "bottom": true,
+        "bottom": false,
         "left": false,
-        "right": false
+        "right": true
       }
     }
   }

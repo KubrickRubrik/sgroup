@@ -192,7 +192,8 @@ type IncomingToolbarAction =
   | 'deletePage'
   | 'toggleBottom'
   | 'toggleLeft'
-  | 'toggleRight';
+  | 'toggleRight'
+  | 'toggleExplorer';
 
 type ColumnSide = 'left' | 'right';
 
@@ -346,6 +347,7 @@ type IncomingMessage =
   | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
   | { type: 'pageCloud'; action: 'pushAll' }
   | { type: 'pageCloud'; action: 'pullAll' }
+  | { type: 'pageCloud'; action: 'check' }
   | { type: 'setPagesFixed'; fixed: boolean }
   | { type: 'profileOpenSettings'; id?: string }
   | {
@@ -2323,6 +2325,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         await this.onPageCloudPullAll(webview);
         return;
       }
+      if (message.action === 'check') {
+        await this.onPageCloudCheck(webview);
+        return;
+      }
       await this.onPageCloud(message.action, message.pageId);
       return;
     }
@@ -3507,6 +3513,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       activeProfileId: this.store.activeProfileId,
       positionSync: this.store.positionSync(),
       pageConfigSync: this.store.allPageConfigSync(),
+      pendingRemoteCount: this.store.pendingRemoteCount(),
+      hasConfigChannel: this.store.hasConfigChannel(),
       pagesFixed: this.store.pagesFixed(),
       pagesFixedSent: this.store.pagesFixedSent(),
       pageDrafts: Object.fromEntries(
@@ -3829,6 +3837,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (action === 'toggleRight') {
       await this.toggleRight();
+      return;
+    }
+    if (action === 'toggleExplorer') {
+      await vscode.commands.executeCommand('workbench.action.toggleSidebarVisibility');
       return;
     }
     const activePage = pageId && this.store.page(pageId) ? pageId : this.pageIdFor(webview);
@@ -4246,6 +4258,23 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       const result = await this.store.pullNewerPageConfigs();
       if (!result.ok && result.message) {
         void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+      }
+    } finally {
+      this.pageCloudBatch = false;
+      void webview.postMessage({ type: 'pageCloudBusy', busy: false });
+    }
+  }
+
+  /** Manual Discord scan from the pager reload button. */
+  private async onPageCloudCheck(webview: vscode.Webview): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    this.pageCloudBatch = true;
+    try {
+      const result = await this.store.checkCloud();
+      if (!result.ok && result.message) {
+        void vscode.window.showWarningMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
       }
     } finally {
       this.pageCloudBatch = false;
@@ -4888,20 +4917,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
       <div class="toolbar-view">
         <button id="toolbar-view" class="history-btn" type="button" title="Вид" aria-label="Вид" aria-haspopup="menu" aria-expanded="false">
-          ${icon('chevron-down')}
+          ${icon('stack-line')}
         </button>
         <div id="toolbar-view-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Вид"></div>
-      </div>
-      <div class="toolbar-view toolbar-create">
-        <button id="toolbar-create" class="history-btn" type="button" title="Создать" aria-label="Создать" aria-haspopup="menu" aria-expanded="false">
-          ${icon('add')}
-        </button>
-        <div id="toolbar-create-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Создать"></div>
       </div>
       <button id="toolbar-collapse" class="history-btn" type="button" title="Свернуть все группы" aria-label="Свернуть все группы">
         ${icon('collapse-all', 'collapse')}
         ${icon('expand-all', 'expand', true)}
       </button>
+      <div class="toolbar-view toolbar-create">
+        <button id="toolbar-create" class="history-btn" type="button" title="Создать" aria-label="Создать" aria-haspopup="menu" aria-expanded="false">
+          ${icon('function-add-line')}
+        </button>
+        <div id="toolbar-create-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Создать"></div>
+      </div>
       <button id="toolbar-review-tab" class="history-btn" type="button" title="Открыть во вкладке" aria-label="Открыть во вкладке" hidden>
         ${icon('split-horizontal')}
       </button>
@@ -4911,19 +4940,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </button>
         <div id="toolbar-panels-menu" class="toolbar-panels-menu" hidden role="group" aria-label="Panel toggles">
           <button type="button" id="panel-toggle-bottom" class="history-btn" data-action="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="false">
-            ${icon('layout-panel')}
+            ${icon('layout-bottom-fill')}
           </button>
           <button type="button" id="panel-toggle-left" class="history-btn" data-action="toggleLeft" title="Toggle left sidebar" aria-label="Toggle left sidebar" aria-pressed="false">
-            ${icon('layout-sidebar-left')}
+            ${icon('layout-left-fill')}
           </button>
           <button type="button" id="panel-toggle-right" class="history-btn" data-action="toggleRight" title="Toggle right sidebar" aria-label="Toggle right sidebar" aria-pressed="false">
-            ${icon('sidebar-right')}
+            ${icon('layout-right-fill')}
           </button>
         </div>
       </div>
+      <button id="toolbar-explorer" class="history-btn" type="button" title="Explorer" aria-label="Explorer">
+        ${icon('layout-column-fill')}
+      </button>
       <div class="toolbar-more">
-        <button id="toolbar-more" class="history-btn" type="button" title="Дополнительные действия" aria-label="Дополнительные действия" aria-haspopup="menu">
-          ${icon('ellipsis')}
+        <button id="toolbar-more" class="history-btn" type="button" title="Menu" aria-label="Menu" aria-haspopup="menu">
+          ${icon('icon')}
         </button>
         <div id="toolbar-menu" class="toolbar-menu" hidden role="menu">
           <div class="toolbar-menu-flyout" id="menu-create-page-wrap">
@@ -4935,9 +4967,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
               <button type="button" data-action="createPageReview" role="menuitem"><span data-i18n="menuNewPageReview">Review</span></button>
             </div>
           </div>
-          <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
-          <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>
           <button type="button" data-action="openSettings" role="menuitem">${icon('gear')}Settings</button>
           <div class="toolbar-menu-sep" role="separator"></div>
           <button type="button" data-action="whySyn3" role="menuitem" id="menu-why">${icon('bill')}<span data-i18n="menuWhy">Why Syn3</span></button>
