@@ -31,6 +31,11 @@
   const toolbarCreateMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-create-menu'));
   const toolbarCreateWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-create'));
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
+  const toolbarReviewTab = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-review-tab'));
+  const reviewFilePane = /** @type {HTMLElement | null} */ (document.getElementById('review-file'));
+  const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
+  const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
+  const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
   const toolbarMoreWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-more'));
@@ -40,7 +45,6 @@
   const toolbarProfile = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile'));
   const toolbarProfileMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-menu'));
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
-  const toolbarProfileName = /** @type {HTMLInputElement | null} */ (document.getElementById('toolbar-profile-name'));
   const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
   const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
   const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
@@ -57,9 +61,11 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   const MENU_CLOSE_MS = 300;
+  /** Pointer travel from the click before an unentered context menu dismisses. */
+  const CONTEXT_AWAY_PX = 24;
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const menuCloseTimers = new Map();
 
@@ -305,21 +311,28 @@
     cancelMenuClose();
     closeToolbarMenus();
     closeContextMenu();
+    if (activePage()?.kind === 'review') {
+      setAllReviewCollapsed(!allTopCollapsed());
+      return;
+    }
     postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
+  });
+  toolbarReviewTab?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewOpenFileTab',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+    });
+  });
+  reviewFileClose?.addEventListener('click', () => {
+    closeReviewFileView();
   });
   toolbarPanels?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarPanelsMenu) {
-      return;
-    }
-    const open = toolbarPanelsMenu.hidden;
-    cancelMenuClose();
-    closeToolbarMenus();
-    closeContextMenu();
-    if (open) {
-      toolbarPanelsMenu.hidden = false;
-      toolbarPanels?.setAttribute('aria-expanded', 'true');
-    }
+    openToolbarPanelsMenu();
   });
   toolbarPanelsMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -333,7 +346,7 @@
     postToolbar(action);
   });
   toolbarPanelsWrap?.addEventListener('mouseenter', () => {
-    cancelMenuClose('toolbar-panels');
+    openToolbarPanelsMenu();
   });
   toolbarPanelsWrap?.addEventListener('mouseleave', () => {
     if (toolbarPanelsMenu && !toolbarPanelsMenu.hidden) {
@@ -347,16 +360,7 @@
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarMenu) {
-      return;
-    }
-    const open = toolbarMenu.hidden;
-    cancelMenuClose();
-    closeToolbarMenus();
-    closeContextMenu();
-    if (open) {
-      toolbarMenu.hidden = false;
-    }
+    openToolbarMoreMenu();
   });
   toolbarMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -388,7 +392,7 @@
     postToolbar(action);
   });
   toolbarMoreWrap?.addEventListener('mouseenter', () => {
-    cancelMenuClose('toolbar-more');
+    openToolbarMoreMenu();
   });
   toolbarMoreWrap?.addEventListener('mouseleave', () => {
     if (toolbarMenu && !toolbarMenu.hidden) {
@@ -414,13 +418,8 @@
   });
   toolbarProfileAdd?.addEventListener('click', (event) => {
     event.stopPropagation();
-    submitProfileCreate();
-  });
-  toolbarProfileName?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      submitProfileCreate();
-    }
+    closeProfileMenu();
+    vscode.postMessage({ type: 'profileOpenSettings' });
   });
   toolbarProfileList?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -429,9 +428,14 @@
       event.stopPropagation();
       const action = actionBtn.getAttribute('data-profile-action');
       const id = actionBtn.getAttribute('data-profile-id') || undefined;
-      if (action === 'rename' || action === 'delete' || action === 'syncPush' || action === 'syncPull') {
+      if (action === 'edit') {
+        vscode.postMessage({ type: 'profileOpenSettings', id });
+        closeProfileMenu();
+        return;
+      }
+      if (action === 'delete' || action === 'syncPush' || action === 'syncPull') {
         vscode.postMessage({ type: 'profile', action, id });
-        if (action === 'rename' || action === 'delete') {
+        if (action === 'delete') {
           closeProfileMenu();
         }
       }
@@ -451,6 +455,65 @@
 
   /** Skip leave-close while the context menu DOM is rebuilt (toggle/highlight). */
   let ignoreContextLeave = false;
+  /** @type {((event: PointerEvent) => void) | null} */
+  let contextDismissMove = null;
+
+  /**
+   * @param {HTMLElement | null} menu
+   * @param {number} x
+   * @param {number} y
+   */
+  function menuBoxContains(menu, x, y) {
+    if (!menu || menu.hidden) {
+      return false;
+    }
+    const rect = menu.getBoundingClientRect();
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+  }
+
+  function clearContextDismissMove() {
+    if (!contextDismissMove) {
+      return;
+    }
+    document.removeEventListener('pointermove', contextDismissMove, true);
+    contextDismissMove = null;
+  }
+
+  /**
+   * replaceChildren can synthesize mouseleave. Ignore that until the pointer
+   * actually moves — mouseenter never fires if the menu opened off the cursor
+   * (flipped above the click), so the first real move must both unlock leave
+   * and dismiss when the pointer stays outside.
+   */
+  function armContextMenuDismiss() {
+    ignoreContextLeave = true;
+    clearContextDismissMove();
+    const originX = openMenuState?.x ?? 0;
+    const originY = openMenuState?.y ?? 0;
+    contextDismissMove = (event) => {
+      if (contextMenu.hidden) {
+        clearContextDismissMove();
+        ignoreContextLeave = false;
+        return;
+      }
+      ignoreContextLeave = false;
+      if (
+        menuBoxContains(contextMenu, event.clientX, event.clientY) ||
+        menuBoxContains(reviewDepthMenu, event.clientX, event.clientY)
+      ) {
+        clearContextDismissMove();
+        return;
+      }
+      const dx = event.clientX - originX;
+      const dy = event.clientY - originY;
+      if (dx * dx + dy * dy < CONTEXT_AWAY_PX * CONTEXT_AWAY_PX) {
+        return;
+      }
+      clearContextDismissMove();
+      scheduleMenuClose('context', () => closeContextMenu());
+    };
+    document.addEventListener('pointermove', contextDismissMove, true);
+  }
 
   contextMenu.addEventListener('mouseenter', () => {
     ignoreContextLeave = false;
@@ -530,6 +593,22 @@
   let problemsPageOpen = false;
   /** @type {any} */
   let data = null;
+  /** @type {Record<string, { canPull?: boolean, canPush?: boolean }>} */
+  let pageConfigSync = {};
+  /** Page tabs show the fixed mark. */
+  let pagesFixed = false;
+  /** Lock value already published. Differs from pagesFixed while that change is unsent. */
+  let pagesFixedSent = false;
+  /** Batch send/receive of page configs is in flight. */
+  let pageCloudBusy = false;
+  /** @type {Record<string, string[]>} */
+  let pageDrafts = {};
+  /** Path from assets/download-cloud-2-fill.svg */
+  const CLOUD_DOWNLOAD_D =
+    'M13 13V18.585L14.8284 16.7574L16.2426 18.1716L12 22.4142L7.75736 18.1716L9.17157 16.7574L11 18.585V13H13ZM12 2C15.5934 2 18.5544 4.70761 18.9541 8.19395C21.2858 8.83154 23 10.9656 23 13.5C23 16.3688 20.8036 18.7246 18.0006 18.9776L18 17C18 13.6863 15.3137 11 12 11C8.7616 11 6.12243 13.5656 6.00414 16.7751L6 17L6.00039 18.9776C3.19696 18.7252 1 16.3692 1 13.5C1 10.9656 2.71424 8.83154 5.04648 8.19411C5.44561 4.70761 8.40661 2 12 2Z';
+  /** Path from assets/upload-cloud-2-fill.svg */
+  const CLOUD_UPLOAD_D =
+    'M12 12.5858L16.2426 16.8284L14.8284 18.2426L13 16.415V22H11V16.413L9.17157 18.2426L7.75736 16.8284L12 12.5858ZM12 2C15.5934 2 18.5544 4.70761 18.9541 8.19395C21.2858 8.83154 23 10.9656 23 13.5C23 16.3688 20.8036 18.7246 18.0006 18.9776L18 17C18 13.6863 15.3137 11 12 11C8.7616 11 6.12243 13.5656 6.00414 16.7751L6 17L6.00039 18.9776C3.19696 18.7252 1 16.3692 1 13.5C1 10.9656 2.71424 8.83154 5.04648 8.19411C5.44561 4.70761 8.40661 2 12 2Z';
   /** Drops a state push that lost the race with a newer one. */
   let stateSeq = 0;
   /** Bumped when map data changes. Same revision means a visited page can be shown from cache. */
@@ -539,6 +618,8 @@
   const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
   /** @type {string | null} */
   let pageDragId = null;
+  /** Last pager-chip click. A second press still counts after the chip is rebuilt. */
+  let pageChipClick = { id: '', at: 0 };
   let wheelLock = false;
   /** @type {any} */
   let dragPayload = null;
@@ -624,9 +705,301 @@
   /** @type {{ anchor: HTMLButtonElement, kind: 'file' | 'dir', relPath: string } | null} */
   let problemPanelState = null;
 
+  /**
+   * @typedef {{
+   *   pageId: string,
+   *   loading?: boolean,
+   *   loadingEdge?: 'initial' | 'older' | 'newer',
+   *   error?: string,
+   *   empty?: boolean,
+   *   contentBlocked?: boolean,
+   *   messages?: Array<{
+   *     id: string,
+   *     content: string,
+   *     author?: string,
+   *     timestamp: string,
+   *     isMr: boolean,
+   *     webUrl?: string,
+   *     title?: string,
+   *     draft?: boolean,
+   *     color?: string,
+   *     status?: 'open' | 'closed',
+   *     locked?: boolean,
+   *     threadId?: string,
+   *     hasThread?: boolean,
+   *     replies: Array<{
+   *       id: string,
+   *       content: string,
+   *       author?: string,
+   *       timestamp: string,
+   *       isReview: boolean,
+   *       isPill?: boolean,
+   *       pillLabel?: string,
+   *       hasFile?: boolean,
+   *       filename?: string,
+   *       contentMissing?: boolean
+   *     }>,
+   *     repliesHasMore: boolean,
+   *     repliesLoaded?: boolean,
+   *     contentMissing?: boolean
+   *   }>,
+   *   canLoadOlder?: boolean,
+   *   canLoadNewer?: boolean,
+   *   focusMessageId?: string,
+   *   pendingMr?: { title: string, draft?: boolean },
+   *   pendingReviewId?: string,
+   *   skeletonSeq?: number
+   * }} ReviewState
+   */
+  /** @type {ReviewState | null} */
+  let reviewState = null;
+  /** Optimistic channel-load edge until the host snapshot arrives. */
+  /** @type {{ pageId: string, edge: 'initial' | 'older' | 'newer' } | null} */
+  let reviewLoadPending = null;
+  /**
+   * MR chip drawn before the host snapshot. Cleared once that snapshot carries
+   * the same title. A newer skeletonSeq from another operation leaves it up.
+   * @type {{ pageId: string, title: string, draft: boolean } | null}
+   */
+  let localPendingMr = null;
+  /**
+   * Review pill drawn in a thread before the Discord reply is in the snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingReview = null;
+  /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
+  const reviewSkeletonSeq = new Map();
+  /** Last placeholder scrolled into view, so later paints do not jump. */
+  let reviewSkelShown = '';
+  /** Pages that already sent reviewLoad while the snapshot was still missing. */
+  const reviewAutoLoad = new Set();
+  /** Settled review snapshots, so switching back does not refetch. */
+  const reviewByPage = new Map();
+  /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, defaultAssignee: string, provider: 'gitlab' | 'github' } | null} */
+  let reviewMrPanel = null;
+  /** Collapsed review threads (MR chips and plain messages). Default open. */
+  const reviewCollapsed = new Set();
+  /** Last closed flag per MR, so a closed thread folds once on load and on close. */
+  const reviewClosedSeen = new Map();
+  /** MR titles expanded past one line. */
+  const reviewTitleExpanded = new Set();
+  /** Plain parents with expanded body + thread. */
+  const reviewPlainExpanded = new Set();
+  /** Tree identity aside from fold flags, so a collapse can animate in place. */
+  let reviewStructureKeyValue = '';
+  /** Downloaded review bodies, keyed by Discord message id. */
+  const reviewFileCache = new Map();
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   title: string,
+   *   filename: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   text: string,
+   *   error: string,
+   * } | null}
+   */
+  let reviewFileView = null;
+
+  /** Thrown by fetch when the machine is offline. Not an HTTP error from Discord. */
+  function isReviewFetchError(text) {
+    return /fetch failed|fetch error|failed to fetch|networkerror|network request failed|enotfound|econnrefused|econnreset|etimedout|eai_again|offline|getaddrinfo/i.test(
+      String(text || ''),
+    );
+  }
+
+  /** @param {ReviewState | null | undefined} state */
+  function reviewStateMessages(state) {
+    return state && Array.isArray(state.messages) ? state.messages : [];
+  }
+
+  /**
+   * A reload that dies before the network answers must not replace a card
+   * that already has messages.
+   * @param {ReviewState | null} incoming
+   * @returns {ReviewState | null}
+   */
+  function keepLoadedReview(incoming) {
+    if (!incoming || !incoming.pageId || !isReviewFetchError(incoming.error)) {
+      return incoming;
+    }
+    const cached = reviewByPage.get(incoming.pageId);
+    const current = reviewState && reviewState.pageId === incoming.pageId ? reviewState : null;
+    const kept = reviewStateMessages(incoming).length
+      ? incoming
+      : reviewStateMessages(current).length
+        ? current
+        : reviewStateMessages(cached).length
+          ? cached
+          : null;
+    if (!kept) {
+      return incoming;
+    }
+    return {
+      ...kept,
+      pageId: incoming.pageId,
+      loading: false,
+      loadingEdge: undefined,
+      error: '',
+      skeletonSeq: incoming.skeletonSeq,
+      pendingMr: incoming.pendingMr || kept.pendingMr,
+      pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
+    };
+  }
+
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'state') {
+    if (message.type === 'reviewFile') {
+      onReviewFileResult(message);
+    } else if (message.type === 'reviewState') {
+      const incoming = keepLoadedReview(message.review || null);
+      const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
+      if (
+        incoming &&
+        incoming.pageId &&
+        incomingSeq < (reviewSkeletonSeq.get(incoming.pageId) || 0)
+      ) {
+        return;
+      }
+      reviewState = incoming;
+      if (reviewState && reviewState.pageId) {
+        if (incomingSeq > (reviewSkeletonSeq.get(reviewState.pageId) || 0)) {
+          reviewSkeletonSeq.set(reviewState.pageId, incomingSeq);
+        }
+        if (localPendingMr && localPendingMr.pageId === reviewState.pageId) {
+          const hostMr = reviewState.pendingMr;
+          if (hostMr && hostMr.title === localPendingMr.title) {
+            localPendingMr = null;
+          }
+        }
+        if (localPendingReview && localPendingReview.pageId === reviewState.pageId) {
+          if (reviewState.pendingReviewId === localPendingReview.messageId) {
+            localPendingReview = null;
+          }
+        }
+        if (reviewState.pendingReviewId) {
+          reviewCollapsed.delete(reviewState.pendingReviewId);
+        }
+        reviewAutoLoad.delete(reviewState.pageId);
+        if (reviewState.error || reviewState.loadingEdge === 'initial') {
+          reviewByPage.delete(reviewState.pageId);
+        } else if (!reviewState.loadingEdge) {
+          reviewByPage.set(reviewState.pageId, reviewState);
+        }
+      }
+      if (
+        reviewLoadPending &&
+        reviewState &&
+        reviewLoadPending.pageId === reviewState.pageId &&
+        (reviewState.loadingEdge || !reviewState.loading)
+      ) {
+        reviewLoadPending = null;
+      }
+      if (activePage()?.kind === 'review') {
+        paintReviewPage();
+      }
+    } else if (message.type === 'reviewMrPanel') {
+      reviewMrPanel = {
+        pageId: message.pageId,
+        branches: Array.isArray(message.branches) ? message.branches : [],
+        parent: typeof message.parent === 'string' ? message.parent : '',
+        people: Array.isArray(message.people) ? message.people : [],
+        defaultAssignee: typeof message.defaultAssignee === 'string' ? message.defaultAssignee : '',
+        provider: message.provider === 'github' ? 'github' : 'gitlab',
+      };
+      openReviewMrPanel();
+    } else if (message.type === 'profileSettingsPanel') {
+      openProfileSettingsPanel({
+        id: typeof message.id === 'string' ? message.id : '',
+        creating: message.creating === true,
+        nameLocked: message.nameLocked === true,
+        name: typeof message.name === 'string' ? message.name : '',
+        githubNick: typeof message.githubNick === 'string' ? message.githubNick : '',
+        gitlabNick: typeof message.gitlabNick === 'string' ? message.gitlabNick : '',
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'profileSettingsError') {
+      const error = document.querySelector('#profile-settings-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'profileSettingsSaved') {
+      closeProfileSettingsPanel();
+    } else if (message.type === 'pageSettingsPanel') {
+      openPageSettingsPanel({
+        mode: message.mode === 'edit' ? 'edit' : 'create',
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        kind: message.kind === 'notes' || message.kind === 'links' || message.kind === 'review' ? message.kind : 'files',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        hasDiscord: message.hasDiscord === true,
+      });
+    } else if (message.type === 'pageSettingsError') {
+      const error = document.querySelector('#page-settings-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'pageSettingsSaved') {
+      closePageSettingsPanel();
+    } else if (message.type === 'reviewCreatePagePanel') {
+      openReviewCreatePagePanel({
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        hasGitlab: message.hasGitlab === true,
+        hasGithub: message.hasGithub === true,
+        hasDiscord: message.hasDiscord === true,
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'discordGatePanel') {
+      if (message.i18n && typeof message.i18n === 'object') {
+        i18nBag = message.i18n;
+      }
+      openDiscordGatePanel({
+        channels:
+          message.channels && typeof message.channels === 'object' ? message.channels : {},
+        hasDiscord: message.hasDiscord === true,
+      });
+    } else if (message.type === 'discordGateClear') {
+      closeDiscordGatePanel();
+    } else if (message.type === 'discordGateError') {
+      applyDiscordGateError(
+        typeof message.field === 'string' ? message.field : '',
+        typeof message.message === 'string' ? message.message : '',
+      );
+    } else if (message.type === 'reviewPageSettingsPanel') {
+      openReviewCreatePagePanel({
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        hasGitlab: message.hasGitlab === true,
+        hasGithub: message.hasGithub === true,
+        hasDiscord: message.hasDiscord === true,
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+        reviewSkillPath: typeof message.reviewSkillPath === 'string' ? message.reviewSkillPath : '',
+        reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
+        reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
+        reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
+      });
+    } else if (message.type === 'pageCloudBusy') {
+      pageCloudBusy = message.busy === true;
+      if (!pageCloudBusy && message.ok === true && message.pushed > 0) {
+        pagesFixedSent = pagesFixed;
+      }
+      renderPager();
+    } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
         if (message.stateSeq < stateSeq) {
           return;
@@ -638,6 +1011,8 @@
       const previousPageId = uiState.activePageId;
       const previousProblems = problemsPageOpen;
       data = message;
+      pagesFixed = message.pagesFixed === true;
+      pagesFixedSent = message.pagesFixedSent === true;
       reconcileGroupFoldSync();
       if (
         message.restorePage &&
@@ -670,6 +1045,12 @@
       setToolbar(activePage() || message);
       setPanelToggles(message.open);
       updatePageMenu();
+      pageConfigSync =
+        message.pageConfigSync && typeof message.pageConfigSync === 'object'
+          ? message.pageConfigSync
+          : {};
+      pageDrafts =
+        message.pageDrafts && typeof message.pageDrafts === 'object' ? message.pageDrafts : {};
       renderProfiles(message.profiles, message.activeProfileId, message.positionSync);
       applyAppearance(message.appearance);
       if (!showProblemsTab()) {
@@ -803,6 +1184,13 @@
   });
 
   function postToolbar(action) {
+    if (action === 'refresh') {
+      const page = activePage();
+      if (page && page.kind === 'review') {
+        requestReviewChannelLoad(page.id, 'initial');
+        return;
+      }
+    }
     vscode.postMessage({ type: 'toolbar', action, pageId: uiState.activePageId });
   }
 
@@ -896,6 +1284,7 @@
     if (samePage && !leaveProblems) {
       return;
     }
+    closeMapSettingsPanels();
     dismissLinkPreview();
     if (!samePage) {
       rememberSlide(pageId);
@@ -923,6 +1312,7 @@
     if (!showProblemsTab() || problemsPageOpen) {
       return;
     }
+    closeMapSettingsPanels();
     dismissLinkPreview();
     problemsPageOpen = true;
     closeProblemPanel();
@@ -1077,6 +1467,10 @@
     });
   }
 
+  function pageHasSettings(page) {
+    return page?.kind === 'review';
+  }
+
   function updatePageMenu() {
     const list = pages();
     const max = typeof data?.maxPages === 'number' ? data.maxPages : 6;
@@ -1088,6 +1482,14 @@
     if (deleteBtn) {
       deleteBtn.disabled = list.length <= 1;
     }
+    const renameBtn = toolbarMenu?.querySelector('[data-action="renamePage"]');
+    if (renameBtn instanceof HTMLButtonElement) {
+      renameBtn.disabled = false;
+    }
+    setMenuItemLocaleByAction(
+      'renamePage',
+      pageHasSettings(activePage()) ? 'menuPageSettings' : 'menuRenamePage',
+    );
   }
 
   /** @param {Record<string, { back?: number, forward?: number }> | undefined} history */
@@ -1096,20 +1498,22 @@
     const pageHistory = history && pageId ? history[pageId] : undefined;
     const back = pageHistory && pageHistory.back ? pageHistory.back : 0;
     const forward = pageHistory && pageHistory.forward ? pageHistory.forward : 0;
+    const pageLoading = pageSkeletonKind() !== '';
     if (historyBack) {
-      historyBack.disabled = back === 0;
+      historyBack.disabled = pageLoading || back === 0;
       const backLabel = t('toolbarBack');
       historyBack.title = back ? backLabel + ' (' + back + ')' : backLabel;
       historyBack.setAttribute('aria-label', historyBack.title);
     }
     if (historyForward) {
-      historyForward.disabled = forward === 0;
+      historyForward.disabled = pageLoading || forward === 0;
       const forwardLabel = t('toolbarForward');
       historyForward.title = forward ? forwardLabel + ' (' + forward + ')' : forwardLabel;
       historyForward.setAttribute('aria-label', historyForward.title);
     }
     if (historyAccept) {
       historyAccept.hidden = back + forward === 0;
+      historyAccept.disabled = pageLoading;
       historyAccept.title = t('toolbarDone');
       historyAccept.setAttribute('aria-label', historyAccept.title);
     }
@@ -1120,10 +1524,6 @@
     contextMenu.setAttribute('aria-label', t('contextMenu'));
     setBtnLocale(toolbarProfile, 'toolbarProfile');
     setElLocale(toolbarProfileMenu, 'profiles', 'aria-label');
-    if (toolbarProfileName) {
-      toolbarProfileName.placeholder = t('profileNewPlaceholder');
-      toolbarProfileName.setAttribute('aria-label', t('profileNewAria'));
-    }
     setBtnLocale(toolbarProfileAdd, 'profileCreate');
     setBtnLocale(toolbarView, 'toolbarView');
     setElLocale(toolbarViewMenu, 'toolbarView', 'aria-label');
@@ -1142,6 +1542,7 @@
     setMenuItemLocaleByAction('createPageFiles', 'menuNewPageGroups');
     setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
     setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
+    setMenuItemLocaleByAction('createPageReview', 'menuNewPageReview');
     setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('refresh', 'menuRefresh');
@@ -1242,6 +1643,27 @@
     }
   }
 
+  function openToolbarPanelsMenu() {
+    if (!toolbarPanelsMenu || toolbarPanels?.disabled) {
+      return;
+    }
+    cancelMenuClose('toolbar-panels');
+    closeToolbarMenus();
+    closeContextMenu();
+    toolbarPanelsMenu.hidden = false;
+    toolbarPanels?.setAttribute('aria-expanded', 'true');
+  }
+
+  function openToolbarMoreMenu() {
+    if (!toolbarMenu) {
+      return;
+    }
+    cancelMenuClose('toolbar-more');
+    closeToolbarMenus();
+    closeContextMenu();
+    toolbarMenu.hidden = false;
+  }
+
   function closeToolbarMenus() {
     cancelMenuClose();
     if (toolbarMenu) {
@@ -1290,6 +1712,8 @@
     target.replaceChildren();
     if (activePage()?.kind === 'links') {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
+    } else if (activePage()?.kind === 'review') {
+      target.append(menuActionChoice(t('createMr'), { toolbar: 'createMr' }));
     } else {
       target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
       target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
@@ -1301,7 +1725,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1313,6 +1737,24 @@
     }
     if (attrs.deleteAction) {
       button.dataset.deleteAction = attrs.deleteAction;
+    }
+    if (attrs.review) {
+      button.dataset.review = attrs.review;
+    }
+    if (attrs.reviewDepth) {
+      button.dataset.reviewDepth = attrs.reviewDepth;
+    }
+    if (attrs.reviewEdit) {
+      button.dataset.reviewEdit = attrs.reviewEdit;
+    }
+    if (attrs.neuroFix) {
+      button.dataset.neuroFix = attrs.neuroFix;
+    }
+    if (attrs.pageId) {
+      button.dataset.pageId = attrs.pageId;
+    }
+    if (attrs.messageId) {
+      button.dataset.messageId = attrs.messageId;
     }
     return button;
   }
@@ -1334,12 +1776,17 @@
 
   function closeContextMenu() {
     cancelMenuClose('context');
+    clearContextDismissMove();
+    // Hiding and replaceChildren can synthesize mouseleave; don't re-arm a close.
+    ignoreContextLeave = true;
+    clearReviewDepthMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
     const chrome = ensureMenuChrome(contextMenu);
     chrome.scroller.replaceChildren();
     chrome.scroller.scrollTop = 0;
     chrome.bar.hidden = true;
+    ignoreContextLeave = false;
     if (openMenuState?.kind === 'context') {
       openMenuState = null;
     }
@@ -1431,6 +1878,9 @@
       viewExpanded: false,
       createExpanded: false,
       deleteExpanded: false,
+      reviewExpanded: false,
+      reviewScope: '',
+      reviewStatusExpanded: false,
       ctx,
       x,
       y,
@@ -1469,6 +1919,154 @@
     scroller.append(block);
   }
 
+  /** @type {HTMLElement | null} */
+  let reviewDepthMenu = null;
+
+  function clearReviewDepthMenu() {
+    reviewDepthMenu?.remove();
+    reviewDepthMenu = null;
+  }
+
+  /**
+   * Scope row inside «Ревью». Click opens the depth submenu.
+   * @param {HTMLElement} nest
+   * @param {'branch' | 'changes'} scope
+   * @param {string} label
+   */
+  function appendReviewScopeRow(nest, scope, label) {
+    const expanded = openMenuState?.reviewScope === scope;
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleReviewScope';
+    row.dataset.reviewScope = scope;
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    nest.append(row);
+  }
+
+  /**
+   * @param {string} messageId
+   */
+  function findReviewReply(messageId) {
+    for (const msg of reviewState?.messages || []) {
+      const reply = (msg.replies || []).find((item) => item.id === messageId);
+      if (reply) {
+        return reply;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * @param {HTMLElement} nest
+   * @param {'inProgress' | 'done'} status
+   * @param {string} label
+   * @param {boolean} active
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function appendReviewStatusChoice(nest, status, label, active, pageId, messageId) {
+    const row = menuAction('', active ? 'is-active' : '');
+    row.dataset.reviewStatus = status;
+    row.dataset.pageId = pageId;
+    row.dataset.messageId = messageId;
+    const ico = document.createElement('span');
+    ico.className = 'syn3-menu-item-ico';
+    ico.append(status === 'done' ? reviewDoneIcon() : reviewProgressIcon());
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    row.append(ico, title);
+    nest.append(row);
+  }
+
+  /**
+   * Depth flyout for the open scope. Lives on document.body so the context
+   * menu's overflow does not clip it.
+   * @param {'branch' | 'changes'} scope
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function mountReviewDepthMenu(scope, pageId, messageId) {
+    clearReviewDepthMenu();
+    const anchor = contextMenu.querySelector('[data-review-scope="' + scope + '"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      fly.append(
+        menuActionChoice(t(key), {
+          review: scope,
+          reviewDepth: depth,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    reviewDepthMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  function rerenderContextMenu() {
+    if (!openMenuState || openMenuState.kind !== 'context') {
+      return;
+    }
+    // Keep the open menu where it is. Re-anchoring to the original click
+    // flips a taller menu above the pointer, and the next move closes it.
+    const placedLeft = parseFloat(contextMenu.style.left);
+    const placedTop = parseFloat(contextMenu.style.top);
+    renderContextMenu();
+    cancelMenuClose('context');
+    positionMenu(contextMenu, {
+      left: Number.isFinite(placedLeft) ? placedLeft : (openMenuState.x ?? 0),
+      top: Number.isFinite(placedTop) ? placedTop : (openMenuState.y ?? 0),
+      keepPosition: true,
+    });
+    if (openMenuState.reviewExpanded && openMenuState.reviewScope && openMenuState.ctx) {
+      mountReviewDepthMenu(
+        openMenuState.reviewScope,
+        String(openMenuState.ctx.reviewPageId || ''),
+        String(openMenuState.ctx.reviewMessageId || ''),
+      );
+    }
+  }
+
   function renderContextMenu() {
     if (!openMenuState || openMenuState.kind !== 'context' || !openMenuState.ctx) {
       return;
@@ -1477,10 +2075,188 @@
     const section = String(ctx.webviewSection || '');
     const depth = Number(ctx.depth) || 0;
     // replaceChildren can synthesize mouseleave; ignore it until the pointer moves again.
-    ignoreContextLeave = true;
+    armContextMenuDismiss();
     cancelMenuClose('context');
+    clearReviewDepthMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
+    if (section === 'reviewMr') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const isPr = typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl);
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewMenu'),
+        !!openMenuState.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+      );
+      scroller.append(
+        menuActionChoice(t(isPr ? 'reviewRenamePr' : 'reviewRenameMr'), {
+          reviewEdit: 'rename',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.draft ? 'reviewClearDraft' : 'reviewSetDraft'), {
+          reviewEdit: 'draft',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuChangeColor'), {
+          reviewEdit: 'color',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(isPr ? 'reviewClosePr' : 'reviewCloseMr'), {
+          reviewEdit: 'close',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.locked ? 'reviewUnlock' : 'reviewLock'), {
+          reviewEdit: 'lock',
+          pageId,
+          messageId,
+        }),
+      );
+      if (chip?.status === 'closed' || chip?.locked) {
+        const reviewStays = !!chip?.locked && chip?.status !== 'closed';
+        scroller.querySelectorAll('button').forEach((button) => {
+          if (button.dataset.reviewEdit === 'lock') {
+            return;
+          }
+          if (chip?.status === 'closed' && !chip?.locked && button.dataset.reviewEdit === 'delete') {
+            return;
+          }
+          // A lock freezes edits. Starting a review on an open MR stays available.
+          if (
+            reviewStays &&
+            (button.dataset.menuAction === 'toggleReview' ||
+              button.dataset.menuAction === 'toggleReviewScope')
+          ) {
+            return;
+          }
+          button.disabled = true;
+        });
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewPill') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const status = reply?.status || '';
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewStatus'),
+        !!openMenuState.reviewStatusExpanded,
+        'toggleReviewStatus',
+        (nest) => {
+          appendReviewStatusChoice(
+            nest,
+            'inProgress',
+            t('reviewStatusProgress'),
+            status === 'inProgress',
+            pageId,
+            messageId,
+          );
+          appendReviewStatusChoice(
+            nest,
+            'done',
+            t('reviewStatusDone'),
+            status === 'done',
+            pageId,
+            messageId,
+          );
+        },
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewNeurofix') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const counts = parsePillSeverityCounts(reply?.pillLabel);
+      if (counts) {
+        /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
+        const items = [
+          { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
+          { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
+          { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
+          {
+            scope: 'all',
+            label: t('neurofixAll'),
+            show: counts.H > 0 || counts.M > 0 || counts.S > 0,
+          },
+        ];
+        for (const item of items) {
+          if (!item.show) {
+            continue;
+          }
+          scroller.append(
+            menuActionChoice(item.label, {
+              neuroFix: item.scope,
+              pageId,
+              messageId,
+            }),
+          );
+        }
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewMsg') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const del = menuActionChoice(t('menuDelete'), {
+        reviewEdit: 'delete',
+        pageId,
+        messageId,
+      });
+      if (parent?.locked) {
+        del.disabled = true;
+      }
+      scroller.append(del);
+      if (parent) {
+        scroller.append(
+          menuActionChoice(t(parent.locked ? 'reviewUnlock' : 'reviewLock'), {
+            reviewEdit: 'lock',
+            pageId,
+            messageId,
+          }),
+        );
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
     if (section === 'problems') {
       const filters = problemsFilterState();
       scroller.append(
@@ -1609,7 +2385,8 @@
    */
   function contextMenuItems(ctx) {
     const section = String(ctx.webviewSection || '');
-    const locked = !!ctx.locked;
+    const entityLocked = !!ctx.locked;
+    const locked = entityLocked;
     const hasAlias = !!ctx.hasAlias;
     const depth = Number(ctx.depth) || 0;
     const isDir = !!ctx.isDir;
@@ -1702,7 +2479,7 @@
       items.push({ kind: 'copyLink' });
     }
 
-    if ((section === 'marker' || section === 'note') && locked) {
+    if ((section === 'marker' || section === 'note') && entityLocked) {
       items.push({ kind: 'unlock' });
     }
 
@@ -1786,6 +2563,9 @@
       return;
     }
     event.stopPropagation();
+    if (button.disabled) {
+      return;
+    }
     // Rebuilds replace DOM and can fire mouseleave — keep the menu open.
     if (source === 'context') {
       cancelMenuClose('context');
@@ -1794,6 +2574,130 @@
     if (button.dataset.toolbar) {
       closeToolbarMenus();
       postToolbar(button.dataset.toolbar);
+      return;
+    }
+
+    if (button.dataset.review) {
+      closeContextMenu();
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      beginLocalReviewSkeleton(pageId, messageId);
+      vscode.postMessage({
+        type: 'reviewStart',
+        pageId,
+        messageId,
+        kind: button.dataset.review,
+        depth: button.dataset.reviewDepth || 'medium',
+      });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReview') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
+        if (!openMenuState.reviewExpanded) {
+          openMenuState.reviewScope = '';
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.reviewStatus) {
+      closeContextMenu();
+      vscode.postMessage({
+        type: 'reviewSetStatus',
+        pageId: button.dataset.pageId || '',
+        messageId: button.dataset.messageId || '',
+        status: button.dataset.reviewStatus,
+      });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReviewStatus') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.reviewStatusExpanded = !openMenuState.reviewStatusExpanded;
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReviewScope') {
+      if (openMenuState?.kind === 'context') {
+        const scope = button.dataset.reviewScope || '';
+        openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
+        openMenuState.reviewExpanded = true;
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.neuroFix) {
+      closeContextMenu();
+      vscode.postMessage({
+        type: 'reviewNeurofix',
+        pageId: button.dataset.pageId || '',
+        messageId: button.dataset.messageId || '',
+        scope: button.dataset.neuroFix,
+      });
+      return;
+    }
+
+    if (button.dataset.reviewEdit) {
+      closeContextMenu();
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const chip = parent;
+      if (button.dataset.reviewEdit === 'lock') {
+        if (parent) {
+          vscode.postMessage({
+            type: 'reviewSetLock',
+            pageId,
+            messageId,
+            locked: parent.locked !== true,
+          });
+        }
+        return;
+      }
+      if (parent?.locked) {
+        return;
+      }
+      if (button.dataset.reviewEdit === 'rename') {
+        openReviewRenamePanel({
+          pageId,
+          messageId,
+          title: chip?.title || '',
+          isPr: typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl),
+        });
+      } else if (button.dataset.reviewEdit === 'color') {
+        openColorsPanel({
+          kind: 'review',
+          id: messageId,
+          pageId,
+          currentHex: chip?.color || '',
+          allowNone: false,
+        });
+      } else if (button.dataset.reviewEdit === 'close') {
+        vscode.postMessage({
+          type: 'reviewCloseMr',
+          pageId,
+          messageId,
+        });
+      } else if (button.dataset.reviewEdit === 'delete') {
+        vscode.postMessage({
+          type: 'reviewDeleteReview',
+          pageId,
+          messageId,
+        });
+      } else {
+        vscode.postMessage({
+          type: 'reviewUpdateMr',
+          pageId,
+          messageId,
+          draft: chip?.draft !== true,
+        });
+      }
       return;
     }
 
@@ -2125,6 +3029,9 @@
   }
 
   function applyPageChrome() {
+    if (pageSkeletonKind()) {
+      return;
+    }
     const page = activePage();
     const layout = page?.layout || data?.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
@@ -2139,26 +3046,20 @@
     toolbarProfile?.setAttribute('aria-expanded', 'false');
   }
 
-  function submitProfileCreate() {
-    const name = (toolbarProfileName?.value || '').trim();
-    if (!name || !isCreatableProfileName(name)) {
-      return;
-    }
-    vscode.postMessage({ type: 'profile', action: 'create', name });
-    if (toolbarProfileName) {
-      toolbarProfileName.value = '';
-    }
-    closeProfileMenu();
-  }
-
-  /** @param {string} name */
-  function isCreatableProfileName(name) {
+  /** @param {string} name @param {string} [exceptId] */
+  function isCreatableProfileName(name, exceptId) {
     const lower = name.toLocaleLowerCase();
     if (lower === 'общий' || lower === 'general') {
       return false;
     }
     const rows = toolbarProfileList?.querySelectorAll('[data-profile-id]') || [];
     for (const row of rows) {
+      if (!(row instanceof HTMLElement)) {
+        continue;
+      }
+      if (exceptId && row.getAttribute('data-profile-id') === exceptId) {
+        continue;
+      }
       const label = row.querySelector('.profile-name');
       if (label && label.textContent && label.textContent.toLocaleLowerCase() === lower) {
         return false;
@@ -2196,32 +3097,33 @@
       }
       const actions = el('span', 'profile-actions');
       if (profile.id === activeId) {
-        const pushBtn = el('button', '');
-        pushBtn.type = 'button';
-        pushBtn.title = t('profileSyncPush');
-        pushBtn.setAttribute('aria-label', t('profileSyncPush'));
-        pushBtn.setAttribute('data-profile-action', 'syncPush');
-        pushBtn.setAttribute('data-profile-id', profile.id);
-        pushBtn.textContent = '↑';
-        pushBtn.disabled = !canPush;
-        const pullBtn = el('button', '');
+        const pullBtn = el('button', 'profile-cloud-btn');
         pullBtn.type = 'button';
         pullBtn.title = t('profileSyncPull');
         pullBtn.setAttribute('aria-label', t('profileSyncPull'));
         pullBtn.setAttribute('data-profile-action', 'syncPull');
         pullBtn.setAttribute('data-profile-id', profile.id);
-        pullBtn.textContent = '↓';
+        pullBtn.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
         pullBtn.disabled = !canPull;
-        actions.append(pushBtn, pullBtn);
+        const pushBtn = el('button', 'profile-cloud-btn');
+        pushBtn.type = 'button';
+        pushBtn.title = t('profileSyncPush');
+        pushBtn.setAttribute('aria-label', t('profileSyncPush'));
+        pushBtn.setAttribute('data-profile-action', 'syncPush');
+        pushBtn.setAttribute('data-profile-id', profile.id);
+        pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
+        pushBtn.disabled = !canPush;
+        actions.append(pullBtn, pushBtn);
       }
+      const editBtn = el('button', '');
+      editBtn.type = 'button';
+      editBtn.title = t('profileEdit');
+      editBtn.setAttribute('aria-label', t('profileEdit'));
+      editBtn.setAttribute('data-profile-action', 'edit');
+      editBtn.setAttribute('data-profile-id', profile.id);
+      editBtn.textContent = '✎';
+      actions.append(editBtn);
       if (profile.id !== 'general') {
-        const renameBtn = el('button', '');
-        renameBtn.type = 'button';
-        renameBtn.title = t('profileRename');
-        renameBtn.setAttribute('aria-label', t('profileRename'));
-        renameBtn.setAttribute('data-profile-action', 'rename');
-        renameBtn.setAttribute('data-profile-id', profile.id);
-        renameBtn.textContent = '✎';
         const deleteBtn = el('button', '');
         deleteBtn.type = 'button';
         deleteBtn.title = t('profileDelete');
@@ -2229,7 +3131,7 @@
         deleteBtn.setAttribute('data-profile-action', 'delete');
         deleteBtn.setAttribute('data-profile-id', profile.id);
         deleteBtn.textContent = '×';
-        actions.append(renameBtn, deleteBtn);
+        actions.append(deleteBtn);
       }
       if (actions.childNodes.length > 0) {
         row.append(actions);
@@ -2315,27 +3217,59 @@
     return [...groups, ...notes];
   }
 
+  /** MR chips and plain messages whose thread can fold. */
+  function reviewMessageCanFold(msg) {
+    if (!msg) {
+      return false;
+    }
+    const pageId = activePage()?.id || '';
+    if (msg.isMr && activePendingReviewId(pageId) === msg.id) {
+      return true;
+    }
+    if (msg.isMr) {
+      return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    }
+    return !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
+  }
+
+  function foldableReviewMessages() {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || !reviewState || reviewState.pageId !== page.id) {
+      return [];
+    }
+    if (reviewPaintEdge(page.id) === 'initial') {
+      return [];
+    }
+    return (reviewState.messages || []).filter((msg) => reviewMessageCanFold(msg) && !msg.locked);
+  }
+
   function allTopCollapsed() {
+    if (activePage()?.kind === 'review') {
+      const items = foldableReviewMessages();
+      return items.length > 0 && items.every((msg) => reviewCollapsed.has(msg.id));
+    }
     const groups = collapsibleTopGroups();
     return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
 
   function syncToolbarView() {
-    const onLinks = !isProblemsPageOpen() && activePage()?.kind === 'links';
+    const kind = activePage()?.kind;
+    const hide = !isProblemsPageOpen() && (kind === 'links' || kind === 'review');
     if (toolbarViewWrap) {
-      toolbarViewWrap.hidden = onLinks;
+      toolbarViewWrap.hidden = hide;
     }
-    if (onLinks) {
+    if (hide) {
       closeToolbarViewMenu();
     }
   }
 
   function setCollapseButton() {
-    const groups = collapsibleTopGroups();
-    const collapsed = groups.length > 0 && groups.every((group) => isCollapsed(group.id));
+    const review = activePage()?.kind === 'review';
+    const groups = review ? foldableReviewMessages() : collapsibleTopGroups();
+    const collapsed = allTopCollapsed();
     const mode = collapsed ? 'expand' : 'collapse';
     if (toolbarCollapse) {
-      toolbarCollapse.disabled = groups.length === 0;
+      toolbarCollapse.disabled = groups.length === 0 || pageSkeletonKind() !== '';
       toolbarCollapse.title = collapsed ? t('toolbarExpand') : t('toolbarCollapse');
       toolbarCollapse.setAttribute('aria-label', toolbarCollapse.title);
       toolbarCollapse.querySelectorAll('.tool-icon').forEach((img) => {
@@ -2779,34 +3713,93 @@
     return !!page && data.contentPageId === page.id;
   }
 
-  function render() {
-    if (!data) {
-      return;
+  /** files / notes / links with no cached body. Review keeps the dimmed wait. */
+  function pageSkeletonKind() {
+    if (!data || isProblemsPageOpen() || pageContentReady()) {
+      return '';
     }
-    if (!pageContentReady()) {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && root.contains(active)) {
-        active.blur();
-      }
-      root.classList.add('is-page-loading');
-      root.setAttribute('aria-busy', 'true');
-      return;
+    const page = activePage();
+    if (!page || page.kind === 'review') {
+      return '';
     }
-    root.classList.remove('is-page-loading');
-    root.removeAttribute('aria-busy');
-    const direction = consumeSlideDirection();
-    if (isSliding && direction === 0) {
-      renderDeferred = true;
-      setCollapseButton();
-      return;
+    if (page.kind === 'notes' || page.kind === 'links') {
+      return page.kind;
     }
-    if (isFolding && direction === 0 && !renderFromToggle) {
-      renderDeferred = true;
-      setCollapseButton();
-      return;
-    }
-    renderDeferred = false;
+    return 'files';
+  }
 
+  function clearPageSkeletonMark() {
+    delete root.dataset.skeletonKind;
+    delete root.dataset.skeletonPageId;
+  }
+
+  /** Content buttons wait. More-menu and profile stay. Leave only via another chip. */
+  function syncPageLoadingChrome() {
+    const locked = pageSkeletonKind() !== '';
+    if (locked) {
+      closeToolbarViewMenu();
+      closeToolbarCreateMenu();
+      closeFormatMenu();
+      if (toolbarPanelsMenu) {
+        toolbarPanelsMenu.hidden = true;
+      }
+      toolbarPanels?.setAttribute('aria-expanded', 'false');
+    }
+    const contentButtons = [
+      toolbarView,
+      toolbarCreate,
+      toolbarCollapse,
+      toolbarFormat,
+      toolbarReviewTab,
+      toolbarPanels,
+      panelToggleBottom,
+      panelToggleLeft,
+      panelToggleRight,
+    ];
+    if (locked) {
+      for (const button of contentButtons) {
+        if (button) {
+          button.disabled = true;
+        }
+      }
+      if (historyBack) {
+        historyBack.disabled = true;
+      }
+      if (historyForward) {
+        historyForward.disabled = true;
+      }
+      if (historyAccept) {
+        historyAccept.disabled = true;
+      }
+    } else {
+      for (const button of contentButtons) {
+        if (button && button !== toolbarCollapse) {
+          button.disabled = false;
+        }
+      }
+      setHistoryButtons(data && data.history);
+      setCollapseButton();
+    }
+    if (!pager) {
+      return;
+    }
+    for (const node of pager.querySelectorAll('.pager-chip')) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      const current = node.classList.contains('active') && !node.classList.contains('problems-tab');
+      if (node.dataset.pageId) {
+        node.draggable = !locked;
+      }
+      node.classList.toggle('is-load-locked', locked && current);
+    }
+  }
+
+  /**
+   * @param {() => void} paint
+   * @param {number} direction
+   */
+  function commitPagePaint(paint, direction) {
     /** @type {HTMLElement | null} */
     let leaving = null;
     let oldHeight = 0;
@@ -2823,7 +3816,7 @@
         leaving.inert = true;
         stage.append(leaving);
       }
-      paintPage();
+      paint();
       if (leaving && stage) {
         stage.classList.add('is-sliding');
         stage.style.height = Math.max(oldHeight, root.offsetHeight) + 'px';
@@ -2887,6 +3880,236 @@
     outgoing.style.transform = 'translateX(' + leaveTo + ')';
   }
 
+  function render() {
+    if (!data) {
+      return;
+    }
+    const skeletonKind = pageSkeletonKind();
+    if (!pageContentReady() && !skeletonKind) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      root.classList.add('is-page-loading');
+      root.setAttribute('aria-busy', 'true');
+      syncPageLoadingChrome();
+      return;
+    }
+    if (skeletonKind) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      const direction = consumeSlideDirection();
+      const page = activePage();
+      const sameSkeleton =
+        root.classList.contains('is-page-skeleton') &&
+        root.dataset.skeletonKind === skeletonKind &&
+        root.dataset.skeletonPageId === page?.id;
+      if (sameSkeleton && direction === 0) {
+        syncPageLoadingChrome();
+        return;
+      }
+      root.classList.remove('is-page-loading');
+      commitPagePaint(() => paintPageSkeleton(skeletonKind), direction);
+      syncPageLoadingChrome();
+      return;
+    }
+
+    const arrivedOnSkeleton =
+      root.classList.contains('is-page-skeleton') &&
+      root.dataset.skeletonPageId === activePage()?.id;
+    root.classList.remove('is-page-loading');
+    root.removeAttribute('aria-busy');
+    if (arrivedOnSkeleton) {
+      pendingSlide = 0;
+      preservingPageScroll(() => {
+        cancelSlide();
+        clearPageSkeletonMark();
+        paintPage();
+      });
+      syncPageLoadingChrome();
+      return;
+    }
+
+    clearPageSkeletonMark();
+    const direction = consumeSlideDirection();
+    if (isSliding && direction === 0) {
+      renderDeferred = true;
+      setCollapseButton();
+      syncPageLoadingChrome();
+      return;
+    }
+    if (isFolding && direction === 0 && !renderFromToggle) {
+      renderDeferred = true;
+      setCollapseButton();
+      syncPageLoadingChrome();
+      return;
+    }
+    renderDeferred = false;
+    commitPagePaint(paintPage, direction);
+    syncPageLoadingChrome();
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   */
+  function pageSkelBar(width, delayMs) {
+    const bar = el('span', 'page-skel-bar');
+    if (width) {
+      bar.style.width = width;
+    }
+    bar.style.animationDelay = delayMs + 'ms';
+    return bar;
+  }
+
+  /** @param {'files' | 'notes' | 'links'} kind */
+  function paintPageSkeleton(kind) {
+    closeContextMenu();
+    dismissLinkPreview();
+    closeGroupPanel(false);
+    openLinkPanelId = null;
+    const page = activePage();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page is-page-skeleton' + (kind === 'links' ? ' links-page' : '');
+    root.dataset.skeletonKind = kind;
+    root.dataset.skeletonPageId = page ? page.id : '';
+    root.setAttribute('aria-busy', 'true');
+    clearDropHighlights();
+    if (kind === 'links') {
+      paintLinksSkeleton();
+      return;
+    }
+    if (kind === 'notes') {
+      paintNotesSkeleton();
+      return;
+    }
+    paintFilesSkeleton();
+  }
+
+  function paintFilesSkeleton() {
+    const widths = ['180px', '140px', '100px'];
+    let delay = 0;
+    for (let groupIndex = 0; groupIndex < 3; groupIndex += 1) {
+      const group = el('section', 'page-skel-group');
+      group.setAttribute('aria-hidden', 'true');
+      group.append(pageSkelBar('120px', delay));
+      delay += 40;
+      const files = el('div', 'page-skel-files');
+      for (const width of widths) {
+        files.append(pageSkelBar(width, delay));
+        delay += 40;
+      }
+      group.append(files);
+      root.append(group);
+    }
+  }
+
+  function paintNotesSkeleton() {
+    for (let noteIndex = 0; noteIndex < 3; noteIndex += 1) {
+      const note = el('section', 'page-skel-note');
+      note.setAttribute('aria-hidden', 'true');
+      const long = pageSkelBar('', noteIndex * 80);
+      long.classList.add('is-long');
+      const half = pageSkelBar('', noteIndex * 80 + 40);
+      half.classList.add('is-half');
+      note.append(long, half);
+      root.append(note);
+    }
+  }
+
+  /** Distinct root hues from the link palette, shuffled. */
+  function pageSkelParentColors(count) {
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    /** @type {string[]} */
+    const hues = [];
+    for (const column of columns) {
+      const tone = Array.isArray(column.tones) ? column.tones[0] : '';
+      if (tone) {
+        hues.push(String(tone));
+      }
+    }
+    if (hues.length < count) {
+      hues.push('#d65156', '#f46d34', '#52be37', '#37beb0', '#5173d6', '#9760c7', '#d651b3');
+    }
+    for (let i = hues.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = hues[i];
+      hues[i] = hues[j];
+      hues[j] = swap;
+    }
+    return hues.slice(0, count);
+  }
+
+  /**
+   * @param {{ depth: number, layout: boolean, leadingGap: boolean, width: string, delay: number, color: string, nextColor: string, children: number }} opts
+   */
+  function pageSkelLinkNode(opts) {
+    const row = el(
+      'div',
+      'link-node depth-' +
+        opts.depth +
+        (opts.leadingGap ? ' has-gap' : '') +
+        (opts.layout ? ' is-layout' : ' is-component'),
+    );
+    row.style.setProperty('--link-color', opts.color);
+    const half = linkChipHalf(opts.depth);
+    row.append(linkElbow((opts.leadingGap ? LINK_ROW_GAP : 0) + half, opts.nextColor));
+    const body = el('div', 'link-body');
+    const chipWrap = el('div', 'link-chip-wrap');
+    const chip = el('span', 'link-chip');
+    chip.append(pageSkelBar(opts.width, opts.delay));
+    chipWrap.append(chip);
+    body.append(chipWrap);
+    if (opts.children > 0) {
+      const kids = el('div', 'link-children');
+      const clip = el('div', 'link-children-clip');
+      const slide = el('div', 'link-children-slide');
+      for (let child = 0; child < opts.children; child += 1) {
+        slide.append(
+          pageSkelLinkNode({
+            depth: opts.depth + 1,
+            layout: false,
+            leadingGap: true,
+            width: '100px',
+            delay: opts.delay + 40 + child * 40,
+            color: opts.color,
+            nextColor: child < opts.children - 1 ? opts.color : '',
+            children: 0,
+          }),
+        );
+      }
+      clip.append(slide);
+      kids.append(clip);
+      body.append(kids);
+    }
+    row.append(body);
+    return row;
+  }
+
+  function paintLinksSkeleton() {
+    const colors = pageSkelParentColors(3);
+    const tree = el('div', 'links-tree page-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    for (let parent = 0; parent < 3; parent += 1) {
+      tree.append(
+        pageSkelLinkNode({
+          depth: 0,
+          layout: true,
+          leadingGap: parent > 0,
+          width: '150px',
+          delay: parent * 90,
+          color: colors[parent] || '#6e6e6e',
+          nextColor: parent < 2 ? colors[parent + 1] || '' : '',
+          children: 3,
+        }),
+      );
+    }
+    root.append(tree);
+  }
+
   /** @type {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' } | null} */
   let pendingLinkDrop = null;
   /** @type {string | null} */
@@ -2935,8 +4158,9 @@
   /**
    * Shared color picker panel.
    * @type {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review',
    *   id?: string,
+   *   pageId?: string,
    *   currentHex: string,
    *   allowNone: boolean,
    *   noneDisabled?: boolean,
@@ -3037,6 +4261,12 @@
   document.addEventListener(
     'keydown',
     (event) => {
+      if (reviewFileView && event.key === 'Escape' && !openColorPanel) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeReviewFileView();
+        return;
+      }
       if (openColorPanel && event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -3185,8 +4415,9 @@
 
   /**
    * @param {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review',
    *   id?: string,
+   *   pageId?: string,
    *   currentHex?: string,
    *   allowNone?: boolean,
    *   noneDisabled?: boolean,
@@ -3198,6 +4429,7 @@
     openColorPanel = {
       kind: opts.kind,
       id: opts.id,
+      pageId: opts.pageId,
       currentHex: currentHex.startsWith('#') ? currentHex : currentHex ? currentHex : '',
       allowNone: opts.allowNone !== false,
       noneDisabled: !!opts.noneDisabled,
@@ -3253,6 +4485,16 @@
       closeColorPanel();
       return;
     }
+    if (target.kind === 'review' && target.id && target.pageId && value) {
+      vscode.postMessage({
+        type: 'reviewUpdateMr',
+        pageId: target.pageId,
+        messageId: target.id,
+        color: value,
+      });
+      closeColorPanel();
+      return;
+    }
     closeColorPanel();
   }
 
@@ -3277,6 +4519,8 @@
       colorTarget = { kind: 'link', id: target.id };
     } else if (target.kind === 'marker' && target.id) {
       colorTarget = { kind: 'marker', id: target.id };
+    } else if (target.kind === 'review' && target.id && target.pageId) {
+      colorTarget = { kind: 'review', id: target.id, pageId: target.pageId };
     } else {
       return;
     }
@@ -3744,15 +4988,18 @@
       state.description = descInput.value;
       descCounter.textContent = descInput.value.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
     });
+    const commitCreateFromFields = () => {
+      state.label = nameInput.value;
+      state.alias = aliasInput.value;
+      state.description = clipGroupDescriptionInput(descInput.value);
+      commitGroupDraft();
+    };
     nameInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
         event.stopPropagation();
         if (state.mode === 'create') {
-          state.label = nameInput.value;
-          state.alias = aliasInput.value;
-          state.description = clipGroupDescriptionInput(descInput.value);
-          commitGroupDraft();
+          commitCreateFromFields();
         } else {
           nameInput.blur();
         }
@@ -3792,6 +5039,42 @@
         description: next || null,
       });
     });
+
+    if (state.mode === 'create') {
+      const actions = el('div', 'link-panel-actions group-draft-actions');
+      const cancel = el('button', 'link-panel-secondary');
+      cancel.type = 'button';
+      cancel.textContent = t('groupDraftCancel');
+      cancel.addEventListener('click', () => closeGroupPanel(true));
+      const save = el('button', 'link-panel-primary');
+      save.type = 'button';
+      save.textContent = t('groupDraftSave');
+      const createDraftDirty = () =>
+        !!(
+          nameInput.value.trim() ||
+          aliasInput.value.trim() ||
+          clipGroupDescriptionInput(descInput.value).trim() ||
+          state.locked ||
+          state.colorTouched ||
+          groupColumnMode(state.columns) !== defaultDraftColumns(state.parentId)
+        );
+      const syncSave = () => {
+        actions.hidden = !createDraftDirty();
+      };
+      syncSave();
+      nameInput.addEventListener('input', syncSave);
+      aliasInput.addEventListener('input', syncSave);
+      descInput.addEventListener('input', syncSave);
+      save.addEventListener('click', () => {
+        if (!nameInput.value.trim()) {
+          nameInput.focus();
+          return;
+        }
+        commitCreateFromFields();
+      });
+      actions.append(cancel, save);
+      panel.append(actions);
+    }
 
     if (state.mode === 'edit' && state.markerId) {
       const actions = el('div', 'link-panel-actions');
@@ -3833,11 +5116,2647 @@
     }
   }
 
+  function formatReviewStamp(iso) {
+    if (!iso) {
+      return '';
+    }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      return '';
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    return (
+      pad(d.getDate()) +
+      '.' +
+      pad(d.getMonth() + 1) +
+      '.' +
+      String(d.getFullYear()).slice(-2) +
+      ' ' +
+      pad(d.getHours()) +
+      ':' +
+      pad(d.getMinutes())
+    );
+  }
+
+  /** Paths from assets/sparkling-2-fill.svg — Neurofix trigger next to review pill. */
+  function reviewSparkleIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-sparkle');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M17.0007 1.20825L18.3195 3.68108L20.7923 4.99992L18.3195 6.31876L17.0007 8.79159L15.6818 6.31876L13.209 4.99992L15.6818 3.68108L17.0007 1.20825ZM8.00065 4.33325L10.6673 9.33325L15.6673 11.9999L10.6673 14.6666L8.00065 19.6666L5.33398 14.6666L0.333984 11.9999L5.33398 9.33325L8.00065 4.33325ZM19.6673 16.3333L18.0007 13.2083L16.334 16.3333L13.209 17.9999L16.334 19.6666L18.0007 22.7916L19.6673 19.6666L22.7923 17.9999L19.6673 16.3333Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /** Paths from assets/blog-line.svg — plain message / comment glyph. */
+  function reviewCommentIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const paths = [
+      { d: 'M11 11.5H9V13.5H11V11.5Z' },
+      { d: 'M15 11.5H13V13.5H15V11.5Z' },
+      { d: 'M17 11.5H19V13.5H17V11.5Z' },
+      {
+        d: 'M11.2 19L14 22.5L16.8 19H22C22.5523 19 23 18.5523 23 18V7.10256C23 6.55028 22.5523 6.10256 22 6.10256H6C5.44772 6.10256 5 6.55028 5 7.10256V18C5 18.5523 5.44772 19 6 19H11.2ZM21 17H15.8387L14 19.2984L12.1613 17H7V8.10256H21V17Z',
+        rule: 'evenodd',
+      },
+      { d: 'M19 2H2C1.44772 2 1 2.44772 1 3V15H3V4H19V2Z' },
+    ];
+    for (const item of paths) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', item.d);
+      path.setAttribute('fill', 'currentColor');
+      if (item.rule) {
+        path.setAttribute('fill-rule', item.rule);
+        path.setAttribute('clip-rule', item.rule);
+      }
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** Path from assets/git-pull-request-fill.svg — MR chip leading glyph. */
+  function reviewPrIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-pr');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3.83481 15.5825 5 15.1707V8.82929Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {string} className
+   * @param {string} d
+   */
+  function reviewSvgIcon(className, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico ' + className);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {string} className
+   * @param {string} d
+   */
+  function cloudSvgIcon(className, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'cloud-ico ' + className);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /** assets/fragment.svg — closed MR chip. */
+  function reviewClosedIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-closed');
+    const specs = [
+      {
+        d: 'M12 9C12.5521 9 12.9997 9.44796 13 10V11H11V10C11.0003 9.44796 11.4479 9 12 9Z',
+      },
+      {
+        d: 'M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM12 7C10.3432 7 9.00023 8.34329 9 10V11H8V16H16V11H15V10C14.9998 8.34329 13.6568 7 12 7Z',
+        rule: 'evenodd',
+      },
+    ];
+    for (const spec of specs) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', spec.d);
+      path.setAttribute('fill', 'currentColor');
+      if (spec.rule) {
+        path.setAttribute('fill-rule', spec.rule);
+        path.setAttribute('clip-rule', spec.rule);
+      }
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** assets/bolt.svg — review chip with empty status. */
+  function reviewBoltIcon() {
+    return reviewSvgIcon('review-ico-bolt', 'M13 10H20L11 23V14H4L13 1V10Z');
+  }
+
+  /** assets/loader-2-fill.svg — review status in progress. */
+  function reviewProgressIcon() {
+    return reviewSvgIcon(
+      'review-ico-progress',
+      'M12 2C12.5523 2 13 2.44772 13 3V6C13 6.55228 12.5523 7 12 7C11.4477 7 11 6.55228 11 6V3C11 2.44772 11.4477 2 12 2ZM12 17C12.5523 17 13 17.4477 13 18V21C13 21.5523 12.5523 22 12 22C11.4477 22 11 21.5523 11 21V18C11 17.4477 11.4477 17 12 17ZM22 12C22 12.5523 21.5523 13 21 13H18C17.4477 13 17 12.5523 17 12C17 11.4477 17.4477 11 18 11H21C21.5523 11 22 11.4477 22 12ZM7 12C7 12.5523 6.55228 13 6 13H3C2.44772 13 2 12.5523 2 12C2 11.4477 2.44772 11 3 11H6C6.55228 11 7 11.4477 7 12ZM19.0711 19.0711C18.6805 19.4616 18.0474 19.4616 17.6569 19.0711L15.5355 16.9497C15.145 16.5592 15.145 15.9261 15.5355 15.5355C15.9261 15.145 16.5592 15.145 16.9497 15.5355L19.0711 17.6569C19.4616 18.0474 19.4616 18.6805 19.0711 19.0711ZM8.46447 8.46447C8.07394 8.85499 7.44078 8.85499 7.05025 8.46447L4.92893 6.34315C4.53841 5.95262 4.53841 5.31946 4.92893 4.92893C5.31946 4.53841 5.95262 4.53841 6.34315 4.92893L8.46447 7.05025C8.85499 7.44078 8.85499 8.07394 8.46447 8.46447ZM4.92893 19.0711C4.53841 18.6805 4.53841 18.0474 4.92893 17.6569L7.05025 15.5355C7.44078 15.145 8.07394 15.145 8.46447 15.5355C8.85499 15.9261 8.85499 16.5592 8.46447 16.9497L6.34315 19.0711C5.95262 19.4616 5.31946 19.4616 4.92893 19.0711ZM15.5355 8.46447C15.145 8.07394 15.145 7.44078 15.5355 7.05025L17.6569 4.92893C18.0474 4.53841 18.6805 4.53841 19.0711 4.92893C19.4616 5.31946 19.4616 5.95262 19.0711 6.34315L16.9497 8.46447C16.5592 8.85499 15.9261 8.85499 15.5355 8.46447Z',
+    );
+  }
+
+  /** assets/check-double-fill.svg — review status done. */
+  function reviewDoneIcon() {
+    return reviewSvgIcon(
+      'review-ico-done',
+      'M11.602 13.7599L13.014 15.1719L21.4795 6.7063L22.8938 8.12051L13.014 18.0003L6.65 11.6363L8.06421 10.2221L10.189 12.3469L11.602 13.7599ZM11.6037 10.9322L16.5563 5.97949L17.9666 7.38977L13.014 12.3424L11.6037 10.9322ZM8.77698 16.5873L7.36396 18.0003L1 11.6363L2.41421 10.2221L3.82723 11.6352L3.82604 11.6363L8.77698 16.5873Z',
+    );
+  }
+
+  /**
+   * @param {string | undefined} status
+   */
+  function reviewStatusIcon(status) {
+    if (status === 'inProgress') {
+      return reviewProgressIcon();
+    }
+    if (status === 'done') {
+      return reviewDoneIcon();
+    }
+    return reviewBoltIcon();
+  }
+
+  function reviewPersonIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M8 8a2.75 2.75 0 1 0 0-5.5A2.75 2.75 0 0 0 8 8zm0 1.25c-2.4 0-4.5 1.2-4.5 2.75V13h9v-.999c0-1.55-2.1-2.751-4.5-2.751z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  const REVIEW_SKELETON_PARENTS = 3;
+  const REVIEW_SKELETON_CHILDREN = 3;
+  const REVIEW_SKEL_COLOR = '#6e6e6e';
+
+  /**
+   * @param {string} pageId
+   * @returns {'initial' | 'older' | 'newer' | ''}
+   */
+  function reviewPaintEdge(pageId) {
+    if (reviewLoadPending && reviewLoadPending.pageId === pageId) {
+      return reviewLoadPending.edge;
+    }
+    if (!reviewState || reviewState.pageId !== pageId) {
+      return 'initial';
+    }
+    const marked = reviewState.loadingEdge;
+    if (marked === 'initial' || marked === 'older' || marked === 'newer') {
+      return marked;
+    }
+    if (reviewState.loading && (!reviewState.messages || reviewState.messages.length === 0)) {
+      return 'initial';
+    }
+    return '';
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {'initial' | 'older' | 'newer'} edge
+   */
+  function requestReviewChannelLoad(pageId, edge) {
+    if (reviewPaintEdge(pageId)) {
+      return;
+    }
+    reviewLoadPending = { pageId, edge };
+    const type =
+      edge === 'older' ? 'reviewLoadOlder' : edge === 'newer' ? 'reviewLoadNewer' : 'reviewLoad';
+    vscode.postMessage(edge === 'initial' ? { type, pageId, force: true } : { type, pageId });
+    paintReviewPage();
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   */
+  function reviewSkeletonBar(width, delayMs) {
+    const bar = el('span', 'review-skel-bar');
+    bar.style.width = width;
+    bar.style.animationDelay = delayMs + 'ms';
+    return bar;
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   * @param {boolean} child
+   */
+  function reviewSkeletonPlain(width, delayMs, child) {
+    const preview = el('div', 'review-plain is-skel' + (child ? ' is-child' : ''));
+    const ico = el('span', 'review-plain-ico review-skel-ico');
+    ico.style.animationDelay = delayMs + 'ms';
+    preview.append(ico, reviewSkeletonBar(width, delayMs));
+    return preview;
+  }
+
+  /**
+   * @param {string} pageId
+   * @returns {{ title: string, draft?: boolean } | null}
+   */
+  function activePendingMr(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingMr && reviewState.pendingMr.title) {
+      return reviewState.pendingMr;
+    }
+    if (localPendingMr && localPendingMr.pageId === pageId) {
+      return localPendingMr;
+    }
+    return null;
+  }
+
+  /** @param {string} pageId */
+  function activePendingReviewId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingReviewId) {
+      return reviewState.pendingReviewId;
+    }
+    if (localPendingReview && localPendingReview.pageId === pageId) {
+      return localPendingReview.messageId;
+    }
+    return '';
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} title
+   * @param {boolean} draft
+   */
+  function beginLocalMrSkeleton(pageId, title, draft) {
+    localPendingMr = {
+      pageId,
+      title,
+      draft: !!draft,
+    };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function beginLocalReviewSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingReview = {
+      pageId,
+      messageId,
+    };
+    reviewCollapsed.delete(messageId);
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /** @param {'mr' | 'review'} kind */
+  function noteReviewSkeletonScroll(kind) {
+    const pageId = activePage()?.id || '';
+    const token =
+      kind === 'review'
+        ? 'review:' + activePendingReviewId(pageId)
+        : 'mr:' + (activePendingMr(pageId)?.title || '');
+    if (!token || token === reviewSkelShown) {
+      return;
+    }
+    reviewSkelShown = token;
+    const node = root.querySelector('[data-review-skel="' + kind + '"]');
+    if (node instanceof HTMLElement) {
+      node.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /**
+   * @param {{ title: string, draft?: boolean }} pending
+   * @param {boolean} leadingGap
+   */
+  function renderReviewMrSkeleton(pending, leadingGap) {
+    const row = el('div', 'review-node is-mr is-skel' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewSkel = 'mr';
+    row.style.setProperty('--link-color', '#8e4ec6');
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 20 }), ''),
+    );
+    const chip = el('div', 'review-chip is-mr-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar(pending.draft ? '52px' : '36px', 0));
+    const side = el('div', 'review-side is-skel');
+    side.append(el('span', 'review-skel-ico'));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip, side);
+    const title = reviewSkeletonBar('180px', 80);
+    title.classList.add('review-skel-title');
+    const head = el('div', 'review-mr-head');
+    head.append(chipWrap, title);
+    const body = el('div', 'review-body');
+    body.append(head);
+    row.append(body);
+    return row;
+  }
+
+  /** @param {string} color */
+  function renderReviewReplySkeleton(color) {
+    const row = el('div', 'review-reply-node has-gap is-skel');
+    row.dataset.reviewSkel = 'review';
+    row.style.setProperty('--link-color', color || '#8e4ec6');
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), ''),
+    );
+    const chip = el('div', 'review-chip is-review-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('132px', 40));
+    const body = el('div', 'review-body');
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
+  /** Three plain parents, each with three plain replies. */
+  function renderReviewSkeletonTree() {
+    const tree = el('div', 'review-tree review-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    const parentWidths = ['168px', '124px', '148px'];
+    const childWidths = [
+      ['96px', '72px', '88px'],
+      ['80px', '112px', '64px'],
+      ['104px', '76px', '92px'],
+    ];
+    for (let parent = 0; parent < REVIEW_SKELETON_PARENTS; parent += 1) {
+      const leadingGap = parent > 0;
+      const row = el('div', 'review-node is-plain' + (leadingGap ? ' has-gap' : ''));
+      row.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+      const nextColor = parent < REVIEW_SKELETON_PARENTS - 1 ? REVIEW_SKEL_COLOR : '';
+      row.append(
+        linkElbow(
+          reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 12 }),
+          nextColor,
+        ),
+      );
+      const body = el('div', 'review-body');
+      body.append(reviewSkeletonPlain(parentWidths[parent], parent * 90, false));
+      const children = el('div', 'review-children');
+      const slide = el('div', 'review-children-slide');
+      for (let child = 0; child < REVIEW_SKELETON_CHILDREN; child += 1) {
+        const reply = el('div', 'review-reply-node has-gap');
+        reply.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+        const childNext = child < REVIEW_SKELETON_CHILDREN - 1 ? REVIEW_SKEL_COLOR : '';
+        reply.append(
+          linkElbow(
+            reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 12 }),
+            childNext,
+          ),
+        );
+        const childBody = el('div', 'review-body');
+        childBody.append(
+          reviewSkeletonPlain(childWidths[parent][child], parent * 90 + (child + 1) * 70, true),
+        );
+        reply.append(childBody);
+        slide.append(reply);
+      }
+      children.append(slide);
+      body.append(children);
+      row.append(body);
+      tree.append(row);
+    }
+    return tree;
+  }
+
+  /** Fold a closed MR the first time it is seen, and again when it becomes closed. */
+  function applyClosedMrFolds() {
+    const pageId = activePage()?.id || '';
+    if (!reviewState || reviewState.pageId !== pageId) {
+      return;
+    }
+    for (const msg of reviewState.messages || []) {
+      if (!msg.isMr) {
+        continue;
+      }
+      const closed = msg.status === 'closed';
+      const prev = reviewClosedSeen.get(msg.id);
+      reviewClosedSeen.set(msg.id, closed);
+      if (closed && prev !== true) {
+        reviewCollapsed.add(msg.id);
+      }
+    }
+  }
+
+  function dismissMissingReviewFile() {
+    if (!reviewFileView || findReviewReply(reviewFileView.messageId)) {
+      return;
+    }
+    reviewFileView = null;
+    mountReviewFile();
+  }
+
+  function paintReviewPage() {
+    const page = activePage();
+    const pageId = page?.id || '';
+    if (pageId && (!reviewState || reviewState.pageId !== pageId)) {
+      const cached = reviewByPage.get(pageId);
+      if (cached) {
+        reviewState = cached;
+      }
+    }
+    applyClosedMrFolds();
+    const pendingReviewId = activePendingReviewId(pageId);
+    if (pendingReviewId) {
+      reviewCollapsed.delete(pendingReviewId);
+    }
+    const pendingMr = activePendingMr(pageId);
+    if (!pendingMr && !pendingReviewId) {
+      reviewSkelShown = '';
+    }
+    setCollapseButton();
+    dismissMissingReviewFile();
+    const edge = reviewPaintEdge(pageId);
+    const samePage = !!(reviewState && reviewState.pageId === pageId);
+    const keepScroll = samePage && edge !== 'initial' ? currentDocScroll() : 0;
+    const structureKey = reviewStructureKey(pageId, edge);
+    if (
+      structureKey &&
+      structureKey === reviewStructureKeyValue &&
+      root.classList.contains('review-page') &&
+      root.querySelector('.review-tree')
+    ) {
+      syncReviewCollapsed();
+      syncReviewFileMark();
+      return;
+    }
+    reviewStructureKeyValue = structureKey;
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page review-page';
+    clearDropHighlights();
+    if (edge || pendingMr || pendingReviewId) {
+      root.setAttribute('aria-busy', 'true');
+    } else {
+      root.removeAttribute('aria-busy');
+    }
+    if (edge === 'initial') {
+      root.append(renderReviewSkeletonTree());
+      if (
+        pageId &&
+        (!reviewState || reviewState.pageId !== pageId) &&
+        !reviewAutoLoad.has(pageId)
+      ) {
+        reviewAutoLoad.add(pageId);
+        vscode.postMessage({ type: 'reviewLoad', pageId });
+      }
+      return;
+    }
+    if (
+      reviewState &&
+      reviewState.error &&
+      !(isReviewFetchError(reviewState.error) && reviewStateMessages(reviewState).length > 0)
+    ) {
+      const box = el('div', 'review-error');
+      box.append(el('div', 'review-error-text', reviewState.error || t('reviewSyncError')));
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        requestReviewChannelLoad(pageId, 'initial');
+      });
+      box.append(retry);
+      root.append(box);
+      if (keepScroll) {
+        applyDocScroll(keepScroll);
+      }
+      return;
+    }
+    if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
+      if (!pendingMr) {
+        root.append(el('div', 'empty', t('reviewEmpty')));
+        return;
+      }
+      const tree = el('div', 'review-tree');
+      tree.append(renderReviewMrSkeleton(pendingMr, false));
+      root.append(tree);
+      noteReviewSkeletonScroll('mr');
+      return;
+    }
+    if (reviewState.contentBlocked) {
+      const warn = el('div', 'review-content-blocked');
+      warn.append(el('div', 'review-content-blocked-text', t('reviewContentBlocked')));
+      const howto = el('button', 'review-howto-link', t('reviewHowToConnect'));
+      howto.type = 'button';
+      howto.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        requestReviewChannelLoad(pageId, 'initial');
+      });
+      const actions = el('div', 'review-content-blocked-actions');
+      actions.append(howto, retry);
+      warn.append(actions);
+      root.append(warn);
+    }
+    const busy = edge === 'older' || edge === 'newer';
+    if (reviewState.canLoadOlder && edge !== 'older') {
+      const older = el('button', 'review-load-edge', t('reviewLoadOlder'));
+      older.type = 'button';
+      older.disabled = busy;
+      older.addEventListener('click', () => {
+        requestReviewChannelLoad(pageId, 'older');
+      });
+      root.append(older);
+    }
+    if (edge === 'older') {
+      root.append(renderReviewSkeletonTree());
+    }
+    const tree = el('div', 'review-tree');
+    const messages = reviewState.messages;
+    messages.forEach((msg, index) => {
+      const next = messages[index + 1];
+      const nextColor = next
+        ? next.color || (next.isMr ? '#8e4ec6' : '#6e6e6e')
+        : pendingMr
+          ? '#8e4ec6'
+          : '';
+      tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
+    });
+    if (pendingMr) {
+      tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
+    }
+    root.append(tree);
+    if (edge === 'newer') {
+      root.append(renderReviewSkeletonTree());
+    }
+    if (reviewState.canLoadNewer && edge !== 'newer') {
+      const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
+      newer.type = 'button';
+      newer.disabled = busy;
+      newer.addEventListener('click', () => {
+        requestReviewChannelLoad(pageId, 'newer');
+      });
+      root.append(newer);
+    }
+    if (keepScroll) {
+      applyDocScroll(keepScroll);
+    }
+    if (reviewState.focusMessageId) {
+      const focused = root.querySelector('[data-review-id="' + reviewState.focusMessageId + '"]');
+      if (focused instanceof HTMLElement) {
+        focused.classList.add('is-focus');
+        focused.scrollIntoView({ block: 'nearest' });
+        vscode.postMessage({ type: 'reviewClearFocus', pageId });
+      }
+    } else if (edge === 'older' || edge === 'newer') {
+      const skel = root.querySelector('.review-skel');
+      if (skel instanceof HTMLElement) {
+        skel.scrollIntoView({ block: 'nearest' });
+      }
+    } else if (pendingReviewId || pendingMr) {
+      noteReviewSkeletonScroll(pendingReviewId ? 'review' : 'mr');
+    }
+    syncReviewFileMark();
+  }
+
+  /**
+   * Fold flags are omitted so toggling them can reuse the mounted tree.
+   * @param {string} pageId
+   * @param {'initial' | 'older' | 'newer' | ''} edge
+   */
+  function reviewStructureKey(pageId, edge) {
+    const state = reviewState;
+    if (!state || state.pageId !== pageId || edge === 'initial') {
+      return '';
+    }
+    /** @type {string[]} */
+    const chunks = [
+      pageId,
+      edge || '',
+      state.error || '',
+      state.empty ? '1' : '0',
+      state.contentBlocked ? '1' : '0',
+      state.canLoadOlder ? '1' : '0',
+      state.canLoadNewer ? '1' : '0',
+      state.focusMessageId || '',
+      [...reviewTitleExpanded].sort().join(','),
+      [...reviewPlainExpanded].sort().join(','),
+      activePendingReviewId(pageId),
+      (() => {
+        const pending = activePendingMr(pageId);
+        return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
+      })(),
+    ];
+    for (const msg of state.messages || []) {
+      chunks.push(
+        msg.id,
+        msg.color || '',
+        msg.title || '',
+        msg.draft ? 'd' : '',
+        msg.status || '',
+        msg.locked ? 'L' : '',
+        msg.timestamp || '',
+        msg.hasThread ? 't' : '',
+        msg.repliesHasMore ? 'm' : '',
+        msg.contentMissing ? 'x' : '',
+        String((msg.content || '').length),
+      );
+      for (const reply of msg.replies || []) {
+        chunks.push(
+          reply.id,
+          reply.pillLabel || '',
+          reply.status || '-',
+          reply.isPill ? 'p' : '',
+          reply.timestamp || '',
+          reply.hasFile ? 'f' : '',
+          reply.filename || '',
+          reply.contentMissing ? 'x' : '',
+          String((reply.content || '').length),
+        );
+      }
+    }
+    return chunks.join('\u001f');
+  }
+
+  /** Fold or open every review thread that has a caret. */
+  function setAllReviewCollapsed(collapsed) {
+    const items = foldableReviewMessages();
+    if (items.length === 0) {
+      return;
+    }
+    for (const msg of items) {
+      if (collapsed) {
+        reviewCollapsed.add(msg.id);
+      } else {
+        reviewCollapsed.delete(msg.id);
+      }
+    }
+    paintReviewPage();
+  }
+
+  /** Parent body without the `lock:` meta line. */
+  function reviewDisplayText(content) {
+    if (typeof content !== 'string') {
+      return '';
+    }
+    return content
+      .split(/\r?\n/)
+      .filter((line) => !/^lock:\s*(true|false)\s*$/i.test(line.trim()))
+      .join('\n')
+      .trim();
+  }
+
+  /** @param {string} messageId */
+  function toggleReviewCollapsed(messageId) {
+    const msg = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (msg?.locked) {
+      flashReviewLock(messageId);
+      return;
+    }
+    if (reviewCollapsed.has(messageId)) {
+      reviewCollapsed.delete(messageId);
+    } else {
+      reviewCollapsed.add(messageId);
+    }
+    paintReviewPage();
+  }
+
+  function syncReviewCollapsed() {
+    root.querySelectorAll('.review-node[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const collapsed = reviewCollapsed.has(node.dataset.reviewId || '');
+      node.classList.toggle('is-collapsed', collapsed);
+      const tri = node.querySelector(
+        ':scope > .review-body > .review-mr-head .link-chip-tri, :scope > .review-body > .review-plain > .link-chip-tri',
+      );
+      if (tri) {
+        tri.classList.toggle('is-collapsed', collapsed);
+      }
+    });
+  }
+
+  function syncReviewFileMark() {
+    const openId = reviewFileView && activePage()?.kind === 'review' ? reviewFileView.messageId : '';
+    root.querySelectorAll('[data-review-reply-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewReplyId === openId);
+    });
+  }
+
+  /** Stamp block above content (10px * 1.2) + body gap — must match .review-stamp / .review-body. */
+  const REVIEW_STAMP_BLOCK = 12;
+  const REVIEW_BODY_GAP = 4;
+
+  /**
+   * Elbow mid Y like links: padding gap + optional stamp + half of the target row.
+   * @param {{ leadingGap?: boolean, hasStamp?: boolean, contentHalf: number }} opts
+   */
+  function reviewElbowMid(opts) {
+    return (
+      (opts.leadingGap ? LINK_ROW_GAP : 0) +
+      (opts.hasStamp ? REVIEW_STAMP_BLOCK + REVIEW_BODY_GAP : 0) +
+      opts.contentHalf
+    );
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   * @param {boolean} leadingGap
+   * @param {string} nextColor
+   */
+  function renderReviewNode(msg, pageId, leadingGap, nextColor) {
+    const color = msg.color || (msg.isMr ? '#8e4ec6' : '#6e6e6e');
+    const showReviewSkeleton = !!msg.isMr && activePendingReviewId(pageId) === msg.id;
+    const canFold = reviewMessageCanFold(msg);
+    const mrCanFold = !!msg.isMr && canFold;
+    const plainCanFold = !msg.isMr && canFold;
+    const collapsed = canFold && reviewCollapsed.has(msg.id);
+    const plainOpen = !msg.isMr && reviewPlainExpanded.has(msg.id);
+    const stamp = formatReviewStamp(msg.timestamp);
+    const row = el(
+      'div',
+      'review-node' +
+        (msg.isMr ? ' is-mr' : ' is-plain') +
+        (leadingGap ? ' has-gap' : '') +
+        (collapsed ? ' is-collapsed' : '') +
+        (plainOpen ? ' is-plain-open' : ''),
+    );
+    row.dataset.reviewId = msg.id;
+    row.style.setProperty('--link-color', color);
+    row.append(
+      linkElbow(
+        reviewElbowMid({
+          leadingGap,
+          hasStamp: !!stamp,
+          contentHalf: msg.isMr ? 20 : 12,
+        }),
+        nextColor,
+      ),
+    );
+
+    const body = el('div', 'review-body');
+    if (stamp) {
+      body.append(el('div', 'review-stamp', stamp));
+    }
+
+    if (msg.isMr) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-mr-pill');
+      chip.type = 'button';
+      chip.append(msg.status === 'closed' ? reviewClosedIcon() : reviewPrIcon());
+      chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
+      if (canFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        if (!mrCanFold) {
+          return;
+        }
+        toggleReviewCollapsed(msg.id);
+      });
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(chip);
+      const side = el('div', 'review-side');
+      side.append(reviewPersonIcon());
+      chipWrap.append(side);
+
+      const titleText =
+        msg.title ||
+        (() => {
+          const head =
+            typeof msg.content === 'string' ? msg.content.trimStart().split('\n')[0] || '' : '';
+          const match = /^\(?(?:MR_SYN3|DMR_SYN3)\)?:\s*(.*)$/.exec(head);
+          return match ? match[1].trim() : '';
+        })() ||
+        t('reviewEmptyMessage');
+      const title = el(
+        'button',
+        'review-mr-title-text' + (reviewTitleExpanded.has(msg.id) ? ' is-expanded' : ''),
+        titleText,
+      );
+      title.type = 'button';
+      title.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
+        if (reviewTitleExpanded.has(msg.id)) {
+          reviewTitleExpanded.delete(msg.id);
+        } else {
+          reviewTitleExpanded.add(msg.id);
+        }
+        paintReviewPage();
+      });
+      title.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      if (msg.webUrl) {
+        title.title = msg.webUrl;
+        title.addEventListener('dblclick', (event) => {
+          event.preventDefault();
+          vscode.postMessage({ type: 'openExternal', url: msg.webUrl });
+        });
+      }
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap);
+      if (msg.locked) {
+        head.append(reviewLockMark(msg.id, pageId));
+      }
+      head.append(title);
+      body.append(head);
+
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, true, showReviewSkeleton));
+      }
+    } else {
+      const raw = reviewDisplayText(msg.content);
+      const missing = msg.contentMissing === true || !raw;
+      const preview = el('button', 'review-plain' + (plainOpen ? ' is-open' : ''));
+      preview.type = 'button';
+      const ico = el('span', 'review-plain-ico');
+      ico.append(reviewCommentIcon());
+      if (plainCanFold) {
+        ico.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+      }
+      preview.append(ico);
+      if (plainCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        preview.append(tri);
+      }
+      if (msg.locked) {
+        preview.append(reviewLockMark(msg.id, pageId));
+      }
+      const text = el(
+        'span',
+        'review-plain-text' + (missing ? ' is-missing' : ''),
+        missing ? t('reviewEmptyMessage') : raw,
+      );
+      preview.append(text);
+      preview.addEventListener('click', () => {
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
+        if (reviewPlainExpanded.has(msg.id)) {
+          reviewPlainExpanded.delete(msg.id);
+        } else {
+          reviewPlainExpanded.add(msg.id);
+        }
+        paintReviewPage();
+      });
+      preview.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      body.append(preview);
+      if ((msg.replies && msg.replies.length) || msg.repliesHasMore) {
+        body.append(renderReviewThread(msg, pageId, false));
+      }
+    }
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   * @param {boolean} allowPills
+   * @param {boolean} [withReviewSkeleton]
+   */
+  function renderReviewThread(msg, pageId, allowPills, withReviewSkeleton) {
+    const children = el('div', 'review-children');
+    const clip = el('div', 'review-children-clip');
+    const slide = el('div', 'review-children-slide');
+    const color = msg.color || '#8e4ec6';
+    if (msg.repliesHasMore) {
+      const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
+      more.type = 'button';
+      more.disabled = !!msg.locked;
+      more.addEventListener('click', () => {
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
+        vscode.postMessage({ type: 'reviewLoadThread', pageId, messageId: msg.id });
+      });
+      slide.append(more);
+    }
+    const replies = msg.replies || [];
+    for (let index = 0; index < replies.length; index += 1) {
+      const next = replies[index + 1];
+      const hasNext = !!next || !!withReviewSkeleton;
+      slide.append(
+        renderReviewReply(replies[index], color, allowPills, true, hasNext ? color : '', pageId),
+      );
+    }
+    if (withReviewSkeleton) {
+      slide.append(renderReviewReplySkeleton(color));
+    }
+    clip.append(slide);
+    children.append(clip);
+    return children;
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply
+   * @param {string} color
+   * @param {boolean} allowPills
+   * @param {boolean} leadingGap
+   * @param {string} nextColor stem below this turn (hidden on :last-child via CSS)
+   * @param {string} [pageId]
+   */
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId) {
+    const stamp = formatReviewStamp(reply.timestamp);
+    const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
+    const row = el('div', 'review-reply-node' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewReplyId = reply.id;
+    row.style.setProperty('--link-color', color);
+    row.append(
+      linkElbow(
+        reviewElbowMid({
+          leadingGap,
+          hasStamp: !!stamp,
+          contentHalf: isPill ? 17 : 12,
+        }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    if (stamp) {
+      body.append(el('div', 'review-stamp', stamp));
+    }
+    const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
+    const replyMissing = reply.contentMissing === true || !replyText;
+    if (isPill) {
+      const wrap = el('div', 'review-chip-wrap');
+      const chip = el('div', 'review-chip is-review-pill');
+      chip.append(reviewStatusIcon(reply.status));
+      chip.append(el('span', 'review-chip-label', reply.pillLabel || ''));
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewPillContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      chip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewFileView(pageId || '', reply);
+      });
+      wrap.append(chip);
+      const side = el('button', 'review-side review-neurofix-btn');
+      side.type = 'button';
+      side.title = t('neurofix');
+      side.setAttribute('aria-label', t('neurofix'));
+      side.append(reviewSparkleIcon());
+      side.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openNeuroFixMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      wrap.append(side);
+      body.append(wrap);
+    } else {
+      const plain = el('div', 'review-plain is-child');
+      const ico = el('span', 'review-plain-ico');
+      ico.append(reviewCommentIcon());
+      plain.append(ico);
+      let shown = replyMissing
+        ? t('reviewEmptyMessage')
+        : reply.isReview
+          ? replyText.split('\n').slice(0, 2).join('\n') || 'R_SYN3'
+          : replyText;
+      plain.append(
+        el('span', 'review-plain-text' + (replyMissing ? ' is-missing' : ''), shown),
+      );
+      plain.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      body.append(plain);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /** @param {string} pageId @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply */
+  function openReviewFileView(pageId, reply) {
+    if (!pageId) {
+      return;
+    }
+    if (reviewFileView && reviewFileView.pageId === pageId && reviewFileView.messageId === reply.id) {
+      closeReviewFileView();
+      return;
+    }
+    const cached = reviewFileCache.get(reply.id);
+    reviewFileView = {
+      pageId,
+      messageId: reply.id,
+      title: reply.pillLabel || reply.filename || t('reviewFileTitle'),
+      filename: (cached && cached.filename) || reply.filename || '',
+      status: cached ? 'ready' : reply.hasFile === false ? 'error' : 'loading',
+      text: cached ? cached.text : '',
+      error: reply.hasFile === false ? t('reviewFileMissing') : '',
+    };
+    mountReviewFile();
+    if (!cached && reply.hasFile !== false) {
+      vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId: reply.id });
+    }
+  }
+
+  function closeReviewFileView() {
+    if (!reviewFileView) {
+      mountReviewFile();
+      return;
+    }
+    reviewFileView = null;
+    mountReviewFile();
+  }
+
+  /** @param {{ messageId?: string, ok?: boolean, text?: string, filename?: string, message?: string }} message */
+  function onReviewFileResult(message) {
+    if (!reviewFileView || reviewFileView.messageId !== message.messageId) {
+      return;
+    }
+    if (message.ok && typeof message.text === 'string') {
+      const filename = message.filename || reviewFileView.filename;
+      reviewFileCache.set(message.messageId, { text: message.text, filename });
+      reviewFileView.status = 'ready';
+      reviewFileView.text = message.text;
+      reviewFileView.filename = filename;
+      reviewFileView.error = '';
+    } else {
+      reviewFileView.status = 'error';
+      reviewFileView.error = message.message || t('reviewFileDownloadFail');
+    }
+    mountReviewFile();
+  }
+
+  function reviewFileSkeleton() {
+    const wrap = el('div', 'review-file-skel');
+    for (const width of ['78%', '100%', '92%', '64%', '100%', '84%', '70%']) {
+      const bar = el('div', 'review-file-skel-bar');
+      bar.style.width = width;
+      wrap.append(bar);
+    }
+    return wrap;
+  }
+
+  function mountReviewFile() {
+    if (!reviewFilePane || !reviewFileBody || !reviewFileTitle) {
+      return;
+    }
+    const view = reviewFileView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      reviewFilePane.hidden = true;
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+      syncReviewFileMark();
+      return;
+    }
+    reviewFilePane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      reviewFilePane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    reviewFileTitle.textContent = view.title || t('reviewFileTitle');
+    reviewFileTitle.title = view.filename || '';
+    if (reviewFileClose) {
+      reviewFileClose.title = t('reviewFileClose');
+      reviewFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    reviewFileBody.replaceChildren();
+    if (view.status === 'loading') {
+      reviewFileBody.append(reviewFileSkeleton());
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+    } else if (view.status === 'error') {
+      reviewFileBody.append(el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')));
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+    } else {
+      reviewFileBody.append(el('pre', 'review-file-text', view.text || ''));
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = false;
+        const label = t('reviewOpenTab');
+        toolbarReviewTab.title = label;
+        toolbarReviewTab.setAttribute('aria-label', label);
+      }
+    }
+    syncReviewFileMark();
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewMr', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewPillContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewPill', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openNeuroFixMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewNeurofix', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * Counts from a normalized pill label `Ревью N | H:n | M:n | S:n`.
+   * @param {string | undefined} pillLabel
+   * @returns {{ H: number, M: number, S: number } | undefined}
+   */
+  function parsePillSeverityCounts(pillLabel) {
+    if (!pillLabel) {
+      return undefined;
+    }
+    const match = pillLabel.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*S:\s*(\d+)/i);
+    if (!match) {
+      return undefined;
+    }
+    return { H: Number(match[1]), M: Number(match[2]), S: Number(match[3]) };
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewMessageContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewMsg', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  function dismissReviewMrPanel() {
+    removeOverlay('review-mr-panel');
+  }
+
+  function closeReviewMrPanel() {
+    dismissReviewMrPanel();
+    reviewMrPanel = null;
+  }
+
+  function removeOverlay(id) {
+    const node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    const backdrop = node.closest('.map-settings-backdrop');
+    if (backdrop) {
+      backdrop.remove();
+      return;
+    }
+    node.remove();
+  }
+
+  /**
+   * @param {HTMLElement} panel
+   * @param {() => void} close
+   */
+  function mountSettingsOverlay(panel, close) {
+    const backdrop = el('div', 'map-settings-backdrop');
+    let pressed = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressed = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressed && event.target === backdrop) {
+        close();
+      }
+      pressed = false;
+    });
+    backdrop.append(panel);
+    document.body.append(backdrop);
+  }
+
+  function closeMapSettingsPanels() {
+    closeProfileSettingsPanel();
+    closePageSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeReviewRenamePanel();
+  }
+
+  function closeDiscordGatePanel() {
+    removeOverlay('discord-gate-panel');
+  }
+
+  /**
+   * @param {string} field
+   * @param {string} message
+   */
+  function applyDiscordGateError(field, message) {
+    const panel = document.getElementById('discord-gate-panel');
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    const saveBtn = panel.querySelector('[data-gate-save]');
+    if (saveBtn instanceof HTMLButtonElement) {
+      saveBtn.disabled = false;
+    }
+    panel.querySelectorAll('.discord-gate-field').forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.classList.remove('has-error');
+      }
+    });
+    panel.querySelectorAll('.discord-gate-field-error').forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.hidden = true;
+        node.textContent = '';
+      }
+    });
+    const target = panel.querySelector(`[data-gate-field="${field}"]`);
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (
+      field === 'explorer' ||
+      field === 'notes' ||
+      field === 'links' ||
+      field === 'review'
+    ) {
+      const extra = panel.querySelector('[data-gate-extra]');
+      const extraBtn = panel.querySelector('[data-gate-extra-toggle]');
+      if (extra instanceof HTMLElement) {
+        extra.hidden = false;
+      }
+      if (extraBtn instanceof HTMLButtonElement) {
+        extraBtn.setAttribute('aria-expanded', 'true');
+      }
+    }
+    target.classList.add('has-error');
+    const err = target.querySelector('.discord-gate-field-error');
+    if (err instanceof HTMLElement) {
+      err.hidden = false;
+      err.textContent = message || '';
+    }
+    const input = target.querySelector('input');
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+    }
+  }
+
+  /**
+   * @param {{
+   *   channels: {
+   *     profile?: string,
+   *     explorer?: string,
+   *     notes?: string,
+   *     links?: string,
+   *     review?: string
+   *   },
+   *   hasDiscord: boolean
+   * }} opts
+   */
+  function openDiscordGatePanel(opts) {
+    if (document.getElementById('discord-gate-panel')) {
+      return;
+    }
+    closeMapSettingsPanels();
+    const channels = opts.channels || {};
+    const initial = {
+      profile: typeof channels.profile === 'string' ? channels.profile.trim() : '',
+      explorer: typeof channels.explorer === 'string' ? channels.explorer.trim() : '',
+      notes: typeof channels.notes === 'string' ? channels.notes.trim() : '',
+      links: typeof channels.links === 'string' ? channels.links.trim() : '',
+      review: typeof channels.review === 'string' ? channels.review.trim() : '',
+    };
+
+    const backdrop = el('div', 'map-settings-backdrop discord-gate-backdrop');
+    const panel = el('div', 'review-mr-panel review-create-page-panel discord-gate-panel');
+    panel.id = 'discord-gate-panel';
+    panel.append(el('div', 'review-mr-people-title', t('discordGateTitle')));
+    panel.append(el('div', 'discord-gate-blurb', t('discordGateBlurb')));
+
+    /**
+     * @param {string} field
+     * @param {string} labelKey
+     * @param {string} value
+     * @param {{ password?: boolean }} [opts]
+     */
+    function fieldBlock(field, labelKey, value, fieldOpts) {
+      const wrap = el('div', 'discord-gate-field review-mr-field');
+      wrap.dataset.gateField = field;
+      const label = el('label', '', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = fieldOpts?.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = value || '';
+      if (fieldOpts?.password) {
+        input.autocomplete = 'new-password';
+      } else {
+        input.inputMode = 'numeric';
+        input.placeholder = t('channelIdPlaceholder');
+      }
+      label.append(input);
+      wrap.append(label);
+      const err = el('div', 'discord-gate-field-error');
+      err.hidden = true;
+      wrap.append(err);
+      panel.append(wrap);
+      return input;
+    }
+
+    const profileInput = fieldBlock('profile', 'labelChannelProfile', initial.profile);
+    const tokenInput = fieldBlock('token', 'reviewFieldDiscordToken', '', { password: true });
+    if (opts.hasDiscord) {
+      const hint = el('div', 'review-token-hint', t('discordGateTokenSavedHint'));
+      panel.append(hint);
+    }
+
+    const toggles = el('div', 'discord-gate-toggles');
+    const extraToggle = el('button', 'review-btn discord-gate-extra-btn', t('discordGateExtra'));
+    extraToggle.type = 'button';
+    extraToggle.dataset.gateExtraToggle = '1';
+    extraToggle.setAttribute('aria-expanded', 'false');
+    toggles.append(extraToggle);
+    panel.append(toggles);
+
+    const extra = el('div', 'discord-gate-extra');
+    extra.dataset.gateExtra = '1';
+    extra.hidden = true;
+    extraToggle.addEventListener('click', () => {
+      const open = extra.hidden;
+      extra.hidden = !open;
+      extraToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      extraToggle.classList.toggle('is-active', open);
+    });
+
+    /**
+     * @param {string} field
+     * @param {string} labelKey
+     * @param {string} value
+     */
+    function extraField(field, labelKey, value) {
+      const wrap = el('div', 'discord-gate-field review-mr-field');
+      wrap.dataset.gateField = field;
+      const label = el('label', '', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = 'text';
+      input.spellcheck = false;
+      input.inputMode = 'numeric';
+      input.placeholder = t('channelIdPlaceholder');
+      input.value = value || '';
+      label.append(input);
+      wrap.append(label);
+      const err = el('div', 'discord-gate-field-error');
+      err.hidden = true;
+      wrap.append(err);
+      extra.append(wrap);
+      return input;
+    }
+
+    const explorerInput = extraField('explorer', 'labelChannelExplorer', initial.explorer);
+    const notesInput = extraField('notes', 'labelChannelNotes', initial.notes);
+    const linksInput = extraField('links', 'labelChannelLinks', initial.links);
+    const reviewInput = extraField('review', 'labelChannelReview', initial.review);
+    panel.append(extra);
+
+    const howToBtn = el('button', 'review-btn discord-gate-howto', t('discordGateHowTo'));
+    howToBtn.type = 'button';
+    howToBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'discordGateOpenHowTo' });
+    });
+    panel.append(howToBtn);
+
+    const actions = el('div', 'review-mr-actions');
+    const save = el('button', 'review-btn is-primary', t('discordGateSave'));
+    save.type = 'button';
+    save.dataset.gateSave = '1';
+    save.addEventListener('click', () => {
+      panel.querySelectorAll('.discord-gate-field').forEach((node) => {
+        if (node instanceof HTMLElement) {
+          node.classList.remove('has-error');
+        }
+      });
+      panel.querySelectorAll('.discord-gate-field-error').forEach((node) => {
+        if (node instanceof HTMLElement) {
+          node.hidden = true;
+          node.textContent = '';
+        }
+      });
+      const next = {
+        profile: profileInput.value.trim(),
+        explorer: explorerInput.value.trim(),
+        notes: notesInput.value.trim(),
+        links: linksInput.value.trim(),
+        review: reviewInput.value.trim(),
+      };
+      /** @type {string[]} */
+      const dirty = [];
+      for (const key of /** @type {const} */ ([
+        'profile',
+        'explorer',
+        'notes',
+        'links',
+        'review',
+      ])) {
+        if (next[key] !== initial[key]) {
+          dirty.push(key);
+        }
+      }
+      // First save always treats profile as dirty so the probe runs.
+      if (!dirty.includes('profile')) {
+        dirty.push('profile');
+      }
+      save.disabled = true;
+      vscode.postMessage({
+        type: 'discordGateSave',
+        profile: next.profile,
+        explorer: next.explorer,
+        notes: next.notes,
+        links: next.links,
+        review: next.review,
+        discordToken: tokenInput.value.trim() || undefined,
+        dirty,
+      });
+    });
+    actions.append(save);
+    panel.append(actions);
+
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    profileInput.focus();
+  }
+
+  function closeReviewRenamePanel() {
+    removeOverlay('review-rename-panel');
+  }
+
+  /**
+   * @param {{ pageId: string, messageId: string, title: string, isPr: boolean }} opts
+   */
+  function openReviewRenamePanel(opts) {
+    closeReviewRenamePanel();
+    closeReviewCreatePagePanel();
+    closePageSettingsPanel();
+    closeProfileSettingsPanel();
+    dismissReviewMrPanel();
+    const panel = el('div', 'review-mr-panel');
+    panel.id = 'review-rename-panel';
+    panel.append(
+      el('div', 'review-mr-people-title', t(opts.isPr ? 'reviewRenamePr' : 'reviewRenameMr')),
+    );
+    const nameLabel = el('label', 'review-mr-field', t('reviewRenameTitle'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.maxLength = 200;
+    nameInput.value = opts.title || '';
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewRenamePanel());
+    const submit = el('button', 'review-btn is-primary', t('reviewRenameTitle'));
+    submit.type = 'button';
+    const send = () => {
+      const title = nameInput.value.trim();
+      if (!title) {
+        nameInput.focus();
+        return;
+      }
+      vscode.postMessage({
+        type: 'reviewUpdateMr',
+        pageId: opts.pageId,
+        messageId: opts.messageId,
+        title,
+      });
+      closeReviewRenamePanel();
+    };
+    submit.addEventListener('click', send);
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        send();
+      }
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeReviewRenamePanel);
+    nameInput.focus();
+    nameInput.select();
+  }
+
+  function closeProfileSettingsPanel() {
+    removeOverlay('profile-settings-panel');
+  }
+
+  function closePageSettingsPanel() {
+    removeOverlay('page-settings-panel');
+  }
+
+  /**
+   * @param {{
+   *   id: string,
+   *   creating: boolean,
+   *   nameLocked: boolean,
+   *   name: string,
+   *   githubNick: string,
+   *   gitlabNick: string,
+   *   githubToken: string,
+   *   gitlabToken: string
+   * }} opts
+   */
+  function openProfileSettingsPanel(opts) {
+    closeProfileSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    const panel = el('div', 'review-mr-panel review-create-page-panel profile-settings-panel');
+    panel.id = 'profile-settings-panel';
+    panel.append(
+      el(
+        'div',
+        'review-mr-people-title',
+        t(opts.creating ? 'profileSettingsCreateTitle' : 'profileSettingsTitle'),
+      ),
+    );
+
+    /**
+     * @param {string} labelKey
+     * @param {{ value?: string, password?: boolean, disabled?: boolean, placeholderKey?: string }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = field.value || '';
+      if (field.password) {
+        input.autocomplete = 'new-password';
+      }
+      if (field.placeholderKey) {
+        input.placeholder = t(field.placeholderKey);
+      }
+      if (field.disabled) {
+        input.disabled = true;
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = fieldRow('profileFieldName', {
+      value: opts.name,
+      disabled: opts.nameLocked,
+    });
+    nameInput.maxLength = 64;
+    panel.append(el('div', 'review-mr-people-title', t('labelGithub')));
+    const githubNick = fieldRow('gitNickPlaceholder', {
+      value: opts.githubNick,
+      placeholderKey: 'gitNickPlaceholder',
+    });
+    const githubToken = fieldRow('gitTokenPlaceholder', {
+      value: opts.githubToken,
+      password: true,
+      placeholderKey: 'gitTokenPlaceholder',
+    });
+    panel.append(el('div', 'review-mr-people-title', t('labelGitlab')));
+    const gitlabNick = fieldRow('gitNickPlaceholder', {
+      value: opts.gitlabNick,
+      placeholderKey: 'gitNickPlaceholder',
+    });
+    const gitlabToken = fieldRow('gitTokenPlaceholder', {
+      value: opts.gitlabToken,
+      password: true,
+      placeholderKey: 'gitTokenPlaceholder',
+    });
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeProfileSettingsPanel());
+    const submit = el('button', 'review-btn is-primary', t('profileSettingsSave'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      error.hidden = true;
+      error.textContent = '';
+      const name = nameInput.value.trim();
+      if (!opts.nameLocked) {
+        if (!name) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+        if (!isCreatableProfileName(name, opts.creating ? undefined : opts.id)) {
+          error.textContent = t('profileNameTaken');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+      }
+      vscode.postMessage({
+        type: 'profileSaveSettings',
+        id: opts.creating ? undefined : opts.id,
+        name,
+        githubNick: githubNick.value,
+        gitlabNick: gitlabNick.value,
+        githubToken: githubToken.value,
+        gitlabToken: gitlabToken.value,
+      });
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeProfileSettingsPanel);
+    if (opts.nameLocked) {
+      githubNick.focus();
+    } else {
+      nameInput.focus();
+      nameInput.select();
+    }
+  }
+
+  /** @type {(() => void) | null} */
+  let detachReviewPathNav = null;
+
+  function closeReviewCreatePagePanel() {
+    if (detachReviewPathNav) {
+      detachReviewPathNav();
+      detachReviewPathNav = null;
+    }
+    removeOverlay('review-create-page-panel');
+  }
+
+  /**
+   * Page description: two lines tall, stretchable to three, 144 characters.
+   * @param {string} value
+   * @returns {{ label: HTMLLabelElement, input: HTMLTextAreaElement }}
+   */
+  function pageDescriptionField(value) {
+    const label = el('label', 'review-mr-field');
+    const head = el('span', 'review-desc-head');
+    head.append(document.createTextNode(t('groupDescription')));
+    const counter = el('span', 'group-panel-counter');
+    const input = document.createElement('textarea');
+    input.className = 'review-mr-title';
+    input.rows = 2;
+    input.maxLength = MAX_GROUP_DESCRIPTION_LENGTH;
+    input.value = clipGroupDescriptionInput(value || '');
+    const sync = () => {
+      const next = clipGroupDescriptionInput(input.value);
+      if (next !== input.value) {
+        const caret = input.selectionStart;
+        input.value = next;
+        if (typeof caret === 'number') {
+          const pos = Math.min(caret, next.length);
+          input.setSelectionRange(pos, pos);
+        }
+      }
+      counter.textContent = input.value.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
+    };
+    input.addEventListener('input', sync);
+    sync();
+    head.append(counter);
+    label.append(head, input);
+    return { label, input };
+  }
+
+  /**
+   * Name, description, Discord channel and bot of a map page, inside the map window.
+   * @param {{
+   *   mode: 'create' | 'edit',
+   *   pageId?: string,
+   *   kind?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   hasDiscord?: boolean
+   * }} opts
+   */
+  function openPageSettingsPanel(opts) {
+    closePageSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeProfileSettingsPanel();
+    const creating = opts.mode !== 'edit';
+    const panel = el('div', 'review-mr-panel review-create-page-panel page-settings-panel');
+    panel.id = 'page-settings-panel';
+    panel.append(
+      el('div', 'review-mr-people-title', t(creating ? 'pageSettingsCreateTitle' : 'pageSettingsTitle')),
+    );
+
+    /**
+     * @param {string} labelKey
+     * @param {{ value?: string, password?: boolean, placeholderKey?: string }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = field.value || '';
+      if (field.password) {
+        input.autocomplete = 'new-password';
+      }
+      if (field.placeholderKey) {
+        input.placeholder = t(field.placeholderKey);
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 64;
+    nameInput.value = opts.name || '';
+    nameInput.setAttribute('aria-label', t('reviewFieldPageName'));
+    panel.append(nameInput);
+
+    const selectedKind =
+      opts.kind === 'notes' || opts.kind === 'links' || opts.kind === 'files' ? opts.kind : 'files';
+    const kindKey =
+      selectedKind === 'notes'
+        ? 'pageKindNotes'
+        : selectedKind === 'links'
+          ? 'pageKindLinks'
+          : 'pageKindFiles';
+    panel.append(el('div', 'page-kind-line', t('labelPageKind') + ': ' + t(kindKey)));
+
+    const pageDesc = pageDescriptionField(opts.description || '');
+    const descInput = pageDesc.input;
+    panel.append(pageDesc.label);
+
+    const channelInput = fieldRow('labelChannelDiscord', {
+      value: opts.channelId || '',
+      placeholderKey: 'channelIdPlaceholder',
+    });
+
+    /** @type {HTMLInputElement | null} */
+    let discordInput = null;
+    if (opts.hasDiscord) {
+      panel.append(
+        el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved')),
+      );
+    } else {
+      discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    /**
+     * @param {boolean} report
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined } | null}
+     */
+    function readPageForm(report) {
+      const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const kind = selectedKind;
+      if (!name) {
+        if (report) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          nameInput.focus();
+        }
+        return null;
+      }
+      if (channelId && !/^\d{5,}$/.test(channelId)) {
+        if (report) {
+          error.textContent = t('reviewFieldChannelId');
+          error.hidden = false;
+          channelInput.focus();
+        }
+        return null;
+      }
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
+      return {
+        name,
+        kind,
+        description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        channelId,
+        discordToken: discordInput?.value.trim() || undefined,
+      };
+    }
+
+    if (creating) {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => closePageSettingsPanel());
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      submit.addEventListener('click', () => {
+        const fields = readPageForm(true);
+        if (!fields) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'pageSaveSettings',
+          kind: fields.kind,
+          name: fields.name,
+          description: fields.description,
+          channelId: fields.channelId,
+          discordToken: fields.discordToken,
+        });
+      });
+      actions.append(cancel, submit);
+      panel.append(actions);
+    } else {
+      let savedSig = JSON.stringify({
+        name: (opts.name || '').trim(),
+        description: clipGroupDescriptionInput(opts.description || '').trim(),
+        channelId: (opts.channelId || '').trim(),
+        discordToken: '',
+      });
+      const saveEditing = () => {
+        const fields = readPageForm(true);
+        if (!fields) {
+          return;
+        }
+        const sig = JSON.stringify({
+          name: fields.name,
+          description: fields.description || '',
+          channelId: fields.channelId,
+          discordToken: fields.discordToken || '',
+        });
+        if (sig === savedSig) {
+          return;
+        }
+        savedSig = sig;
+        vscode.postMessage({
+          type: 'pageSaveSettings',
+          pageId: opts.pageId,
+          name: fields.name,
+          description: fields.description,
+          channelId: fields.channelId,
+          discordToken: fields.discordToken,
+        });
+      };
+      nameInput.addEventListener('change', saveEditing);
+      descInput.addEventListener('change', saveEditing);
+      channelInput.addEventListener('change', saveEditing);
+      if (discordInput) {
+        discordInput.addEventListener('change', saveEditing);
+      }
+    }
+    mountSettingsOverlay(panel, closePageSettingsPanel);
+    nameInput.focus();
+    if (!creating) {
+      nameInput.select();
+    }
+  }
+
+  /**
+   * @param {{
+   *   origin: string,
+   *   suggestedProvider: 'gitlab' | 'github',
+   *   hasGitlab: boolean,
+   *   hasGithub: boolean,
+   *   hasDiscord: boolean,
+   *   pageId?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   repoUrl?: string,
+   *   githubToken?: string,
+   *   gitlabToken?: string,
+   *   reviewSkillPath?: string,
+   *   reviewDirPath?: string,
+   *   reviewModel?: string,
+   *   reviewFixModel?: string
+   * }} opts
+   */
+  function openReviewCreatePagePanel(opts) {
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeProfileSettingsPanel();
+    const editing = !!opts.pageId;
+    const panel = el('div', 'review-mr-panel review-create-page-panel');
+    panel.id = 'review-create-page-panel';
+    if (editing) {
+      panel.append(el('div', 'review-mr-people-title', t('reviewPageSettingsTitle')));
+    } else {
+      const header = el('div', 'review-create-page-header');
+      header.append(el('div', 'review-mr-people-title', t('reviewCreatePageTitle')));
+      const headerLinks = el('div', 'review-create-page-links');
+      const howTo = el('button', 'review-howto-link', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const promptEx = el('button', 'review-howto-link', t('reviewPromptExample'));
+      promptEx.type = 'button';
+      promptEx.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenPromptExample' });
+      });
+      headerLinks.append(howTo, promptEx);
+      header.append(headerLinks);
+      panel.append(header);
+    }
+
+    /**
+     * @param {string} labelKey
+     * @param {{ type?: string, value?: string, placeholder?: string, password?: boolean }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : field.type || 'text';
+      if (field.value) {
+        input.value = field.value;
+      }
+      if (field.placeholder) {
+        input.placeholder = field.placeholder;
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = fieldRow('reviewFieldPageName', {
+      placeholder: 'Review',
+      value: opts.name || '',
+    });
+    const pageDesc = pageDescriptionField(opts.description || '');
+    const descInput = pageDesc.input;
+    panel.append(pageDesc.label);
+    const channelInput = fieldRow('reviewFieldChannelId', {
+      placeholder: '123456789012345678',
+      value: opts.channelId || '',
+    });
+
+    /** @type {'gitlab' | 'github'} */
+    let provider = opts.suggestedProvider === 'github' ? 'github' : 'gitlab';
+    const providerBox = el('div', 'review-provider-row');
+    providerBox.append(el('div', 'review-mr-people-title', t('reviewFieldProvider')));
+    const providerChoices = el('div', 'review-provider-choices');
+    /** @type {HTMLButtonElement[]} */
+    const providerButtons = [];
+    for (const value of /** @type {const} */ (['gitlab', 'github'])) {
+      const btn = el(
+        'button',
+        'review-btn review-provider-btn' + (provider === value ? ' is-primary' : ''),
+        t(value === 'github' ? 'reviewProviderGithub' : 'reviewProviderGitlab'),
+      );
+      btn.type = 'button';
+      btn.dataset.provider = value;
+      btn.addEventListener('click', () => {
+        if (hostTokenInput) {
+          if (provider === 'github') opts.githubToken = hostTokenInput.value;
+          else opts.gitlabToken = hostTokenInput.value;
+        }
+        provider = value;
+        for (const other of providerButtons) {
+          other.classList.toggle('is-primary', other.dataset.provider === provider);
+        }
+        renderHostToken();
+        if (editing) {
+          saveEditing();
+        }
+      });
+      providerButtons.push(btn);
+      providerChoices.append(btn);
+    }
+    providerBox.append(providerChoices);
+    panel.append(providerBox);
+
+    const repoInput = fieldRow('reviewFieldRepoUrl', { value: opts.repoUrl || opts.origin });
+
+    const hostTokenSlot = el('div', 'review-host-token-slot');
+    panel.append(hostTokenSlot);
+
+    /** @type {HTMLInputElement | null} */
+    let hostTokenInput = null;
+
+    function renderHostToken() {
+      hostTokenSlot.replaceChildren();
+      const labelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = 'password';
+      input.spellcheck = false;
+      input.autocomplete = 'new-password';
+      input.value = provider === 'github' ? opts.githubToken || '' : opts.gitlabToken || '';
+      label.append(input);
+      hostTokenSlot.append(label);
+      hostTokenInput = input;
+      if (editing) {
+        input.addEventListener('change', () => saveEditing());
+      }
+    }
+    renderHostToken();
+
+    /** @type {HTMLInputElement | null} */
+    let discordInput = null;
+    if (opts.hasDiscord) {
+      const saved = el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved'));
+      panel.append(saved);
+    } else {
+      discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
+    }
+
+    /** @type {HTMLInputElement | null} */
+    let skillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let dirInput = null;
+    /** @type {HTMLInputElement | null} */
+    let modelInput = null;
+    /** @type {HTMLInputElement | null} */
+    let fixModelInput = null;
+    if (editing) {
+      /**
+       * @param {string} labelKey
+       * @param {string} value
+       * @param {'skill' | 'dir' | 'model'} kind
+       */
+      function reviewAgentField(labelKey, value, kind) {
+        const label = el('label', 'review-mr-field', t(labelKey));
+        const row = el('div', 'review-path-field');
+        const input = document.createElement('input');
+        input.className = 'review-mr-title' + (kind === 'model' ? ' review-model-input' : '');
+        input.type = 'text';
+        input.spellcheck = false;
+        input.value = value;
+        if (kind === 'model') {
+          input.autocapitalize = 'none';
+          input.autocomplete = 'off';
+          input.placeholder = 'grok-4.7-high-fast';
+          input.addEventListener('input', () => {
+            const next = input.value.toLowerCase();
+            if (next === input.value) {
+              return;
+            }
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            input.value = next;
+            if (start !== null && end !== null) {
+              input.setSelectionRange(start, end);
+            }
+          });
+        }
+        row.append(input);
+        if (kind !== 'model') {
+          const browse = el('button', 'review-btn review-path-browse', '…');
+          browse.type = 'button';
+          browse.title = t('browseProject');
+          browse.setAttribute('aria-label', t('browseProject'));
+          browse.addEventListener('click', () => openReviewPathNav(kind, input));
+          row.append(browse);
+        }
+        label.append(row);
+        panel.append(label);
+        return input;
+      }
+
+      skillInput = reviewAgentField('labelReviewSkillPath', opts.reviewSkillPath || '', 'skill');
+      dirInput = reviewAgentField('labelReviewDirPath', opts.reviewDirPath || '', 'dir');
+      modelInput = reviewAgentField('labelReviewModel', (opts.reviewModel || '').toLowerCase(), 'model');
+      fixModelInput = reviewAgentField(
+        'labelReviewFixModel',
+        (opts.reviewFixModel || '').toLowerCase(),
+        'model',
+      );
+
+      function saveReviewPaths() {
+        if (!(skillInput instanceof HTMLInputElement) || !(dirInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const reviewSkillPath = skillInput.value.trim();
+        const reviewDirPath = dirInput.value.trim();
+        const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
+        const reviewFixModel =
+          fixModelInput instanceof HTMLInputElement ? fixModelInput.value.trim().toLowerCase() : '';
+        if (
+          reviewSkillPath === (opts.reviewSkillPath || '') &&
+          reviewDirPath === (opts.reviewDirPath || '') &&
+          reviewModel === (opts.reviewModel || '').toLowerCase() &&
+          reviewFixModel === (opts.reviewFixModel || '').toLowerCase()
+        ) {
+          return;
+        }
+        opts.reviewSkillPath = reviewSkillPath;
+        opts.reviewDirPath = reviewDirPath;
+        opts.reviewModel = reviewModel;
+        opts.reviewFixModel = reviewFixModel;
+        vscode.postMessage({
+          type: 'setReviewPaths',
+          reviewSkillPath,
+          reviewDirPath,
+          reviewModel,
+          reviewFixModel,
+        });
+      }
+
+      for (const input of [skillInput, dirInput, modelInput, fixModelInput]) {
+        input.addEventListener('change', () => saveReviewPaths());
+      }
+
+      /** @type {HTMLInputElement | null} */
+      let navTarget = null;
+      let browseSeq = 0;
+      let navRel = '';
+      const pathNav = el('div', 'review-path-nav');
+      pathNav.id = 'review-path-nav';
+      pathNav.hidden = true;
+      const pathPanel = el('div', 'review-path-nav-panel');
+      pathPanel.setAttribute('role', 'dialog');
+      const pathTitle = el('div', 'review-path-nav-title', '');
+      const pathBar = el('div', 'review-path-nav-bar');
+      const pathUp = el('button', 'review-path-nav-icon', '↑');
+      pathUp.type = 'button';
+      pathUp.title = t('pathNavUp');
+      const pathCrumbs = el('div', 'review-path-nav-crumbs');
+      const pathClose = el('button', 'review-path-nav-icon', '×');
+      pathClose.type = 'button';
+      pathClose.title = t('pathNavClose');
+      pathBar.append(pathUp, pathCrumbs, pathClose);
+      const pathList = el('div', 'review-path-nav-list');
+      pathList.tabIndex = -1;
+      const pathFoot = el('div', 'review-path-nav-foot');
+      const pathPick = el('button', 'review-btn', t('pathNavSelectDir'));
+      pathPick.type = 'button';
+      pathFoot.append(pathPick);
+      pathPanel.append(pathTitle, pathBar, pathList, pathFoot);
+      pathNav.append(pathPanel);
+      document.body.append(pathNav);
+
+      function closeReviewPathNav() {
+        pathNav.hidden = true;
+      }
+
+      function requestReviewDir(rel) {
+        browseSeq += 1;
+        navRel = rel || '';
+        vscode.postMessage({ type: 'listProjectDir', seq: browseSeq, rel: navRel });
+      }
+
+      function chooseReviewPath(rel) {
+        if (!(navTarget instanceof HTMLInputElement)) {
+          return;
+        }
+        navTarget.value = rel || '.';
+        closeReviewPathNav();
+        navTarget.dispatchEvent(new Event('change'));
+      }
+
+      /**
+       * @param {{ relDir?: string, entries?: Array<{ name: string, relPath: string, isDir: boolean }>, error?: string }} payload
+       */
+      function renderReviewPathNav(payload) {
+        navRel = payload && typeof payload.relDir === 'string' ? payload.relDir : '';
+        pathUp.disabled = !navRel;
+        pathCrumbs.replaceChildren();
+        const rootBtn = el('button', 'review-path-crumb', t('pathNavRoot'));
+        rootBtn.type = 'button';
+        rootBtn.addEventListener('click', () => requestReviewDir(''));
+        pathCrumbs.append(rootBtn);
+        if (navRel) {
+          let acc = '';
+          for (const part of navRel.split('/')) {
+            acc = acc ? acc + '/' + part : part;
+            pathCrumbs.append(el('span', 'review-path-crumb-sep', '/'));
+            const crumb = el('button', 'review-path-crumb', part);
+            crumb.type = 'button';
+            const target = acc;
+            crumb.addEventListener('click', () => requestReviewDir(target));
+            pathCrumbs.append(crumb);
+          }
+        }
+        pathList.replaceChildren();
+        const entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (payload && payload.error) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavUnreadable')));
+        } else if (entries.length === 0) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavEmpty')));
+        }
+        for (const entry of entries) {
+          const row = el('div', 'review-path-nav-row');
+          const open = el('button', 'review-path-nav-open');
+          open.type = 'button';
+          open.append(el('span', 'review-path-nav-mark', entry.isDir ? '▸' : ''), el('span', 'review-path-nav-name', entry.name));
+          if (entry.isDir) {
+            open.addEventListener('click', () => requestReviewDir(entry.relPath));
+            const pick = el('button', 'review-btn review-path-nav-pick', t('pathNavPick'));
+            pick.type = 'button';
+            pick.addEventListener('click', () => chooseReviewPath(entry.relPath));
+            row.append(open, pick);
+          } else {
+            open.title = t('pathNavPick');
+            open.addEventListener('click', () => chooseReviewPath(entry.relPath));
+            row.append(open);
+          }
+          pathList.append(row);
+        }
+      }
+
+      /**
+       * @param {'skill' | 'dir'} kind
+       * @param {HTMLInputElement} input
+       */
+      function openReviewPathNav(kind, input) {
+        navTarget = input;
+        pathTitle.textContent = t(kind === 'dir' ? 'labelReviewDirPath' : 'labelReviewSkillPath');
+        pathNav.hidden = false;
+        requestReviewDir(input.value);
+        pathList.focus();
+      }
+
+      pathUp.addEventListener('click', () => {
+        requestReviewDir(navRel.includes('/') ? navRel.slice(0, navRel.lastIndexOf('/')) : '');
+      });
+      pathClose.addEventListener('click', () => closeReviewPathNav());
+      pathPick.addEventListener('click', () => chooseReviewPath(navRel));
+      pathNav.addEventListener('click', (event) => {
+        if (event.target === pathNav) {
+          closeReviewPathNav();
+        }
+      });
+      function onReviewPathKey(event) {
+        if (event.key === 'Escape' && !pathNav.hidden) {
+          event.stopPropagation();
+          closeReviewPathNav();
+        }
+      }
+      function onReviewPathMessage(event) {
+        if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {
+          renderReviewPathNav(event.data);
+        }
+      }
+      document.addEventListener('keydown', onReviewPathKey, true);
+      window.addEventListener('message', onReviewPathMessage);
+      detachReviewPathNav = () => {
+        document.removeEventListener('keydown', onReviewPathKey, true);
+        window.removeEventListener('message', onReviewPathMessage);
+        pathNav.remove();
+      };
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    /**
+     * @param {boolean | 'focus'} report
+     * @returns {Record<string, string | undefined> | null}
+     */
+    function readReviewPageForm(report) {
+      const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const repoUrl = repoInput.value.trim();
+      const fail = (key, input) => {
+        if (report) {
+          error.textContent = t(key);
+          error.hidden = false;
+          if (report === 'focus' && input instanceof HTMLElement) {
+            input.focus();
+          }
+        }
+        return null;
+      };
+      if (!name) {
+        return fail('reviewFieldPageName', nameInput);
+      }
+      if (!/^\d{5,}$/.test(channelId)) {
+        return fail('reviewFieldChannelId', channelInput);
+      }
+      if (!repoUrl) {
+        return fail('reviewFieldRepoUrl', repoInput);
+      }
+      const hostLabelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
+      if (!(hostTokenInput?.value || '').trim()) {
+        return fail(hostLabelKey, hostTokenInput);
+      }
+      if (!opts.hasDiscord && !(discordInput?.value || '').trim()) {
+        return fail('reviewFieldDiscordToken', discordInput);
+      }
+      const hostToken = hostTokenInput?.value.trim() || '';
+      if (provider === 'github') opts.githubToken = hostToken;
+      else opts.gitlabToken = hostToken;
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
+      return {
+        name,
+        provider,
+        channelId,
+        repoUrl,
+        description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        gitlabToken: (opts.gitlabToken || '').trim() || undefined,
+        githubToken: (opts.githubToken || '').trim() || undefined,
+        discordToken: discordInput?.value.trim() || undefined,
+      };
+    }
+
+    let savedSig = '';
+
+    function saveEditing() {
+      if (!editing) {
+        return;
+      }
+      const fields = readReviewPageForm(true);
+      if (!fields) {
+        return;
+      }
+      const sig = JSON.stringify(fields);
+      if (sig === savedSig) {
+        return;
+      }
+      savedSig = sig;
+      vscode.postMessage({
+        type: 'reviewUpdatePage',
+        pageId: opts.pageId,
+        ...fields,
+      });
+    }
+
+    if (editing) {
+      const initial = readReviewPageForm(false);
+      savedSig = initial ? JSON.stringify(initial) : '';
+      for (const input of [nameInput, descInput, channelInput, repoInput, discordInput]) {
+        input?.addEventListener('change', () => saveEditing());
+      }
+      const docs = el('div', 'review-settings-docs');
+      const howTo = el('button', 'review-btn', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const promptEx = el('button', 'review-btn', t('reviewPromptExample'));
+      promptEx.type = 'button';
+      promptEx.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenPromptExample' });
+      });
+      docs.append(howTo, promptEx);
+      panel.append(docs);
+    } else {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => closeReviewCreatePagePanel());
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      submit.addEventListener('click', () => {
+        const fields = readReviewPageForm('focus');
+        if (!fields) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'reviewCreatePage',
+          ...fields,
+        });
+        closeReviewCreatePagePanel();
+      });
+      actions.append(cancel, submit);
+      panel.append(actions);
+    }
+    mountSettingsOverlay(panel, closeReviewCreatePagePanel);
+    nameInput.focus();
+  }
+
+  function openReviewMrPanel() {
+    dismissReviewMrPanel();
+    closeProfileSettingsPanel();
+    if (!reviewMrPanel) {
+      return;
+    }
+    const isGithub = reviewMrPanel.provider === 'github';
+    const createLabel = t(isGithub ? 'createPr' : 'createMr');
+    const panel = el('div', 'review-mr-panel');
+    panel.id = 'review-mr-panel';
+    const titleRow = el('div', 'review-mr-title-row');
+    const draftChip = el('button', 'review-btn review-draft-chip is-primary', 'Draft');
+    draftChip.type = 'button';
+    draftChip.dataset.on = '1';
+    draftChip.addEventListener('click', () => {
+      const on = draftChip.dataset.on === '1';
+      draftChip.dataset.on = on ? '0' : '1';
+      draftChip.classList.toggle('is-primary', !on);
+    });
+    const titleInput = document.createElement('input');
+    titleInput.className = 'review-mr-title';
+    titleInput.placeholder = t(isGithub ? 'reviewPrTitlePlaceholder' : 'reviewMrTitlePlaceholder');
+    titleRow.append(draftChip, titleInput);
+    panel.append(titleRow);
+
+    const branchLabel = el('label', 'review-mr-field', createLabel);
+    const branchSelect = document.createElement('select');
+    branchSelect.className = 'review-mr-select';
+    for (const branch of reviewMrPanel.branches) {
+      const opt = document.createElement('option');
+      opt.value = branch;
+      opt.textContent = branch + (branch === reviewMrPanel.parent ? ' ←' : '');
+      if (branch === reviewMrPanel.parent) {
+        opt.selected = true;
+      }
+      branchSelect.append(opt);
+    }
+    if (!reviewMrPanel.branches.length && reviewMrPanel.parent) {
+      const opt = document.createElement('option');
+      opt.value = reviewMrPanel.parent;
+      opt.textContent = reviewMrPanel.parent;
+      opt.selected = true;
+      branchSelect.append(opt);
+    }
+    branchLabel.append(branchSelect);
+    panel.append(branchLabel);
+
+    /** @type {Set<string>} */
+    const reviewers = new Set();
+    /** @type {Set<string>} */
+    const assignees = new Set();
+    if (reviewMrPanel.defaultAssignee) {
+      assignees.add(reviewMrPanel.defaultAssignee);
+    }
+    const peopleBox = el('div', 'review-mr-people');
+    peopleBox.append(el('div', 'review-mr-people-title', 'Reviewers / Assignees'));
+    for (const person of reviewMrPanel.people) {
+      const row = el('div', 'review-mr-person');
+      const label = person.name ? person.name + ' (' + person.nick + ')' : person.nick;
+      row.append(el('span', 'review-mr-person-name', label));
+      const rev = el('button', 'review-person-toggle', 'R');
+      rev.type = 'button';
+      rev.title = 'Reviewer';
+      rev.addEventListener('click', () => {
+        if (reviewers.has(person.nick)) {
+          reviewers.delete(person.nick);
+          rev.classList.remove('is-on');
+        } else {
+          reviewers.add(person.nick);
+          rev.classList.add('is-on');
+        }
+      });
+      const asg = el('button', 'review-person-toggle', 'A');
+      asg.type = 'button';
+      asg.title = 'Assignee';
+      if (assignees.has(person.nick)) {
+        asg.classList.add('is-on');
+      }
+      asg.addEventListener('click', () => {
+        if (assignees.has(person.nick)) {
+          assignees.delete(person.nick);
+          asg.classList.remove('is-on');
+        } else {
+          assignees.add(person.nick);
+          asg.classList.add('is-on');
+        }
+      });
+      row.append(rev, asg);
+      peopleBox.append(row);
+    }
+    if (reviewMrPanel.people.length) {
+      panel.append(peopleBox);
+    }
+
+    const squash = document.createElement('input');
+    squash.type = 'checkbox';
+    squash.checked = true;
+    if (!isGithub) {
+      const squashRow = el('label', 'review-mr-field review-mr-squash');
+      squashRow.append(squash, document.createTextNode(' Squash'));
+      panel.append(squashRow);
+    }
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', 'Cancel');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewMrPanel());
+    const submit = el('button', 'review-btn is-primary', createLabel);
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      const title = titleInput.value.trim();
+      if (!title) {
+        titleInput.focus();
+        return;
+      }
+      const pageId = reviewMrPanel?.pageId;
+      if (!pageId) {
+        return;
+      }
+      beginLocalMrSkeleton(pageId, title, draftChip.dataset.on === '1');
+      vscode.postMessage({
+        type: 'reviewCreateMr',
+        pageId,
+        title,
+        draft: draftChip.dataset.on === '1',
+        targetBranch: branchSelect.value,
+        reviewers: [...reviewers],
+        assignees: [...assignees],
+        squash: squash.checked,
+      });
+      closeReviewMrPanel();
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeReviewMrPanel);
+    titleInput.focus();
+  }
+
   function paintLinksPage() {
     const links = pageLinks();
     const key = linkStructureKey(links);
     const tree = root.querySelector(':scope > .links-tree');
-    if (key === linksStructureKey && tree && root.classList.contains('links-page') && !data?.error) {
+    if (
+      key === linksStructureKey &&
+      tree &&
+      !tree.classList.contains('page-skel') &&
+      !root.classList.contains('is-page-skeleton') &&
+      root.classList.contains('links-page') &&
+      !data?.error
+    ) {
       syncLinkCollapsed();
       setCollapseButton();
       mountLinkPanel(links);
@@ -4463,6 +8382,15 @@
       return;
     }
     const page = activePage();
+    if (page?.kind !== 'review' && reviewFileView) {
+      reviewFileView = null;
+      mountReviewFile();
+    }
+    if (page?.kind === 'review') {
+      closeGroupPanel(false);
+      paintReviewPage();
+      return;
+    }
     if (page?.kind === 'links') {
       if (openGroupPanel?.mode === 'create') {
         // Keep create draft if host asked for it on this surface.
@@ -4505,7 +8433,14 @@
 
     const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
     const noteMap = notesById();
+    const draftSet = new Set(pageDrafts[uiState.activePageId] || []);
+    let draftLineDrawn = false;
     for (const card of cards) {
+      if (draftSet.has(card.id) && !draftLineDrawn) {
+        const divider = el('div', 'cards-draft-divider', t('draftDivider'));
+        root.append(divider);
+        draftLineDrawn = true;
+      }
       if (card.kind === 'marker') {
         const group = byId[card.id];
         if (group) {
@@ -4798,10 +8733,185 @@
     el.style.opacity = '';
   }
 
+  /**
+   * Same editor the page menu uses: host fills Discord channel and bot status.
+   * @param {{ id: string, kind?: string }} page
+   */
+  function openPageChipSettings(page) {
+    if (page.kind === 'review') {
+      vscode.postMessage({ type: 'reviewOpenPageSettings', pageId: page.id });
+      return;
+    }
+    vscode.postMessage({ type: 'pageOpenSettings', pageId: page.id });
+  }
+
+  /** Page chips in strip order. The problems tab and the batch-send button are excluded. */
+  function pageStripChips() {
+    if (!pager) {
+      return [];
+    }
+    return [...pager.querySelectorAll('.pager-chip[data-page-id]')];
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   * @returns {{ index: number, chip: HTMLElement, before: boolean } | null}
+   */
+  function pageInsertAt(clientX, clientY) {
+    const chips = pageStripChips();
+    if (!chips.length) {
+      return null;
+    }
+    let nearest = chips[0];
+    let nearestDist = Infinity;
+    for (const chip of chips) {
+      const rect = chip.getBoundingClientRect();
+      const dist = Math.abs(clientY - (rect.top + rect.height / 2));
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = chip;
+      }
+    }
+    const rowTop = nearest.getBoundingClientRect().top;
+    const row = chips.filter((chip) => Math.abs(chip.getBoundingClientRect().top - rowTop) < 6);
+    for (const chip of row) {
+      const rect = chip.getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) {
+        return { index: chips.indexOf(chip), chip, before: true };
+      }
+    }
+    const last = row[row.length - 1];
+    return { index: chips.indexOf(last) + 1, chip: last, before: false };
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function placePageDropCaret(clientX, clientY) {
+    if (!pager) {
+      return;
+    }
+    const slot = pageInsertAt(clientX, clientY);
+    if (!slot) {
+      pager.querySelector('.pager-drop-caret')?.remove();
+      return;
+    }
+    let caret = pager.querySelector('.pager-drop-caret');
+    if (!(caret instanceof HTMLElement)) {
+      caret = el('span', 'pager-drop-caret');
+      caret.setAttribute('aria-hidden', 'true');
+      pager.append(caret);
+    }
+    const chips = pageStripChips();
+    const rect = slot.chip.getBoundingClientRect();
+    const host = pager.getBoundingClientRect();
+    let x = slot.before ? rect.left : rect.right;
+    if (slot.before) {
+      const index = chips.indexOf(slot.chip);
+      const prev = index > 0 ? chips[index - 1] : null;
+      const prevRect = prev?.getBoundingClientRect();
+      if (prevRect && Math.abs(prevRect.top - rect.top) < 6) {
+        x = (prevRect.right + rect.left) / 2;
+      }
+    }
+    caret.style.left = x - host.left + 'px';
+    caret.style.top = rect.top - host.top + 'px';
+    caret.style.height = rect.height + 'px';
+  }
+
+  function clearPageDropCaret() {
+    pager?.querySelector('.pager-drop-caret')?.remove();
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function commitPageDrop(clientX, clientY) {
+    const from = pageDragId;
+    const slot = pageInsertAt(clientX, clientY);
+    if (!from || !slot || pageSkeletonKind()) {
+      return;
+    }
+    const ordered = pages().map((item) => item.id);
+    const fromIndex = ordered.indexOf(from);
+    let toIndex = slot.index;
+    if (fromIndex < 0 || toIndex < 0) {
+      return;
+    }
+    if (toIndex === fromIndex || toIndex === fromIndex + 1) {
+      return;
+    }
+    ordered.splice(fromIndex, 1);
+    if (fromIndex < toIndex) {
+      toIndex -= 1;
+    }
+    ordered.splice(toIndex, 0, from);
+    vscode.postMessage({ type: 'reorderPages', orderedIds: ordered });
+  }
+
+  function bindPagerDrag() {
+    if (!pager || pager.dataset.pageDragBound) {
+      return;
+    }
+    pager.dataset.pageDragBound = '1';
+    pager.addEventListener('dragover', (event) => {
+      if (!pageDragId || pageSkeletonKind()) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      placePageDropCaret(event.clientX, event.clientY);
+    });
+    pager.addEventListener('drop', (event) => {
+      if (!pageDragId || pageSkeletonKind()) {
+        return;
+      }
+      event.preventDefault();
+      commitPageDrop(event.clientX, event.clientY);
+      clearPageDropCaret();
+    });
+    pager.addEventListener('dragleave', (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && pager.contains(next)) {
+        return;
+      }
+      clearPageDropCaret();
+    });
+  }
+
+  function countPush(list) {
+    if (pagesFixed !== pagesFixedSent) {
+      return list.length;
+    }
+    return list.filter((page) => pageConfigSync[page.id]?.canPush).length;
+  }
+
+  function applyPushButton(button, count) {
+    button.disabled = pageCloudBusy || count === 0;
+    button.title = count > 0 ? t('pageCloudPushAll') : t('pagesSent');
+    button.setAttribute('aria-label', button.title);
+    const badge = button.querySelector('.pager-sync-count');
+    if (count > 0) {
+      if (badge) {
+        badge.textContent = String(count);
+      } else {
+        button.append(el('span', 'pager-sync-count', String(count)));
+      }
+    } else if (badge) {
+      badge.remove();
+    }
+  }
+
   function renderPager() {
     if (!pager) {
       return;
     }
+    bindPagerDrag();
     armScrollKeep();
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && pager.contains(focused)) {
@@ -4819,11 +8929,95 @@
     }
     pager.hidden = false;
     const problemsOpen = isProblemsPageOpen();
+    if (list.length > 0) {
+      const pushCount = countPush(list);
+      const pullCount = list.filter((page) => pageConfigSync[page.id]?.canPull).length;
+      const pushAll = el('button', 'pager-sync pager-sync-push');
+      pushAll.type = 'button';
+      pushAll.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
+      applyPushButton(pushAll, pushCount);
+      pushAll.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pageCloudBusy) {
+          return;
+        }
+        pageCloudBusy = true;
+        renderPager();
+        vscode.postMessage({ type: 'pageCloud', action: 'pushAll' });
+      });
+      const lockBtn = el('button', 'pager-lock' + (pagesFixed ? ' is-fixed' : ''));
+      lockBtn.type = 'button';
+      lockBtn.title = pagesFixed ? t('pagesUnfix') : t('pagesFix');
+      lockBtn.setAttribute('aria-label', lockBtn.title);
+      lockBtn.setAttribute('aria-pressed', pagesFixed ? 'true' : 'false');
+      const lockIcon = pagesFixed ? lockClosedIcon() : lockOpenIcon();
+      lockIcon.setAttribute('viewBox', pagesFixed ? '2.5 1.75 13.5 13.5' : '2.75 1.75 13.5 13.5');
+      lockBtn.append(lockIcon);
+      lockBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        pagesFixed = !pagesFixed;
+        // Rebuilding the pager removes this button under the pointer, and the
+        // same click hits the new lock and toggles the flag straight back off.
+        lockBtn.classList.toggle('is-fixed', pagesFixed);
+        lockBtn.title = pagesFixed ? t('pagesUnfix') : t('pagesFix');
+        lockBtn.setAttribute('aria-label', lockBtn.title);
+        lockBtn.setAttribute('aria-pressed', pagesFixed ? 'true' : 'false');
+        const nextIcon = pagesFixed ? lockClosedIcon() : lockOpenIcon();
+        nextIcon.setAttribute('viewBox', pagesFixed ? '2.5 1.75 13.5 13.5' : '2.75 1.75 13.5 13.5');
+        lockBtn.replaceChildren(nextIcon);
+        applyPushButton(pushAll, countPush(list));
+        for (const chip of pager.querySelectorAll('.pager-chip[data-page-id]')) {
+          const badge = chip.querySelector('.pager-chip-lock');
+          if (pagesFixed) {
+            if (!badge) {
+              const next = el('span', 'pager-chip-lock');
+              const icon = lockClosedIcon();
+              icon.setAttribute('viewBox', '2.5 1.75 13.5 13.5');
+              next.append(icon);
+              chip.append(next);
+            }
+          } else if (badge) {
+            badge.remove();
+          }
+        }
+        vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
+      });
+      const pullAll = el('button', 'pager-sync pager-sync-pull');
+      pullAll.type = 'button';
+      pullAll.disabled = pageCloudBusy || pullCount === 0;
+      pullAll.title = t('pageCloudPullAll');
+      pullAll.setAttribute('aria-label', pullAll.title);
+      pullAll.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
+      if (pullCount > 0) {
+        pullAll.append(el('span', 'pager-sync-count', String(pullCount)));
+      }
+      pullAll.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pageCloudBusy) {
+          return;
+        }
+        pageCloudBusy = true;
+        renderPager();
+        vscode.postMessage({ type: 'pageCloud', action: 'pullAll' });
+      });
+      const tools = el('div', 'pager-tools');
+      tools.append(pullAll, lockBtn, pushAll);
+      if (pageCloudBusy) {
+        const loader = el('span', 'pager-cloud-loader');
+        loader.title = t('pageCloudWorking');
+        loader.setAttribute('aria-label', loader.title);
+        loader.append(reviewProgressIcon());
+        tools.append(loader);
+      }
+      pager.append(tools);
+    }
     for (const page of list) {
       const chip = el(
         'button',
         'pager-chip' + (page.id === uiState.activePageId && !problemsOpen ? ' active' : ''),
-        page.name,
       );
       chip.type = 'button';
       chip.draggable = true;
@@ -4831,11 +9025,43 @@
       chip.title =
         page.kind === 'links'
           ? page.name + ' (' + t('pageKindLinks') + ')'
-          : page.kind === 'notes'
-            ? page.name + ' (' + t('pageKindNotes') + ')'
-            : page.name + ' (' + t('pageKindFiles') + ')';
-      chip.addEventListener('click', () => setActivePage(page.id));
+          : page.kind === 'review'
+            ? page.name + ' (' + t('pageKindReview') + ')'
+            : page.kind === 'notes'
+              ? page.name + ' (' + t('pageKindNotes') + ')'
+              : page.name + ' (' + t('pageKindFiles') + ')';
+      const chipLabel = el('span', 'pager-chip-label', page.name);
+      chip.append(chipLabel);
+      if (pagesFixed) {
+        const badge = el('span', 'pager-chip-lock');
+        const icon = lockClosedIcon();
+        // Codicon lock is not centered in the 16×16 box (ink sits right and low).
+        icon.setAttribute('viewBox', '2.5 1.75 13.5 13.5');
+        badge.append(icon);
+        chip.append(badge);
+      }
+      chip.addEventListener('click', (event) => {
+        if (pageSkeletonKind() && page.id === uiState.activePageId) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        const now = Date.now();
+        const again = pageChipClick.id === page.id && now - pageChipClick.at < 500;
+        pageChipClick = again ? { id: '', at: 0 } : { id: page.id, at: now };
+        setActivePage(page.id);
+        if (!again) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openPageChipSettings(page);
+      });
       chip.addEventListener('dragstart', (event) => {
+        if (pageSkeletonKind()) {
+          event.preventDefault();
+          return;
+        }
         pageDragId = page.id;
         event.dataTransfer?.setData(PAGE_MIME, page.id);
         if (event.dataTransfer) {
@@ -4846,44 +9072,7 @@
       chip.addEventListener('dragend', () => {
         pageDragId = null;
         chip.classList.remove('dragging');
-        pager.querySelectorAll('.pager-chip').forEach((node) => node.classList.remove('drop-before', 'drop-after'));
-      });
-      chip.addEventListener('dragover', (event) => {
-        if (!pageDragId || pageDragId === page.id) {
-          return;
-        }
-        event.preventDefault();
-        const rect = chip.getBoundingClientRect();
-        const before = event.clientX < rect.left + rect.width / 2;
-        chip.classList.toggle('drop-before', before);
-        chip.classList.toggle('drop-after', !before);
-      });
-      chip.addEventListener('dragleave', () => {
-        chip.classList.remove('drop-before', 'drop-after');
-      });
-      chip.addEventListener('drop', (event) => {
-        event.preventDefault();
-        chip.classList.remove('drop-before', 'drop-after');
-        const from = pageDragId || event.dataTransfer?.getData(PAGE_MIME);
-        if (!from || from === page.id) {
-          return;
-        }
-        const ordered = pages().map((item) => item.id);
-        const fromIndex = ordered.indexOf(from);
-        let toIndex = ordered.indexOf(page.id);
-        if (fromIndex < 0 || toIndex < 0) {
-          return;
-        }
-        const rect = chip.getBoundingClientRect();
-        if (event.clientX >= rect.left + rect.width / 2) {
-          toIndex += 1;
-        }
-        ordered.splice(fromIndex, 1);
-        if (fromIndex < toIndex) {
-          toIndex -= 1;
-        }
-        ordered.splice(toIndex, 0, from);
-        vscode.postMessage({ type: 'reorderPages', orderedIds: ordered });
+        clearPageDropCaret();
       });
       pager.append(chip);
     }
@@ -5132,6 +9321,73 @@
         button.classList.remove('is-denied');
       }
     }, LOCK_DENY_MS);
+  }
+
+  /**
+   * Blink the review lock for 3s. Repeat clicks on that parent are dropped.
+   * @param {string} messageId
+   */
+  function flashReviewLock(messageId) {
+    const now = Date.now();
+    const until = lockDenyUntil.get(messageId) ?? 0;
+    if (now < until) {
+      return;
+    }
+    const mark = root.querySelector(
+      '.review-lock[data-review-lock="' + CSS.escape(messageId) + '"]',
+    );
+    if (!(mark instanceof HTMLElement)) {
+      return;
+    }
+    const ends = now + LOCK_DENY_MS;
+    lockDenyUntil.set(messageId, ends);
+    mark.dataset.denyToken = String(ends);
+    mark.classList.add('is-denied');
+    setTimeout(() => {
+      if (lockDenyUntil.get(messageId) === ends) {
+        lockDenyUntil.delete(messageId);
+      }
+      if (mark.dataset.denyToken === String(ends)) {
+        delete mark.dataset.denyToken;
+        mark.classList.remove('is-denied');
+      }
+    }, LOCK_DENY_MS);
+  }
+
+  /**
+   * Closed-lock glyph in front of a fixed review parent name.
+   * A click writes `lock: false` on that Discord parent.
+   * @param {string} messageId
+   * @param {string} pageId
+   */
+  function reviewLockMark(messageId, pageId) {
+    const mark = el('span', 'review-lock');
+    mark.dataset.reviewLock = messageId;
+    mark.title = t('reviewUnlock');
+    mark.setAttribute('role', 'button');
+    mark.setAttribute('aria-label', mark.title);
+    mark.append(lockClosedIcon());
+    mark.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      vscode.postMessage({
+        type: 'reviewSetLock',
+        pageId,
+        messageId,
+        locked: false,
+      });
+    });
+    mark.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      if (parent?.isMr) {
+        openReviewContextMenu(event.clientX, event.clientY, pageId, messageId);
+      } else {
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, messageId);
+      }
+    });
+    return mark;
   }
 
   function lockButton(group) {
@@ -12389,7 +16645,7 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft', id?: string, section?: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review', id?: string, pageId?: string, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
@@ -12411,6 +16667,13 @@
         vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: colorInput.value });
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
+      } else if (colorTarget.kind === 'review' && colorTarget.id && colorTarget.pageId) {
+        vscode.postMessage({
+          type: 'reviewUpdateMr',
+          pageId: colorTarget.pageId,
+          messageId: colorTarget.id,
+          color: colorInput.value,
+        });
       } else if (colorTarget.id) {
         vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: colorInput.value });
       }

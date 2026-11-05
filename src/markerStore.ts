@@ -31,6 +31,45 @@ import {
 } from './linkPalette';
 import { normalizeHex } from './palette';
 import {
+  type CatalogChannels,
+  type CatalogFile,
+  type CloudStamp,
+  type ConfigSyncFlags,
+  CATALOG_PATH,
+  configSyncFlags,
+  emptyCatalog,
+  formatConfigHeaderDate,
+  normalizeCatalog,
+  packCatalogChannels,
+  packProfileConfigBody,
+  pageKindToConfigKind,
+  parseConfigHeader,
+  resolveConfigChannel,
+} from './configFormat';
+import {
+  assembleSplitWorkspace,
+  buildCatalogFromPages,
+  catalogEntryFromPage,
+  normalizePageConfig,
+  packPageConfig,
+  pageConfigContentJson,
+  pageFilePath,
+  PAGES_DIR,
+  stringifyCatalog,
+  stringifyPageConfig,
+  type PageAccessConfig,
+  type PageConfigFile,
+} from './configPersist';
+import {
+  findLatestConfigMessage,
+  findLatestPageMessages,
+  downloadConfigAttachment,
+  latestIsNewer,
+  nextConfigNumber,
+  postConfigMessage,
+  stampFromLatest,
+} from './configCloud';
+import {
   cloneProfileLayout,
   emptyPositions,
   emptyProfileLayout,
@@ -39,15 +78,16 @@ import {
   packProfileLayout,
   POS_LOCAL_PATH,
   POS_REMOTE_PATH,
-  positionSyncState,
   positionsIsEmpty,
   pruneFocusMap,
   prunePositionsFile,
+  type PageTombstone,
   type PositionSyncState,
   type PositionsFile,
   type ProfileLayout,
   type WorkingFocus,
 } from './positions';
+import { getSecret, SECRET_DISCORD, type AccessStore } from './accessStore';
 
 export type { WorkingFocus };
 
@@ -61,7 +101,7 @@ export const PROFILES_PATH = '.syn3/profiles.json';
 /** Appearance per profile id. */
 export const STYLES_PATH = '.syn3/styles.json';
 /** Live per-profile card layout (gitignored). */
-export { POS_LOCAL_PATH, POS_REMOTE_PATH };
+export { POS_LOCAL_PATH, POS_REMOTE_PATH, CATALOG_PATH, PAGES_DIR };
 /** Built-in profile: always present, cannot be renamed or deleted. */
 export const GENERAL_PROFILE_ID = 'general';
 export const GENERAL_PROFILE_NAME = 'Общий';
@@ -88,7 +128,7 @@ export const MAX_PAGES = 6;
 /** Default page id created for legacy files and empty stores. */
 export const DEFAULT_PAGE_ID = 'map';
 
-export type PageKind = 'files' | 'notes' | 'links';
+export type PageKind = 'files' | 'notes' | 'links' | 'review';
 export type MapLayout = 'chips' | 'list';
 export type GroupsLayout = 'flow' | '1' | '2' | '3';
 
@@ -118,7 +158,9 @@ export function normalizeGroupDescription(value: unknown): string | undefined {
 }
 
 export function normalizePageKind(value: unknown): PageKind | undefined {
-  return value === 'files' || value === 'notes' || value === 'links' ? value : undefined;
+  return value === 'files' || value === 'notes' || value === 'links' || value === 'review'
+    ? value
+    : undefined;
 }
 
 export function normalizeMapLayout(value: unknown): MapLayout {
@@ -135,6 +177,18 @@ export interface StyleProfile {
   name: string;
   /** SHA-256 hashes of machine ids currently bound to this profile. */
   sProfileIds: string[];
+  /** Absolute or workspace-relative path to the review skill. */
+  reviewSkillPath?: string;
+  /** Absolute or workspace-relative directory for temporary review files. */
+  reviewDirPath?: string;
+  /** Optional Cursor Agent `--model` value. Empty → CLI default. */
+  reviewModel?: string;
+  /** Optional Cursor Agent `--model` for Neurofix. Empty → CLI default. */
+  reviewFixModel?: string;
+  /** GitHub login for this profile. The token is not stored here. */
+  githubNick?: string;
+  /** GitLab username for this profile. The token is not stored here. */
+  gitlabNick?: string;
 }
 
 /** Profile row for UI — no machine hashes. */
@@ -143,6 +197,10 @@ export interface StyleProfileInfo {
   name: string;
   /** How many machines are bound to this profile (`sProfileIds.length`). */
   boundCount: number;
+  reviewSkillPath: string;
+  reviewDirPath: string;
+  reviewModel: string;
+  reviewFixModel: string;
 }
 
 /** Map font scales, card paint, and Explorer label saturation, stored per profile in styles.json. */
@@ -204,6 +262,8 @@ export interface Appearance {
   problemsInfo: boolean;
   /** Syn3 UI language for menus and settings of this profile. */
   language: Syn3Locale;
+  /** Auto-refresh interval for review pages, seconds (30–3600). */
+  reviewRefreshSec: number;
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -234,6 +294,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   problemsWarning: true,
   problemsInfo: true,
   language: 'ru',
+  reviewRefreshSec: 60,
 };
 
 const FONT_SCALE_MIN = 0.6;
@@ -245,6 +306,9 @@ const MULTIPLIER_STEP = 0.1;
 const SATURATION_STEP = 5;
 const GRADIENT_STEP = 1;
 const OPEN_FILE_DURATION_STEP = 0.1;
+const REVIEW_REFRESH_MIN = 30;
+const REVIEW_REFRESH_MAX = 3600;
+const REVIEW_REFRESH_STEP = 10;
 
 export function snapFontScale(value: number): number {
   return snap(value, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP);
@@ -270,6 +334,11 @@ export function snapPercent(value: number): number {
 /** Open-tab blink cycle, seconds. */
 export function snapOpenFileDuration(value: number): number {
   return snap(value, 0, 3, OPEN_FILE_DURATION_STEP);
+}
+
+/** Review page auto-refresh interval, seconds. */
+export function snapReviewRefreshSec(value: number): number {
+  return snap(value, REVIEW_REFRESH_MIN, REVIEW_REFRESH_MAX, REVIEW_REFRESH_STEP);
 }
 
 function snap(value: number, min: number, max: number, step: number): number {
@@ -308,6 +377,9 @@ export function normalizeAppearance(raw: unknown): Appearance {
     openLinksInCursor: boolOr(source.openLinksInCursor, DEFAULT_APPEARANCE.openLinksInCursor),
     ...normalizeProblemsFilters(source),
     language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
+    reviewRefreshSec: snapReviewRefreshSec(
+      numOr(source.reviewRefreshSec, DEFAULT_APPEARANCE.reviewRefreshSec),
+    ),
   };
 }
 
@@ -424,6 +496,8 @@ export function emptySurfaces(defaultPage = DEFAULT_PAGE_ID): SurfacesState {
 export interface PageDef {
   name: string;
   kind: PageKind;
+  /** Short description shown in the page settings panel. */
+  description?: string;
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -572,6 +646,14 @@ function emptyProfiles(): ProfilesFile {
   };
 }
 
+function normalizeGitNick(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const nick = raw.trim().replace(/^@+/, '');
+  return nick || undefined;
+}
+
 function normalizeSProfileIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -620,6 +702,7 @@ interface PageSnapshot {
   page: {
     name: string;
     kind: PageKind;
+    description?: string;
     order: number;
     layout: MapLayout;
     groupsLayout: GroupsLayout;
@@ -703,20 +786,38 @@ export class MarkerStore implements vscode.Disposable {
   private writingStyles = false;
   private writingPosLocal = false;
   private writingPosRemote = false;
+  private writingCatalog = false;
   private posLocal: PositionsFile = emptyPositions();
   private posRemote: PositionsFile = emptyPositions();
   /** False until pos_local / pos_remote have been read and applied. */
   private positionsReady = false;
   /** True while `setSurfacePage` is inside `commitNow`, so listeners can skip rebuilding page bodies. */
   private surfaceOnlyChange = false;
+  /** Workspace uses catalog.json + pages/*.json instead of syn3.json. */
+  private usingSplitConfig = false;
+  private catalog: CatalogFile = emptyCatalog();
+  private pageCloud: Record<string, CloudStamp> = {};
+  private dirtyPages = new Set<string>();
+  private profileDirty = false;
+  private pageCloudNewer: Record<string, boolean> = {};
+  private profileCloudNewer = false;
+  private accessStore?: AccessStore;
+  private secrets?: vscode.SecretStorage;
 
   readonly onDidChange = this.changeEmitter.event;
   lastError?: string;
 
   constructor(readonly root: vscode.Uri) {}
 
+  /** Wire Discord secrets and review access for config sync. */
+  bindCloud(access: AccessStore, secrets: vscode.SecretStorage): void {
+    this.accessStore = access;
+    this.secrets = secrets;
+  }
+
+  /** Opens the catalog in the editor (`syn3.openConfig`). */
   get configUri(): vscode.Uri {
-    return vscode.Uri.joinPath(this.root, this.sessionConfigPath);
+    return this.catalogUri;
   }
 
   get historyUri(): vscode.Uri {
@@ -739,6 +840,18 @@ export class MarkerStore implements vscode.Disposable {
     return vscode.Uri.joinPath(this.root, POS_REMOTE_PATH);
   }
 
+  get catalogUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, CATALOG_PATH);
+  }
+
+  get pagesDirUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, PAGES_DIR);
+  }
+
+  pageUri(pageId: string): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, pageFilePath(pageId));
+  }
+
   /** Appearance of the active profile. */
   get appearance(): Appearance {
     return this.activeProfileStyle().appearance;
@@ -758,11 +871,111 @@ export class MarkerStore implements vscode.Disposable {
 
   /** Profiles in creation order. «Общий» is always first. Machine hashes stay private. */
   profiles(): StyleProfileInfo[] {
-    return this.profilesData.profiles.map(({ id, name, sProfileIds }) => ({
-      id,
-      name,
-      boundCount: sProfileIds.length,
+    return this.profilesData.profiles.map((p) => ({
+      id: p.id,
+      name: p.name,
+      boundCount: p.sProfileIds.length,
+      reviewSkillPath: p.reviewSkillPath ?? '',
+      reviewDirPath: p.reviewDirPath ?? '',
+      reviewModel: p.reviewModel ?? '',
+      reviewFixModel: p.reviewFixModel ?? '',
     }));
+  }
+
+  /** Review skill / dir / models of the active profile. */
+  activeReviewPaths(): { skillPath: string; dirPath: string; model: string; fixModel: string } {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    return {
+      skillPath: (profile?.reviewSkillPath ?? '').trim(),
+      dirPath: (profile?.reviewDirPath ?? '').trim(),
+      model: (profile?.reviewModel ?? '').trim().toLowerCase(),
+      fixModel: (profile?.reviewFixModel ?? '').trim().toLowerCase(),
+    };
+  }
+
+  async setActiveReviewPaths(partial: {
+    reviewSkillPath?: string;
+    reviewDirPath?: string;
+    reviewModel?: string;
+    reviewFixModel?: string;
+  }): Promise<void> {
+    const id = this.ensureActiveProfileId();
+    const profile = this.profilesData.profiles.find((p) => p.id === id);
+    if (!profile) {
+      return;
+    }
+    if (partial.reviewSkillPath !== undefined) {
+      profile.reviewSkillPath = partial.reviewSkillPath.trim();
+    }
+    if (partial.reviewDirPath !== undefined) {
+      profile.reviewDirPath = partial.reviewDirPath.trim();
+    }
+    if (partial.reviewModel !== undefined) {
+      profile.reviewModel = partial.reviewModel.trim().toLowerCase();
+    }
+    if (partial.reviewFixModel !== undefined) {
+      profile.reviewFixModel = partial.reviewFixModel.trim().toLowerCase();
+    }
+    await this.persistProfiles();
+    this.changeEmitter.fire();
+  }
+
+  /** GitHub / GitLab logins of one profile. Tokens stay in SecretStorage. */
+  gitNicks(id: string): { githubNick: string; gitlabNick: string } {
+    const profile = this.profilesData.profiles.find((p) => p.id === id);
+    return {
+      githubNick: profile?.githubNick ?? '',
+      gitlabNick: profile?.gitlabNick ?? '',
+    };
+  }
+
+  /** GitHub / GitLab logins of the active profile. Tokens stay in SecretStorage. */
+  activeGitNicks(): { githubNick: string; gitlabNick: string } {
+    return this.gitNicks(this.activeId || GENERAL_PROFILE_ID);
+  }
+
+  async setProfileGitNicks(
+    id: string,
+    nicks: { githubNick?: string; gitlabNick?: string },
+  ): Promise<void> {
+    const profile = this.profilesData.profiles.find((p) => p.id === id);
+    if (!profile) {
+      return;
+    }
+    let changed = false;
+    const apply = (key: 'githubNick' | 'gitlabNick', value: string | undefined) => {
+      if (value === undefined) {
+        return;
+      }
+      const trimmed = value.trim().replace(/^@+/, '');
+      const current = profile[key] ?? '';
+      if (current === trimmed) {
+        return;
+      }
+      if (trimmed) {
+        profile[key] = trimmed;
+      } else {
+        delete profile[key];
+      }
+      changed = true;
+    };
+    apply('githubNick', nicks.githubNick);
+    apply('gitlabNick', nicks.gitlabNick);
+    if (!changed) {
+      return;
+    }
+    await this.persistProfiles();
+    this.changeEmitter.fire();
+  }
+
+  async setActiveGitNick(provider: 'github' | 'gitlab', nick: string): Promise<void> {
+    const id = this.ensureActiveProfileId();
+    await this.setProfileGitNicks(
+      id,
+      provider === 'github' ? { githubNick: nick } : { gitlabNick: nick },
+    );
   }
 
   get activeProfileId(): string {
@@ -840,61 +1053,219 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   async init(): Promise<void> {
-    await this.migrateLegacyConfig();
     await this.migrateHistory();
+    this.usingSplitConfig = true;
     await this.load();
     await this.loadProfilesAndStyles();
     await this.loadPositions();
+    this.dirtyPages.clear();
+    this.profileDirty = false;
     await this.loadHistory();
+    await this.reconcilePageDirty();
     this.historyReady = true;
     this.watch();
     this.changeEmitter.fire();
+    void this.refreshCloudHints();
   }
 
-  /** Whether local → remote / remote → local sync buttons should be enabled. */
+  /** Profile Discord sync flags (replaces pos_local ↔ pos_remote arrows). */
   positionSync(): PositionSyncState {
-    const id = this.activeId;
-    return positionSyncState(this.posLocal.profiles[id], this.posRemote.profiles[id]);
+    const flags = this.profileConfigSync();
+    return { canPush: flags.canPush, canPull: flags.canPull };
   }
 
-  /** Copy active profile layout from local into remote (backup). */
-  async syncPositionsLocalToRemote(): Promise<boolean> {
-    return await this.enqueueResult(async () => {
-      const id = this.ensureActiveProfileId();
-      const local = this.posLocal.profiles[id];
-      if (!local) {
-        return false;
-      }
-      const sync = positionSyncState(local, this.posRemote.profiles[id]);
-      if (!sync.canPush) {
-        return false;
-      }
-      this.posRemote.profiles[id] = cloneProfileLayout(local);
-      await this.persistPosRemote();
-      this.changeEmitter.fire();
-      return true;
+  profileConfigSync(): ConfigSyncFlags {
+    return configSyncFlags({
+      dirty: this.profileDirty,
+      cloudNewer: this.profileCloudNewer,
     });
   }
 
-  /** Restore active profile layout from remote into local. */
-  async syncPositionsRemoteToLocal(): Promise<boolean> {
-    return await this.enqueueResult(async () => {
-      const id = this.ensureActiveProfileId();
-      const remote = this.posRemote.profiles[id];
-      if (!remote) {
-        return false;
+  configSync(pageId: string): ConfigSyncFlags {
+    return configSyncFlags({
+      dirty: this.dirtyPages.has(pageId),
+      cloudNewer: !!this.pageCloudNewer[pageId],
+    });
+  }
+
+  /** All page sync flags for the pager. */
+  allPageConfigSync(): Record<string, ConfigSyncFlags> {
+    const result: Record<string, ConfigSyncFlags> = {};
+    for (const [pageId] of this.pages()) {
+      result[pageId] = this.configSync(pageId);
+    }
+    return result;
+  }
+
+  /** Page tabs show the fixed mark. The mark itself is a pending change until it is sent. */
+  pagesFixed(): boolean {
+    return this.posLocal.pagesFixed === true;
+  }
+
+  /** Lock value already published. Absent means the last send was unlocked. */
+  pagesFixedSent(): boolean {
+    return this.posLocal.pagesFixedSent === true;
+  }
+
+  private pagesFixedDirty(): boolean {
+    return this.pagesFixed() !== this.pagesFixedSent();
+  }
+
+  private rememberPagesFixedSent(): void {
+    if (this.posLocal.pagesFixed === true) {
+      this.posLocal.pagesFixedSent = true;
+    } else {
+      delete this.posLocal.pagesFixedSent;
+    }
+  }
+
+  async setPagesFixed(fixed: boolean): Promise<void> {
+    if (fixed) {
+      this.posLocal.pagesFixed = true;
+    } else {
+      delete this.posLocal.pagesFixed;
+    }
+    await this.enqueue(async () => {
+      if (fixed) {
+        this.posLocal.pagesFixed = true;
+      } else {
+        delete this.posLocal.pagesFixed;
       }
-      const sync = positionSyncState(this.posLocal.profiles[id], remote);
-      if (!sync.canPull) {
-        return false;
-      }
-      this.posLocal.profiles[id] = cloneProfileLayout(remote);
-      this.applyProfileLayout(this.posLocal.profiles[id]);
       await this.persistPosLocal();
+      this.changeEmitter.fire();
+    });
+  }
+
+  pageDraftIds(pageId: string): string[] {
+    return this.posLocal.drafts?.[pageId] ?? [];
+  }
+
+  catalogChannels(): CatalogChannels {
+    return packCatalogChannels(this.catalog.channels);
+  }
+
+  async setCatalogChannels(partial: Partial<CatalogChannels>): Promise<void> {
+    await this.enqueue(async () => {
+      const next = { ...this.catalog.channels };
+      if (partial.profile !== undefined) {
+        next.profile = partial.profile.trim();
+      }
+      if (partial.explorer !== undefined) {
+        const value = partial.explorer.trim();
+        if (value) {
+          next.explorer = value;
+        } else {
+          delete next.explorer;
+        }
+      }
+      if (partial.notes !== undefined) {
+        const value = partial.notes.trim();
+        if (value) {
+          next.notes = value;
+        } else {
+          delete next.notes;
+        }
+      }
+      if (partial.links !== undefined) {
+        const value = partial.links.trim();
+        if (value) {
+          next.links = value;
+        } else {
+          delete next.links;
+        }
+      }
+      if (partial.review !== undefined) {
+        const value = partial.review.trim();
+        if (value) {
+          next.review = value;
+        } else {
+          delete next.review;
+        }
+      }
+      this.catalog.channels = next;
+      this.profileDirty = true;
+      if (this.usingSplitConfig) {
+        await this.persistCatalogOnly();
+      }
+      this.changeEmitter.fire();
+    });
+  }
+
+  /**
+   * Full Syn3 wipe: markers, pages, profiles (except Общий), styles, positions,
+   * history, catalog channels, access bindings. Tokens cleared separately via SecretStorage.
+   */
+  async clearAllData(): Promise<void> {
+    await this.enqueue(async () => {
+      this.data = emptyData();
+      this.catalog = buildCatalogFromPages(this.data.pages, { profile: '' });
+      this.pageCloud = {};
+      this.dirtyPages.clear();
+      this.pageCloudNewer = {};
+      this.profileDirty = false;
+      this.profileCloudNewer = false;
+      this.profilesData = emptyProfiles();
+      this.stylesData = emptyStyles();
+      this.bindMachineToProfiles();
+      this.mirrorActiveOpenToSurfaces();
+      this.history = emptyHistory();
+      this.posLocal = emptyPositions();
+      this.posRemote = emptyPositions();
+      await this.accessStore?.clearAll();
+      await this.persistSplitConfig();
+      await this.persistProfiles();
+      await this.persistStyles();
+      await this.persistHistory();
+      await this.persistPosLocal();
+      await this.persistPosRemote();
+      try {
+        await vscode.workspace.fs.delete(vscode.Uri.joinPath(this.root, CONFIG_PATH));
+      } catch {
+        // legacy syn3.json may be absent
+      }
+      this.present = this.capture();
+      this.baseline = undefined;
       this.pagePresent = this.captureAllPageSnapshots();
       this.changeEmitter.fire();
-      return true;
     });
+  }
+
+  /** Push PROFILE_SYN3 (replaces local→remote layout backup). */
+  async syncPositionsLocalToRemote(): Promise<boolean> {
+    const result = await this.pushProfileConfig();
+    return result.ok;
+  }
+
+  /** Pull PROFILE_SYN3 (replaces remote→local layout restore). */
+  async syncPositionsRemoteToLocal(): Promise<boolean> {
+    const result = await this.pullProfileConfig();
+    return result.ok;
+  }
+
+  async pushPageConfig(pageId: string): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pushPageConfigNow(pageId));
+  }
+
+  /** Push every page whose content changed, plus every page when the lock itself changed. */
+  async pushDirtyPageConfigs(): Promise<{ ok: boolean; message?: string; pushed: number }> {
+    return this.enqueueResult(() => this.pushDirtyPageConfigsNow());
+  }
+
+  /** Pull every page that has a newer cloud config, in tab order. */
+  async pullNewerPageConfigs(): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pullNewerPageConfigsNow());
+  }
+
+  async pullPageConfig(pageId: string): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pullPageConfigNow(pageId));
+  }
+
+  async pushProfileConfig(): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pushProfileConfigNow());
+  }
+
+  async pullProfileConfig(): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pullProfileConfigNow());
   }
 
   dispose(): void {
@@ -960,7 +1331,7 @@ export class MarkerStore implements vscode.Disposable {
       if (this.borrowMissingIntoActiveLocal() || layoutAdded) {
         await this.persistPosLocal();
       }
-      this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+      this.applyCollapsedFromLocal(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
       this.pagePresent = this.captureAllPageSnapshots();
       await this.persistProfiles();
       this.changeEmitter.fire();
@@ -989,7 +1360,7 @@ export class MarkerStore implements vscode.Disposable {
       this.posLocal.profiles[id] = cloneProfileLayout(sourceLayout);
       this.moveMachineToProfile(id);
       this.mirrorActiveOpenToSurfaces();
-      this.applyProfileLayout(this.posLocal.profiles[id]);
+      this.applyCollapsedFromLocal(this.posLocal.profiles[id]);
       this.pagePresent = this.captureAllPageSnapshots();
       await this.persistProfiles();
       await this.persistStyles();
@@ -1032,9 +1403,7 @@ export class MarkerStore implements vscode.Disposable {
       this.profilesData.profiles.splice(index, 1);
       delete this.stylesData.styles[id];
       const hadLocal = !!this.posLocal.profiles[id];
-      const hadRemote = !!this.posRemote.profiles[id];
       delete this.posLocal.profiles[id];
-      delete this.posRemote.profiles[id];
       let localNeedsWrite = hadLocal;
       if (this.posLocal.focus?.[id]) {
         delete this.posLocal.focus[id];
@@ -1049,16 +1418,13 @@ export class MarkerStore implements vscode.Disposable {
         if (this.ensureActiveLayoutInLocal() || this.borrowMissingIntoActiveLocal()) {
           localNeedsWrite = true;
         }
-        this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+        this.applyCollapsedFromLocal(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
         this.pagePresent = this.captureAllPageSnapshots();
       }
       await this.persistProfiles();
       await this.persistStyles();
       if (localNeedsWrite) {
         await this.persistPosLocal();
-      }
-      if (hadRemote) {
-        await this.persistPosRemote();
       }
       this.changeEmitter.fire();
       return true;
@@ -2016,7 +2382,7 @@ export class MarkerStore implements vscode.Disposable {
 
   // ---- pages ----
 
-  async createPage(name: string, kind: PageKind): Promise<string | undefined> {
+  async createPage(name: string, kind: PageKind, description?: string): Promise<string | undefined> {
     if (this.pages().length >= MAX_PAGES) {
       return undefined;
     }
@@ -2026,11 +2392,16 @@ export class MarkerStore implements vscode.Disposable {
     }
     const id = this.uniquePageId(trimmed);
     const maxOrder = Math.max(0, ...this.pages().map(([, p]) => p.order));
-    this.data.pages[id] = {
+    const page = {
       ...defaultPage(capitalize(trimmed)),
       kind,
       order: maxOrder + 1,
     };
+    const text = normalizeGroupDescription(description);
+    if (text) {
+      page.description = text;
+    }
+    this.data.pages[id] = page;
     if (kind === 'links') {
       this.insertLinkBranch(id, 2);
     }
@@ -2048,51 +2419,120 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
+  /** Name and optional description of a map page. */
+  async setPageMeta(id: string, name: string, description?: string): Promise<void> {
+    const page = this.data.pages[id];
+    const trimmed = name.trim();
+    if (!page || !trimmed) {
+      return;
+    }
+    page.name = capitalize(trimmed);
+    const text = normalizeGroupDescription(description);
+    if (text) {
+      page.description = text;
+    } else {
+      delete page.description;
+    }
+    await this.commit();
+  }
+
   /**
    * Deletes a page and every group / note on it.
    * Returns the neighbor page id to open next, or undefined if nothing was deleted.
    */
   async deletePage(id: string): Promise<string | undefined> {
     let neighbor: string | undefined;
+    let tombstone: { pageId: string; tomb: PageTombstone } | undefined;
     await this.enqueue(async () => {
-      const ordered = this.pages();
-      if (ordered.length <= 1 || !this.data.pages[id]) {
+      const page = this.data.pages[id];
+      if (this.pages().length <= 1 || !page) {
         return;
       }
-      const index = ordered.findIndex(([pageId]) => pageId === id);
-      neighbor = ordered[index + 1]?.[0] ?? ordered[index - 1]?.[0];
-      const toRemove = this.children(undefined, id).flatMap(([rootId]) =>
-        this.descendantMarkers(rootId, true),
-      );
-      for (const markerId of toRemove) {
-        for (const [noteId] of this.notesOf(markerId)) {
-          this.purgeNoteTree(noteId);
-        }
-        this.purgeMarker(markerId);
+      const kind = pageKindToConfigKind(page.kind);
+      const stamp = this.pageCloud[id];
+      let channel = '';
+      if (kind === 'REVIEW') {
+        await this.accessStore?.ensureLoaded();
+        channel = this.accessStore?.page(id)?.channelId?.trim() || '';
+      } else if (kind) {
+        channel = resolveConfigChannel(this.catalog.channels, kind);
       }
-      for (const [noteId] of this.rootNotes(id)) {
+      if (stamp && kind && kind !== 'PROFILE' && channel) {
+        tombstone = {
+          pageId: id,
+          tomb: {
+            kind,
+            channelId: channel,
+            name: page.name,
+            pageKind: page.kind,
+            order: page.order,
+            number: stamp.number,
+            headerDate: stamp.headerDate,
+            messageId: stamp.messageId,
+          },
+        };
+      }
+      neighbor = await this.erasePageNow(id);
+    });
+    if (tombstone) {
+      await this.postPageTombstone(tombstone.pageId, tombstone.tomb);
+    }
+    return neighbor;
+  }
+
+  /** Drop a page and its cards. Caller must already hold the store queue. */
+  private async erasePageNow(id: string): Promise<string | undefined> {
+    if (!this.data.pages[id]) {
+      return undefined;
+    }
+    const ordered = this.pages();
+    const index = ordered.findIndex(([pageId]) => pageId === id);
+    const neighbor = ordered[index + 1]?.[0] ?? ordered[index - 1]?.[0];
+    const toRemove = this.children(undefined, id).flatMap(([rootId]) =>
+      this.descendantMarkers(rootId, true),
+    );
+    for (const markerId of toRemove) {
+      for (const [noteId] of this.notesOf(markerId)) {
         this.purgeNoteTree(noteId);
       }
-      for (const [linkId] of this.rootLinks(id)) {
-        this.purgeLinkTree(linkId);
-      }
-      delete this.data.pages[id];
-      this.applyPageOrder(this.pages().map(([pageId]) => pageId));
-      if (neighbor) {
-        for (const surface of MAP_SURFACES) {
-          if (this.data.surfaces[surface].page === id) {
-            this.data.surfaces[surface] = { page: neighbor };
-          }
+      this.purgeMarker(markerId);
+    }
+    for (const [noteId] of this.rootNotes(id)) {
+      this.purgeNoteTree(noteId);
+    }
+    for (const [linkId] of this.rootLinks(id)) {
+      this.purgeLinkTree(linkId);
+    }
+    delete this.data.pages[id];
+    delete this.pageCloud[id];
+    await this.accessStore?.deletePage(id);
+    this.applyPageOrder(this.pages().map(([pageId]) => pageId));
+    if (neighbor) {
+      for (const surface of MAP_SURFACES) {
+        if (this.data.surfaces[surface].page === id) {
+          this.data.surfaces[surface] = { page: neighbor };
         }
       }
-      await this.commitNow();
-      dropPageHistory(this.history, id);
-      delete this.pagePresent[id];
-      if (this.historyReady) {
-        await this.persistHistory();
-      }
-    });
+    }
+    await this.commitNow();
+    dropPageHistory(this.history, id);
+    delete this.pagePresent[id];
+    if (this.historyReady) {
+      await this.persistHistory();
+    }
     return neighbor;
+  }
+
+  /** The page push icon lights when the page config changed, including review bindings. */
+  async touchPageConfig(pageId: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.data.pages[pageId]) {
+        return;
+      }
+      this.dirtyPages.add(pageId);
+      await this.persistSplitConfig();
+      this.changeEmitter.fire();
+    });
   }
 
   async reorderPages(orderedIds: string[]): Promise<void> {
@@ -3323,7 +3763,16 @@ export class MarkerStore implements vscode.Disposable {
       watcher.onDidDelete(onChange);
       this.watchers.push(watcher);
     };
-    attach(this.sessionConfigPath, () => {
+    attach(CATALOG_PATH, () => {
+      if (this.writingCatalog) {
+        return;
+      }
+      void this.enqueue(() => this.reloadFromDisk(false));
+    });
+    attach(`${PAGES_DIR}/*.json`, () => {
+      if (this.writingCatalog) {
+        return;
+      }
       void this.enqueue(() => this.reloadFromDisk(false));
     });
     attach(PROFILES_PATH, () => {
@@ -3337,12 +3786,6 @@ export class MarkerStore implements vscode.Disposable {
         return;
       }
       void this.enqueue(() => this.reloadStylesFromDisk());
-    });
-    attach(POS_REMOTE_PATH, () => {
-      if (this.writingPosRemote) {
-        return;
-      }
-      void this.enqueue(() => this.reloadPosRemoteFromDisk());
     });
   }
 
@@ -3462,66 +3905,33 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async reloadFromDisk(notify: boolean): Promise<void> {
-    let raw: string | undefined;
-    let next: MarkersFile | undefined;
-    try {
-      raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
-      const parsed = JSON.parse(raw) as unknown;
-      this.surfacesNeedLegacyHydration =
-        !parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !('surfaces' in parsed);
-      next = normalize(parsed);
+    this.usingSplitConfig = true;
+    if (!(await fileExists(this.catalogUri))) {
+      this.data = emptyData();
+      this.catalog = buildCatalogFromPages(this.data.pages, { profile: '' });
+      this.pageCloud = {};
+      this.surfacesNeedLegacyHydration = true;
       this.lastError = undefined;
-    } catch (error) {
-      if (isFileNotFound(error)) {
-        next = emptyData();
-        this.surfacesNeedLegacyHydration = true;
-        this.lastError = undefined;
-      } else {
-        this.lastError = `Cannot read ${this.sessionConfigPath}: ${error instanceof Error ? error.message : String(error)}`;
-        this.changeEmitter.fire();
-        return;
-      }
-    }
-    const canonical = this.captureFrom(next);
-    const baseline = raw !== undefined && raw !== canonical ? raw : undefined;
-    if (!this.historyReady) {
-      this.data = next;
-      if (this.positionsReady) {
-        this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
-      }
-      this.present = canonical;
-      this.baseline = baseline;
+      await this.persistSplitConfig();
+      this.present = this.capture();
+      this.baseline = undefined;
       this.pagePresent = this.captureAllPageSnapshots();
-      if (this.remapOutOfPaletteLinkColors()) {
-        await this.commitNow();
-      } else {
+      if (notify || !this.historyReady) {
         this.changeEmitter.fire();
       }
       return;
     }
-    if (canonical === this.present) {
-      if (this.remapOutOfPaletteLinkColors()) {
-        await this.commitNow();
-      } else if (notify) {
-        this.changeEmitter.fire();
-      }
-      return;
-    }
-    this.data = next;
-    if (this.positionsReady) {
-      if (this.borrowMissingIntoActiveLocal()) {
-        await this.persistPosLocal();
-      }
-      this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
-    }
-    this.present = canonical;
-    this.baseline = baseline;
-    this.pagePresent = this.captureAllPageSnapshots();
-    this.history = emptyHistory();
-    await this.persistHistory();
+    const previous = this.present;
+    await this.reloadSplitFromDisk(false);
     if (this.remapOutOfPaletteLinkColors()) {
       await this.commitNow();
-    } else {
+      return;
+    }
+    if (this.historyReady && previous && previous !== this.present) {
+      this.history = emptyHistory();
+      await this.persistHistory();
+    }
+    if (notify || !this.historyReady) {
       this.changeEmitter.fire();
     }
   }
@@ -3544,10 +3954,7 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  /**
-   * Load profiles.json and styles.json. When styles.json is missing, seed «Общий»
-   * from the legacy appearance block and current panel open flags in syn3.json.
-   */
+  /** Load profiles.json and styles.json. Missing files are seeded with defaults. */
   private async loadProfilesAndStyles(): Promise<void> {
     const stylesExist = await fileExists(this.stylesUri);
     const profilesExist = await fileExists(this.profilesUri);
@@ -3561,10 +3968,6 @@ export class MarkerStore implements vscode.Disposable {
       this.mirrorActiveOpenToSurfaces();
       await this.persistStyles();
       await this.persistProfiles();
-      // Drop legacy appearance from syn3.json on the next markers write.
-      await this.writeConfig(this.capture());
-      this.present = this.capture();
-      this.baseline = undefined;
       return;
     }
 
@@ -3597,20 +4000,7 @@ export class MarkerStore implements vscode.Disposable {
       await this.persistProfiles();
     }
     this.mirrorActiveOpenToSurfaces();
-    // Rewrite styles.json if entries were still flat appearance-only.
     await this.persistStyles();
-    // Drop legacy appearance from syn3.json if it is still on disk.
-    try {
-      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'appearance' in parsed) {
-        await this.writeConfig(this.capture());
-        this.present = this.capture();
-        this.baseline = undefined;
-      }
-    } catch {
-      // Markers file may be missing during a fresh workspace.
-    }
   }
 
   private async reloadProfilesFromDisk(notify = true, seedOpen?: PanelOpenState): Promise<void> {
@@ -3664,7 +4054,17 @@ export class MarkerStore implements vscode.Disposable {
       const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
       const sProfileIds = general?.sProfileIds ?? [];
       this.profilesData.profiles = [
-        { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds },
+        {
+          id: GENERAL_PROFILE_ID,
+          name: GENERAL_PROFILE_NAME,
+          sProfileIds,
+          ...(general?.reviewSkillPath ? { reviewSkillPath: general.reviewSkillPath } : {}),
+          ...(general?.reviewDirPath ? { reviewDirPath: general.reviewDirPath } : {}),
+          ...(general?.reviewModel ? { reviewModel: general.reviewModel } : {}),
+          ...(general?.reviewFixModel ? { reviewFixModel: general.reviewFixModel } : {}),
+          ...(general?.githubNick ? { githubNick: general.githubNick } : {}),
+          ...(general?.gitlabNick ? { gitlabNick: general.gitlabNick } : {}),
+        },
         ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
       ];
     }
@@ -3753,7 +4153,785 @@ export class MarkerStore implements vscode.Disposable {
     return id;
   }
 
+  private async discordToken(): Promise<string | undefined> {
+    if (!this.secrets) {
+      return undefined;
+    }
+    return getSecret(this.secrets, SECRET_DISCORD);
+  }
+
+  private async refreshCloudHints(): Promise<void> {
+    const token = await this.discordToken();
+    if (!token) {
+      return;
+    }
+    let changed = false;
+    const profileChannel = resolveConfigChannel(this.catalog.channels, 'PROFILE');
+    if (profileChannel) {
+      const latest = await findLatestConfigMessage(token, profileChannel, 'PROFILE', undefined);
+      if (latest.ok && latest.value) {
+        const newer = latestIsNewer(latest.value, this.catalog.cloud);
+        if (this.profileCloudNewer !== newer) {
+          this.profileCloudNewer = newer;
+          changed = true;
+        }
+      }
+    }
+    const seen = new Set<string>();
+    const scan = async (channel: string, kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW') => {
+      const key = `${kind}:${channel}`;
+      if (!channel || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      const listed = await findLatestPageMessages(
+        token,
+        channel,
+        kind,
+        this.pageIdsInChannel(kind, channel),
+      );
+      if (!listed.ok) {
+        return;
+      }
+      for (const latest of listed.value) {
+        const pageId = latest.header.pageId;
+        if (!pageId) {
+          continue;
+        }
+        if (!this.data.pages[pageId]) {
+          const downloaded = await downloadConfigAttachment(token, latest.attachmentUrl);
+          if (!downloaded.ok) {
+            continue;
+          }
+          let remoteFile: PageConfigFile;
+          try {
+            remoteFile = normalizePageConfig(JSON.parse(downloaded.value));
+          } catch {
+            continue;
+          }
+          if (remoteFile.deleted || (remoteFile.pageId && remoteFile.pageId !== pageId)) {
+            continue;
+          }
+          await this.adoptRemotePage(pageId, remoteFile, stampFromLatest(latest));
+          continue;
+        }
+        const newer = latestIsNewer(latest, this.pageCloud[pageId]);
+        if (!!this.pageCloudNewer[pageId] !== newer) {
+          this.pageCloudNewer[pageId] = newer;
+          changed = true;
+        }
+      }
+    };
+    for (const kind of ['EXPLORER', 'NOTES', 'LINKS'] as const) {
+      const channel = resolveConfigChannel(this.catalog.channels, kind);
+      await scan(channel, kind);
+    }
+    await this.accessStore?.ensureLoaded();
+    for (const access of Object.values(this.accessStore?.entries() ?? {})) {
+      const channel = access.channelId.trim();
+      if (channel) {
+        await scan(channel, 'REVIEW');
+      }
+    }
+    const pending = { ...(this.posLocal.pageTombstones ?? {}) };
+    for (const [pageId, tomb] of Object.entries(pending)) {
+      await this.postPageTombstone(pageId, tomb);
+    }
+    if (changed) {
+      this.changeEmitter.fire();
+    }
+  }
+
+  /** Local pages of this kind whose messages are posted to `channel`. */
+  private pageIdsInChannel(
+    kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW',
+    channel: string,
+  ): string[] {
+    const ids: string[] = [];
+    for (const [pageId, page] of Object.entries(this.data.pages)) {
+      if (pageKindToConfigKind(page.kind) !== kind) {
+        continue;
+      }
+      if (kind === 'REVIEW') {
+        const reviewChannel = this.accessStore?.page(pageId)?.channelId?.trim() || '';
+        if (reviewChannel === channel) {
+          ids.push(pageId);
+        }
+        continue;
+      }
+      ids.push(pageId);
+    }
+    return ids;
+  }
+
+  /** Take a page that exists only in its channel. Does not mark the page dirty. */
+  private async adoptRemotePage(
+    pageId: string,
+    remoteFile: PageConfigFile,
+    stamp: CloudStamp,
+  ): Promise<void> {
+    await this.enqueue(async () => {
+      if (this.data.pages[pageId] || remoteFile.deleted) {
+        return;
+      }
+      await this.applyRemotePageFile(pageId, remoteFile, stamp, []);
+      this.present = this.capture();
+      this.pagePresent = this.captureAllPageSnapshots();
+      this.dirtyPages.delete(pageId);
+      this.pageCloudNewer[pageId] = false;
+      this.rememberPageClean(pageId);
+      await this.persistPosLocal();
+      this.changeEmitter.fire();
+    });
+  }
+
+  private async postPageTombstone(pageId: string, tomb: PageTombstone): Promise<void> {
+    const token = await this.discordToken();
+    if (!token) {
+      await this.rememberTombstone(pageId, tomb);
+      return;
+    }
+    const posted = await postConfigMessage({
+      token,
+      channelId: tomb.channelId,
+      kind: tomb.kind,
+      pageId,
+      number: (tomb.number || 0) + 1,
+      filename: `${pageId}.json`,
+      body:
+        JSON.stringify(
+          {
+            version: 1,
+            pageId,
+            deleted: true,
+            page: { name: tomb.name, kind: tomb.pageKind, order: tomb.order },
+          },
+          null,
+          2,
+        ) + '\n',
+    });
+    if (!posted.ok) {
+      await this.rememberTombstone(pageId, tomb);
+      return;
+    }
+    await this.forgetTombstone(pageId);
+  }
+
+  private async rememberTombstone(pageId: string, tomb: PageTombstone): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.posLocal.pageTombstones) {
+        this.posLocal.pageTombstones = {};
+      }
+      this.posLocal.pageTombstones[pageId] = tomb;
+      await this.persistPosLocal();
+    });
+  }
+
+  private async forgetTombstone(pageId: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.posLocal.pageTombstones?.[pageId]) {
+        return;
+      }
+      delete this.posLocal.pageTombstones[pageId];
+      if (Object.keys(this.posLocal.pageTombstones).length === 0) {
+        delete this.posLocal.pageTombstones;
+      }
+      await this.persistPosLocal();
+    });
+  }
+
+  private async pushPageConfigNow(
+    pageId: string,
+    force = false,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const page = this.data.pages[pageId];
+    if (!page) {
+      return { ok: false, message: 'Page not found' };
+    }
+    if (this.pageCloudNewer[pageId]) {
+      return { ok: false, message: 'cloudPullFirst' };
+    }
+    if (!force && !this.dirtyPages.has(pageId)) {
+      return { ok: false, message: 'Nothing to push' };
+    }
+    const kind = pageKindToConfigKind(page.kind);
+    if (!kind) {
+      return { ok: false, message: 'Unsupported page kind' };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { ok: false, message: 'Discord token is not set' };
+    }
+    let channel = '';
+    if (kind === 'REVIEW') {
+      await this.accessStore?.ensureLoaded();
+      channel = this.accessStore?.page(pageId)?.channelId?.trim() || '';
+    } else {
+      channel = resolveConfigChannel(this.catalog.channels, kind);
+    }
+    if (!channel) {
+      return { ok: false, message: 'Discord channel is not set' };
+    }
+    const packed = this.packPageFile(pageId);
+    if (!packed) {
+      return { ok: false, message: 'Cannot pack page' };
+    }
+    const number = nextConfigNumber(this.pageCloud[pageId]);
+    const headerDate = formatConfigHeaderDate();
+    const posted = await postConfigMessage({
+      token,
+      channelId: channel,
+      kind,
+      pageId,
+      number,
+      headerDate,
+      filename: `${pageId}.json`,
+      body: stringifyPageConfig({ ...packed, cloud: undefined, fixed: this.pagesFixed() }),
+    });
+    if (!posted.ok) {
+      return { ok: false, message: posted.message };
+    }
+    const parsed = parseConfigHeader(posted.value.content);
+    this.pageCloud[pageId] = parsed
+      ? {
+          number: parsed.number,
+          headerDate: parsed.headerDate,
+          messageId: posted.value.id,
+        }
+      : {
+          number,
+          headerDate,
+          messageId: posted.value.id,
+        };
+    this.dirtyPages.delete(pageId);
+    this.pageCloudNewer[pageId] = false;
+    if (this.posLocal.drafts?.[pageId]) {
+      delete this.posLocal.drafts[pageId];
+    }
+    this.rememberPageClean(pageId);
+    await this.persistPosLocal();
+    await this.persistSplitConfig();
+    this.present = this.capture();
+    this.changeEmitter.fire();
+    void this.refreshCloudHints();
+    return { ok: true };
+  }
+
+  private async pushDirtyPageConfigsNow(): Promise<{
+    ok: boolean;
+    message?: string;
+    pushed: number;
+  }> {
+    const lockDirty = this.pagesFixedDirty();
+    const ids = this.pages()
+      .map(([id]) => id)
+      .filter((id) => lockDirty || this.configSync(id).canPush);
+    const result = await this.pushPageIds(ids, lockDirty);
+    if (result.ok && lockDirty && result.pushed > 0) {
+      this.rememberPagesFixedSent();
+      await this.persistPosLocal();
+      this.changeEmitter.fire();
+    }
+    return result;
+  }
+
+  private async pushPageIds(
+    ids: string[],
+    force: boolean,
+  ): Promise<{ ok: boolean; message?: string; pushed: number }> {
+    const lines: string[] = [];
+    let pushed = 0;
+    for (const id of ids) {
+      const result = await this.pushPageConfigNow(id, force);
+      if (result.ok) {
+        pushed += 1;
+        continue;
+      }
+      if (
+        !result.message ||
+        result.message === 'Nothing to push' ||
+        result.message === 'Unsupported page kind'
+      ) {
+        continue;
+      }
+      const name = this.data.pages[id]?.name?.trim() || id;
+      lines.push(`${name}\t${result.message}`);
+    }
+    if (lines.length === 0) {
+      return { ok: true, pushed };
+    }
+    return { ok: false, message: lines.join('\n'), pushed };
+  }
+
+  private async pullNewerPageConfigsNow(): Promise<{ ok: boolean; message?: string }> {
+    const ids = this.pages()
+      .map(([id]) => id)
+      .filter((id) => this.configSync(id).canPull);
+    const lines: string[] = [];
+    for (const id of ids) {
+      const result = await this.pullPageConfigNow(id);
+      if (result.ok || !result.message || result.message === 'Nothing to pull') {
+        continue;
+      }
+      const name = this.data.pages[id]?.name?.trim() || id;
+      lines.push(`${name}\t${result.message}`);
+    }
+    if (lines.length === 0) {
+      return { ok: true };
+    }
+    return { ok: false, message: lines.join('\n') };
+  }
+
+  private async pullPageConfigNow(pageId: string): Promise<{ ok: boolean; message?: string }> {
+    const page = this.data.pages[pageId];
+    if (!page) {
+      return { ok: false, message: 'Page not found' };
+    }
+    if (!this.pageCloudNewer[pageId] && this.pageCloud[pageId]) {
+      // Still allow pull when a newer tip exists; refresh first.
+      await this.refreshCloudHints();
+      if (!this.pageCloudNewer[pageId]) {
+        return { ok: false, message: 'Nothing to pull' };
+      }
+    }
+    const kind = pageKindToConfigKind(page.kind);
+    if (!kind) {
+      return { ok: false, message: 'Unsupported page kind' };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { ok: false, message: 'Discord token is not set' };
+    }
+    let channel = '';
+    if (kind === 'REVIEW') {
+      await this.accessStore?.ensureLoaded();
+      channel = this.accessStore?.page(pageId)?.channelId?.trim() || '';
+    } else {
+      channel = resolveConfigChannel(this.catalog.channels, kind);
+    }
+    if (!channel) {
+      return { ok: false, message: 'Discord channel is not set' };
+    }
+    const latest = await findLatestConfigMessage(token, channel, kind, pageId);
+    if (!latest.ok) {
+      return { ok: false, message: latest.message };
+    }
+    if (!latest.value) {
+      return { ok: false, message: 'No cloud config found' };
+    }
+    const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
+    if (!downloaded.ok) {
+      return { ok: false, message: downloaded.message };
+    }
+    let remoteFile: PageConfigFile;
+    try {
+      remoteFile = normalizePageConfig(JSON.parse(downloaded.value));
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (remoteFile.pageId && remoteFile.pageId !== pageId) {
+      return { ok: false, message: 'Page config does not match this page' };
+    }
+    if (remoteFile.deleted) {
+      await this.erasePageNow(pageId);
+      this.pageCloudNewer[pageId] = false;
+      delete this.pageCloud[pageId];
+      this.present = this.capture();
+      this.pagePresent = this.captureAllPageSnapshots();
+      await this.persistPosLocal();
+      this.changeEmitter.fire();
+      return { ok: true };
+    }
+    const localDirty = this.dirtyPages.has(pageId);
+    const stamp = stampFromLatest(latest.value);
+    if (!localDirty) {
+      await this.applyRemotePageFile(pageId, remoteFile, stamp, []);
+    } else {
+      const localPacked = this.packPageFile(pageId);
+      const draftIds: string[] = [];
+      if (localPacked) {
+        const localMarkers = localPacked.markers ?? {};
+        const cloudMarkers = remoteFile.markers ?? {};
+        for (const id of Object.keys(localMarkers)) {
+          if (!(id in cloudMarkers)) {
+            draftIds.push(id);
+            remoteFile.markers = remoteFile.markers ?? {};
+            remoteFile.markers[id] = localMarkers[id];
+          }
+        }
+        const localNotes = localPacked.notes ?? {};
+        const cloudNotes = remoteFile.notes ?? {};
+        for (const id of Object.keys(localNotes)) {
+          if (!(id in cloudNotes)) {
+            draftIds.push(id);
+            remoteFile.notes = remoteFile.notes ?? {};
+            remoteFile.notes[id] = localNotes[id];
+          }
+        }
+        const localLinks = localPacked.links ?? {};
+        const cloudLinks = remoteFile.links ?? {};
+        for (const id of Object.keys(localLinks)) {
+          if (!(id in cloudLinks)) {
+            draftIds.push(id);
+            remoteFile.links = remoteFile.links ?? {};
+            remoteFile.links[id] = localLinks[id];
+          }
+        }
+        // Append draft orders after cloud entities.
+        let maxOrder = 0;
+        for (const entry of Object.values(remoteFile.markers ?? {})) {
+          if (entry.order > maxOrder) {
+            maxOrder = entry.order;
+          }
+        }
+        for (const entry of Object.values(remoteFile.notes ?? {})) {
+          if (entry.order > maxOrder) {
+            maxOrder = entry.order;
+          }
+        }
+        for (const entry of Object.values(remoteFile.links ?? {})) {
+          if (entry.order > maxOrder) {
+            maxOrder = entry.order;
+          }
+        }
+        draftIds.sort();
+        draftIds.forEach((id, index) => {
+          if (remoteFile.markers?.[id]) {
+            remoteFile.markers[id].order = maxOrder + index + 1;
+          } else if (remoteFile.notes?.[id]) {
+            remoteFile.notes[id].order = maxOrder + index + 1;
+          } else if (remoteFile.links?.[id]) {
+            remoteFile.links[id].order = maxOrder + index + 1;
+          }
+        });
+      }
+      await this.applyRemotePageFile(pageId, remoteFile, stamp, draftIds);
+    }
+    this.pageCloudNewer[pageId] = false;
+    this.dirtyPages.delete(pageId);
+    this.present = this.capture();
+    this.pagePresent = this.captureAllPageSnapshots();
+    this.rememberPageClean(pageId);
+    if (remoteFile.fixed === true || remoteFile.fixed === false) {
+      if (remoteFile.fixed) {
+        this.posLocal.pagesFixed = true;
+        this.posLocal.pagesFixedSent = true;
+      } else {
+        delete this.posLocal.pagesFixed;
+        delete this.posLocal.pagesFixedSent;
+      }
+    }
+    await this.persistPosLocal();
+    this.changeEmitter.fire();
+    return { ok: true };
+  }
+
+  private async applyRemotePageFile(
+    pageId: string,
+    remoteFile: PageConfigFile,
+    stamp: CloudStamp,
+    draftIds: string[],
+  ): Promise<void> {
+    // Rebuild this page's entities from the remote file while keeping other pages.
+    const keepMarkers = new Set(
+      Object.keys(this.data.markers).filter((id) => this.pageOf(id) !== pageId),
+    );
+    const keepNotes = new Set(
+      Object.keys(this.data.notes).filter((id) => this.pageOfNote(id) !== pageId),
+    );
+    const keepLinks = new Set(
+      Object.keys(this.data.links).filter((id) => {
+        const link = this.data.links[id];
+        if (!link) {
+          return false;
+        }
+        if (link.page === pageId) {
+          return false;
+        }
+        let current: string | undefined = link.parent;
+        const seen = new Set<string>();
+        while (current && this.data.links[current] && !seen.has(current)) {
+          seen.add(current);
+          if (this.data.links[current].page === pageId) {
+            return false;
+          }
+          current = this.data.links[current].parent;
+        }
+        return true;
+      }),
+    );
+
+    for (const id of Object.keys(this.data.markers)) {
+      if (!keepMarkers.has(id)) {
+        delete this.data.markers[id];
+      }
+    }
+    for (const id of Object.keys(this.data.notes)) {
+      if (!keepNotes.has(id)) {
+        delete this.data.notes[id];
+      }
+    }
+    for (const id of Object.keys(this.data.links)) {
+      if (!keepLinks.has(id)) {
+        delete this.data.links[id];
+      }
+    }
+
+    // Drop items/classes that only belonged to removed markers.
+    for (const relPath of Object.keys(this.data.items)) {
+      const ids = (this.data.items[relPath] ?? []).filter((id) => this.data.markers[id]);
+      if (ids.length === 0) {
+        delete this.data.items[relPath];
+        delete this.data.added[relPath];
+      } else {
+        this.data.items[relPath] = ids;
+      }
+    }
+
+    if (!this.data.pages[pageId]) {
+      this.data.pages[pageId] = {
+        name: remoteFile.page.name || pageId,
+        kind: remoteFile.page.kind || 'files',
+        order: typeof remoteFile.page.order === 'number' ? remoteFile.page.order : 0,
+        layout: remoteFile.page.layout || 'chips',
+        groupsLayout: remoteFile.page.groupsLayout || 'flow',
+        collapsed: emptyCollapsed(),
+        ...(remoteFile.page.description ? { description: remoteFile.page.description } : {}),
+      };
+    }
+    const page = this.data.pages[pageId];
+    if (page) {
+      page.name = remoteFile.page.name || page.name;
+      page.kind = remoteFile.page.kind || page.kind;
+      if (typeof remoteFile.page.order === 'number') {
+        page.order = remoteFile.page.order;
+      }
+      page.layout = remoteFile.page.layout || page.layout;
+      page.groupsLayout = remoteFile.page.groupsLayout || page.groupsLayout;
+      if (remoteFile.page.description) {
+        page.description = remoteFile.page.description;
+      } else {
+        delete page.description;
+      }
+    }
+    if (remoteFile.access) {
+      await this.accessStore?.setPage(pageId, remoteFile.access);
+    }
+
+    for (const [id, def] of Object.entries(remoteFile.markers ?? {})) {
+      this.data.markers[id] = {
+        label: def.label,
+        order: def.order,
+        ...(def.color ? { color: def.color } : {}),
+        ...(def.icons ? { icons: def.icons } : {}),
+        ...(def.alias ? { alias: def.alias } : {}),
+        ...(def.description ? { description: def.description } : {}),
+        ...(def.parent ? { parent: def.parent } : {}),
+        ...(def.page ? { page: def.page } : !def.parent ? { page: pageId } : {}),
+        ...(def.columns ? { columns: def.columns } : {}),
+        ...(def.locked ? { locked: true } : {}),
+      };
+    }
+    for (const [relPath, ids] of Object.entries(remoteFile.items ?? {})) {
+      const merged = new Set([...(this.data.items[relPath] ?? []), ...ids]);
+      this.data.items[relPath] = [...merged];
+    }
+    for (const [relPath, dates] of Object.entries(remoteFile.added ?? {})) {
+      this.data.added[relPath] = { ...(this.data.added[relPath] ?? {}), ...dates };
+    }
+    for (const [relPath, alias] of Object.entries(remoteFile.aliases ?? {})) {
+      this.data.aliases[relPath] = alias;
+    }
+    for (const [classId, def] of Object.entries(remoteFile.classes ?? {})) {
+      this.data.classes[classId] = def;
+    }
+    for (const [classId, ids] of Object.entries(remoteFile.classItems ?? {})) {
+      const merged = new Set([...(this.data.classItems[classId] ?? []), ...ids]);
+      this.data.classItems[classId] = [...merged];
+    }
+    for (const [classId, dates] of Object.entries(remoteFile.classAdded ?? {})) {
+      this.data.classAdded[classId] = { ...(this.data.classAdded[classId] ?? {}), ...dates };
+    }
+    for (const [id, def] of Object.entries(remoteFile.notes ?? {})) {
+      this.data.notes[id] = {
+        text: def.text,
+        order: def.order,
+        ...(def.page ? { page: def.page } : {}),
+        ...(def.markerId ? { markerId: def.markerId } : {}),
+        ...(def.parentNote ? { parentNote: def.parentNote } : {}),
+        ...(def.color ? { color: def.color } : {}),
+        ...(def.icons ? { icons: def.icons } : {}),
+        ...(def.locked ? { locked: true } : {}),
+      };
+    }
+    for (const [id, def] of Object.entries(remoteFile.links ?? {})) {
+      this.data.links[id] = {
+        label: def.label,
+        order: def.order,
+        ...(def.description ? { description: def.description } : {}),
+        ...(def.url ? { url: def.url } : {}),
+        ...(def.parent ? { parent: def.parent } : {}),
+        ...(def.page ? { page: def.page } : {}),
+        ...(def.color ? { color: def.color } : {}),
+        ...(def.locked ? { locked: true } : {}),
+      };
+    }
+
+    this.pageCloud[pageId] = stamp;
+    if (draftIds.length > 0) {
+      if (!this.posLocal.drafts) {
+        this.posLocal.drafts = {};
+      }
+      this.posLocal.drafts[pageId] = draftIds;
+    } else if (this.posLocal.drafts?.[pageId]) {
+      delete this.posLocal.drafts[pageId];
+    }
+    await this.persistSplitConfig();
+    await this.persistPosLocal();
+  }
+
+  private async pushProfileConfigNow(): Promise<{ ok: boolean; message?: string }> {
+    if (this.profileCloudNewer) {
+      return { ok: false, message: 'cloudPullFirst' };
+    }
+    if (!this.profileDirty) {
+      return { ok: false, message: 'Nothing to push' };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { ok: false, message: 'Discord token is not set' };
+    }
+    const channel = resolveConfigChannel(this.catalog.channels, 'PROFILE');
+    if (!channel) {
+      return { ok: false, message: 'Profile Discord channel is not set' };
+    }
+    const body = packProfileConfigBody({
+      channels: this.catalog.channels,
+      profiles: this.profilesData,
+      styles: this.stylesData,
+    });
+    const number = nextConfigNumber(this.catalog.cloud);
+    const headerDate = formatConfigHeaderDate();
+    const posted = await postConfigMessage({
+      token,
+      channelId: channel,
+      kind: 'PROFILE',
+      number,
+      headerDate,
+      filename: 'profile.json',
+      body: JSON.stringify(body, null, 2) + '\n',
+    });
+    if (!posted.ok) {
+      return { ok: false, message: posted.message };
+    }
+    const parsed = parseConfigHeader(posted.value.content);
+    this.catalog.cloud = parsed
+      ? {
+          number: parsed.number,
+          headerDate: parsed.headerDate,
+          messageId: posted.value.id,
+        }
+      : {
+          number,
+          headerDate,
+          messageId: posted.value.id,
+        };
+    this.profileDirty = false;
+    this.profileCloudNewer = false;
+    await this.persistCatalogOnly();
+    this.changeEmitter.fire();
+    void this.refreshCloudHints();
+    return { ok: true };
+  }
+
+  private async pullProfileConfigNow(): Promise<{ ok: boolean; message?: string }> {
+    await this.refreshCloudHints();
+    if (!this.profileCloudNewer && this.catalog.cloud) {
+      return { ok: false, message: 'Nothing to pull' };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { ok: false, message: 'Discord token is not set' };
+    }
+    const channel = resolveConfigChannel(this.catalog.channels, 'PROFILE');
+    if (!channel) {
+      return { ok: false, message: 'Profile Discord channel is not set' };
+    }
+    const latest = await findLatestConfigMessage(token, channel, 'PROFILE', undefined);
+    if (!latest.ok) {
+      return { ok: false, message: latest.message };
+    }
+    if (!latest.value) {
+      return { ok: false, message: 'No cloud profile config found' };
+    }
+    const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
+    if (!downloaded.ok) {
+      return { ok: false, message: downloaded.message };
+    }
+    let body: {
+      channels?: unknown;
+      catalog?: { channels?: unknown; pages?: unknown };
+      profiles?: unknown;
+      styles?: unknown;
+      access?: unknown;
+    };
+    try {
+      body = JSON.parse(downloaded.value) as typeof body;
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const channelSource = body.channels ?? body.catalog?.channels;
+    if (channelSource) {
+      this.catalog.channels = normalizeCatalog({ channels: channelSource }).channels;
+    }
+    this.catalog.cloud = stampFromLatest(latest.value);
+    if (body.profiles) {
+      this.profilesData = normalizeProfiles(body.profiles);
+      this.bindMachineToProfiles();
+      await this.persistProfiles();
+    }
+    if (body.styles) {
+      try {
+        const raw = body.styles as StylesFile;
+        if (raw && typeof raw === 'object' && raw.styles) {
+          this.stylesData = { version: 1, styles: {} };
+          for (const [id, value] of Object.entries(raw.styles)) {
+            this.stylesData.styles[id] = normalizeProfileStyle(value);
+          }
+          await this.persistStyles();
+        }
+      } catch {
+        // keep local styles
+      }
+    }
+    if (body.access) {
+      try {
+        await vscode.workspace.fs.writeFile(
+          vscode.Uri.joinPath(this.root, '.syn3/access.json'),
+          Buffer.from(JSON.stringify(body.access, null, 2) + '\n', 'utf8'),
+        );
+        await this.accessStore?.reload();
+      } catch {
+        // ignore
+      }
+    }
+    this.profileDirty = false;
+    this.profileCloudNewer = false;
+    await this.persistSplitConfig();
+    this.present = this.capture();
+    this.pagePresent = this.captureAllPageSnapshots();
+    this.changeEmitter.fire();
+    return { ok: true };
+  }
+
   private async persistProfiles(): Promise<void> {
+    this.profileDirty = true;
     this.writingProfiles = true;
     try {
       const payload: ProfilesFile = {
@@ -3762,6 +4940,12 @@ export class MarkerStore implements vscode.Disposable {
           id: p.id,
           name: p.name,
           sProfileIds: [...p.sProfileIds],
+          ...(p.reviewSkillPath ? { reviewSkillPath: p.reviewSkillPath } : {}),
+          ...(p.reviewDirPath ? { reviewDirPath: p.reviewDirPath } : {}),
+          ...(p.reviewModel ? { reviewModel: p.reviewModel } : {}),
+          ...(p.reviewFixModel ? { reviewFixModel: p.reviewFixModel } : {}),
+          ...(p.githubNick ? { githubNick: p.githubNick } : {}),
+          ...(p.gitlabNick ? { gitlabNick: p.gitlabNick } : {}),
         })),
       };
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.profilesUri, '..'));
@@ -3802,72 +4986,60 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Load pos_local / pos_remote, migrate layout out of syn3.json once,
-   * hydrate a missing local copy, and apply the active profile layout.
+   * Load pos_local folds / focus / drafts / surfaces.
+   * Card order lives in page files; pos_remote is unused.
    */
   private async loadPositions(): Promise<void> {
     const localExists = await fileExists(this.posLocalUri);
-    const remoteExists = await fileExists(this.posRemoteUri);
     this.posLocal = localExists
       ? await this.readPositionsFile(this.posLocalUri, true)
       : emptyPositions();
-    this.posRemote = remoteExists
-      ? await this.readPositionsFile(this.posRemoteUri, false)
-      : emptyPositions();
+    this.posRemote = emptyPositions();
 
     let localDirty = false;
-    let remoteDirty = false;
-    let rewriteMarkers = false;
+    if (positionsIsEmpty(this.posLocal)) {
+      this.posLocal.profiles[GENERAL_PROFILE_ID] = emptyProfileLayout();
+      localDirty = true;
+    }
 
-    if (!localExists && !remoteExists) {
-      const migrated = this.extractLayoutFromData();
-      this.posLocal.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
-      this.posRemote.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
-      localDirty = true;
-      remoteDirty = true;
-      rewriteMarkers = true;
-    } else if (positionsIsEmpty(this.posLocal) && !positionsIsEmpty(this.posRemote)) {
-      for (const [id, layout] of Object.entries(this.posRemote.profiles)) {
-        this.posLocal.profiles[id] = cloneProfileLayout(layout);
+    if (this.posLocal.surfaces) {
+      const fallback = this.defaultFilesPageId();
+      for (const surface of MAP_SURFACES) {
+        const page = this.posLocal.surfaces[surface]?.page;
+        this.data.surfaces[surface] = {
+          page: page && this.data.pages[page] ? page : fallback,
+        };
       }
-      localDirty = true;
-    } else if (positionsIsEmpty(this.posLocal) && positionsIsEmpty(this.posRemote)) {
-      const migrated = this.extractLayoutFromData();
-      this.posLocal.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
-      this.posRemote.profiles[GENERAL_PROFILE_ID] = cloneProfileLayout(migrated);
-      localDirty = true;
-      remoteDirty = true;
-      rewriteMarkers = true;
     }
 
     const ids = this.entityIdSets();
     if (prunePositionsFile(this.posLocal, ids.pages, ids.markers, ids.notes, ids.links)) {
       localDirty = true;
     }
-    if (prunePositionsFile(this.posRemote, ids.pages, ids.markers, ids.notes)) {
-      remoteDirty = true;
-    }
 
     if (this.ensureActiveLayoutInLocal()) {
       localDirty = true;
     }
-    if (this.borrowMissingIntoActiveLocal()) {
-      localDirty = true;
-    }
 
-    this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+    // Apply folds only — page/marker order already comes from page files.
+    this.applyCollapsedFromLocal(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
     this.positionsReady = true;
 
     if (localDirty) {
       await this.persistPosLocal();
     }
-    if (remoteDirty) {
-      await this.persistPosRemote();
-    }
-    if (rewriteMarkers || (await this.markersFileHasLayoutFields())) {
-      await this.writeConfig(this.capture());
-      this.present = this.capture();
-      this.baseline = undefined;
+  }
+
+  /** Apply only fold state from pos_local; keep content order from page files. */
+  private applyCollapsedFromLocal(layout: ProfileLayout): void {
+    const packed = packProfileLayout(layout);
+    for (const [id, page] of Object.entries(this.data.pages)) {
+      const pos = packed.pages[id];
+      if (pos) {
+        page.collapsed = packCollapsed(pos.collapsed);
+      } else {
+        page.collapsed = page.collapsed ?? emptyCollapsed();
+      }
     }
   }
 
@@ -3901,7 +5073,7 @@ export class MarkerStore implements vscode.Disposable {
       localDirty = true;
     }
     if (localDirty) {
-      this.applyProfileLayout(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+      this.applyCollapsedFromLocal(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
       this.pagePresent = this.captureAllPageSnapshots();
       await this.persistPosLocal();
     }
@@ -3911,11 +5083,33 @@ export class MarkerStore implements vscode.Disposable {
   private async persistPosLocal(): Promise<void> {
     this.writingPosLocal = true;
     try {
+      this.mirrorSurfacesToPosLocal();
       const focus = packFocus(this.posLocal.focus);
+      const drafts: Record<string, string[]> = {};
+      for (const pageId of Object.keys(this.posLocal.drafts ?? {}).sort()) {
+        const ids = (this.posLocal.drafts?.[pageId] ?? []).filter(Boolean);
+        if (ids.length > 0) {
+          drafts[pageId] = ids;
+        }
+      }
+      const pageClean: Record<string, string> = {};
+      for (const pageId of Object.keys(this.posLocal.pageClean ?? {}).sort()) {
+        const fp = this.posLocal.pageClean?.[pageId]?.trim();
+        if (fp) {
+          pageClean[pageId] = fp;
+        }
+      }
+      const pageTombstones = this.posLocal.pageTombstones;
       const payload: PositionsFile = {
         version: 1,
         profiles: {},
         ...(focus ? { focus } : {}),
+        ...(Object.keys(drafts).length > 0 ? { drafts } : {}),
+        ...(Object.keys(pageClean).length > 0 ? { pageClean } : {}),
+        ...(pageTombstones && Object.keys(pageTombstones).length > 0 ? { pageTombstones } : {}),
+        ...(this.posLocal.surfaces ? { surfaces: this.posLocal.surfaces } : {}),
+        ...(this.posLocal.pagesFixed ? { pagesFixed: true as const } : {}),
+        ...(this.posLocal.pagesFixedSent ? { pagesFixedSent: true as const } : {}),
       };
       for (const id of Object.keys(this.posLocal.profiles).sort()) {
         payload.profiles[id] = packProfileLayout(this.posLocal.profiles[id]);
@@ -3997,170 +5191,77 @@ export class MarkerStore implements vscode.Disposable {
     return packProfileLayout(layout);
   }
 
-  private applyProfileLayout(layout: ProfileLayout): void {
-    const packed = packProfileLayout(layout);
-    for (const [id, page] of Object.entries(this.data.pages)) {
-      const pos = packed.pages[id];
-      if (pos) {
-        page.order = pos.order;
-        page.layout = pos.layout;
-        page.groupsLayout = pos.groupsLayout;
-        page.collapsed = packCollapsed(pos.collapsed);
-      } else {
-        page.layout = page.layout || 'chips';
-        page.groupsLayout = page.groupsLayout || 'flow';
-        page.collapsed = page.collapsed ?? emptyCollapsed();
-      }
-    }
-    for (const [id, marker] of Object.entries(this.data.markers)) {
-      const pos = packed.markers[id];
-      if (pos) {
-        marker.order = pos.order;
-        marker.columns = pos.columns;
-      }
-    }
-    for (const [id, note] of Object.entries(this.data.notes)) {
-      const pos = packed.notes[id];
-      if (pos) {
-        note.order = pos.order;
-      }
-    }
-    for (const [id, link] of Object.entries(this.data.links)) {
-      const pos = packed.links?.[id];
-      if (pos) {
-        link.order = pos.order;
-      }
-    }
-  }
-
-  /** Write current memory layout into the active profile slot of pos_local. */
+  /** Persist fold state of the active profile into pos_local. */
   private async syncActiveLayoutToLocal(): Promise<void> {
     if (!this.positionsReady) {
       return;
     }
     const id = this.ensureActiveProfileId();
-    const next = this.extractLayoutFromData();
-    const prev = this.posLocal.profiles[id];
-    if (prev && JSON.stringify(packProfileLayout(prev)) === JSON.stringify(next)) {
+    const prev = this.posLocal.profiles[id] ?? emptyProfileLayout();
+    const next = emptyProfileLayout();
+    for (const [pageId, page] of Object.entries(this.data.pages)) {
+      next.pages[pageId] = {
+        order: page.order,
+        layout: page.layout,
+        groupsLayout: page.groupsLayout,
+        collapsed: packCollapsed(page.collapsed),
+      };
+    }
+    // Keep leftover marker/note/link slots from prev for prune compatibility.
+    next.markers = { ...prev.markers };
+    next.notes = { ...prev.notes };
+    next.links = { ...prev.links };
+    const packedNext = packProfileLayout(next);
+    if (JSON.stringify(packProfileLayout(prev)) === JSON.stringify(packedNext)) {
       return;
     }
-    this.posLocal.profiles[id] = next;
+    this.posLocal.profiles[id] = packedNext;
     await this.persistPosLocal();
   }
 
-  /**
-   * Ensure active profile has a layout in pos_local.
-   * Copies from remote, or from the first profile in profiles.json that has one.
-   * Returns true when local was modified.
-   */
+  /** Ensure active profile has a folds slot in pos_local. */
   private ensureActiveLayoutInLocal(): boolean {
     const id = this.ensureActiveProfileId();
     if (this.posLocal.profiles[id]) {
       return false;
     }
-    if (this.posRemote.profiles[id]) {
-      this.posLocal.profiles[id] = cloneProfileLayout(this.posRemote.profiles[id]);
-      return true;
-    }
     for (const profile of this.profilesData.profiles) {
-      const remote = this.posRemote.profiles[profile.id];
-      if (remote) {
-        this.posLocal.profiles[id] = cloneProfileLayout(remote);
-        return true;
-      }
       const local = this.posLocal.profiles[profile.id];
       if (local) {
         this.posLocal.profiles[id] = cloneProfileLayout(local);
         return true;
       }
     }
-    this.posLocal.profiles[id] = this.extractLayoutFromData();
+    this.posLocal.profiles[id] = emptyProfileLayout();
     return true;
   }
 
-  /**
-   * For entities missing from the active local layout, borrow order from the first
-   * remote profile (profiles.json order) that has it; otherwise append at the end.
-   */
+  /** Ensure every page has a collapsed entry in the active local layout. */
   private borrowMissingIntoActiveLocal(): boolean {
     const id = this.ensureActiveProfileId();
     const layout = this.posLocal.profiles[id] ?? emptyProfileLayout();
     let changed = false;
 
-    const remoteOrder = (): string[] => this.profilesData.profiles.map((p) => p.id);
-
-    const nextPageOrder = () =>
-      Math.max(0, ...Object.values(layout.pages).map((p) => p.order), 0) + 1;
-    const nextMarkerOrder = () =>
-      Math.max(0, ...Object.values(layout.markers).map((m) => m.order), 0) + 1;
-    const nextNoteOrder = () =>
-      Math.max(0, ...Object.values(layout.notes).map((n) => n.order), 0) + 1;
-
     for (const pageId of Object.keys(this.data.pages)) {
       if (layout.pages[pageId]) {
         continue;
       }
-      let order: number | undefined;
-      for (const profileId of remoteOrder()) {
-        const remotePage = this.posRemote.profiles[profileId]?.pages[pageId];
-        if (remotePage) {
-          order = remotePage.order;
-          layout.pages[pageId] = {
-            order: remotePage.order,
-            layout: remotePage.layout,
-            groupsLayout: remotePage.groupsLayout,
-            collapsed: packCollapsed(remotePage.collapsed),
-          };
-          break;
-        }
-      }
-      if (order === undefined) {
-        layout.pages[pageId] = {
-          order: nextPageOrder(),
-          layout: 'chips',
-          groupsLayout: 'flow',
-          collapsed: emptyCollapsed(),
-        };
-      }
+      const page = this.data.pages[pageId];
+      layout.pages[pageId] = {
+        order: page.order,
+        layout: page.layout,
+        groupsLayout: page.groupsLayout,
+        collapsed: emptyCollapsed(),
+      };
       changed = true;
     }
 
-    for (const markerId of Object.keys(this.data.markers)) {
-      if (layout.markers[markerId]) {
-        continue;
+    // Drop folds for removed pages.
+    for (const pageId of Object.keys(layout.pages)) {
+      if (!this.data.pages[pageId]) {
+        delete layout.pages[pageId];
+        changed = true;
       }
-      let found = false;
-      for (const profileId of remoteOrder()) {
-        const remoteMarker = this.posRemote.profiles[profileId]?.markers[markerId];
-        if (remoteMarker) {
-          layout.markers[markerId] = { ...remoteMarker };
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        layout.markers[markerId] = { order: nextMarkerOrder() };
-      }
-      changed = true;
-    }
-
-    for (const noteId of Object.keys(this.data.notes)) {
-      if (layout.notes[noteId]) {
-        continue;
-      }
-      let found = false;
-      for (const profileId of remoteOrder()) {
-        const remoteNote = this.posRemote.profiles[profileId]?.notes[noteId];
-        if (remoteNote) {
-          layout.notes[noteId] = { ...remoteNote };
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        layout.notes[noteId] = { order: nextNoteOrder() };
-      }
-      changed = true;
     }
 
     if (changed) {
@@ -4169,69 +5270,146 @@ export class MarkerStore implements vscode.Disposable {
     return changed;
   }
 
-  private async markersFileHasLayoutFields(): Promise<boolean> {
-    try {
-      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.configUri)).toString('utf8');
-      const parsed = JSON.parse(raw) as {
-        pages?: Record<string, Record<string, unknown>>;
-        markers?: Record<string, Record<string, unknown>>;
-        notes?: Record<string, Record<string, unknown>>;
-      };
-      for (const page of Object.values(parsed.pages ?? {})) {
-        if ('order' in page || 'layout' in page || 'groupsLayout' in page || 'collapsed' in page) {
-          return true;
+  /**
+   * Send flags are in-memory. After a restart, compare the page with the last
+   * synced fingerprint. A page that was never sent and already has content stays sendable.
+   */
+  private async reconcilePageDirty(): Promise<void> {
+    const clean: Record<string, string> = { ...(this.posLocal.pageClean ?? {}) };
+    let persist = false;
+    for (const [pageId, snapshot] of Object.entries(this.pagePresent)) {
+      const fp = fingerprint(this.pageDirtyKey(snapshot));
+      const saved = clean[pageId];
+      if (saved) {
+        if (saved !== fp && saved !== fingerprint(snapshot)) {
+          this.dirtyPages.add(pageId);
+        } else if (saved !== fp) {
+          clean[pageId] = fp;
+          persist = true;
         }
+        continue;
       }
-      for (const marker of Object.values(parsed.markers ?? {})) {
-        if ('order' in marker || 'columns' in marker) {
-          return true;
-        }
+      if (!this.pageCloud[pageId] && this.pageHasLocalContent(pageId)) {
+        this.dirtyPages.add(pageId);
+        continue;
       }
-      for (const note of Object.values(parsed.notes ?? {})) {
-        if ('order' in note) {
-          return true;
-        }
+      clean[pageId] = fp;
+      persist = true;
+    }
+    for (const pageId of Object.keys(clean)) {
+      if (!this.pagePresent[pageId]) {
+        delete clean[pageId];
+        persist = true;
       }
-      return false;
-    } catch {
-      return false;
+    }
+    if (Object.keys(clean).length > 0) {
+      this.posLocal.pageClean = clean;
+    } else {
+      delete this.posLocal.pageClean;
+    }
+    if (persist) {
+      await this.persistPosLocal();
     }
   }
 
+  /** Remember the snapshot that Discord already has, so the send icon can go out. */
+  private rememberPageClean(pageId: string): void {
+    const snapshot = this.pagePresent[pageId];
+    if (!snapshot) {
+      if (this.posLocal.pageClean?.[pageId]) {
+        delete this.posLocal.pageClean[pageId];
+      }
+      return;
+    }
+    if (!this.posLocal.pageClean) {
+      this.posLocal.pageClean = {};
+    }
+    this.posLocal.pageClean[pageId] = fingerprint(this.pageDirtyKey(snapshot));
+  }
+
+  private pageHasLocalContent(pageId: string): boolean {
+    if (this.markerIdsOnPage(pageId).length > 0) {
+      return true;
+    }
+    for (const noteId of Object.keys(this.data.notes)) {
+      if (this.pageOfNote(noteId) === pageId) {
+        return true;
+      }
+    }
+    for (const linkId of Object.keys(this.data.links)) {
+      if (this.pageOfLink(linkId) === pageId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private async commitNow(): Promise<void> {
+    const previousPages = { ...this.pagePresent };
+    const previousPageIds = new Set(Object.keys(previousPages));
     const next = this.capture();
     const contentChanged = next !== this.present;
-    const previousPages = { ...this.pagePresent };
     if (contentChanged) {
       await this.writeConfig(next);
       this.baseline = undefined;
       this.present = next;
     }
     const nextPages = this.captureAllPageSnapshots();
-    if (this.historyReady) {
-      for (const [pageId, curr] of Object.entries(nextPages)) {
-        const prev = previousPages[pageId];
-        if (prev !== undefined && prev !== curr) {
+    let pageDirty = false;
+    for (const [pageId, curr] of Object.entries(nextPages)) {
+      const prev = previousPages[pageId];
+      if (prev !== undefined && this.pageDirtyKey(prev) !== this.pageDirtyKey(curr)) {
+        this.dirtyPages.add(pageId);
+        pageDirty = true;
+        if (this.historyReady) {
           remember(pageStacks(this.history, pageId), prev);
         }
+      } else if (prev === undefined) {
+        this.dirtyPages.add(pageId);
+        pageDirty = true;
       }
-      this.pagePresent = nextPages;
-      if (contentChanged || Object.keys(nextPages).some((id) => previousPages[id] !== nextPages[id])) {
+    }
+    for (const pageId of previousPageIds) {
+      if (!(pageId in nextPages)) {
+        this.dirtyPages.delete(pageId);
+        delete this.pageCloudNewer[pageId];
+        if (this.posLocal.drafts?.[pageId]) {
+          delete this.posLocal.drafts[pageId];
+        }
+        if (this.posLocal.pageClean?.[pageId]) {
+          delete this.posLocal.pageClean[pageId];
+        }
+      }
+    }
+    const pageIdsChanged =
+      previousPageIds.size !== Object.keys(nextPages).length ||
+      [...previousPageIds].some((id) => !(id in nextPages));
+    this.pagePresent = nextPages;
+    if (this.historyReady) {
+      if (contentChanged || pageDirty || pageIdsChanged) {
         await this.persistHistory();
       }
-    } else {
-      this.pagePresent = nextPages;
     }
     const focusDirty = pruneFocusMap(
       this.posLocal,
       new Set(Object.keys(this.data.markers)),
       new Set(Object.keys(this.data.notes)),
     );
+    this.mirrorSurfacesToPosLocal();
     await this.syncActiveLayoutToLocal();
     if (focusDirty) {
       await this.persistPosLocal();
     }
     this.changeEmitter.fire();
+  }
+
+  private mirrorSurfacesToPosLocal(): void {
+    this.posLocal.surfaces = {
+      explorer: { page: this.data.surfaces.explorer.page },
+      bottom: { page: this.data.surfaces.bottom.page },
+      left: { page: this.data.surfaces.left.page },
+      right: { page: this.data.surfaces.right.page },
+    };
   }
 
   private async travel(pageId: string, direction: -1 | 1): Promise<void> {
@@ -4298,6 +5476,21 @@ export class MarkerStore implements vscode.Disposable {
       return this.capture();
     } finally {
       this.data = previous;
+    }
+  }
+
+  /**
+   * Send-icon comparison. The full snapshot also carries every page's order so
+   * undo can restore a reorder; that map must not mark neighbours dirty when
+   * one page is created.
+   */
+  private pageDirtyKey(raw: string): string {
+    try {
+      const snap = JSON.parse(raw) as PageSnapshot;
+      delete snap.pageOrders;
+      return JSON.stringify(snap);
+    } catch {
+      return raw;
     }
   }
 
@@ -4430,6 +5623,7 @@ export class MarkerStore implements vscode.Disposable {
       page: {
         name: def.name,
         kind: def.kind,
+        ...(def.description ? { description: def.description } : {}),
         order: def.order,
         layout: def.layout,
         groupsLayout: def.groupsLayout,
@@ -4573,6 +5767,14 @@ export class MarkerStore implements vscode.Disposable {
 
     page.name = snap.page.name;
     page.kind = normalizePageKind(snap.page.kind) ?? page.kind;
+    if ('description' in snap.page) {
+      const text = normalizeGroupDescription(snap.page.description);
+      if (text) {
+        page.description = text;
+      } else {
+        delete page.description;
+      }
+    }
     if (snap.pageOrders && typeof snap.pageOrders === 'object') {
       for (const [id, order] of Object.entries(snap.pageOrders)) {
         if (this.data.pages[id] && typeof order === 'number') {
@@ -4784,141 +5986,227 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Stable JSON of the markers file (content only).
-   * Layout fields live in pos_local / pos_remote.
+   * Stable fingerprint of catalog + page files (content only).
+   * Layout folds live in pos_local; card order lives in page files.
    */
   private capture(): string {
-    const pages: Record<string, { name: string; kind: PageKind }> = {};
-    for (const [id, def] of this.pages()) {
-      pages[id] = {
-        name: def.name,
-        kind: def.kind,
-      };
-    }
-    const surfaces = packSurfaces(this.data.surfaces, this.data.pages, this.defaultFilesPageId());
-    const markers: Record<string, Record<string, unknown>> = {};
-    for (const [id, def] of this.markers()) {
-      const entry: Record<string, unknown> = { label: def.label };
-      if (def.color) {
-        entry.color = def.color;
-      }
-      if (def.icons?.length) {
-        entry.icons = def.icons.slice(0, MAX_BADGE_ICONS);
-      }
-      if (def.alias) {
-        entry.alias = def.alias;
-      }
-      if (def.description) {
-        entry.description = def.description;
-      }
-      if (def.locked) {
-        entry.locked = true;
-      }
-      if (def.parent) {
-        entry.parent = def.parent;
-      } else if (def.page) {
-        entry.page = def.page;
-      }
-      markers[id] = entry;
-    }
-    const items: Record<string, string[]> = {};
-    const added: Record<string, Record<string, number>> = {};
-    for (const relPath of Object.keys(this.data.items).sort()) {
-      const ids = this.markersOf(relPath);
-      items[relPath] = ids;
-      const dates: Record<string, number> = {};
-      for (const id of ids) {
-        const at = this.data.added[relPath]?.[id];
-        if (at !== undefined) {
-          dates[id] = at;
-        }
-      }
-      if (Object.keys(dates).length > 0) {
-        added[relPath] = dates;
-      }
-    }
-    const aliases: Record<string, string> = {};
-    for (const key of Object.keys(this.data.aliases).sort()) {
-      const value = this.data.aliases[key]?.trim();
-      if (value) {
-        aliases[key] = value;
-      }
-    }
-    const classes: Record<string, ClassDef> = {};
-    const classItems: Record<string, string[]> = {};
-    const classAdded: Record<string, Record<string, number>> = {};
-    for (const classId of Object.keys(this.data.classes).sort()) {
-      const def = this.data.classes[classId];
-      const markerIds = (this.data.classItems[classId] ?? []).filter((id) => id in this.data.markers);
-      if (!def || markerIds.length === 0) {
-        continue;
-      }
-      classes[classId] = {
-        relPath: def.relPath,
-        name: def.name,
-        ...(def.line !== undefined ? { line: def.line } : {}),
-        ...(def.alias ? { alias: def.alias } : {}),
-      };
-      classItems[classId] = markerIds;
-      const dates: Record<string, number> = {};
-      for (const markerId of markerIds) {
-        const at = this.data.classAdded[classId]?.[markerId];
-        if (at !== undefined) {
-          dates[markerId] = at;
-        }
-      }
-      if (Object.keys(dates).length > 0) {
-        classAdded[classId] = dates;
-      }
-    }
-    const notes: Record<string, Record<string, unknown>> = {};
-    for (const [id, def] of this.notes()) {
-      const packed = this.packNoteContent(id, def);
-      if (packed) {
-        notes[id] = packed;
-      }
-    }
-    const links: Record<string, Record<string, unknown>> = {};
-    for (const [id, def] of Object.entries(this.data.links).sort(([a], [b]) => a.localeCompare(b))) {
-      const packed = this.packLinkContent(def);
-      if (packed) {
-        links[id] = packed;
-      }
-    }
-    const payload: Record<string, unknown> = {
-      version: 1,
-      pages,
-      markers,
-      items,
-      added,
-      surfaces,
-    };
-    if (Object.keys(aliases).length > 0) {
-      payload.aliases = aliases;
-    }
-    if (Object.keys(classes).length > 0) {
-      payload.classes = classes;
-      payload.classItems = classItems;
-      if (Object.keys(classAdded).length > 0) {
-        payload.classAdded = classAdded;
-      }
-    }
-    if (Object.keys(notes).length > 0) {
-      payload.notes = notes;
-    }
-    if (Object.keys(links).length > 0) {
-      payload.links = links;
-    }
-    return JSON.stringify(payload, null, 2) + '\n';
+    return this.captureSplitFingerprint();
   }
 
   private async save(): Promise<void> {
     await this.writeConfig(this.capture());
   }
 
-  private async writeConfig(json: string): Promise<void> {
-    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.configUri, '..'));
-    await vscode.workspace.fs.writeFile(this.configUri, Buffer.from(json, 'utf8'));
+  private async writeConfig(_json?: string): Promise<void> {
+    await this.persistSplitConfig();
+  }
+
+  private async persistCatalogOnly(): Promise<void> {
+    this.writingCatalog = true;
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.catalogUri, '..'));
+      await vscode.workspace.fs.writeFile(
+        this.catalogUri,
+        Buffer.from(stringifyCatalog(this.catalog), 'utf8'),
+      );
+    } finally {
+      setTimeout(() => {
+        this.writingCatalog = false;
+      }, 100);
+    }
+  }
+
+  private syncCatalogPagesFromData(): void {
+    const pages: CatalogFile['pages'] = {};
+    for (const [id, page] of Object.entries(this.data.pages)) {
+      pages[id] = catalogEntryFromPage(id, page);
+    }
+    this.catalog.pages = pages;
+  }
+
+  private packPageFile(pageId: string): PageConfigFile | undefined {
+    const page = this.data.pages[pageId];
+    if (!page) {
+      return undefined;
+    }
+    const markerIds = this.markerIdsOnPage(pageId);
+    const noteIds = Object.keys(this.data.notes).filter((id) => this.pageOfNote(id) === pageId);
+    const linkIds = Object.keys(this.data.links).filter((id) => {
+      const link = this.data.links[id];
+      if (!link) {
+        return false;
+      }
+      if (link.page === pageId) {
+        return true;
+      }
+      let current: string | undefined = link.parent;
+      const seen = new Set<string>();
+      while (current && this.data.links[current] && !seen.has(current)) {
+        seen.add(current);
+        if (this.data.links[current].page === pageId) {
+          return true;
+        }
+        current = this.data.links[current].parent;
+      }
+      return false;
+    });
+    return packPageConfig({
+      pageId,
+      page,
+      markers: this.data.markers,
+      items: this.data.items,
+      added: this.data.added,
+      aliases: this.data.aliases,
+      classes: this.data.classes,
+      classItems: this.data.classItems,
+      classAdded: this.data.classAdded,
+      notes: this.data.notes,
+      links: this.data.links,
+      markerIdsOnPage: markerIds,
+      noteIdsOnPage: noteIds,
+      linkIdsOnPage: linkIds,
+      access: this.pageAccessFor(pageId),
+      cloud: this.pageCloud[pageId],
+    });
+  }
+
+  private pageAccessFor(pageId: string): PageAccessConfig | undefined {
+    if (this.data.pages[pageId]?.kind !== 'review') {
+      return undefined;
+    }
+    const access = this.accessStore?.page(pageId);
+    if (!access?.channelId || !access.repoUrl) {
+      return undefined;
+    }
+    return {
+      provider: access.provider,
+      channelId: access.channelId,
+      repoUrl: access.repoUrl,
+    };
+  }
+
+  private async persistSplitConfig(): Promise<void> {
+    this.writingCatalog = true;
+    try {
+      await this.accessStore?.ensureLoaded();
+      this.syncCatalogPagesFromData();
+      await vscode.workspace.fs.createDirectory(this.pagesDirUri);
+      const keep = new Set(Object.keys(this.data.pages));
+      try {
+        for (const [name, type] of await vscode.workspace.fs.readDirectory(this.pagesDirUri)) {
+          if (type !== vscode.FileType.File || !name.endsWith('.json')) {
+            continue;
+          }
+          const id = name.slice(0, -'.json'.length);
+          if (!keep.has(id)) {
+            await vscode.workspace.fs.delete(this.pageUri(id));
+          }
+        }
+      } catch {
+        // pages dir may be empty
+      }
+      for (const pageId of keep) {
+        const packed = this.packPageFile(pageId);
+        if (!packed) {
+          continue;
+        }
+        await vscode.workspace.fs.writeFile(
+          this.pageUri(pageId),
+          Buffer.from(stringifyPageConfig(packed), 'utf8'),
+        );
+      }
+      await vscode.workspace.fs.writeFile(
+        this.catalogUri,
+        Buffer.from(stringifyCatalog(this.catalog), 'utf8'),
+      );
+    } finally {
+      setTimeout(() => {
+        this.writingCatalog = false;
+      }, 100);
+    }
+  }
+
+  private captureSplitFingerprint(): string {
+    this.syncCatalogPagesFromData();
+    const catalogPart = stringifyCatalog({
+      version: 1,
+      pages: this.catalog.pages,
+      channels: this.catalog.channels,
+    });
+    const pageParts: string[] = [];
+    for (const pageId of Object.keys(this.data.pages).sort()) {
+      const packed = this.packPageFile(pageId);
+      if (packed) {
+        pageParts.push(pageId + '\n' + pageConfigContentJson(packed));
+      }
+    }
+    return catalogPart + pageParts.join('\n');
+  }
+
+  private async reloadSplitFromDisk(notify: boolean): Promise<void> {
+    let catalogRaw: string;
+    try {
+      catalogRaw = Buffer.from(await vscode.workspace.fs.readFile(this.catalogUri)).toString('utf8');
+    } catch (error) {
+      if (!isFileNotFound(error)) {
+        this.lastError = `Cannot read ${CATALOG_PATH}: ${error instanceof Error ? error.message : String(error)}`;
+        this.changeEmitter.fire();
+      }
+      return;
+    }
+    const catalog = normalizeCatalog(JSON.parse(catalogRaw));
+    const pageFiles: Record<string, PageConfigFile> = {};
+    for (const pageId of Object.keys(catalog.pages)) {
+      try {
+        const raw = Buffer.from(await vscode.workspace.fs.readFile(this.pageUri(pageId))).toString(
+          'utf8',
+        );
+        pageFiles[pageId] = normalizePageConfig(JSON.parse(raw));
+      } catch (error) {
+        if (!isFileNotFound(error)) {
+          console.error('Syn3 page config:', pageId, error);
+        }
+      }
+    }
+    const assembled = assembleSplitWorkspace(catalog, pageFiles);
+    const surfaces = this.posLocal.surfaces
+      ? {
+          explorer: { ...this.posLocal.surfaces.explorer },
+          bottom: { ...this.posLocal.surfaces.bottom },
+          left: { ...this.posLocal.surfaces.left },
+          right: { ...this.posLocal.surfaces.right },
+          open: { ...this.data.surfaces.open },
+        }
+      : this.data.surfaces;
+    const next: MarkersFile = {
+      version: 1,
+      pages: assembled.pages,
+      markers: assembled.markers,
+      items: assembled.items,
+      added: assembled.added,
+      aliases: assembled.aliases,
+      classes: assembled.classes,
+      classItems: assembled.classItems,
+      classAdded: assembled.classAdded,
+      notes: assembled.notes,
+      links: assembled.links,
+      appearance: this.data.appearance,
+      surfaces: surfaces ?? emptySurfaces(Object.keys(assembled.pages)[0] || DEFAULT_PAGE_ID),
+    };
+    this.catalog = assembled.catalog;
+    this.pageCloud = assembled.pageCloud;
+    this.usingSplitConfig = true;
+    this.data = next;
+    if (this.positionsReady) {
+      this.applyCollapsedFromLocal(this.posLocal.profiles[this.activeId] ?? emptyProfileLayout());
+    }
+    this.present = this.capture();
+    this.baseline = undefined;
+    this.pagePresent = this.captureAllPageSnapshots();
+    this.lastError = undefined;
+    if (notify) {
+      this.changeEmitter.fire();
+    }
   }
 
   private setItem(relPath: string, ids: string[]): void {
@@ -5845,14 +7133,45 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
         continue;
       }
-      const item = entry as { id?: unknown; name?: unknown; sProfileIds?: unknown };
+      const item = entry as {
+        id?: unknown;
+        name?: unknown;
+        sProfileIds?: unknown;
+        reviewSkillPath?: unknown;
+        reviewDirPath?: unknown;
+        reviewModel?: unknown;
+        reviewFixModel?: unknown;
+        githubNick?: unknown;
+        gitlabNick?: unknown;
+      };
       if (typeof item.id !== 'string' || !item.id.trim()) {
         continue;
       }
       const id = item.id.trim();
       const sProfileIds = normalizeSProfileIds(item.sProfileIds);
+      const reviewSkillPath =
+        typeof item.reviewSkillPath === 'string' ? item.reviewSkillPath.trim() : undefined;
+      const reviewDirPath =
+        typeof item.reviewDirPath === 'string' ? item.reviewDirPath.trim() : undefined;
+      const reviewModel =
+        typeof item.reviewModel === 'string' ? item.reviewModel.trim() : undefined;
+      const reviewFixModel =
+        typeof item.reviewFixModel === 'string' ? item.reviewFixModel.trim() : undefined;
+      const githubNick = normalizeGitNick(item.githubNick);
+      const gitlabNick = normalizeGitNick(item.gitlabNick);
       if (id === GENERAL_PROFILE_ID) {
         generalIds = sProfileIds;
+        result.profiles[0] = {
+          id: GENERAL_PROFILE_ID,
+          name: GENERAL_PROFILE_NAME,
+          sProfileIds: generalIds,
+          ...(reviewSkillPath ? { reviewSkillPath } : {}),
+          ...(reviewDirPath ? { reviewDirPath } : {}),
+          ...(reviewModel ? { reviewModel } : {}),
+          ...(reviewFixModel ? { reviewFixModel } : {}),
+          ...(githubNick ? { githubNick } : {}),
+          ...(gitlabNick ? { gitlabNick } : {}),
+        };
         continue;
       }
       if (seen.has(id)) {
@@ -5864,13 +7183,25 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         continue;
       }
       seen.add(id);
-      profiles.push({ id, name, sProfileIds });
+      profiles.push({
+        id,
+        name,
+        sProfileIds,
+        ...(reviewSkillPath ? { reviewSkillPath } : {}),
+        ...(reviewDirPath ? { reviewDirPath } : {}),
+        ...(reviewModel ? { reviewModel } : {}),
+        ...(reviewFixModel ? { reviewFixModel } : {}),
+        ...(githubNick ? { githubNick } : {}),
+        ...(gitlabNick ? { gitlabNick } : {}),
+      });
     }
   }
-  result.profiles = [
-    { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: generalIds },
-    ...profiles,
-  ];
+  const general = result.profiles[0] ?? {
+    id: GENERAL_PROFILE_ID,
+    name: GENERAL_PROFILE_NAME,
+    sProfileIds: generalIds,
+  };
+  result.profiles = [general, ...profiles];
   return result;
 }
 
@@ -5962,9 +7293,11 @@ function normalize(raw: unknown): MarkersFile {
       const kind = normalizePageKind(def.kind) ?? 'files';
       const name =
         typeof def.name === 'string' && def.name.trim() ? capitalize(def.name.trim()) : capitalize(id);
+      const description = normalizeGroupDescription(def.description);
       result.pages[id] = {
         name,
         kind,
+        ...(description ? { description } : {}),
         order: typeof def.order === 'number' ? def.order : index,
         layout: normalizeMapLayout(def.layout),
         groupsLayout: normalizeGroupsLayout(def.groupsLayout),

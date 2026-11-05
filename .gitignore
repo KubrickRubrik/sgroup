@@ -4,4 +4,5 @@ out/
 version/.reload-window
 .syn3/history.json
 .syn3/pos_local.json
+.syn3/review-pending.md
 # *.vsix
