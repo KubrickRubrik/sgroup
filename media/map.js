@@ -951,12 +951,29 @@
       openReviewCreatePagePanel({
         origin: typeof message.origin === 'string' ? message.origin : '',
         suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
         hasGitlab: message.hasGitlab === true,
         hasGithub: message.hasGithub === true,
         hasDiscord: message.hasDiscord === true,
         githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
         gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
       });
+    } else if (message.type === 'discordGatePanel') {
+      if (message.i18n && typeof message.i18n === 'object') {
+        i18nBag = message.i18n;
+      }
+      openDiscordGatePanel({
+        channels:
+          message.channels && typeof message.channels === 'object' ? message.channels : {},
+        hasDiscord: message.hasDiscord === true,
+      });
+    } else if (message.type === 'discordGateClear') {
+      closeDiscordGatePanel();
+    } else if (message.type === 'discordGateError') {
+      applyDiscordGateError(
+        typeof message.field === 'string' ? message.field : '',
+        typeof message.message === 'string' ? message.message : '',
+      );
     } else if (message.type === 'reviewPageSettingsPanel') {
       openReviewCreatePagePanel({
         pageId: typeof message.pageId === 'string' ? message.pageId : '',
@@ -6402,6 +6419,250 @@
     closeReviewCreatePagePanel();
     closeReviewMrPanel();
     closeReviewRenamePanel();
+  }
+
+  function closeDiscordGatePanel() {
+    removeOverlay('discord-gate-panel');
+  }
+
+  /**
+   * @param {string} field
+   * @param {string} message
+   */
+  function applyDiscordGateError(field, message) {
+    const panel = document.getElementById('discord-gate-panel');
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    const saveBtn = panel.querySelector('[data-gate-save]');
+    if (saveBtn instanceof HTMLButtonElement) {
+      saveBtn.disabled = false;
+    }
+    panel.querySelectorAll('.discord-gate-field').forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.classList.remove('has-error');
+      }
+    });
+    panel.querySelectorAll('.discord-gate-field-error').forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.hidden = true;
+        node.textContent = '';
+      }
+    });
+    const target = panel.querySelector(`[data-gate-field="${field}"]`);
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (
+      field === 'explorer' ||
+      field === 'notes' ||
+      field === 'links' ||
+      field === 'review'
+    ) {
+      const extra = panel.querySelector('[data-gate-extra]');
+      const extraBtn = panel.querySelector('[data-gate-extra-toggle]');
+      if (extra instanceof HTMLElement) {
+        extra.hidden = false;
+      }
+      if (extraBtn instanceof HTMLButtonElement) {
+        extraBtn.setAttribute('aria-expanded', 'true');
+      }
+    }
+    target.classList.add('has-error');
+    const err = target.querySelector('.discord-gate-field-error');
+    if (err instanceof HTMLElement) {
+      err.hidden = false;
+      err.textContent = message || '';
+    }
+    const input = target.querySelector('input');
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+    }
+  }
+
+  /**
+   * @param {{
+   *   channels: {
+   *     profile?: string,
+   *     explorer?: string,
+   *     notes?: string,
+   *     links?: string,
+   *     review?: string
+   *   },
+   *   hasDiscord: boolean
+   * }} opts
+   */
+  function openDiscordGatePanel(opts) {
+    if (document.getElementById('discord-gate-panel')) {
+      return;
+    }
+    closeMapSettingsPanels();
+    const channels = opts.channels || {};
+    const initial = {
+      profile: typeof channels.profile === 'string' ? channels.profile.trim() : '',
+      explorer: typeof channels.explorer === 'string' ? channels.explorer.trim() : '',
+      notes: typeof channels.notes === 'string' ? channels.notes.trim() : '',
+      links: typeof channels.links === 'string' ? channels.links.trim() : '',
+      review: typeof channels.review === 'string' ? channels.review.trim() : '',
+    };
+
+    const backdrop = el('div', 'map-settings-backdrop discord-gate-backdrop');
+    const panel = el('div', 'review-mr-panel review-create-page-panel discord-gate-panel');
+    panel.id = 'discord-gate-panel';
+    panel.append(el('div', 'review-mr-people-title', t('discordGateTitle')));
+    panel.append(el('div', 'discord-gate-blurb', t('discordGateBlurb')));
+
+    /**
+     * @param {string} field
+     * @param {string} labelKey
+     * @param {string} value
+     * @param {{ password?: boolean }} [opts]
+     */
+    function fieldBlock(field, labelKey, value, fieldOpts) {
+      const wrap = el('div', 'discord-gate-field review-mr-field');
+      wrap.dataset.gateField = field;
+      const label = el('label', '', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = fieldOpts?.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = value || '';
+      if (fieldOpts?.password) {
+        input.autocomplete = 'new-password';
+      } else {
+        input.inputMode = 'numeric';
+        input.placeholder = t('channelIdPlaceholder');
+      }
+      label.append(input);
+      wrap.append(label);
+      const err = el('div', 'discord-gate-field-error');
+      err.hidden = true;
+      wrap.append(err);
+      panel.append(wrap);
+      return input;
+    }
+
+    const profileInput = fieldBlock('profile', 'labelChannelProfile', initial.profile);
+    const tokenInput = fieldBlock('token', 'reviewFieldDiscordToken', '', { password: true });
+    if (opts.hasDiscord) {
+      const hint = el('div', 'review-token-hint', t('discordGateTokenSavedHint'));
+      panel.append(hint);
+    }
+
+    const toggles = el('div', 'discord-gate-toggles');
+    const extraToggle = el('button', 'review-btn discord-gate-extra-btn', t('discordGateExtra'));
+    extraToggle.type = 'button';
+    extraToggle.dataset.gateExtraToggle = '1';
+    extraToggle.setAttribute('aria-expanded', 'false');
+    toggles.append(extraToggle);
+    panel.append(toggles);
+
+    const extra = el('div', 'discord-gate-extra');
+    extra.dataset.gateExtra = '1';
+    extra.hidden = true;
+    extraToggle.addEventListener('click', () => {
+      const open = extra.hidden;
+      extra.hidden = !open;
+      extraToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      extraToggle.classList.toggle('is-active', open);
+    });
+
+    /**
+     * @param {string} field
+     * @param {string} labelKey
+     * @param {string} value
+     */
+    function extraField(field, labelKey, value) {
+      const wrap = el('div', 'discord-gate-field review-mr-field');
+      wrap.dataset.gateField = field;
+      const label = el('label', '', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = 'text';
+      input.spellcheck = false;
+      input.inputMode = 'numeric';
+      input.placeholder = t('channelIdPlaceholder');
+      input.value = value || '';
+      label.append(input);
+      wrap.append(label);
+      const err = el('div', 'discord-gate-field-error');
+      err.hidden = true;
+      wrap.append(err);
+      extra.append(wrap);
+      return input;
+    }
+
+    const explorerInput = extraField('explorer', 'labelChannelExplorer', initial.explorer);
+    const notesInput = extraField('notes', 'labelChannelNotes', initial.notes);
+    const linksInput = extraField('links', 'labelChannelLinks', initial.links);
+    const reviewInput = extraField('review', 'labelChannelReview', initial.review);
+    panel.append(extra);
+
+    const howToBtn = el('button', 'review-btn discord-gate-howto', t('discordGateHowTo'));
+    howToBtn.type = 'button';
+    howToBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'discordGateOpenHowTo' });
+    });
+    panel.append(howToBtn);
+
+    const actions = el('div', 'review-mr-actions');
+    const save = el('button', 'review-btn is-primary', t('discordGateSave'));
+    save.type = 'button';
+    save.dataset.gateSave = '1';
+    save.addEventListener('click', () => {
+      panel.querySelectorAll('.discord-gate-field').forEach((node) => {
+        if (node instanceof HTMLElement) {
+          node.classList.remove('has-error');
+        }
+      });
+      panel.querySelectorAll('.discord-gate-field-error').forEach((node) => {
+        if (node instanceof HTMLElement) {
+          node.hidden = true;
+          node.textContent = '';
+        }
+      });
+      const next = {
+        profile: profileInput.value.trim(),
+        explorer: explorerInput.value.trim(),
+        notes: notesInput.value.trim(),
+        links: linksInput.value.trim(),
+        review: reviewInput.value.trim(),
+      };
+      /** @type {string[]} */
+      const dirty = [];
+      for (const key of /** @type {const} */ ([
+        'profile',
+        'explorer',
+        'notes',
+        'links',
+        'review',
+      ])) {
+        if (next[key] !== initial[key]) {
+          dirty.push(key);
+        }
+      }
+      // First save always treats profile as dirty so the probe runs.
+      if (!dirty.includes('profile')) {
+        dirty.push('profile');
+      }
+      save.disabled = true;
+      vscode.postMessage({
+        type: 'discordGateSave',
+        profile: next.profile,
+        explorer: next.explorer,
+        notes: next.notes,
+        links: next.links,
+        review: next.review,
+        discordToken: tokenInput.value.trim() || undefined,
+        dirty,
+      });
+    });
+    actions.append(save);
+    panel.append(actions);
+
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    profileInput.focus();
   }
 
   function closeReviewRenamePanel() {

@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import {
+  clearAllSyn3Secrets,
   deleteProfileHostToken,
   deleteProfileHostTokens,
   GitHostProvider,
@@ -9,6 +10,7 @@ import {
   storeSecrets,
   writeProfileHostToken,
 } from './accessStore';
+import { isValidChannelId, reviewChannelConflicts } from './discordSetup';
 import { normalizeLocale, stringsFor, t, Syn3Locale } from './i18n';
 import { listProjectDirectory } from './projectNav';
 import {
@@ -44,6 +46,7 @@ type IncomingMessage =
       channelExplorer?: string;
       channelNotes?: string;
       channelLinks?: string;
+      channelReview?: string;
       discordToken?: string;
     }
   | {
@@ -52,7 +55,8 @@ type IncomingMessage =
       id?: string;
       name?: string;
     }
-  | { type: 'openProfileEditor'; id?: string };
+  | { type: 'openProfileEditor'; id?: string }
+  | { type: 'clearAllData' };
 
 export class SettingsPanel implements vscode.Disposable {
   static readonly viewType = 'syn3Settings';
@@ -153,9 +157,34 @@ export class SettingsPanel implements vscode.Disposable {
       this.openProfileEditor?.(message.id);
       return;
     }
+    if (message.type === 'clearAllData') {
+      await this.onClearAllData();
+      return;
+    }
     if (message.type === 'profile') {
       await this.onProfile(message.action, message.id, message.name);
     }
+  }
+
+  private async onClearAllData(): Promise<void> {
+    const locale = this.locale();
+    const confirm = t(locale, 'clearAllConfirmAction');
+    const choice = await vscode.window.showWarningMessage(
+      t(locale, 'clearAllConfirm'),
+      { modal: true },
+      confirm,
+    );
+    if (choice !== confirm) {
+      return;
+    }
+    const profileIds = this.store.profiles().map((p) => p.id);
+    if (!profileIds.includes(GENERAL_PROFILE_ID)) {
+      profileIds.push(GENERAL_PROFILE_ID);
+    }
+    await clearAllSyn3Secrets(this.secrets, profileIds);
+    await this.store.clearAllData();
+    await this.postState();
+    void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'clearAllDone')}`);
   }
 
   private async onProfile(
@@ -279,6 +308,7 @@ export class SettingsPanel implements vscode.Disposable {
     channelExplorer?: string;
     channelNotes?: string;
     channelLinks?: string;
+    channelReview?: string;
     discordToken?: string;
   }): Promise<void> {
     const values = [
@@ -286,13 +316,27 @@ export class SettingsPanel implements vscode.Disposable {
       message.channelExplorer,
       message.channelNotes,
       message.channelLinks,
+      message.channelReview,
     ];
     for (const value of values) {
       const trimmed = (value ?? '').trim();
-      if (trimmed && !/^\d{5,}$/.test(trimmed)) {
+      if (trimmed && !isValidChannelId(trimmed)) {
         void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'reviewFieldChannelId')}`);
         return;
       }
+    }
+    const review = (message.channelReview ?? '').trim();
+    if (
+      review &&
+      reviewChannelConflicts(review, {
+        profile: message.channelProfile ?? '',
+        explorer: message.channelExplorer,
+        notes: message.channelNotes,
+        links: message.channelLinks,
+      })
+    ) {
+      void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'channelReviewMustBeDistinct')}`);
+      return;
     }
     if (message.discordToken?.trim()) {
       await storeSecrets(this.secrets, { discord: message.discordToken });
@@ -302,6 +346,7 @@ export class SettingsPanel implements vscode.Disposable {
       explorer: message.channelExplorer ?? '',
       notes: message.channelNotes ?? '',
       links: message.channelLinks ?? '',
+      review: message.channelReview ?? '',
     });
     await this.postState();
   }
@@ -358,6 +403,7 @@ export class SettingsPanel implements vscode.Disposable {
         explorer: channels.explorer || '',
         notes: channels.notes || '',
         links: channels.links || '',
+        review: channels.review || '',
       },
       hasDiscord: secrets.hasDiscord,
       locale,
@@ -718,6 +764,18 @@ export class SettingsPanel implements vscode.Disposable {
     .channels > .note[data-i18n="noteChannels"] {
       margin-bottom: 14px;
     }
+    .danger-btn {
+      background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+      border: 1px solid var(--vscode-inputValidation-errorBorder, #f14c4c);
+      border-radius: 2px;
+      color: var(--vscode-errorForeground, #f14c4c);
+      cursor: pointer;
+      font: inherit;
+      padding: 6px 12px;
+    }
+    .danger-btn:hover {
+      background: var(--vscode-inputValidation-errorBackground, rgba(241, 76, 76, 0.15));
+    }
     #reviewModel,
     #reviewFixModel {
       text-transform: lowercase;
@@ -991,11 +1049,19 @@ export class SettingsPanel implements vscode.Disposable {
         <label for="channelLinks" data-i18n="labelChannelLinks">Links maps</label>
         <input id="channelLinks" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
       </div>
+      <div class="row text-row">
+        <label for="channelReview" data-i18n="labelChannelReview">Review channel</label>
+        <input id="channelReview" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
+      </div>
       <div class="row text-row" id="discord-token-row">
         <label for="discordToken" data-i18n="reviewFieldDiscordToken">Discord bot token</label>
         <input id="discordToken" type="password" spellcheck="false" autocomplete="new-password">
       </div>
       <p class="note" id="discord-token-saved" hidden></p>
+      <p class="note" data-i18n="clearAllNote"></p>
+      <div class="row">
+        <button type="button" id="clear-all-data" class="danger-btn" data-i18n="clearAll">Clear all Syn3 data</button>
+      </div>
     </section>
     <div class="title-row">
       <div class="profile-switch" id="profile-switch">
@@ -1301,6 +1367,7 @@ export class SettingsPanel implements vscode.Disposable {
     const channelExplorer = document.getElementById('channelExplorer');
     const channelNotes = document.getElementById('channelNotes');
     const channelLinks = document.getElementById('channelLinks');
+    const channelReview = document.getElementById('channelReview');
     const discordToken = document.getElementById('discordToken');
     const discordTokenRow = document.getElementById('discord-token-row');
     const discordTokenSaved = document.getElementById('discord-token-saved');
@@ -1344,6 +1411,7 @@ export class SettingsPanel implements vscode.Disposable {
       if (channelExplorer instanceof HTMLInputElement) channelExplorer.value = next.explorer || '';
       if (channelNotes instanceof HTMLInputElement) channelNotes.value = next.notes || '';
       if (channelLinks instanceof HTMLInputElement) channelLinks.value = next.links || '';
+      if (channelReview instanceof HTMLInputElement) channelReview.value = next.review || '';
       const saved = hasDiscord === true;
       if (discordTokenRow) discordTokenRow.hidden = saved;
       if (discordTokenSaved) {
@@ -1365,6 +1433,7 @@ export class SettingsPanel implements vscode.Disposable {
         channelExplorer: channelExplorer instanceof HTMLInputElement ? channelExplorer.value : '',
         channelNotes: channelNotes instanceof HTMLInputElement ? channelNotes.value : '',
         channelLinks: channelLinks instanceof HTMLInputElement ? channelLinks.value : '',
+        channelReview: channelReview instanceof HTMLInputElement ? channelReview.value : '',
         discordToken: discordToken instanceof HTMLInputElement ? discordToken.value : undefined,
       });
     }
@@ -1642,9 +1711,20 @@ export class SettingsPanel implements vscode.Disposable {
       vscode.postMessage({ type: 'profile', action: 'syncPull' });
     });
 
-    for (const input of [channelProfile, channelExplorer, channelNotes, channelLinks, discordToken]) {
+    for (const input of [
+      channelProfile,
+      channelExplorer,
+      channelNotes,
+      channelLinks,
+      channelReview,
+      discordToken,
+    ]) {
       input?.addEventListener('change', () => emitCatalogChannels());
     }
+
+    document.getElementById('clear-all-data')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'clearAllData' });
+    });
 
     for (const input of [reviewSkillPath, reviewDirPath, reviewModel, reviewFixModel]) {
       input?.addEventListener('change', () => emitReviewPaths());

@@ -88,6 +88,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void map.showProfileSettings(profileId);
   });
 
+  async function gated(run: () => void | PromiseLike<void>): Promise<void> {
+    if (await map.refuseIfDiscordGate()) {
+      return;
+    }
+    await run();
+  }
+
   context.subscriptions.push(
     store,
     tree,
@@ -95,17 +102,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     languages,
     map,
     settings,
-    vscode.commands.registerCommand('syn3.openSettings', () => settings.open()),
-    vscode.commands.registerCommand('syn3.historyBack', () => map.historyBack()),
-    vscode.commands.registerCommand('syn3.historyForward', () => map.historyForward()),
-    vscode.commands.registerCommand('syn3.selectAllInMap', () => map.selectAllInMap()),
-    vscode.commands.registerCommand('syn3.undoInMap', () => map.undoInMap()),
-    vscode.commands.registerCommand('syn3.copyInMap', () => map.copyInMap()),
+    vscode.commands.registerCommand('syn3.openSettings', () => gated(() => settings.open())),
+    vscode.commands.registerCommand('syn3.historyBack', () => gated(() => map.historyBack())),
+    vscode.commands.registerCommand('syn3.historyForward', () => gated(() => map.historyForward())),
+    vscode.commands.registerCommand('syn3.selectAllInMap', () => gated(() => map.selectAllInMap())),
+    vscode.commands.registerCommand('syn3.undoInMap', () => gated(() => map.undoInMap())),
+    vscode.commands.registerCommand('syn3.copyInMap', () => gated(() => map.copyInMap())),
     vscode.commands.registerCommand('syn3.copyFromEditor', () => {
-      void map.copyFromEditor();
+      void gated(() => map.copyFromEditor());
     }),
     vscode.commands.registerCommand('syn3.pasteInMap', () => {
-      void map.pasteInMap();
+      void gated(() => map.pasteInMap());
     }),
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.registerWebviewViewProvider(MarkersMapProvider.viewId, map, {
@@ -115,6 +122,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.commands.registerCommand('syn3.map.openBottom', async () => {
+      if (await map.refuseIfDiscordGate()) {
+        return;
+      }
       if (await map.toggleBottom()) {
         return;
       }
@@ -128,8 +138,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.window.registerWebviewPanelSerializer(MarkersMapProvider.panelType, map),
-    vscode.commands.registerCommand('syn3.map.toggleColumn', () => map.toggleColumn()),
-    vscode.commands.registerCommand('syn3.map.toggleRight', () => map.toggleRight()),
+    vscode.commands.registerCommand('syn3.map.toggleColumn', () => gated(() => map.toggleColumn())),
+    vscode.commands.registerCommand('syn3.map.toggleRight', () => gated(() => map.toggleRight())),
     ...registerCommands(store, tree, map),
     vscode.commands.registerCommand('syn3.openMap', async () => {
       await vscode.commands.executeCommand('workbench.view.explorer');
@@ -142,13 +152,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
       }
     }),
-    vscode.commands.registerCommand('syn3.map.toggleLayout', () => map.toggleLayout()),
+    vscode.commands.registerCommand('syn3.map.toggleLayout', () => gated(() => map.toggleLayout())),
     ...(['flow', '1', '2', '3'] as const).map((state) => {
-      return vscode.commands.registerCommand(`syn3.map.groups.${state}`, () => map.setGroupsLayout(state));
+      return vscode.commands.registerCommand(`syn3.map.groups.${state}`, () =>
+        gated(() => map.setGroupsLayout(state)),
+      );
     }),
-    vscode.commands.registerCommand('syn3.map.collapseGroups', () => map.setTopGroups(true)),
-    vscode.commands.registerCommand('syn3.map.expandGroups', () => map.setTopGroups(false)),
+    vscode.commands.registerCommand('syn3.map.collapseGroups', () =>
+      gated(() => map.setTopGroups(true)),
+    ),
+    vscode.commands.registerCommand('syn3.map.expandGroups', () =>
+      gated(() => map.setTopGroups(false)),
+    ),
     vscode.commands.registerCommand('syn3.map.move', async () => {
+      if (await map.refuseIfDiscordGate()) {
+        return;
+      }
       await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       await vscode.commands.executeCommand('workbench.action.moveFocusedView');
     }),

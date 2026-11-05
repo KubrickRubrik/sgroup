@@ -6,50 +6,6 @@
     "kind": "files",
     "order": 1,
     "layout": "chips",
-    "groupsLayout": "1"
-  },
-  "markers": {
-    "2": {
-      "label": "Тест 2",
-      "order": 1,
-      "color": "#99294e",
-      "columns": "1",
-      "page": "map"
-    },
-    "media": {
-      "label": "Media",
-      "order": 2,
-      "color": "#37be7f",
-      "alias": "media",
-      "columns": "1",
-      "page": "map"
-    }
-  },
-  "items": {
-    ".vscodeignore": [
-      "2"
-    ],
-    "media/map.css": [
-      "media"
-    ],
-    "media/map.js": [
-      "media"
-    ]
-  },
-  "added": {
-    ".vscodeignore": {
-      "2": 1793799087559
-    },
-    "media/map.css": {
-      "media": 1793781525058
-    },
-    "media/map.js": {
-      "media": 1793783100220
-    }
-  },
-  "cloud": {
-    "number": 8,
-    "headerDate": "04.11.26 19:05",
-    "messageId": "1567570396788826273"
+    "groupsLayout": "flow"
   }
 }

@@ -40,6 +40,7 @@ import {
   emptyCatalog,
   formatConfigHeaderDate,
   normalizeCatalog,
+  packCatalogChannels,
   packProfileConfigBody,
   pageKindToConfigKind,
   parseConfigHeader,
@@ -1140,12 +1141,7 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   catalogChannels(): CatalogChannels {
-    return {
-      profile: this.catalog.channels.profile || '',
-      ...(this.catalog.channels.explorer ? { explorer: this.catalog.channels.explorer } : {}),
-      ...(this.catalog.channels.notes ? { notes: this.catalog.channels.notes } : {}),
-      ...(this.catalog.channels.links ? { links: this.catalog.channels.links } : {}),
-    };
+    return packCatalogChannels(this.catalog.channels);
   }
 
   async setCatalogChannels(partial: Partial<CatalogChannels>): Promise<void> {
@@ -1178,11 +1174,58 @@ export class MarkerStore implements vscode.Disposable {
           delete next.links;
         }
       }
+      if (partial.review !== undefined) {
+        const value = partial.review.trim();
+        if (value) {
+          next.review = value;
+        } else {
+          delete next.review;
+        }
+      }
       this.catalog.channels = next;
       this.profileDirty = true;
       if (this.usingSplitConfig) {
         await this.persistCatalogOnly();
       }
+      this.changeEmitter.fire();
+    });
+  }
+
+  /**
+   * Full Syn3 wipe: markers, pages, profiles (except Общий), styles, positions,
+   * history, catalog channels, access bindings. Tokens cleared separately via SecretStorage.
+   */
+  async clearAllData(): Promise<void> {
+    await this.enqueue(async () => {
+      this.data = emptyData();
+      this.catalog = buildCatalogFromPages(this.data.pages, { profile: '' });
+      this.pageCloud = {};
+      this.dirtyPages.clear();
+      this.pageCloudNewer = {};
+      this.profileDirty = false;
+      this.profileCloudNewer = false;
+      this.profilesData = emptyProfiles();
+      this.stylesData = emptyStyles();
+      this.bindMachineToProfiles();
+      this.mirrorActiveOpenToSurfaces();
+      this.history = emptyHistory();
+      this.posLocal = emptyPositions();
+      this.posRemote = emptyPositions();
+      await this.accessStore?.clearAll();
+      await this.persistSplitConfig();
+      await this.persistProfiles();
+      await this.persistStyles();
+      await this.persistHistory();
+      await this.persistPosLocal();
+      await this.persistPosRemote();
+      try {
+        await vscode.workspace.fs.delete(vscode.Uri.joinPath(this.root, CONFIG_PATH));
+      } catch {
+        // legacy syn3.json may be absent
+      }
+      this.present = this.capture();
+      this.baseline = undefined;
+      this.pagePresent = this.captureAllPageSnapshots();
       this.changeEmitter.fire();
     });
   }

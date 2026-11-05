@@ -3,12 +3,12 @@
   "styles": {
     "general": {
       "appearance": {
-        "fontGroup": 1.1,
-        "fontSubgroup": 1.1,
+        "fontGroup": 1.15,
+        "fontSubgroup": 1.05,
         "fontFolder": 0.95,
-        "fontFile": 0.95,
+        "fontFile": 0.9,
         "fontScale": 1,
-        "gradientDirection": 48,
+        "gradientDirection": 0,
         "cardGradient": true,
         "cardFill": 9,
         "cardBorder": 55,
@@ -17,62 +17,25 @@
         "bgSubgroup": 0,
         "bgClass": 8,
         "bgNote": 0,
-        "bgHover": 5,
-        "labelSaturation": 70,
+        "bgHover": 10,
+        "labelSaturation": 20,
         "openFileMark": true,
         "showErrorIcon": true,
         "openFileAnimate": true,
-        "openFileDuration": 1.5,
+        "openFileDuration": 1,
         "showProblemsTab": true,
         "cyclePageScroll": true,
         "openLinksInCursor": false,
         "problemsError": true,
         "problemsWarning": true,
         "problemsInfo": true,
-        "language": "en",
+        "language": "ru",
         "reviewRefreshSec": 60
       },
       "open": {
-        "bottom": false,
+        "bottom": true,
         "left": false,
-        "right": true
-      }
-    },
-    "profile-профиль-1": {
-      "appearance": {
-        "fontGroup": 1.2,
-        "fontSubgroup": 1.15,
-        "fontFolder": 0.95,
-        "fontFile": 0.95,
-        "fontScale": 1,
-        "gradientDirection": 48,
-        "cardGradient": true,
-        "cardFill": 9,
-        "cardBorder": 55,
-        "bgFolder": 4,
-        "bgFile": 5,
-        "bgSubgroup": 0,
-        "bgClass": 8,
-        "bgNote": 0,
-        "bgHover": 5,
-        "labelSaturation": 70,
-        "openFileMark": true,
-        "showErrorIcon": true,
-        "openFileAnimate": true,
-        "openFileDuration": 1.6,
-        "showProblemsTab": true,
-        "cyclePageScroll": true,
-        "openLinksInCursor": true,
-        "problemsError": true,
-        "problemsWarning": true,
-        "problemsInfo": true,
-        "language": "ru",
-        "reviewRefreshSec": 30
-      },
-      "open": {
-        "bottom": false,
-        "left": false,
-        "right": true
+        "right": false
       }
     }
   }

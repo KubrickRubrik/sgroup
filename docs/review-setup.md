@@ -17,7 +17,13 @@
 3. Вкладка **Bot** → **Privileged Gateway Intents** → обязательно включи **Message Content Intent** и сохрани.
 4. OAuth2 → URL Generator:
    - Scopes: `bot`
-   - Bot Permissions: View Channel, Read Message History, Send Messages, Create Public Threads, Send Messages in Threads, Attach Files
+   - Bot Permissions:
+     1. View Channel
+     2. Read Message History
+     3. Send Messages
+     4. Create Public Threads
+     5. Send Messages in Threads
+     6. Attach Files
 5. Открой сгенерированную ссылку и добавь бота на сервер.
 
 ### Message Content Intent (обязательно)

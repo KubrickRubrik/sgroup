@@ -22,21 +22,31 @@ import {
   snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
+import { instructionPageHtml, instructionTitle } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
 import { ReviewChipStatus } from './discordApi';
+import {
+  ensureSetupProbe,
+  isValidChannelId,
+  reviewChannelConflicts,
+  type SetupChannelKind,
+} from './discordSetup';
 import { ReviewDepth, ReviewKind } from './reviewPending';
 import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
 import {
   deleteProfileHostToken,
+  getSecret,
   readProfileHostToken,
+  SECRET_DISCORD,
   secretsStatus,
   storeSecrets,
   writeProfileHostToken,
 } from './accessStore';
 import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 import { listProjectDirectory } from './projectNav';
+import type { CatalogChannels } from './configFormat';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 /** Legacy workspace keys for active page per surface (migrated into syn3.json once). */
@@ -428,6 +438,7 @@ type IncomingMessage =
       discordToken?: string;
     }
   | { type: 'reviewOpenSetupDoc' }
+  | { type: 'discordGateOpenHowTo' }
   | {
       type: 'setReviewPaths';
       reviewSkillPath?: string;
@@ -441,7 +452,17 @@ type IncomingMessage =
       messageId: string;
       scope: string;
     }
-  | { type: 'listProjectDir'; seq: number; rel?: string };
+  | { type: 'listProjectDir'; seq: number; rel?: string }
+  | {
+      type: 'discordGateSave';
+      profile: string;
+      explorer: string;
+      notes: string;
+      links: string;
+      review: string;
+      discordToken?: string;
+      dirty: SetupChannelKind[];
+    };
 
 interface DirListingEntry {
   name: string;
@@ -666,8 +687,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly media: vscode.Uri;
   private leftPanel?: vscode.WebviewPanel;
   private rightPanel?: vscode.WebviewPanel;
+  private explorerView?: vscode.WebviewView;
   private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
+  /** Rendered setup docs, one tab per file. */
+  private readonly instructionPanels = new Map<string, vscode.WebviewPanel>();
   /** In-memory OG preview cache keyed by page URL. */
   private readonly linkPreviewCache = new Map<
     string,
@@ -825,6 +849,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     this.reviewRefreshTimers.clear();
     this.subscriptions.forEach((s) => s.dispose());
+    for (const panel of this.instructionPanels.values()) {
+      panel.dispose();
+    }
+    this.instructionPanels.clear();
   }
 
   private clearReviewRefresh(webview: vscode.Webview): void {
@@ -876,6 +904,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const surface: MapSurface = view.viewType === MarkersMapProvider.bottomViewId ? 'bottom' : 'explorer';
     if (surface === 'bottom') {
       this.bottomView = view;
+    } else {
+      this.explorerView = view;
     }
     const webview = view.webview;
     this.attach(webview, 'view', surface);
@@ -888,12 +918,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (surface === 'bottom' && this.store.ready && !this.applyingBottom) {
         void this.store.setSurfaceOpen('bottom', true);
       }
+      if (this.store.ready) {
+        void this.postDiscordGate(webview);
+      }
     });
     view.onDidDispose(() => {
       this.clearReviewRefresh(webview);
       this.webviews.delete(webview);
       if (this.bottomView === view) {
         this.bottomView = undefined;
+      }
+      if (this.explorerView === view) {
+        this.explorerView = undefined;
       }
     });
   }
@@ -1482,6 +1518,208 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
+  /** True when profile channel or Discord bot token is missing. */
+  async needsDiscordGate(): Promise<boolean> {
+    if (!this.store.ready) {
+      return false;
+    }
+    const profile = this.store.catalogChannels().profile.trim();
+    if (!profile) {
+      return true;
+    }
+    const status = await secretsStatus(this.hostSecrets);
+    return !status.hasDiscord;
+  }
+
+  /** Focus a visible map webview; returns false when none is visible. */
+  async focusVisibleMapForGate(): Promise<boolean> {
+    if (this.explorerView?.visible) {
+      try {
+        await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
+        return true;
+      } catch {
+        // View may be missing until reload.
+      }
+    }
+    if (this.bottomView?.visible) {
+      try {
+        await vscode.commands.executeCommand(`${MarkersMapProvider.bottomViewId}.focus`);
+        return true;
+      } catch {
+        // Bottom view may be unregistered until reload.
+      }
+    }
+    for (const panel of [this.leftPanel, this.rightPanel]) {
+      if (!panel?.visible) {
+        continue;
+      }
+      panel.reveal(panel.viewColumn, false);
+      return true;
+    }
+    return false;
+  }
+
+  async refuseIfDiscordGate(): Promise<boolean> {
+    if (!(await this.needsDiscordGate())) {
+      return false;
+    }
+    if (await this.focusVisibleMapForGate()) {
+      await this.pushDiscordGateToVisible();
+      return true;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'discordGateOpenMap')}`);
+    return true;
+  }
+
+  private async pushDiscordGateToVisible(): Promise<void> {
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      await this.postDiscordGate(webview);
+    }
+  }
+
+  private async postDiscordGate(webview: vscode.Webview): Promise<void> {
+    if (!this.webviews.has(webview) || !this.readyWebviews.has(webview) || !this.store.ready) {
+      return;
+    }
+    if (!(await this.needsDiscordGate())) {
+      await webview.postMessage({ type: 'discordGateClear' });
+      return;
+    }
+    const channels = this.store.catalogChannels();
+    const status = await secretsStatus(this.hostSecrets);
+    const locale = normalizeLocale(this.store.appearance.language);
+    await webview.postMessage({
+      type: 'discordGatePanel',
+      channels: {
+        profile: channels.profile || '',
+        explorer: channels.explorer || '',
+        notes: channels.notes || '',
+        links: channels.links || '',
+        review: channels.review || '',
+      },
+      hasDiscord: status.hasDiscord,
+      locale,
+      i18n: stringsFor(locale),
+    });
+  }
+
+  private async onDiscordGateSave(
+    webview: vscode.Webview,
+    message: {
+      profile: string;
+      explorer: string;
+      notes: string;
+      links: string;
+      review: string;
+      discordToken?: string;
+      dirty: SetupChannelKind[];
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (field: SetupChannelKind | 'token', text: string) => {
+      await webview.postMessage({ type: 'discordGateError', field, message: text });
+    };
+
+    const profile = (message.profile || '').trim();
+    const explorer = (message.explorer || '').trim();
+    const notes = (message.notes || '').trim();
+    const links = (message.links || '').trim();
+    const review = (message.review || '').trim();
+    const dirty = new Set(
+      (Array.isArray(message.dirty) ? message.dirty : []).filter(
+        (kind): kind is SetupChannelKind =>
+          kind === 'profile' ||
+          kind === 'explorer' ||
+          kind === 'notes' ||
+          kind === 'links' ||
+          kind === 'review',
+      ),
+    );
+
+    if (!profile || !isValidChannelId(profile)) {
+      await fail('profile', t(locale, 'reviewFieldChannelId'));
+      return;
+    }
+    for (const [kind, value] of [
+      ['explorer', explorer],
+      ['notes', notes],
+      ['links', links],
+      ['review', review],
+    ] as const) {
+      if (value && !isValidChannelId(value)) {
+        await fail(kind, t(locale, 'reviewFieldChannelId'));
+        return;
+      }
+    }
+    if (review && reviewChannelConflicts(review, { profile, explorer, notes, links })) {
+      await fail('review', t(locale, 'channelReviewMustBeDistinct'));
+      return;
+    }
+
+    const newToken = (message.discordToken || '').trim();
+    if (newToken) {
+      await storeSecrets(this.hostSecrets, { discord: newToken });
+    }
+    const token =
+      newToken || (await getSecret(this.hostSecrets, SECRET_DISCORD)) || '';
+    if (!token) {
+      await fail('token', t(locale, 'reviewFieldDiscordToken'));
+      return;
+    }
+
+    const effective: CatalogChannels = {
+      profile,
+      ...(explorer ? { explorer } : {}),
+      ...(notes ? { notes } : {}),
+      ...(links ? { links } : {}),
+      ...(review ? { review } : {}),
+    };
+    // Profile always: gate closes only when the profile channel answers.
+    // Optional channels: only when edited in this form and non-empty.
+    const toProbe: SetupChannelKind[] = ['profile'];
+    for (const kind of ['explorer', 'notes', 'links', 'review'] as const) {
+      if (!dirty.has(kind)) {
+        continue;
+      }
+      if (!(effective[kind]?.trim())) {
+        continue;
+      }
+      toProbe.push(kind);
+    }
+
+    for (const kind of toProbe) {
+      const channelId = kind === 'profile' ? profile : (effective[kind]?.trim() || '');
+      if (!channelId) {
+        continue;
+      }
+      const probed = await ensureSetupProbe(token, channelId, kind, locale);
+      if (!probed.ok) {
+        await fail(kind, probed.message);
+        return;
+      }
+    }
+
+    const partial: Partial<CatalogChannels> = { profile };
+    if (dirty.has('explorer')) {
+      partial.explorer = explorer;
+    }
+    if (dirty.has('notes')) {
+      partial.notes = notes;
+    }
+    if (dirty.has('links')) {
+      partial.links = links;
+    }
+    if (dirty.has('review')) {
+      partial.review = review;
+    }
+    await this.store.setCatalogChannels(partial);
+    await this.pushDiscordGateToVisible();
+  }
+
   /** Focus an existing map surface; open the Explorer map view when none is ready. */
   private async ensureMapWebview(): Promise<void> {
     if (this.lastFocusedWebview && this.readyWebviews.has(this.lastFocusedWebview)) {
@@ -1915,6 +2153,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async onMessage(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
+    if (message.type === 'discordGateSave') {
+      await this.onDiscordGateSave(webview, message);
+      return;
+    }
     if (message.type === 'setPagesFixed') {
       await this.store.setPagesFixed(message.fixed === true);
       return;
@@ -1926,6 +2168,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       await this.postState(webview);
+      await this.postDiscordGate(webview);
       await this.syncFocusContext();
       const readyPage = this.pageIdFor(webview);
       if (this.store.page(readyPage)?.kind === 'review') {
@@ -1933,6 +2176,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       this.armReviewRefresh(webview);
       return;
+    }
+    if (await this.needsDiscordGate()) {
+      // Overlay owns the webview until Discord is configured.
+      if (
+        message.type !== 'mapFocus' &&
+        message.type !== 'activePage' &&
+        message.type !== 'listProjectDir' &&
+        message.type !== 'clipboardRead' &&
+        message.type !== 'reviewOpenSetupDoc' &&
+        message.type !== 'discordGateOpenHowTo'
+      ) {
+        await this.postDiscordGate(webview);
+        return;
+      }
     }
     if (message.type === 'activePage') {
       const prev = this.pageIdFor(webview);
@@ -2318,12 +2575,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewOpenSetupDoc') {
-      const doc = vscode.Uri.joinPath(this.extensionUri, 'docs', 'review-setup.md');
-      try {
-        await vscode.commands.executeCommand('markdown.showPreview', doc);
-      } catch {
-        await vscode.window.showTextDocument(doc, { preview: true });
-      }
+      await this.openInstruction('review-setup.md');
+      return;
+    }
+    if (message.type === 'discordGateOpenHowTo') {
+      await this.openInstruction('discord-setup.md');
       return;
     }
     if (message.type === 'setAppearance') {
@@ -2952,13 +3208,122 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  /** Files must never open inside a map column. */
-  private targetColumn(): vscode.ViewColumn | undefined {
-    const mapColumns = new Set(
+  /** Opens the setup doc as a rendered page in an editor tab, outside the map column. */
+  private async openInstruction(fileName: string): Promise<void> {
+    const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
+    const column = this.instructionColumn();
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const markdown = Buffer.from(bytes).toString('utf8');
+      const existing = this.instructionPanels.get(fileName);
+      if (existing) {
+        existing.reveal(column, false);
+      } else {
+        const panel = vscode.window.createWebviewPanel(
+          'syn3Instruction',
+          instructionTitle(markdown),
+          { viewColumn: column, preserveFocus: false },
+          { enableScripts: true, retainContextWhenHidden: true },
+        );
+        this.instructionPanels.set(fileName, panel);
+        panel.onDidDispose(() => {
+          if (this.instructionPanels.get(fileName) === panel) {
+            this.instructionPanels.delete(fileName);
+          }
+        });
+        panel.webview.onDidReceiveMessage((message: { type?: string; href?: string }) => {
+          if (message?.type !== 'openLink' || !message.href) {
+            return;
+          }
+          let target: vscode.Uri;
+          try {
+            target = vscode.Uri.parse(message.href);
+          } catch {
+            return;
+          }
+          if (target.scheme === 'http' || target.scheme === 'https') {
+            void vscode.env.openExternal(target);
+          }
+        });
+        panel.webview.html = instructionPageHtml(markdown);
+        await this.movePanelOutOfMap(panel);
+      }
+      await this.closeInstructionSource(uri);
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : '';
+      void vscode.window.showErrorMessage(`Syn3: не удалось открыть инструкцию${detail}`);
+    }
+  }
+
+  /** Editor column that is not a locked map. */
+  private instructionColumn(): vscode.ViewColumn {
+    const mapColumns = this.mapColumns();
+    const preferred =
+      this.lastEditorColumn !== undefined && !mapColumns.has(this.lastEditorColumn)
+        ? this.lastEditorColumn
+        : undefined;
+    const group = vscode.window.tabGroups.all.find((item) => {
+      if (item.viewColumn < 1 || mapColumns.has(item.viewColumn)) {
+        return false;
+      }
+      if (preferred !== undefined && item.viewColumn !== preferred) {
+        return false;
+      }
+      return item.tabs.some((tab) => tab.input instanceof vscode.TabInputText);
+    });
+    if (group) {
+      return group.viewColumn;
+    }
+    const other = vscode.window.tabGroups.all.find(
+      (item) => item.viewColumn > 0 && !mapColumns.has(item.viewColumn),
+    );
+    return other?.viewColumn ?? vscode.ViewColumn.Beside;
+  }
+
+  /** Webview opened inside the locked map. Move that tab into a neighboring group. */
+  private async movePanelOutOfMap(panel: vscode.WebviewPanel): Promise<void> {
+    const column = panel.viewColumn;
+    const mapColumns = this.mapColumns();
+    if (column === undefined || !mapColumns.has(column)) {
+      return;
+    }
+    panel.reveal(column, false);
+    const hasLower = vscode.window.tabGroups.all.some(
+      (group) => group.viewColumn > 0 && group.viewColumn < column && !mapColumns.has(group.viewColumn),
+    );
+    await vscode.commands.executeCommand(
+      hasLower ? 'workbench.action.moveEditorToPreviousGroup' : 'workbench.action.moveEditorToNextGroup',
+    );
+  }
+
+  /** Drops the raw markdown tab so the rendered page is the one on screen. */
+  private async closeInstructionSource(uri: vscode.Uri): Promise<void> {
+    const key = uri.toString();
+    const tabs: vscode.Tab[] = [];
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === key) {
+          tabs.push(tab);
+        }
+      }
+    }
+    if (tabs.length > 0) {
+      await vscode.window.tabGroups.close(tabs, true);
+    }
+  }
+
+  /** Columns that hold a Syn3 map. Those groups are locked so files open elsewhere. */
+  private mapColumns(): Set<vscode.ViewColumn> {
+    return new Set(
       [this.leftPanel?.viewColumn, this.rightPanel?.viewColumn].filter(
         (column): column is vscode.ViewColumn => column !== undefined,
       ),
     );
+  }
+
+  /** Files must never open inside a map column. */
+  private targetColumn(): vscode.ViewColumn | undefined {
+    const mapColumns = this.mapColumns();
     if (mapColumns.size === 0) {
       return undefined;
     }
@@ -3165,6 +3530,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       themeGeneration: this.languages.getThemeGeneration(),
       problems: this.problems,
     });
+    await this.postDiscordGate(webview);
   }
 
   private pageKindOfMarker(markerId: string): PageKind | undefined {
@@ -3898,6 +4264,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         type: 'reviewCreatePagePanel',
         origin: defaults.origin,
         suggestedProvider: defaults.suggestedProvider,
+        channelId: this.store.catalogChannels().review || '',
         hasGitlab: defaults.hasGitlab,
         hasGithub: defaults.hasGithub,
         hasDiscord: defaults.hasDiscord,
@@ -4130,7 +4497,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       origin: defaults.origin,
       repoUrl: access?.repoUrl || defaults.origin,
       suggestedProvider: access?.provider || defaults.suggestedProvider,
-      channelId: access?.channelId || '',
+      channelId: access?.channelId || this.store.catalogChannels().review || '',
       hasGitlab: defaults.hasGitlab,
       hasGithub: defaults.hasGithub,
       hasDiscord: defaults.hasDiscord,

@@ -5,6 +5,7 @@ import {
   emptyCatalog,
   normalizeCatalog,
   normalizeCloudStamp,
+  packCatalogChannels,
   pageFilePath,
   CATALOG_PATH,
   PAGES_DIR,
@@ -177,12 +178,7 @@ export function buildCatalogFromPages(
   cloud?: CloudStamp,
 ): CatalogFile {
   const catalog = emptyCatalog();
-  catalog.channels = {
-    profile: channels.profile || '',
-    ...(channels.explorer ? { explorer: channels.explorer } : {}),
-    ...(channels.notes ? { notes: channels.notes } : {}),
-    ...(channels.links ? { links: channels.links } : {}),
-  };
+  catalog.channels = packCatalogChannels(channels);
   for (const [id, page] of Object.entries(pages)) {
     catalog.pages[id] = catalogEntryFromPage(id, page);
   }
@@ -749,12 +745,7 @@ export function stringifyCatalog(catalog: CatalogFile): string {
   const payload: CatalogFile = {
     version: 1,
     pages,
-    channels: {
-      profile: catalog.channels.profile || '',
-      ...(catalog.channels.explorer ? { explorer: catalog.channels.explorer } : {}),
-      ...(catalog.channels.notes ? { notes: catalog.channels.notes } : {}),
-      ...(catalog.channels.links ? { links: catalog.channels.links } : {}),
-    },
+    channels: packCatalogChannels(catalog.channels),
   };
   if (catalog.cloud) {
     payload.cloud = catalog.cloud;

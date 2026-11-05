@@ -135,6 +135,13 @@ export class AccessStore {
     await this.persist();
   }
 
+  /** Wipe every review page binding in access.json. */
+  async clearAll(): Promise<void> {
+    await this.ensureLoaded();
+    this.data = emptyAccess();
+    await this.persist();
+  }
+
   private async persist(): Promise<void> {
     const dir = vscode.Uri.joinPath(this.root, '.syn3');
     try {
@@ -232,6 +239,19 @@ export async function deleteProfileHostTokens(
 ): Promise<void> {
   await deleteProfileHostToken(secrets, profileId, 'github');
   await deleteProfileHostToken(secrets, profileId, 'gitlab');
+}
+
+/** Drop Discord + host tokens (legacy keys and every profile scope). */
+export async function clearAllSyn3Secrets(
+  secrets: vscode.SecretStorage,
+  profileIds: readonly string[],
+): Promise<void> {
+  await secrets.delete(SECRET_DISCORD);
+  await secrets.delete(SECRET_GITHUB);
+  await secrets.delete(SECRET_GITLAB);
+  for (const id of profileIds) {
+    await deleteProfileHostTokens(secrets, id);
+  }
 }
 
 export async function ensureSecrets(

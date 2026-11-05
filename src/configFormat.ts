@@ -46,6 +46,19 @@ export interface CatalogChannels {
   explorer?: string;
   notes?: string;
   links?: string;
+  /** Optional shared default for review pages; pages keep their own access.channelId. */
+  review?: string;
+}
+
+/** Drop empty optional channel keys; always keep `profile`. */
+export function packCatalogChannels(channels: CatalogChannels): CatalogChannels {
+  return {
+    profile: channels.profile || '',
+    ...(channels.explorer?.trim() ? { explorer: channels.explorer.trim() } : {}),
+    ...(channels.notes?.trim() ? { notes: channels.notes.trim() } : {}),
+    ...(channels.links?.trim() ? { links: channels.links.trim() } : {}),
+    ...(channels.review?.trim() ? { review: channels.review.trim() } : {}),
+  };
 }
 
 export interface CatalogPageEntry {
@@ -250,12 +263,13 @@ export function normalizeCatalogChannels(raw: unknown): CatalogChannels {
     const value = typeof source[key] === 'string' ? source[key].trim() : '';
     return value || undefined;
   };
-  return {
+  return packCatalogChannels({
     profile: pick('profile') || '',
-    ...(pick('explorer') ? { explorer: pick('explorer') } : {}),
-    ...(pick('notes') ? { notes: pick('notes') } : {}),
-    ...(pick('links') ? { links: pick('links') } : {}),
-  };
+    explorer: pick('explorer'),
+    notes: pick('notes'),
+    links: pick('links'),
+    review: pick('review'),
+  });
 }
 
 export function normalizeCatalog(raw: unknown): CatalogFile {
@@ -343,12 +357,7 @@ export function packProfileConfigBody(opts: {
 }): ProfileConfigBody {
   return {
     version: 1,
-    channels: {
-      profile: opts.channels.profile || '',
-      ...(opts.channels.explorer ? { explorer: opts.channels.explorer } : {}),
-      ...(opts.channels.notes ? { notes: opts.channels.notes } : {}),
-      ...(opts.channels.links ? { links: opts.channels.links } : {}),
-    },
+    channels: packCatalogChannels(opts.channels),
     profiles: opts.profiles,
     styles: opts.styles,
   };

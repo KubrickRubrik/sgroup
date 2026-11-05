@@ -3903,6 +3903,82 @@ button.review-neurofix-btn:hover {
   z-index: 40;
 }
 
+.discord-gate-backdrop {
+  background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+  z-index: 60;
+}
+
+.discord-gate-panel.review-mr-panel {
+  left: 50%;
+  max-height: calc(100% - 72px);
+  overflow: auto;
+  right: auto;
+  top: 56px;
+  transform: translateX(-50%);
+  width: min(360px, calc(100% - 24px));
+  z-index: 61;
+}
+
+.discord-gate-blurb {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  line-height: 1.35;
+  margin: -2px 0 2px;
+}
+
+.discord-gate-field > label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.discord-gate-field .review-mr-title {
+  box-sizing: border-box;
+  flex: none;
+  width: 100%;
+}
+
+.discord-gate-field.has-error .review-mr-title {
+  border-color: var(--vscode-inputValidation-errorBorder, #f14c4c);
+}
+
+.discord-gate-field-error {
+  color: var(--vscode-errorForeground, #f14c4c);
+  font-size: 12px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.discord-gate-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.discord-gate-toggles .review-btn,
+.discord-gate-howto {
+  align-self: stretch;
+  text-align: center;
+  width: 100%;
+}
+
+.discord-gate-extra-btn.is-active {
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+}
+
+.discord-gate-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.discord-gate-extra[hidden] {
+  display: none;
+}
+
 .review-mr-panel {
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-widget-border, transparent);
