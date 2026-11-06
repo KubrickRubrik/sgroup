@@ -207,6 +207,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await map.syncGroupsLayoutContext();
   await map.syncTopCollapsedContext(false);
   await store.init();
+  map.armSyncFetchTimers();
   await map.bootstrapSurfaces();
   await syncExplorerLabelColors(store.appearance.labelSaturation);
 }

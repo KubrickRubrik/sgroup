@@ -344,6 +344,11 @@ type IncomingMessage =
       id?: string;
       name?: string;
     }
+  | {
+      type: 'project';
+      action: 'select' | 'create' | 'syncPush' | 'syncPull' | 'join';
+      id?: string;
+    }
   | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
   | { type: 'pageCloud'; action: 'pushAll' }
   | { type: 'pageCloud'; action: 'pullAll' }
@@ -706,6 +711,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastFocusedWebview?: vscode.Webview;
   /** Batch push/pull of page configs is in flight. */
   private pageCloudBatch = false;
+  private baseConfigBatch = false;
   /** Explorer «New marker» draft: resolve with created id or undefined on cancel. */
   private readonly pendingGroupDrafts = new Map<
     string,
@@ -755,6 +761,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private pendingDiscordMr?: { pageId: string; mr: ReviewMr };
   /** Per-webview interval for review page Discord poll. */
   private readonly reviewRefreshTimers = new Map<vscode.Webview, ReturnType<typeof setInterval>>();
+  /** Workspace-wide auto-fetch for project lock and content checks. */
+  private projectFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private filesFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private notesFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private linksFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private syncFetchKey = '';
 
   constructor(
     private readonly store: MarkerStore,
@@ -812,6 +824,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         }
         this.postOpenFlags();
         void this.syncOpenSurfacesIfNeeded();
+        this.armSyncFetchTimersIfNeeded();
       }),
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.viewColumn !== undefined) {
@@ -850,6 +863,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       clearInterval(timer);
     }
     this.reviewRefreshTimers.clear();
+    this.clearSyncFetchTimers();
     this.subscriptions.forEach((s) => s.dispose());
     for (const panel of this.instructionPanels.values()) {
       panel.dispose();
@@ -898,6 +912,68 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     await this.pushReviewState(webview, await this.review.pollRefresh(pageId));
+  }
+
+  private clearSyncFetchTimers(): void {
+    if (this.projectFetchTimer) {
+      clearInterval(this.projectFetchTimer);
+      this.projectFetchTimer = undefined;
+    }
+    if (this.filesFetchTimer) {
+      clearInterval(this.filesFetchTimer);
+      this.filesFetchTimer = undefined;
+    }
+    if (this.notesFetchTimer) {
+      clearInterval(this.notesFetchTimer);
+      this.notesFetchTimer = undefined;
+    }
+    if (this.linksFetchTimer) {
+      clearInterval(this.linksFetchTimer);
+      this.linksFetchTimer = undefined;
+    }
+  }
+
+  /** Arm workspace auto-fetch for lock + content checks from profile appearance. */
+  armSyncFetchTimers(): void {
+    this.clearSyncFetchTimers();
+    if (!this.store.ready) {
+      this.syncFetchKey = '';
+      return;
+    }
+    const appearance = this.store.appearance;
+    const projectSec = snapReviewRefreshSec(appearance.projectFetchSec);
+    const filesSec = snapReviewRefreshSec(appearance.filesFetchSec);
+    const notesSec = snapReviewRefreshSec(appearance.notesFetchSec);
+    const linksSec = snapReviewRefreshSec(appearance.linksFetchSec);
+    this.syncFetchKey = `${projectSec}:${filesSec}:${notesSec}:${linksSec}`;
+    this.projectFetchTimer = setInterval(() => {
+      void this.store.fetchBaseLockOnly();
+    }, projectSec * 1000);
+    this.filesFetchTimer = setInterval(() => {
+      void this.store.checkCloud();
+    }, filesSec * 1000);
+    this.notesFetchTimer = setInterval(() => {
+      void this.store.checkCloud();
+    }, notesSec * 1000);
+    this.linksFetchTimer = setInterval(() => {
+      void this.store.checkCloud();
+    }, linksSec * 1000);
+  }
+
+  private armSyncFetchTimersIfNeeded(): void {
+    if (!this.store.ready) {
+      return;
+    }
+    const appearance = this.store.appearance;
+    const key = [
+      snapReviewRefreshSec(appearance.projectFetchSec),
+      snapReviewRefreshSec(appearance.filesFetchSec),
+      snapReviewRefreshSec(appearance.notesFetchSec),
+      snapReviewRefreshSec(appearance.linksFetchSec),
+    ].join(':');
+    if (key !== this.syncFetchKey) {
+      this.armSyncFetchTimers();
+    }
   }
 
   // ---- section inside Explorer ----
@@ -1525,7 +1601,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.ready) {
       return false;
     }
-    const profile = this.store.catalogChannels().profile.trim();
+    const profile = (this.store.catalogChannels().profile ?? '').trim();
     if (!profile) {
       return true;
     }
@@ -2189,6 +2265,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.type !== 'reviewOpenSetupDoc' &&
         message.type !== 'discordGateOpenHowTo'
       ) {
+        // Clear optimistic / leftover sync loaders before the gate takes over.
+        void webview.postMessage({ type: 'baseConfigBusy', busy: false });
+        void webview.postMessage({ type: 'pageCloudBusy', busy: false });
         await this.postDiscordGate(webview);
         return;
       }
@@ -2314,6 +2393,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'profile') {
       await this.onProfile(message.action, message.id, message.name);
+      return;
+    }
+    if (message.type === 'project') {
+      await this.onProject(message.action, message.id);
       return;
     }
     if (message.type === 'pageCloud') {
@@ -2591,10 +2674,24 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'setAppearance') {
       this.rememberFocus(webview);
       if (message.appearance && typeof message.appearance === 'object') {
-        const prevRefresh = this.store.appearance.reviewRefreshSec;
+        const prev = this.store.appearance;
+        const prevRefresh = prev.reviewRefreshSec;
+        const prevProject = prev.projectFetchSec;
+        const prevFiles = prev.filesFetchSec;
+        const prevNotes = prev.notesFetchSec;
+        const prevLinks = prev.linksFetchSec;
         await this.store.setAppearance(message.appearance);
-        if (this.store.appearance.reviewRefreshSec !== prevRefresh) {
+        const next = this.store.appearance;
+        if (next.reviewRefreshSec !== prevRefresh) {
           this.rearmAllReviewRefresh();
+        }
+        if (
+          next.projectFetchSec !== prevProject ||
+          next.filesFetchSec !== prevFiles ||
+          next.notesFetchSec !== prevNotes ||
+          next.linksFetchSec !== prevLinks
+        ) {
+          this.armSyncFetchTimers();
         }
       }
       return;
@@ -3512,6 +3609,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       positionSync: this.store.positionSync(),
+      profileConfigSync: this.store.profileConfigSync(),
+      projects: this.store.projects(),
+      activeProjectId: this.store.activeProjectId(),
+      projectConfigSync: this.store.projectConfigSync(),
+      canToggleProjectLock: this.store.canToggleProjectLock(),
       pageConfigSync: this.store.allPageConfigSync(),
       pendingRemoteCount: this.store.pendingRemoteCount(),
       hasConfigChannel: this.store.hasConfigChannel(),
@@ -4181,20 +4283,146 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'syncPush') {
-      const result = await this.store.pushProfileConfig();
-      if (!result.ok && result.message) {
-        const locale = normalizeLocale(this.store.appearance.language);
-        const text =
-          result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
-      }
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pushProfileConfig();
+        this.showBaseConfigResult(result);
+      });
       return;
     }
     if (action === 'syncPull') {
-      const result = await this.store.pullProfileConfig();
-      if (!result.ok && result.message) {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pullProfileConfig();
+        this.showBaseConfigResult(result);
+      });
+    }
+  }
+
+  private async onProject(
+    action: 'select' | 'create' | 'syncPush' | 'syncPull' | 'join',
+    id?: string,
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    if (action === 'select') {
+      if (id) {
+        await this.store.setActiveProject(id);
       }
+      return;
+    }
+    if (action === 'create') {
+      const projects = this.store.projects();
+      const needChannel = projects.length === 0 || !this.store.baseChannelId().trim();
+      const title = t(locale, 'projectCreateTitle');
+      const name = await vscode.window.showInputBox({
+        title,
+        prompt: t(locale, 'projectName'),
+        validateInput: (v) => {
+          const trimmed = v.trim();
+          if (!trimmed) {
+            return t(locale, 'projectNameEmpty');
+          }
+          return undefined;
+        },
+      });
+      if (!name?.trim()) {
+        return;
+      }
+      let channelId: string | undefined;
+      if (needChannel) {
+        const ch = await vscode.window.showInputBox({
+          title,
+          prompt: t(locale, 'projectChannel'),
+          placeHolder: t(locale, 'channelIdPlaceholder'),
+          validateInput: (v) => {
+            const trimmed = v.trim();
+            if (!trimmed) {
+              return t(locale, 'projectChannelEmpty');
+            }
+            if (!isValidChannelId(trimmed)) {
+              return t(locale, 'projectChannelInvalid');
+            }
+            return undefined;
+          },
+        });
+        if (!ch?.trim()) {
+          return;
+        }
+        channelId = ch.trim();
+      }
+      await this.store.createProject(name.trim(), channelId);
+      return;
+    }
+    if (action === 'join') {
+      const ch = await vscode.window.showInputBox({
+        title: t(locale, 'projectJoinTitle'),
+        prompt: t(locale, 'projectChannel'),
+        placeHolder: t(locale, 'channelIdPlaceholder'),
+        validateInput: (v) => {
+          const trimmed = v.trim();
+          if (!trimmed) {
+            return t(locale, 'projectChannelEmpty');
+          }
+          if (!isValidChannelId(trimmed)) {
+            return t(locale, 'projectChannelInvalid');
+          }
+          return undefined;
+        },
+      });
+      if (!ch?.trim()) {
+        return;
+      }
+      await this.withBaseConfigBusy(async () => {
+        await this.store.setCatalogChannels({ profile: ch.trim() });
+        const pull = await this.store.pullProfileConfig();
+        if (!pull.ok && pull.message) {
+          const text =
+            pull.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : pull.message;
+          void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        }
+      });
+      return;
+    }
+    if (action === 'syncPush') {
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pushProfileConfig();
+        this.showBaseConfigResult(result);
+      });
+      return;
+    }
+    if (action === 'syncPull') {
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pullProfileConfig();
+        this.showBaseConfigResult(result);
+      });
+    }
+  }
+
+  private showBaseConfigResult(result: { ok: boolean; message?: string }): void {
+    if (result.ok || !result.message) {
+      return;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    const text =
+      result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
+    void vscode.window.showErrorMessage(`Syn3: ${text}`);
+  }
+
+  private postBaseConfigBusy(busy: boolean): void {
+    for (const webview of this.webviews) {
+      void webview.postMessage({ type: 'baseConfigBusy', busy });
+    }
+  }
+
+  private async withBaseConfigBusy(task: () => Promise<void>): Promise<void> {
+    if (this.baseConfigBatch) {
+      return;
+    }
+    this.baseConfigBatch = true;
+    this.postBaseConfigBusy(true);
+    try {
+      await task();
+    } finally {
+      this.baseConfigBatch = false;
+      this.postBaseConfigBusy(false);
     }
   }
 
@@ -4861,8 +5089,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private html(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): string {
     const nonce = crypto.randomBytes(16).toString('base64');
-    const css = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.css'));
-    const js = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.js'));
+    // Bust webview cache when media files change during Extension Development Host.
+    const mediaRev = Date.now().toString(36);
+    const css = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.css')).with({
+      query: mediaRev,
+    });
+    const js = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.js')).with({
+      query: mediaRev,
+    });
     // Themed copies of assets/bill.svg / box-3-line.svg for fixed type icons.
     const noteIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-light.svg'));
     const noteIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-dark.svg'));
@@ -4881,6 +5115,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 <body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="map-chrome">
   <div class="history-bar">
+    <div class="toolbar-project">
+      <button id="toolbar-project" class="history-btn" type="button" aria-label="Project" aria-haspopup="menu" aria-expanded="false">
+        ${icon('apps-line')}
+      </button>
+      <div id="toolbar-project-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Projects">
+        <div id="toolbar-project-list" class="toolbar-profile-list"></div>
+        <div class="toolbar-profile-create">
+          <button id="toolbar-project-add" class="history-btn" type="button" title="New project" aria-label="New project">
+            ${icon('add')}
+          </button>
+        </div>
+      </div>
+    </div>
+    <button id="toolbar-lock" class="history-btn toolbar-lock" type="button" title="Fix pages" aria-label="Fix pages" aria-pressed="false"></button>
     <div class="toolbar-profile">
       <button id="toolbar-profile" class="history-btn" type="button" aria-label="Профиль" aria-haspopup="menu" aria-expanded="false">
         ${icon('person')}
@@ -4894,6 +5142,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </div>
       </div>
     </div>
+    <span id="toolbar-base-loader" class="toolbar-base-loader pager-cloud-loader" hidden aria-hidden="true"></span>
     <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
       ${icon('arrow-left')}
     </button>

@@ -1142,9 +1142,37 @@ export class SettingsPanel implements vscode.Disposable {
     </section>
 
     <section>
+      <h2 data-i18n="sectionSyncFetch">Auto fetch</h2>
+      <div class="row">
+        <label for="projectFetchSec" data-i18n="labelProjectFetchSec">Project lock interval</label>
+        <input id="projectFetchSec" type="range" min="30" max="3600" step="10">
+        <span class="value" data-for="projectFetchSec"></span>
+      </div>
+      <p class="note" data-i18n="noteProjectFetch"></p>
+      <div class="row">
+        <label for="filesFetchSec" data-i18n="labelFilesFetchSec">Explorer content check</label>
+        <input id="filesFetchSec" type="range" min="30" max="3600" step="10">
+        <span class="value" data-for="filesFetchSec"></span>
+      </div>
+      <p class="note" data-i18n="noteFilesFetch"></p>
+      <div class="row">
+        <label for="notesFetchSec" data-i18n="labelNotesFetchSec">Notes content check</label>
+        <input id="notesFetchSec" type="range" min="30" max="3600" step="10">
+        <span class="value" data-for="notesFetchSec"></span>
+      </div>
+      <p class="note" data-i18n="noteNotesFetch"></p>
+      <div class="row">
+        <label for="linksFetchSec" data-i18n="labelLinksFetchSec">Links content check</label>
+        <input id="linksFetchSec" type="range" min="30" max="3600" step="10">
+        <span class="value" data-for="linksFetchSec"></span>
+      </div>
+      <p class="note" data-i18n="noteLinksFetch"></p>
+    </section>
+
+    <section>
       <h2 data-i18n="sectionReview">Review</h2>
       <div class="row">
-        <label for="reviewRefreshSec" data-i18n="labelReviewRefreshSec">Refresh interval</label>
+        <label for="reviewRefreshSec" data-i18n="labelReviewRefreshSec">Review MR interval</label>
         <input id="reviewRefreshSec" type="range" min="30" max="3600" step="10">
         <span class="value" data-for="reviewRefreshSec"></span>
       </div>
@@ -1326,6 +1354,7 @@ export class SettingsPanel implements vscode.Disposable {
       'gradientDirection', 'cardFill', 'cardBorder',
       'bgFolder', 'bgFile', 'bgSubgroup', 'bgClass', 'bgNote', 'bgHover',
       'labelSaturation', 'openFileDuration', 'reviewRefreshSec',
+      'projectFetchSec', 'filesFetchSec', 'notesFetchSec', 'linksFetchSec',
     ];
     const percentKeys = {
       labelSaturation: true,
@@ -1448,7 +1477,15 @@ export class SettingsPanel implements vscode.Disposable {
       if (percentKeys[key]) return Math.round(value) + '%';
       if (key === 'fontScale') return Number(value).toFixed(1) + '×';
       if (key === 'openFileDuration') return Number(value).toFixed(1) + ' ' + tr('secondsUnit');
-      if (key === 'reviewRefreshSec') return Math.round(Number(value)) + ' ' + tr('secondsUnit');
+      if (
+        key === 'reviewRefreshSec' ||
+        key === 'projectFetchSec' ||
+        key === 'filesFetchSec' ||
+        key === 'notesFetchSec' ||
+        key === 'linksFetchSec'
+      ) {
+        return Math.round(Number(value)) + ' ' + tr('secondsUnit');
+      }
       return Number(value).toFixed(2);
     }
 

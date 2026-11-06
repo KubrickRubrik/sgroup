@@ -1,16 +1,24 @@
 import {
-  type CatalogFile,
-  type CatalogPageEntry,
+  type BaseConfigFile,
   type CloudStamp,
-  emptyCatalog,
-  normalizeCatalog,
+  type PageLayoutPrefs,
+  type ProjectChannels,
+  type ProjectEntry,
+  type ProjectLock,
+  type ProjectPageAccess,
+  type ProjectPageEntry,
+  type ProjectProfileEntry,
+  emptyBaseConfig,
+  emptyProject,
   normalizeCloudStamp,
-  packCatalogChannels,
+  normalizeProjectChannels,
+  packProjectChannels,
   pageFilePath,
-  CATALOG_PATH,
+  BASE_PATH,
   PAGES_DIR,
 } from './configFormat';
 import type {
+  Appearance,
   ClassDef,
   ColumnsMode,
   GroupsLayout,
@@ -20,15 +28,57 @@ import type {
   NoteDef,
   PageDef,
   PageKind,
+  PanelOpenState,
+  ProfileStyle,
+  StyleProfile,
   SurfaceCollapsed,
 } from './markerStore';
+import type { Syn3Locale } from './i18n';
+
+const GENERAL_PROFILE_ID = 'general';
+const GENERAL_PROFILE_NAME = 'Админ';
+
+const DEFAULT_APPEARANCE_LOCAL: Appearance = {
+  fontGroup: 1.15,
+  fontSubgroup: 1.05,
+  fontFolder: 0.95,
+  fontFile: 0.9,
+  fontScale: 1,
+  gradientDirection: 0,
+  cardGradient: true,
+  cardFill: 9,
+  cardBorder: 55,
+  bgFolder: 4,
+  bgFile: 5,
+  bgSubgroup: 0,
+  bgClass: 8,
+  bgNote: 0,
+  bgHover: 10,
+  labelSaturation: 20,
+  openFileMark: true,
+  showErrorIcon: true,
+  openFileAnimate: true,
+  openFileDuration: 1,
+  showProblemsTab: true,
+  cyclePageScroll: true,
+  openLinksInCursor: false,
+  problemsError: true,
+  problemsWarning: true,
+  problemsInfo: true,
+  language: 'ru',
+  reviewRefreshSec: 60,
+  projectFetchSec: 60,
+  filesFetchSec: 60,
+  notesFetchSec: 60,
+  linksFetchSec: 60,
+};
+
+function emptyPanelOpenLocal(): PanelOpenState {
+  return { bottom: false, left: false, right: true };
+}
 
 function emptyCollapsedLocal(): SurfaceCollapsed {
   return { explorer: {}, bottom: {}, left: {}, right: {} };
-}
-
-function normalizeColumnsLocal(value: unknown): ColumnsMode | undefined {
-  return value === 'flow' || value === '1' || value === '2' || value === '3' ? value : undefined;
 }
 
 function normalizeMapLayoutLocal(value: unknown): MapLayout {
@@ -43,6 +93,21 @@ function normalizePageKindLocal(value: unknown): PageKind | undefined {
   return value === 'files' || value === 'notes' || value === 'links' || value === 'review'
     ? value
     : undefined;
+}
+
+function snapFetchSecLocal(value: number): number {
+  const min = 30;
+  const max = 3600;
+  const step = 10;
+  if (!Number.isFinite(value)) {
+    return 60;
+  }
+  const clamped = Math.min(max, Math.max(min, value));
+  return Math.round(clamped / step) * step;
+}
+
+function normalizeColumnsLocal(value: unknown): ColumnsMode | undefined {
+  return value === 'flow' || value === '1' || value === '2' || value === '3' ? value : undefined;
 }
 
 function normalizeGroupDescriptionLocal(value: unknown): string | undefined {
@@ -71,31 +136,21 @@ function normalizeIconsLocal(icons?: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-/** Review binding stored with the page, not in PROFILE_SYN3. */
+/** Review binding used by the access store and UI. Channel comes from the project. */
 export interface PageAccessConfig {
   provider: 'github' | 'gitlab';
   channelId: string;
   repoUrl: string;
 }
 
-/** On-disk page fallback (and Discord attachment body). */
-export interface PageConfigFile {
+/**
+ * On-disk / Discord body for page *content* only.
+ * Name, kind, order, layouts and review bindings live in the base snapshot.
+ */
+export interface PageContentFile {
   version: 1;
-  /** Which page this file is. Several pages of one kind share a channel. */
   pageId?: string;
-  /** Latest message drops this pageId only. Peers remove it on pull. */
   deleted?: true;
-  page: {
-    name: string;
-    kind: PageKind;
-    description?: string;
-    /** Pager position. Lives with the page, not in the profile config. */
-    order?: number;
-    layout?: MapLayout;
-    groupsLayout?: GroupsLayout;
-  };
-  /** Review pages only. */
-  access?: PageAccessConfig;
   markers?: Record<string, PageMarkerEntry>;
   items?: Record<string, string[]>;
   added?: Record<string, Record<string, number>>;
@@ -106,9 +161,10 @@ export interface PageConfigFile {
   notes?: Record<string, PageNoteEntry>;
   links?: Record<string, PageLinkEntry>;
   cloud?: CloudStamp;
-  /** Workspace lock at the moment this page was sent. */
-  fixed?: boolean;
 }
+
+/** @deprecated Alias kept while call sites rename. */
+export type PageConfigFile = PageContentFile;
 
 export interface PageMarkerEntry {
   label: string;
@@ -145,9 +201,9 @@ export interface PageLinkEntry {
   locked?: true;
 }
 
-/** Assembled workspace from catalog + page files. */
+/** Assembled workspace from base snapshot + content files. */
 export interface SplitWorkspace {
-  catalog: CatalogFile;
+  base: BaseConfigFile;
   pages: Record<string, PageDef>;
   markers: Record<string, MarkerDef>;
   items: Record<string, string[]>;
@@ -159,38 +215,303 @@ export interface SplitWorkspace {
   notes: Record<string, NoteDef>;
   links: Record<string, LinkDef>;
   pageCloud: Record<string, CloudStamp>;
+  profiles: StyleProfile[];
+  styles: Record<string, ProfileStyle>;
+  pageLayouts: Record<string, PageLayoutPrefs>;
 }
 
-export { CATALOG_PATH, PAGES_DIR, pageFilePath };
+export { BASE_PATH, PAGES_DIR, pageFilePath };
 
-export function catalogEntryFromPage(id: string, page: PageDef): CatalogPageEntry {
+export function projectPageEntryFromPage(
+  page: PageDef,
+  access?: ProjectPageAccess,
+  version = 1,
+): ProjectPageEntry {
   return {
+    version,
     name: page.name,
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
+    ...(access ? { access } : {}),
   };
 }
 
-export function buildCatalogFromPages(
-  pages: Record<string, PageDef>,
-  channels: CatalogFile['channels'] = { profile: '' },
-  cloud?: CloudStamp,
-): CatalogFile {
-  const catalog = emptyCatalog();
-  catalog.channels = packCatalogChannels(channels);
-  for (const [id, page] of Object.entries(pages)) {
-    catalog.pages[id] = catalogEntryFromPage(id, page);
+function normalizePageAccessBody(raw: unknown): ProjectPageAccess | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
   }
-  if (cloud) {
-    catalog.cloud = cloud;
+  const source = raw as Partial<ProjectPageAccess> & { channelId?: string };
+  const provider = source.provider === 'github' || source.provider === 'gitlab' ? source.provider : undefined;
+  const repoUrl = typeof source.repoUrl === 'string' ? source.repoUrl.trim() : '';
+  if (!provider || !repoUrl) {
+    return undefined;
   }
-  return catalog;
+  return { provider, repoUrl };
 }
 
-export function packPageConfig(opts: {
+function normalizeSProfileIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const hash = item.trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hash) || seen.has(hash)) {
+      continue;
+    }
+    seen.add(hash);
+    out.push(hash);
+  }
+  return out;
+}
+
+function normalizeGitNick(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const nick = raw.trim().replace(/^@+/, '');
+  return nick || undefined;
+}
+
+function numOr(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function boolOr(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeAppearanceLocal(raw: unknown): Appearance {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Partial<Appearance>) : {};
+  const language: Syn3Locale =
+    source.language === 'en' || source.language === 'ru' ? source.language : DEFAULT_APPEARANCE_LOCAL.language;
+  return {
+    fontGroup: numOr(source.fontGroup, DEFAULT_APPEARANCE_LOCAL.fontGroup),
+    fontSubgroup: numOr(source.fontSubgroup, DEFAULT_APPEARANCE_LOCAL.fontSubgroup),
+    fontFolder: numOr(source.fontFolder, DEFAULT_APPEARANCE_LOCAL.fontFolder),
+    fontFile: numOr(source.fontFile, DEFAULT_APPEARANCE_LOCAL.fontFile),
+    fontScale: numOr(source.fontScale, DEFAULT_APPEARANCE_LOCAL.fontScale),
+    gradientDirection: numOr(source.gradientDirection, DEFAULT_APPEARANCE_LOCAL.gradientDirection),
+    cardGradient: boolOr(source.cardGradient, DEFAULT_APPEARANCE_LOCAL.cardGradient),
+    cardFill: numOr(source.cardFill, DEFAULT_APPEARANCE_LOCAL.cardFill),
+    cardBorder: numOr(source.cardBorder, DEFAULT_APPEARANCE_LOCAL.cardBorder),
+    bgFolder: numOr(source.bgFolder, DEFAULT_APPEARANCE_LOCAL.bgFolder),
+    bgFile: numOr(source.bgFile, DEFAULT_APPEARANCE_LOCAL.bgFile),
+    bgSubgroup: numOr(source.bgSubgroup, DEFAULT_APPEARANCE_LOCAL.bgSubgroup),
+    bgClass: numOr(source.bgClass, DEFAULT_APPEARANCE_LOCAL.bgClass),
+    bgNote: numOr(source.bgNote, DEFAULT_APPEARANCE_LOCAL.bgNote),
+    bgHover: numOr(source.bgHover, DEFAULT_APPEARANCE_LOCAL.bgHover),
+    labelSaturation: numOr(source.labelSaturation, DEFAULT_APPEARANCE_LOCAL.labelSaturation),
+    openFileMark: boolOr(source.openFileMark, DEFAULT_APPEARANCE_LOCAL.openFileMark),
+    showErrorIcon: boolOr(source.showErrorIcon, DEFAULT_APPEARANCE_LOCAL.showErrorIcon),
+    openFileAnimate: boolOr(source.openFileAnimate, DEFAULT_APPEARANCE_LOCAL.openFileAnimate),
+    openFileDuration: numOr(source.openFileDuration, DEFAULT_APPEARANCE_LOCAL.openFileDuration),
+    showProblemsTab: boolOr(source.showProblemsTab, DEFAULT_APPEARANCE_LOCAL.showProblemsTab),
+    cyclePageScroll: boolOr(source.cyclePageScroll, DEFAULT_APPEARANCE_LOCAL.cyclePageScroll),
+    openLinksInCursor: boolOr(source.openLinksInCursor, DEFAULT_APPEARANCE_LOCAL.openLinksInCursor),
+    problemsError: boolOr(source.problemsError, DEFAULT_APPEARANCE_LOCAL.problemsError),
+    problemsWarning: boolOr(source.problemsWarning, DEFAULT_APPEARANCE_LOCAL.problemsWarning),
+    problemsInfo: boolOr(source.problemsInfo, DEFAULT_APPEARANCE_LOCAL.problemsInfo),
+    language,
+    reviewRefreshSec: snapFetchSecLocal(
+      numOr(source.reviewRefreshSec, DEFAULT_APPEARANCE_LOCAL.reviewRefreshSec),
+    ),
+    projectFetchSec: snapFetchSecLocal(
+      numOr(source.projectFetchSec, DEFAULT_APPEARANCE_LOCAL.projectFetchSec),
+    ),
+    filesFetchSec: snapFetchSecLocal(numOr(source.filesFetchSec, DEFAULT_APPEARANCE_LOCAL.filesFetchSec)),
+    notesFetchSec: snapFetchSecLocal(numOr(source.notesFetchSec, DEFAULT_APPEARANCE_LOCAL.notesFetchSec)),
+    linksFetchSec: snapFetchSecLocal(numOr(source.linksFetchSec, DEFAULT_APPEARANCE_LOCAL.linksFetchSec)),
+  };
+}
+
+function normalizeOpenLocal(raw: unknown): PanelOpenState {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return emptyPanelOpenLocal();
+  }
+  const source = raw as Partial<PanelOpenState>;
+  return {
+    bottom: source.bottom === true,
+    left: source.left === true,
+    right: source.right !== false,
+  };
+}
+
+function normalizePageLayoutsLocal(raw: unknown): Record<string, PageLayoutPrefs> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const out: Record<string, PageLayoutPrefs> = {};
+  for (const [pageId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const def = value as Partial<PageLayoutPrefs>;
+    out[pageId] = {
+      layout: normalizeMapLayoutLocal(def.layout),
+      groupsLayout: normalizeGroupsLayoutLocal(def.groupsLayout),
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeProfileEntry(id: string, raw: unknown): ProjectProfileEntry {
+  const source =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Partial<ProjectProfileEntry>)
+      : {};
+  const name =
+    typeof source.name === 'string' && source.name.trim()
+      ? source.name.trim()
+      : id === GENERAL_PROFILE_ID
+        ? GENERAL_PROFILE_NAME
+        : id;
+  const version =
+    typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
+      ? Math.floor(source.version)
+      : 1;
+  const pageLayouts = normalizePageLayoutsLocal(source.pageLayouts);
+  return {
+    version,
+    name,
+    sProfileIds: normalizeSProfileIds(source.sProfileIds),
+    ...(normalizeGitNick(source.githubNick) ? { githubNick: normalizeGitNick(source.githubNick) } : {}),
+    ...(normalizeGitNick(source.gitlabNick) ? { gitlabNick: normalizeGitNick(source.gitlabNick) } : {}),
+    ...(typeof source.reviewSkillPath === 'string' && source.reviewSkillPath.trim()
+      ? { reviewSkillPath: source.reviewSkillPath.trim() }
+      : {}),
+    ...(typeof source.reviewDirPath === 'string' && source.reviewDirPath.trim()
+      ? { reviewDirPath: source.reviewDirPath.trim() }
+      : {}),
+    ...(typeof source.reviewModel === 'string' && source.reviewModel.trim()
+      ? { reviewModel: source.reviewModel.trim().toLowerCase() }
+      : {}),
+    ...(typeof source.reviewFixModel === 'string' && source.reviewFixModel.trim()
+      ? { reviewFixModel: source.reviewFixModel.trim().toLowerCase() }
+      : {}),
+    appearance: normalizeAppearanceLocal(source.appearance),
+    open: normalizeOpenLocal(source.open),
+    ...(pageLayouts ? { pageLayouts } : {}),
+  };
+}
+
+function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPageEntry {
+  const source =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Partial<ProjectPageEntry>)
+      : {};
+  const kind = normalizePageKindLocal(source.kind) ?? 'files';
+  const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : id;
+  const description = normalizeGroupDescriptionLocal(source.description);
+  const version =
+    typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
+      ? Math.floor(source.version)
+      : 1;
+  const access = normalizePageAccessBody(source.access);
+  return {
+    version,
+    name,
+    kind,
+    order: typeof source.order === 'number' && Number.isFinite(source.order) ? source.order : index,
+    ...(description ? { description } : {}),
+    ...(access ? { access } : {}),
+  };
+}
+
+function normalizeLock(raw: unknown): ProjectLock | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const profileId =
+    typeof (raw as ProjectLock).profileId === 'string'
+      ? (raw as ProjectLock).profileId.trim()
+      : '';
+  return profileId ? { profileId } : undefined;
+}
+
+export function normalizeProjectEntry(raw: unknown, fallbackName = 'Project'): ProjectEntry {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return emptyProject(fallbackName);
+  }
+  const source = raw as Partial<ProjectEntry>;
+  const name =
+    typeof source.name === 'string' && source.name.trim() ? source.name.trim() : fallbackName;
+  const version =
+    typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
+      ? Math.floor(source.version)
+      : 1;
+  const profiles: Record<string, ProjectProfileEntry> = {};
+  if (source.profiles && typeof source.profiles === 'object' && !Array.isArray(source.profiles)) {
+    for (const [id, value] of Object.entries(source.profiles)) {
+      profiles[id] = normalizeProfileEntry(id, value);
+    }
+  }
+  if (!profiles[GENERAL_PROFILE_ID]) {
+    profiles[GENERAL_PROFILE_ID] = normalizeProfileEntry(GENERAL_PROFILE_ID, {
+      name: GENERAL_PROFILE_NAME,
+      sProfileIds: [],
+      appearance: DEFAULT_APPEARANCE_LOCAL,
+      open: emptyPanelOpenLocal(),
+      version: 1,
+    });
+  }
+  const pages: Record<string, ProjectPageEntry> = {};
+  if (source.pages && typeof source.pages === 'object' && !Array.isArray(source.pages)) {
+    let index = 0;
+    for (const [id, value] of Object.entries(source.pages)) {
+      index += 1;
+      pages[id] = normalizePageEntry(id, value, index);
+    }
+  }
+  const lock = normalizeLock(source.lock);
+  return {
+    version,
+    name,
+    channels: normalizeProjectChannels(source.channels),
+    ...(lock ? { lock } : {}),
+    profiles,
+    pages,
+  };
+}
+
+export function normalizeBaseConfig(raw: unknown): BaseConfigFile {
+  const result = emptyBaseConfig();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return result;
+  }
+  const source = raw as Partial<BaseConfigFile>;
+  result.channelId = typeof source.channelId === 'string' ? source.channelId.trim() : '';
+  if (typeof source.activeProjectId === 'string' && source.activeProjectId.trim()) {
+    result.activeProjectId = source.activeProjectId.trim();
+  }
+  if (source.projects && typeof source.projects === 'object' && !Array.isArray(source.projects)) {
+    for (const [id, value] of Object.entries(source.projects)) {
+      result.projects[id] = normalizeProjectEntry(value, id);
+    }
+  }
+  const cloud = normalizeCloudStamp(source.cloud);
+  if (cloud) {
+    result.cloud = cloud;
+  }
+  const lockCloud = normalizeCloudStamp(source.lockCloud);
+  if (lockCloud) {
+    result.lockCloud = lockCloud;
+  }
+  if (result.activeProjectId && !result.projects[result.activeProjectId]) {
+    delete result.activeProjectId;
+  }
+  return result;
+}
+
+/** Pack content-only page body for disk / Discord. */
+export function packPageContent(opts: {
   pageId: string;
-  page: PageDef;
   markers: Record<string, MarkerDef>;
   items: Record<string, string[]>;
   added: Record<string, Record<string, number>>;
@@ -203,32 +524,19 @@ export function packPageConfig(opts: {
   markerIdsOnPage: string[];
   noteIdsOnPage: string[];
   linkIdsOnPage: string[];
-  access?: PageAccessConfig;
   cloud?: CloudStamp;
-  /** Current workspace lock, written onto every sent page. */
-  fixed?: boolean;
-}): PageConfigFile {
-  const markerSet = new Set(opts.markerIdsOnPage);
-  const pagePayload: PageConfigFile['page'] = {
-    name: opts.page.name,
-    kind: opts.page.kind,
-    order: opts.page.order,
-    layout: opts.page.layout,
-    groupsLayout: opts.page.groupsLayout,
-    ...(opts.page.description ? { description: opts.page.description } : {}),
-  };
-
-  if (opts.page.kind === 'review') {
+  deleted?: true;
+}): PageContentFile {
+  if (opts.deleted) {
     return {
       version: 1,
       pageId: opts.pageId,
-      page: pagePayload,
-      ...(opts.access ? { access: opts.access } : {}),
+      deleted: true,
       ...(opts.cloud ? { cloud: opts.cloud } : {}),
-      ...(typeof opts.fixed === 'boolean' ? { fixed: opts.fixed } : {}),
     };
   }
 
+  const markerSet = new Set(opts.markerIdsOnPage);
   const markers: Record<string, PageMarkerEntry> = {};
   for (const id of opts.markerIdsOnPage) {
     const src = opts.markers[id];
@@ -387,11 +695,9 @@ export function packPageConfig(opts: {
     links[linkId] = entry;
   }
 
-  const payload: PageConfigFile = {
+  const payload: PageContentFile = {
     version: 1,
     pageId: opts.pageId,
-    page: pagePayload,
-    ...(typeof opts.fixed === 'boolean' ? { fixed: opts.fixed } : {}),
   };
   if (Object.keys(markers).length > 0) {
     payload.markers = markers;
@@ -424,56 +730,30 @@ export function packPageConfig(opts: {
   return payload;
 }
 
-function normalizePageAccess(raw: unknown): PageAccessConfig | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return undefined;
-  }
-  const source = raw as Partial<PageAccessConfig>;
-  const provider = source.provider === 'github' || source.provider === 'gitlab' ? source.provider : undefined;
-  const channelId = typeof source.channelId === 'string' ? source.channelId.trim() : '';
-  const repoUrl = typeof source.repoUrl === 'string' ? source.repoUrl.trim() : '';
-  if (!provider || !channelId || !repoUrl) {
-    return undefined;
-  }
-  return { provider, channelId, repoUrl };
-}
+/** @deprecated Use packPageContent. */
+export const packPageConfig = packPageContent;
 
-export function normalizePageConfig(raw: unknown): PageConfigFile {
+export function normalizePageContent(raw: unknown): PageContentFile {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return {
-      version: 1,
-      page: { name: 'Карта', kind: 'files', layout: 'chips', groupsLayout: 'flow' },
-    };
+    return { version: 1 };
   }
-  const source = raw as PageConfigFile;
-  const pageRaw = source.page && typeof source.page === 'object' ? source.page : undefined;
-  const kind = normalizePageKindLocal(pageRaw?.kind) ?? 'files';
-  const name =
-    typeof pageRaw?.name === 'string' && pageRaw.name.trim() ? pageRaw.name.trim() : 'Карта';
-  const description = normalizeGroupDescriptionLocal(pageRaw?.description);
-  const order = typeof pageRaw?.order === 'number' && Number.isFinite(pageRaw.order) ? pageRaw.order : undefined;
+  const source = raw as PageContentFile & {
+    page?: { name?: string; kind?: PageKind; layout?: MapLayout; groupsLayout?: GroupsLayout };
+    access?: unknown;
+    fixed?: boolean;
+  };
   const pageId = typeof source.pageId === 'string' ? source.pageId.trim() : '';
-  const result: PageConfigFile = {
+  const result: PageContentFile = {
     version: 1,
     ...(pageId ? { pageId } : {}),
     ...(source.deleted ? { deleted: true as const } : {}),
-    ...(source.fixed === true ? { fixed: true } : source.fixed === false ? { fixed: false } : {}),
-    page: {
-      name,
-      kind,
-      ...(order !== undefined ? { order } : {}),
-      layout: normalizeMapLayoutLocal(pageRaw?.layout),
-      groupsLayout: normalizeGroupsLayoutLocal(pageRaw?.groupsLayout),
-      ...(description ? { description } : {}),
-    },
   };
-  const access = normalizePageAccess(source.access);
-  if (access) {
-    result.access = access;
-  }
   const cloud = normalizeCloudStamp(source.cloud);
   if (cloud) {
     result.cloud = cloud;
+  }
+  if (source.deleted) {
+    return result;
   }
   if (source.markers && typeof source.markers === 'object') {
     result.markers = {};
@@ -609,10 +889,101 @@ export function normalizePageConfig(raw: unknown): PageConfigFile {
   return result;
 }
 
+/** @deprecated Use normalizePageContent. */
+export const normalizePageConfig = normalizePageContent;
+
+export function packProfileEntry(opts: {
+  profile: StyleProfile;
+  style: ProfileStyle;
+  pageLayouts?: Record<string, PageLayoutPrefs>;
+  version: number;
+}): ProjectProfileEntry {
+  const pageLayouts =
+    opts.pageLayouts && Object.keys(opts.pageLayouts).length > 0 ? opts.pageLayouts : undefined;
+  return {
+    version: opts.version,
+    name: opts.profile.name,
+    sProfileIds: [...opts.profile.sProfileIds],
+    ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
+    ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
+    ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
+    ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
+    ...(opts.profile.githubNick ? { githubNick: opts.profile.githubNick } : {}),
+    ...(opts.profile.gitlabNick ? { gitlabNick: opts.profile.gitlabNick } : {}),
+    appearance: opts.style.appearance,
+    open: opts.style.open,
+    ...(pageLayouts ? { pageLayouts } : {}),
+  };
+}
+
+export function unpackProfilesFromProject(project: ProjectEntry): {
+  profiles: StyleProfile[];
+  styles: Record<string, ProfileStyle>;
+  pageLayouts: Record<string, PageLayoutPrefs>;
+} {
+  const profiles: StyleProfile[] = [];
+  const styles: Record<string, ProfileStyle> = {};
+  const pageLayouts: Record<string, PageLayoutPrefs> = {};
+  const ids = Object.keys(project.profiles).sort((a, b) => {
+    if (a === GENERAL_PROFILE_ID) {
+      return -1;
+    }
+    if (b === GENERAL_PROFILE_ID) {
+      return 1;
+    }
+    return a.localeCompare(b);
+  });
+  for (const id of ids) {
+    const entry = project.profiles[id];
+    if (!entry) {
+      continue;
+    }
+    profiles.push({
+      id,
+      name: entry.name,
+      sProfileIds: [...entry.sProfileIds],
+      ...(entry.reviewSkillPath ? { reviewSkillPath: entry.reviewSkillPath } : {}),
+      ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
+      ...(entry.reviewModel ? { reviewModel: entry.reviewModel } : {}),
+      ...(entry.reviewFixModel ? { reviewFixModel: entry.reviewFixModel } : {}),
+      ...(entry.githubNick ? { githubNick: entry.githubNick } : {}),
+      ...(entry.gitlabNick ? { gitlabNick: entry.gitlabNick } : {}),
+    });
+    styles[id] = {
+      appearance: entry.appearance,
+      open: entry.open,
+    };
+    if (entry.pageLayouts) {
+      for (const [pageId, layout] of Object.entries(entry.pageLayouts)) {
+        pageLayouts[pageId] = layout;
+      }
+    }
+  }
+  if (!profiles.some((p) => p.id === GENERAL_PROFILE_ID)) {
+    profiles.unshift({
+      id: GENERAL_PROFILE_ID,
+      name: GENERAL_PROFILE_NAME,
+      sProfileIds: [],
+    });
+    styles[GENERAL_PROFILE_ID] = {
+      appearance: { ...DEFAULT_APPEARANCE_LOCAL },
+      open: emptyPanelOpenLocal(),
+    };
+  }
+  return { profiles, styles, pageLayouts };
+}
+
 export function assembleSplitWorkspace(
-  catalog: CatalogFile,
-  pageFiles: Record<string, PageConfigFile>,
+  base: BaseConfigFile,
+  pageFiles: Record<string, PageContentFile>,
+  projectId?: string,
 ): SplitWorkspace {
+  const normalized = normalizeBaseConfig(base);
+  const activeId =
+    (projectId && normalized.projects[projectId] ? projectId : undefined) ||
+    normalized.activeProjectId ||
+    Object.keys(normalized.projects)[0];
+  const project = activeId ? normalized.projects[activeId] : undefined;
   const pages: Record<string, PageDef> = {};
   const markers: Record<string, MarkerDef> = {};
   const items: Record<string, string[]> = {};
@@ -625,96 +996,104 @@ export function assembleSplitWorkspace(
   const links: Record<string, LinkDef> = {};
   const pageCloud: Record<string, CloudStamp> = {};
 
-  const orderedIds = Object.keys(catalog.pages).sort(
-    (a, b) => catalog.pages[a].order - catalog.pages[b].order || a.localeCompare(b),
-  );
+  let profiles: StyleProfile[] = [
+    { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: [] },
+  ];
+  let styles: Record<string, ProfileStyle> = {
+    [GENERAL_PROFILE_ID]: { appearance: { ...DEFAULT_APPEARANCE_LOCAL }, open: emptyPanelOpenLocal() },
+  };
+  let pageLayouts: Record<string, PageLayoutPrefs> = {};
 
-  for (const pageId of orderedIds) {
-    const meta = catalog.pages[pageId];
-    const file = pageFiles[pageId] ?? {
-      version: 1 as const,
-      page: {
+  if (project) {
+    const unpacked = unpackProfilesFromProject(project);
+    profiles = unpacked.profiles;
+    styles = unpacked.styles;
+    pageLayouts = unpacked.pageLayouts;
+
+    const orderedIds = Object.keys(project.pages).sort(
+      (a, b) => project.pages[a].order - project.pages[b].order || a.localeCompare(b),
+    );
+
+    for (const pageId of orderedIds) {
+      const meta = project.pages[pageId];
+      const file = pageFiles[pageId] ?? { version: 1 as const, pageId };
+      const layout = pageLayouts[pageId] ?? { layout: 'chips' as const, groupsLayout: 'flow' as const };
+      pages[pageId] = {
         name: meta.name,
         kind: meta.kind,
-        layout: 'chips' as const,
-        groupsLayout: 'flow' as const,
+        order: meta.order,
+        layout: layout.layout,
+        groupsLayout: layout.groupsLayout,
+        collapsed: emptyCollapsedLocal(),
         ...(meta.description ? { description: meta.description } : {}),
-      },
-    };
-    pages[pageId] = {
-      name: file.page.name || meta.name,
-      kind: normalizePageKindLocal(file.page.kind) ?? meta.kind,
-      order: typeof file.page.order === 'number' ? file.page.order : meta.order,
-      layout: normalizeMapLayoutLocal(file.page.layout),
-      groupsLayout: normalizeGroupsLayoutLocal(file.page.groupsLayout),
-      collapsed: emptyCollapsedLocal(),
-      ...(file.page.description || meta.description
-        ? { description: file.page.description || meta.description }
-        : {}),
-    };
-    if (file.cloud) {
-      pageCloud[pageId] = file.cloud;
-    }
-    for (const [id, def] of Object.entries(file.markers ?? {})) {
-      markers[id] = {
-        label: def.label,
-        order: def.order,
-        ...(def.color ? { color: def.color } : {}),
-        ...(def.icons ? { icons: def.icons } : {}),
-        ...(def.alias ? { alias: def.alias } : {}),
-        ...(def.description ? { description: def.description } : {}),
-        ...(def.parent ? { parent: def.parent } : {}),
-        ...(def.page ? { page: def.page } : !def.parent ? { page: pageId } : {}),
-        ...(def.columns ? { columns: def.columns } : {}),
-        ...(def.locked ? { locked: true } : {}),
       };
-    }
-    for (const [relPath, ids] of Object.entries(file.items ?? {})) {
-      items[relPath] = [...(items[relPath] ?? []), ...ids];
-    }
-    for (const [relPath, dates] of Object.entries(file.added ?? {})) {
-      added[relPath] = { ...(added[relPath] ?? {}), ...dates };
-    }
-    for (const [relPath, alias] of Object.entries(file.aliases ?? {})) {
-      aliases[relPath] = alias;
-    }
-    for (const [classId, def] of Object.entries(file.classes ?? {})) {
-      classes[classId] = def;
-    }
-    for (const [classId, ids] of Object.entries(file.classItems ?? {})) {
-      classItems[classId] = [...(classItems[classId] ?? []), ...ids];
-    }
-    for (const [classId, dates] of Object.entries(file.classAdded ?? {})) {
-      classAdded[classId] = { ...(classAdded[classId] ?? {}), ...dates };
-    }
-    for (const [id, def] of Object.entries(file.notes ?? {})) {
-      notes[id] = {
-        text: def.text,
-        order: def.order,
-        ...(def.page ? { page: def.page } : {}),
-        ...(def.markerId ? { markerId: def.markerId } : {}),
-        ...(def.parentNote ? { parentNote: def.parentNote } : {}),
-        ...(def.color ? { color: def.color } : {}),
-        ...(def.icons ? { icons: def.icons } : {}),
-        ...(def.locked ? { locked: true } : {}),
-      };
-    }
-    for (const [id, def] of Object.entries(file.links ?? {})) {
-      links[id] = {
-        label: def.label,
-        order: def.order,
-        ...(def.description ? { description: def.description } : {}),
-        ...(def.url ? { url: def.url } : {}),
-        ...(def.parent ? { parent: def.parent } : {}),
-        ...(def.page ? { page: def.page } : {}),
-        ...(def.color ? { color: def.color } : {}),
-        ...(def.locked ? { locked: true } : {}),
-      };
+      if (file.cloud) {
+        pageCloud[pageId] = file.cloud;
+      }
+      if (file.deleted) {
+        continue;
+      }
+      for (const [id, def] of Object.entries(file.markers ?? {})) {
+        markers[id] = {
+          label: def.label,
+          order: def.order,
+          ...(def.color ? { color: def.color } : {}),
+          ...(def.icons ? { icons: def.icons } : {}),
+          ...(def.alias ? { alias: def.alias } : {}),
+          ...(def.description ? { description: def.description } : {}),
+          ...(def.parent ? { parent: def.parent } : {}),
+          ...(def.page ? { page: def.page } : !def.parent ? { page: pageId } : {}),
+          ...(def.columns ? { columns: def.columns } : {}),
+          ...(def.locked ? { locked: true } : {}),
+        };
+      }
+      for (const [relPath, ids] of Object.entries(file.items ?? {})) {
+        items[relPath] = [...(items[relPath] ?? []), ...ids];
+      }
+      for (const [relPath, dates] of Object.entries(file.added ?? {})) {
+        added[relPath] = { ...(added[relPath] ?? {}), ...dates };
+      }
+      for (const [relPath, alias] of Object.entries(file.aliases ?? {})) {
+        aliases[relPath] = alias;
+      }
+      for (const [classId, def] of Object.entries(file.classes ?? {})) {
+        classes[classId] = def;
+      }
+      for (const [classId, ids] of Object.entries(file.classItems ?? {})) {
+        classItems[classId] = [...(classItems[classId] ?? []), ...ids];
+      }
+      for (const [classId, dates] of Object.entries(file.classAdded ?? {})) {
+        classAdded[classId] = { ...(classAdded[classId] ?? {}), ...dates };
+      }
+      for (const [id, def] of Object.entries(file.notes ?? {})) {
+        notes[id] = {
+          text: def.text,
+          order: def.order,
+          ...(def.page ? { page: def.page } : {}),
+          ...(def.markerId ? { markerId: def.markerId } : {}),
+          ...(def.parentNote ? { parentNote: def.parentNote } : {}),
+          ...(def.color ? { color: def.color } : {}),
+          ...(def.icons ? { icons: def.icons } : {}),
+          ...(def.locked ? { locked: true } : {}),
+        };
+      }
+      for (const [id, def] of Object.entries(file.links ?? {})) {
+        links[id] = {
+          label: def.label,
+          order: def.order,
+          ...(def.description ? { description: def.description } : {}),
+          ...(def.url ? { url: def.url } : {}),
+          ...(def.parent ? { parent: def.parent } : {}),
+          ...(def.page ? { page: def.page } : {}),
+          ...(def.color ? { color: def.color } : {}),
+          ...(def.locked ? { locked: true } : {}),
+        };
+      }
     }
   }
 
   return {
-    catalog: normalizeCatalog(catalog),
+    base: normalized,
     pages,
     markers,
     items,
@@ -726,39 +1105,85 @@ export function assembleSplitWorkspace(
     notes,
     links,
     pageCloud,
+    profiles,
+    styles,
+    pageLayouts,
   };
 }
 
-export function stringifyCatalog(catalog: CatalogFile): string {
-  const pages: Record<string, CatalogPageEntry> = {};
-  for (const id of Object.keys(catalog.pages).sort(
-    (a, b) => catalog.pages[a].order - catalog.pages[b].order || a.localeCompare(b),
-  )) {
-    const page = catalog.pages[id];
-    pages[id] = {
-      name: page.name,
-      kind: page.kind,
-      order: page.order,
-      ...(page.description ? { description: page.description } : {}),
+export function stringifyBaseConfig(base: BaseConfigFile): string {
+  const normalized = normalizeBaseConfig(base);
+  const projects: Record<string, ProjectEntry> = {};
+  for (const id of Object.keys(normalized.projects).sort()) {
+    const project = normalized.projects[id];
+    const profiles: Record<string, ProjectProfileEntry> = {};
+    for (const profileId of Object.keys(project.profiles).sort((a, b) => {
+      if (a === GENERAL_PROFILE_ID) {
+        return -1;
+      }
+      if (b === GENERAL_PROFILE_ID) {
+        return 1;
+      }
+      return a.localeCompare(b);
+    })) {
+      profiles[profileId] = project.profiles[profileId];
+    }
+    const pages: Record<string, ProjectPageEntry> = {};
+    for (const pageId of Object.keys(project.pages).sort(
+      (a, b) => project.pages[a].order - project.pages[b].order || a.localeCompare(b),
+    )) {
+      pages[pageId] = project.pages[pageId];
+    }
+    projects[id] = {
+      version: project.version,
+      name: project.name,
+      channels: packProjectChannels(project.channels),
+      ...(project.lock ? { lock: project.lock } : {}),
+      profiles,
+      pages,
     };
   }
-  const payload: CatalogFile = {
+  const payload: BaseConfigFile = {
     version: 1,
-    pages,
-    channels: packCatalogChannels(catalog.channels),
+    channelId: normalized.channelId,
+    projects,
   };
-  if (catalog.cloud) {
-    payload.cloud = catalog.cloud;
+  if (normalized.activeProjectId) {
+    payload.activeProjectId = normalized.activeProjectId;
+  }
+  if (normalized.cloud) {
+    payload.cloud = normalized.cloud;
+  }
+  if (normalized.lockCloud) {
+    payload.lockCloud = normalized.lockCloud;
   }
   return JSON.stringify(payload, null, 2) + '\n';
 }
 
-export function stringifyPageConfig(file: PageConfigFile): string {
+/** Body posted to Discord — same as disk without local cloud stamps. */
+export function packBaseConfigBody(base: BaseConfigFile): BaseConfigFile {
+  const { cloud: _cloud, lockCloud: _lockCloud, ...rest } = normalizeBaseConfig(base);
+  return rest;
+}
+
+export function stringifyPageConfig(file: PageContentFile): string {
   return JSON.stringify(file, null, 2) + '\n';
 }
 
 /** Stable content fingerprint of a page file without the cloud stamp. */
-export function pageConfigContentJson(file: PageConfigFile): string {
+export function pageConfigContentJson(file: PageContentFile): string {
   const { cloud: _cloud, ...rest } = file;
   return JSON.stringify(rest) + '\n';
+}
+
+export function mergeProjectChannels(
+  current: ProjectChannels,
+  partial: Partial<ProjectChannels>,
+): ProjectChannels {
+  return packProjectChannels({
+    files: partial.files !== undefined ? partial.files : current.files,
+    notes: partial.notes !== undefined ? partial.notes : current.notes,
+    links: partial.links !== undefined ? partial.links : current.links,
+    review: partial.review !== undefined ? partial.review : current.review,
+  });
 }

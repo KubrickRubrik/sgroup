@@ -1,16 +1,25 @@
-import type { PageKind } from './markerStore';
+import type {
+  Appearance,
+  GroupsLayout,
+  MapLayout,
+  PageKind,
+  PanelOpenState,
+} from './markerStore';
 
 /** Discord config message kinds (attachment + header). */
-export type ConfigMessageKind = 'PROFILE' | 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
+export type ConfigMessageKind = 'BASE' | 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
 
-export const PROFILE_CONFIG_PREFIX = 'PROFILE_SYN3';
+export const BASE_CONFIG_PREFIX = 'BASE_SYN3';
 export const EXPLORER_CONFIG_PREFIX = 'EXPLORER_SYN3';
 export const NOTES_CONFIG_PREFIX = 'NOTES_SYN3';
 export const LINKS_CONFIG_PREFIX = 'LINKS_SYN3';
 export const REVIEW_CONFIG_PREFIX = 'REVIEW_SYN3';
 
+/** @deprecated Use BASE_CONFIG_PREFIX. Kept for a few call-site renames. */
+export const PROFILE_CONFIG_PREFIX = BASE_CONFIG_PREFIX;
+
 export const CONFIG_PREFIXES: readonly ConfigMessageKind[] = [
-  'PROFILE',
+  'BASE',
   'EXPLORER',
   'NOTES',
   'LINKS',
@@ -18,19 +27,28 @@ export const CONFIG_PREFIXES: readonly ConfigMessageKind[] = [
 ];
 
 const PREFIX_BY_KIND: Record<ConfigMessageKind, string> = {
-  PROFILE: PROFILE_CONFIG_PREFIX,
+  BASE: BASE_CONFIG_PREFIX,
   EXPLORER: EXPLORER_CONFIG_PREFIX,
   NOTES: NOTES_CONFIG_PREFIX,
   LINKS: LINKS_CONFIG_PREFIX,
   REVIEW: REVIEW_CONFIG_PREFIX,
 };
 
-/** `PROFILE_SYN3 | #1 | 04.11.26 12:15` or `EXPLORER_SYN3 | page-id | #1 | 04.11.26 12:15`. */
+/** `BASE_SYN3 | #1 | 04.11.26 12:15` or `EXPLORER_SYN3 | page-id | #1 | 04.11.26 12:15`. */
 const CONFIG_HEAD_RE =
-  /^\(?((?:PROFILE|EXPLORER|NOTES|LINKS|REVIEW)_SYN3)\)?\s*\|\s*(?:([^|#]+?)\s*\|\s*)?#(\d+)\s*\|\s*(\d{2}\.\d{2}\.\d{2}\s+\d{1,2}:\d{2})\s*$/i;
+  /^\(?((?:BASE|EXPLORER|NOTES|LINKS|REVIEW)_SYN3)\)?\s*\|\s*(?:([^|#]+?)\s*\|\s*)?#(\d+)\s*\|\s*(\d{2}\.\d{2}\.\d{2}\s+\d{1,2}:\d{2})\s*$/i;
 
-export const CATALOG_PATH = '.syn3/catalog.json';
+export const BASE_PATH = '.syn3/base.json';
 export const PAGES_DIR = '.syn3/pages';
+
+/** Legacy UI channel shape: `profile` is the base channel, `explorer` is files. */
+export type CatalogChannels = {
+  profile: string;
+  explorer?: string;
+  notes?: string;
+  links?: string;
+  review?: string;
+};
 
 /** Stamp of the last applied Discord message. */
 export interface CloudStamp {
@@ -40,39 +58,92 @@ export interface CloudStamp {
   messageId: string;
 }
 
-export interface CatalogChannels {
-  /** Required for Discord sync of profiles and default for maps. */
-  profile: string;
-  explorer?: string;
+/** Discord channels for page content, one id per page kind in a project. */
+export interface ProjectChannels {
+  files?: string;
   notes?: string;
   links?: string;
-  /** Optional shared default for review pages; pages keep their own access.channelId. */
   review?: string;
 }
 
-/** Drop empty optional channel keys; always keep `profile`. */
-export function packCatalogChannels(channels: CatalogChannels): CatalogChannels {
+/** Drop empty channel keys. */
+export function packProjectChannels(channels: ProjectChannels): ProjectChannels {
   return {
-    profile: channels.profile || '',
-    ...(channels.explorer?.trim() ? { explorer: channels.explorer.trim() } : {}),
+    ...(channels.files?.trim() ? { files: channels.files.trim() } : {}),
     ...(channels.notes?.trim() ? { notes: channels.notes.trim() } : {}),
     ...(channels.links?.trim() ? { links: channels.links.trim() } : {}),
     ...(channels.review?.trim() ? { review: channels.review.trim() } : {}),
   };
 }
 
-export interface CatalogPageEntry {
+export interface ProjectLock {
+  profileId: string;
+}
+
+/** Review binding without channel — channel lives on the project. */
+export interface ProjectPageAccess {
+  provider: 'github' | 'gitlab';
+  repoUrl: string;
+}
+
+/** Page settings in the base snapshot (no map content). */
+export interface ProjectPageEntry {
+  version: number;
   name: string;
   kind: PageKind;
   description?: string;
   order: number;
+  access?: ProjectPageAccess;
 }
 
-export interface CatalogFile {
+/** Per-page map/group layout stored on the profile. */
+export interface PageLayoutPrefs {
+  layout: MapLayout;
+  groupsLayout: GroupsLayout;
+}
+
+/** Profile settings bound to a project. */
+export interface ProjectProfileEntry {
+  version: number;
+  name: string;
+  sProfileIds: string[];
+  reviewSkillPath?: string;
+  reviewDirPath?: string;
+  reviewModel?: string;
+  reviewFixModel?: string;
+  githubNick?: string;
+  gitlabNick?: string;
+  appearance: Appearance;
+  open: PanelOpenState;
+  /** Layout prefs keyed by page id. */
+  pageLayouts?: Record<string, PageLayoutPrefs>;
+}
+
+/** One project inside the base snapshot. */
+export interface ProjectEntry {
+  version: number;
+  name: string;
+  channels: ProjectChannels;
+  lock?: ProjectLock;
+  profiles: Record<string, ProjectProfileEntry>;
+  pages: Record<string, ProjectPageEntry>;
+}
+
+/**
+ * Full base config: every project, its profiles and page settings.
+ * Lives at `.syn3/base.json` and as the BASE_SYN3 Discord attachment.
+ */
+export interface BaseConfigFile {
   version: 1;
-  pages: Record<string, CatalogPageEntry>;
-  channels: CatalogChannels;
+  /** Discord channel that stores this snapshot. */
+  channelId: string;
+  /** Active project for this workspace. */
+  activeProjectId?: string;
+  projects: Record<string, ProjectEntry>;
+  /** Stamp of the last fully applied base message. */
   cloud?: CloudStamp;
+  /** Stamp of the last lock field applied by auto-fetch. */
+  lockCloud?: CloudStamp;
 }
 
 export interface ParsedConfigHeader {
@@ -121,6 +192,19 @@ export function configKindToPageKind(kind: ConfigMessageKind): PageKind | undefi
     return 'review';
   }
   return undefined;
+}
+
+export function pageKindToChannelKey(kind: PageKind): keyof ProjectChannels {
+  if (kind === 'files') {
+    return 'files';
+  }
+  if (kind === 'notes') {
+    return 'notes';
+  }
+  if (kind === 'links') {
+    return 'links';
+  }
+  return 'review';
 }
 
 /** Format `04.11.26 12:15` in local time. */
@@ -175,7 +259,7 @@ export function parseConfigHeader(content: string): ParsedConfigHeader | undefin
   if (!Number.isFinite(number) || number < 1) {
     return undefined;
   }
-  if (kind === 'PROFILE') {
+  if (kind === 'BASE') {
     if (pageRaw) {
       return undefined;
     }
@@ -199,7 +283,7 @@ export function formatConfigHeader(opts: {
 }): string {
   const date = opts.headerDate ?? formatConfigHeaderDate();
   const prefix = configPrefix(opts.kind);
-  if (opts.kind === 'PROFILE') {
+  if (opts.kind === 'BASE') {
     return `${prefix} | #${opts.number} | ${date}`;
   }
   const pageId = (opts.pageId || '').trim();
@@ -232,11 +316,21 @@ export function isCloudNewer(
   return false;
 }
 
-export function emptyCatalog(): CatalogFile {
+export function emptyBaseConfig(): BaseConfigFile {
   return {
     version: 1,
+    channelId: '',
+    projects: {},
+  };
+}
+
+export function emptyProject(name: string): ProjectEntry {
+  return {
+    version: 1,
+    name,
+    channels: {},
+    profiles: {},
     pages: {},
-    channels: { profile: '' },
   };
 }
 
@@ -254,113 +348,46 @@ export function normalizeCloudStamp(raw: unknown): CloudStamp | undefined {
   return { number, headerDate, messageId };
 }
 
-export function normalizeCatalogChannels(raw: unknown): CatalogChannels {
+export function normalizeProjectChannels(raw: unknown): ProjectChannels {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { profile: '' };
+    return {};
   }
   const source = raw as Record<string, unknown>;
   const pick = (key: string): string | undefined => {
     const value = typeof source[key] === 'string' ? source[key].trim() : '';
     return value || undefined;
   };
-  return packCatalogChannels({
-    profile: pick('profile') || '',
-    explorer: pick('explorer'),
+  // Accept legacy catalog keys (`explorer` / `profile`) when reading local leftovers.
+  const files = pick('files') || pick('explorer');
+  return packProjectChannels({
+    files,
     notes: pick('notes'),
     links: pick('links'),
     review: pick('review'),
   });
 }
 
-export function normalizeCatalog(raw: unknown): CatalogFile {
-  const result = emptyCatalog();
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return result;
-  }
-  const source = raw as {
-    pages?: unknown;
-    channels?: unknown;
-    cloud?: unknown;
-  };
-  result.channels = normalizeCatalogChannels(source.channels);
-  if (source.pages && typeof source.pages === 'object' && !Array.isArray(source.pages)) {
-    let index = 0;
-    for (const [id, value] of Object.entries(source.pages as Record<string, unknown>)) {
-      index += 1;
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        continue;
-      }
-      const def = value as Partial<CatalogPageEntry>;
-      const kind =
-        def.kind === 'files' || def.kind === 'notes' || def.kind === 'links' || def.kind === 'review'
-          ? def.kind
-          : 'files';
-      const name = typeof def.name === 'string' && def.name.trim() ? def.name.trim() : id;
-      const description =
-        typeof def.description === 'string' && def.description.trim()
-          ? def.description.trim()
-          : undefined;
-      result.pages[id] = {
-        name,
-        kind,
-        order: typeof def.order === 'number' ? def.order : index,
-        ...(description ? { description } : {}),
-      };
-    }
-  }
-  const cloud = normalizeCloudStamp(source.cloud);
-  if (cloud) {
-    result.cloud = cloud;
-  }
-  return result;
-}
-
-/** Resolve channel for a map kind; empty map channel → profile channel. */
-export function resolveConfigChannel(
-  channels: CatalogChannels,
+export function resolveProjectChannel(
+  channels: ProjectChannels,
   kind: ConfigMessageKind,
 ): string {
-  if (kind === 'PROFILE') {
-    return channels.profile.trim();
-  }
   if (kind === 'EXPLORER') {
-    return (channels.explorer || channels.profile || '').trim();
+    return (channels.files || '').trim();
   }
   if (kind === 'NOTES') {
-    return (channels.notes || channels.profile || '').trim();
+    return (channels.notes || '').trim();
   }
   if (kind === 'LINKS') {
-    return (channels.links || channels.profile || '').trim();
+    return (channels.links || '').trim();
+  }
+  if (kind === 'REVIEW') {
+    return (channels.review || '').trim();
   }
   return '';
 }
 
 export function pageFilePath(pageId: string): string {
   return `${PAGES_DIR}/${pageId}.json`;
-}
-
-/**
- * PROFILE_SYN3 attachment body.
- * Page list, page order, and review bindings stay on each page message.
- */
-export interface ProfileConfigBody {
-  version: 1;
-  channels: CatalogChannels;
-  profiles: unknown;
-  styles: unknown;
-}
-
-export function packProfileConfigBody(opts: {
-  channels: CatalogChannels;
-  profiles: unknown;
-  styles: unknown;
-}): ProfileConfigBody {
-  return {
-    version: 1,
-    channels: packCatalogChannels(opts.channels),
-    profiles: opts.profiles,
-    styles: opts.styles,
-  };
 }
 
 /**
@@ -416,4 +443,10 @@ export function configSyncFlags(opts: {
     canPull: opts.cloudNewer,
     canPush: opts.dirty,
   };
+}
+
+/** Stable JSON of a project without lock (lock has its own stamp path). */
+export function projectMetaJson(project: ProjectEntry): string {
+  const { lock: _lock, ...rest } = project;
+  return JSON.stringify(rest);
 }

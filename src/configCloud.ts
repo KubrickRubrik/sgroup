@@ -33,7 +33,7 @@ function configMessageOf(
   if (!header || header.kind !== kind) {
     return undefined;
   }
-  if (kind === 'PROFILE') {
+  if (kind === 'BASE') {
     if (header.pageId) {
       return undefined;
     }
@@ -70,7 +70,7 @@ export async function findLatestConfigMessage(
       return listed;
     }
     for (const message of [...listed.value].reverse()) {
-      const found = configMessageOf(message, kind, kind === 'PROFILE' ? undefined : pageId);
+      const found = configMessageOf(message, kind, kind === 'BASE' ? undefined : pageId);
       if (found) {
         return { ok: true, value: found };
       }
@@ -98,7 +98,7 @@ export async function findLatestPageMessages(
   kind: ConfigMessageKind,
   needPageIds: readonly string[] = [],
 ): Promise<DiscordResult<LatestConfigMessage[]>> {
-  if (kind === 'PROFILE') {
+  if (kind === 'BASE') {
     return { ok: true, value: [] };
   }
   const byPage = new Map<string, LatestConfigMessage>();

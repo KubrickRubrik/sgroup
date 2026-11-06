@@ -299,6 +299,19 @@ html::-webkit-scrollbar {
   position: relative;
 }
 
+.toolbar-project {
+  position: relative;
+}
+
+.toolbar-base-loader {
+  flex: 0 0 auto;
+  margin-inline: 2px;
+}
+
+.toolbar-base-loader[hidden] {
+  display: none;
+}
+
 .toolbar-profile-menu {
   background: var(--vscode-menu-background, var(--vscode-sideBar-background));
   border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -393,6 +406,17 @@ html::-webkit-scrollbar {
   opacity: 0.35;
 }
 
+.toolbar-profile-row .profile-actions button.profile-cloud-push:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 16%, transparent);
+  border-radius: 3px;
+  color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
+  opacity: 1;
+}
+
+.toolbar-profile-row .profile-actions button.profile-cloud-push:not(:disabled):hover {
+  background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 28%, transparent);
+}
+
 .toolbar-profile-create {
   align-items: center;
   border-top: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -416,6 +440,74 @@ html::-webkit-scrollbar {
 
 .toolbar-profile-create input:focus {
   outline: 1px solid var(--vscode-focusBorder, #4daafc);
+}
+
+.toolbar-project-hint {
+  cursor: default;
+  opacity: 0.85;
+  padding: 2px 8px 4px;
+}
+
+.toolbar-project-hint .profile-name {
+  font-size: 11px;
+  white-space: normal;
+}
+
+.toolbar-project-join-btn {
+  height: auto;
+  justify-content: center;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+.toolbar-lock {
+  align-items: center;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 38%, transparent);
+  border-radius: 50%;
+  box-sizing: border-box;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  flex-shrink: 0;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.toolbar-lock:not(.is-fixed) {
+  color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground, #8b8b8b));
+}
+
+.toolbar-lock:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.toolbar-lock:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.toolbar-lock.toolbar-lock-dirty:not(.is-fixed) {
+  border-color: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 55%, transparent);
+  color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
+}
+
+button.toolbar-lock.is-fixed,
+button.toolbar-lock.is-fixed:hover {
+  background: #f14c4c;
+  border-color: #f14c4c;
+  color: #fff;
+}
+
+button.toolbar-lock.is-fixed:hover {
+  background: #d73a3a;
+  border-color: #d73a3a;
+}
+
+.toolbar-lock .lock-icon {
+  display: block;
+  height: 11px;
+  width: 11px;
 }
 
 .toolbar-menu {
@@ -1412,8 +1504,9 @@ button.pager-lock.is-fixed:hover {
 }
 
 .profile-cloud-btn .cloud-ico {
-  width: 14px;
   height: 14px;
+  pointer-events: none;
+  width: 14px;
 }
 
 .cards-draft-divider {

@@ -43,11 +43,18 @@
   const toolbarFormatWrap = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-format-wrap'));
   const toolbarFormat = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-format'));
   const toolbarFormatMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-format-menu'));
+  const toolbarProject = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-project'));
+  const toolbarProjectMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-project-menu'));
+  const toolbarProjectList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-project-list'));
+  const toolbarProjectAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-project-add'));
+  const toolbarProjectWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-project'));
+  const toolbarLock = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-lock'));
   const toolbarProfile = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile'));
   const toolbarProfileMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-menu'));
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
   const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
   const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
+  const toolbarBaseLoader = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-base-loader'));
   const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
   const toolbarPanelsMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-panels-menu'));
   const panelToggleBottom = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-bottom'));
@@ -426,6 +433,58 @@
     }
   });
 
+  toolbarProjectWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-project');
+    closeToolbarMenus();
+    closeContextMenu();
+    if (toolbarProjectMenu) {
+      toolbarProjectMenu.hidden = false;
+      toolbarProject?.setAttribute('aria-expanded', 'true');
+    }
+  });
+  toolbarProjectWrap?.addEventListener('mouseleave', () => {
+    scheduleMenuClose('toolbar-project', () => closeProjectMenu());
+  });
+  toolbarProjectAdd?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeProjectMenu();
+    vscode.postMessage({ type: 'project', action: 'create' });
+  });
+  toolbarProjectList?.addEventListener('click', (event) => {
+    // SVG icons inside cloud buttons are Element, not HTMLElement.
+    const target = event.target instanceof Element ? event.target : null;
+    const actionBtn = target?.closest('[data-project-action]');
+    if (actionBtn instanceof HTMLElement) {
+      event.stopPropagation();
+      const action = actionBtn.getAttribute('data-project-action');
+      const id = actionBtn.getAttribute('data-project-id') || undefined;
+      if (action === 'join') {
+        if (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled)) {
+          return;
+        }
+        vscode.postMessage({ type: 'project', action: 'join' });
+        closeProjectMenu();
+        return;
+      }
+      if (action === 'syncPush' || action === 'syncPull') {
+        if (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled)) {
+          return;
+        }
+        vscode.postMessage({ type: 'project', action, id });
+      }
+      return;
+    }
+    const row = target?.closest('[data-project-id]');
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const id = row.getAttribute('data-project-id');
+    if (!id) {
+      return;
+    }
+    vscode.postMessage({ type: 'project', action: 'select', id });
+    closeProjectMenu();
+  });
   toolbarProfileWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-profile');
     closeToolbarMenus();
@@ -443,8 +502,20 @@
     closeProfileMenu();
     vscode.postMessage({ type: 'profileOpenSettings' });
   });
+  toolbarLock?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (toolbarLock.disabled) {
+      return;
+    }
+    pagesFixed = !pagesFixed;
+    applyToolbarLock();
+    renderPager();
+    vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
+  });
   toolbarProfileList?.addEventListener('click', (event) => {
-    const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
+    // SVG icons inside cloud buttons are Element, not HTMLElement.
+    const target = event.target instanceof Element ? event.target : null;
     const actionBtn = target?.closest('[data-profile-action]');
     if (actionBtn instanceof HTMLElement) {
       event.stopPropagation();
@@ -456,6 +527,12 @@
         return;
       }
       if (action === 'delete' || action === 'syncPush' || action === 'syncPull') {
+        if (
+          (action === 'syncPush' || action === 'syncPull') &&
+          (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled))
+        ) {
+          return;
+        }
         vscode.postMessage({ type: 'profile', action, id });
         if (action === 'delete') {
           closeProfileMenu();
@@ -621,8 +698,16 @@
   let pagesFixed = false;
   /** Lock value already published. Differs from pagesFixed while that change is unsent. */
   let pagesFixedSent = false;
+  /** @type {{ id: string, name: string, active?: boolean }[]} */
+  let projectsList = [];
+  let activeProjectId = '';
+  /** @type {{ canPush?: boolean, canPull?: boolean }} */
+  let projectConfigSync = {};
+  let canToggleProjectLock = true;
   /** Batch send/receive of page configs is in flight. */
   let pageCloudBusy = false;
+  /** Project / profile Discord sync in flight. */
+  let baseConfigBusy = false;
   /** @type {Record<string, string[]>} */
   let pageDrafts = {};
   /** Path from assets/download-cloud-2-fill.svg */
@@ -1028,6 +1113,15 @@
         pagesFixedSent = pagesFixed;
       }
       renderPager();
+    } else if (message.type === 'baseConfigBusy') {
+      baseConfigBusy = message.busy === true;
+      applyBaseConfigLoader();
+      renderProjects(projectsList, activeProjectId, projectConfigSync);
+      renderProfiles(
+        Array.isArray(data?.profiles) ? data.profiles : undefined,
+        typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
+        data?.profileConfigSync,
+      );
     } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
         if (message.stateSeq < stateSeq) {
@@ -1085,7 +1179,21 @@
       hasConfigChannel = message.hasConfigChannel === true;
       pageDrafts =
         message.pageDrafts && typeof message.pageDrafts === 'object' ? message.pageDrafts : {};
-      renderProfiles(message.profiles, message.activeProfileId, message.positionSync);
+      renderProfiles(message.profiles, message.activeProfileId, message.profileConfigSync);
+      projectsList = Array.isArray(message.projects)
+        ? /** @type {{ id: string, name: string, active?: boolean }[]} */ (message.projects)
+        : [];
+      activeProjectId =
+        typeof message.activeProjectId === 'string'
+          ? message.activeProjectId
+          : projectsList.find((p) => p.active)?.id || '';
+      projectConfigSync =
+        message.projectConfigSync && typeof message.projectConfigSync === 'object'
+          ? message.projectConfigSync
+          : {};
+      canToggleProjectLock = message.canToggleProjectLock !== false;
+      renderProjects(projectsList, activeProjectId, projectConfigSync);
+      applyToolbarLock();
       applyAppearance(message.appearance);
       if (!showProblemsTab()) {
         problemsPageOpen = false;
@@ -1548,6 +1656,10 @@
   /** Apply profile language to static toolbar chrome and more-menu labels. */
   function applyToolbarLocale() {
     contextMenu.setAttribute('aria-label', t('contextMenu'));
+    setBtnLocale(toolbarProject, 'toolbarProject');
+    setElLocale(toolbarProjectMenu, 'projectSelect', 'aria-label');
+    setBtnLocale(toolbarProjectAdd, 'projectCreate');
+    applyToolbarLock();
     setBtnLocale(toolbarProfile, 'toolbarProfile');
     setElLocale(toolbarProfileMenu, 'profiles', 'aria-label');
     setBtnLocale(toolbarProfileAdd, 'profileCreate');
@@ -1706,6 +1818,7 @@
     toolbarPanels?.setAttribute('aria-expanded', 'false');
     closeToolbarViewMenu();
     closeToolbarCreateMenu();
+    closeProjectMenu();
     closeProfileMenu();
     closeFormatMenu();
   }
@@ -3070,12 +3183,176 @@
       toolbarProfileMenu.hidden = true;
     }
     toolbarProfile?.setAttribute('aria-expanded', 'false');
+    closeProjectMenu();
+  }
+
+  function closeProjectMenu() {
+    cancelMenuClose('toolbar-project');
+    if (toolbarProjectMenu) {
+      toolbarProjectMenu.hidden = true;
+    }
+    toolbarProject?.setAttribute('aria-expanded', 'false');
+  }
+
+  /**
+   * @param {{ id: string, name: string, active?: boolean }[] | undefined} projects
+   * @param {string | undefined} activeId
+   * @param {{ canPush?: boolean, canPull?: boolean } | undefined} sync
+   */
+  function applyBaseConfigLoader() {
+    if (!toolbarBaseLoader) {
+      return;
+    }
+    if (!baseConfigBusy) {
+      toolbarBaseLoader.hidden = true;
+      toolbarBaseLoader.replaceChildren();
+      toolbarBaseLoader.removeAttribute('title');
+      toolbarBaseLoader.setAttribute('aria-hidden', 'true');
+      toolbarBaseLoader.removeAttribute('aria-label');
+      return;
+    }
+    const label = t('baseConfigWorking');
+    toolbarBaseLoader.hidden = false;
+    toolbarBaseLoader.title = label;
+    toolbarBaseLoader.setAttribute('aria-label', label);
+    toolbarBaseLoader.setAttribute('aria-hidden', 'false');
+    toolbarBaseLoader.replaceChildren(reviewProgressIcon());
+  }
+
+  /**
+   * Direct listeners — delegated clicks on SVG paths were easy to miss.
+   * @param {HTMLButtonElement} button
+   * @param {'syncPush' | 'syncPull'} action
+   * @param {string} id
+   */
+  function bindProjectSyncButton(button, action, id) {
+    // Do not preventDefault on pointerdown — that cancels the following click.
+    button.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+      cancelMenuClose('toolbar-project');
+    });
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (baseConfigBusy || button.disabled) {
+        return;
+      }
+      vscode.postMessage({ type: 'project', action, id });
+    });
+  }
+
+  /**
+   * @param {HTMLButtonElement} button
+   * @param {'syncPush' | 'syncPull'} action
+   * @param {string} id
+   */
+  function bindProfileSyncButton(button, action, id) {
+    button.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+      cancelMenuClose('toolbar-profile');
+    });
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (baseConfigBusy || button.disabled) {
+        return;
+      }
+      vscode.postMessage({ type: 'profile', action, id });
+    });
+  }
+
+  function renderProjects(projects, activeId, sync) {
+    if (!toolbarProjectList) {
+      return;
+    }
+    const canPush = !baseConfigBusy && !!(sync && sync.canPush);
+    const canPull = !baseConfigBusy && !!(sync && sync.canPull);
+    toolbarProjectList.replaceChildren();
+    const list = Array.isArray(projects) ? projects : [];
+    if (list.length === 0) {
+      const hint = el('div', 'toolbar-profile-row toolbar-project-hint');
+      hint.setAttribute('role', 'presentation');
+      const hintText = el('span', 'profile-name');
+      hintText.textContent = t('projectPickExisting');
+      hint.append(hintText);
+      toolbarProjectList.append(hint);
+      const joinRow = el('div', 'toolbar-profile-row');
+      joinRow.setAttribute('role', 'menuitem');
+      const joinBtn = el('button', 'history-btn toolbar-project-join-btn');
+      joinBtn.type = 'button';
+      joinBtn.textContent = t('projectJoin');
+      joinBtn.title = t('projectJoinTitle');
+      joinBtn.setAttribute('aria-label', joinBtn.title);
+      joinBtn.setAttribute('data-project-action', 'join');
+      joinBtn.disabled = baseConfigBusy;
+      joinRow.append(joinBtn);
+      toolbarProjectList.append(joinRow);
+      return;
+    }
+    for (const project of list) {
+      const row = el('div', 'toolbar-profile-row' + (project.id === activeId ? ' is-active' : ''));
+      row.setAttribute('role', 'menuitem');
+      row.setAttribute('data-project-id', project.id);
+      const name = el('span', 'profile-name');
+      name.textContent = project.name;
+      row.append(name);
+      const actions = el('span', 'profile-actions');
+      if (project.id === activeId) {
+        const pullBtn = el('button', 'profile-cloud-btn');
+        pullBtn.type = 'button';
+        pullBtn.title = t('projectSyncPull');
+        pullBtn.setAttribute('aria-label', t('projectSyncPull'));
+        pullBtn.setAttribute('data-project-action', 'syncPull');
+        pullBtn.setAttribute('data-project-id', project.id);
+        pullBtn.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
+        pullBtn.disabled = !canPull;
+        const pushBtn = el('button', 'profile-cloud-btn profile-cloud-push');
+        pushBtn.type = 'button';
+        pushBtn.title = t('projectSyncPush');
+        pushBtn.setAttribute('aria-label', t('projectSyncPush'));
+        pushBtn.setAttribute('data-project-action', 'syncPush');
+        pushBtn.setAttribute('data-project-id', project.id);
+        pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
+        pushBtn.disabled = !canPush;
+        bindProjectSyncButton(pullBtn, 'syncPull', project.id);
+        bindProjectSyncButton(pushBtn, 'syncPush', project.id);
+        actions.append(pullBtn, pushBtn);
+      }
+      if (actions.childNodes.length > 0) {
+        row.append(actions);
+      }
+      toolbarProjectList.append(row);
+    }
+  }
+
+  function applyToolbarLock() {
+    if (!toolbarLock) {
+      return;
+    }
+    const lockedOut = !canToggleProjectLock;
+    toolbarLock.disabled = lockedOut;
+    const label = pagesFixed ? t('pagesUnfix') : t('pagesFix');
+    toolbarLock.title = label;
+    toolbarLock.setAttribute('aria-label', label);
+    toolbarLock.setAttribute('aria-pressed', pagesFixed ? 'true' : 'false');
+    toolbarLock.classList.toggle('is-fixed', pagesFixed);
+    toolbarLock.classList.toggle('toolbar-lock-dirty', pagesFixed !== pagesFixedSent);
+    const nextIcon = pagesFixed ? lockClosedIcon() : lockOpenIcon();
+    nextIcon.setAttribute('viewBox', pagesFixed ? '2.5 1.75 13.5 13.5' : '2.75 1.75 13.5 13.5');
+    toolbarLock.replaceChildren(nextIcon);
+  }
+
+  function syncToolbarLockBeforePager() {
+    if (!toolbarLock) {
+      return;
+    }
+    toolbarLock.classList.toggle('toolbar-lock-dirty', pagesFixed !== pagesFixedSent);
   }
 
   /** @param {string} name @param {string} [exceptId] */
   function isCreatableProfileName(name, exceptId) {
     const lower = name.toLocaleLowerCase();
-    if (lower === 'общий' || lower === 'general') {
+    if (lower === 'админ' || lower === 'общий' || lower === 'general') {
       return false;
     }
     const rows = toolbarProfileList?.querySelectorAll('[data-profile-id]') || [];
@@ -3103,8 +3380,8 @@
     if (!toolbarProfileList) {
       return;
     }
-    const canPush = !!(sync && sync.canPush);
-    const canPull = !!(sync && sync.canPull);
+    const canPush = !baseConfigBusy && !!(sync && sync.canPush);
+    const canPull = !baseConfigBusy && !!(sync && sync.canPull);
     toolbarProfileList.replaceChildren();
     const list = Array.isArray(profiles) ? profiles : [];
     for (const profile of list) {
@@ -3131,7 +3408,7 @@
         pullBtn.setAttribute('data-profile-id', profile.id);
         pullBtn.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
         pullBtn.disabled = !canPull;
-        const pushBtn = el('button', 'profile-cloud-btn');
+        const pushBtn = el('button', 'profile-cloud-btn profile-cloud-push');
         pushBtn.type = 'button';
         pushBtn.title = t('profileSyncPush');
         pushBtn.setAttribute('aria-label', t('profileSyncPush'));
@@ -3139,6 +3416,8 @@
         pushBtn.setAttribute('data-profile-id', profile.id);
         pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
         pushBtn.disabled = !canPush;
+        bindProfileSyncButton(pullBtn, 'syncPull', profile.id);
+        bindProfileSyncButton(pushBtn, 'syncPush', profile.id);
         actions.append(pullBtn, pushBtn);
       }
       const editBtn = el('button', '');
@@ -8911,9 +9190,6 @@
   }
 
   function countPush(list) {
-    if (pagesFixed !== pagesFixedSent) {
-      return list.length;
-    }
     return list.filter((page) => pageConfigSync[page.id]?.canPush).length;
   }
 
@@ -8937,6 +9213,7 @@
     if (!pager) {
       return;
     }
+    syncToolbarLockBeforePager();
     bindPagerDrag();
     armScrollKeep();
     const focused = document.activeElement;
@@ -8972,44 +9249,6 @@
         pageCloudBusy = true;
         renderPager();
         vscode.postMessage({ type: 'pageCloud', action: 'pushAll' });
-      });
-      const lockBtn = el('button', 'pager-lock' + (pagesFixed ? ' is-fixed' : ''));
-      lockBtn.type = 'button';
-      lockBtn.title = pagesFixed ? t('pagesUnfix') : t('pagesFix');
-      lockBtn.setAttribute('aria-label', lockBtn.title);
-      lockBtn.setAttribute('aria-pressed', pagesFixed ? 'true' : 'false');
-      const lockIcon = pagesFixed ? lockClosedIcon() : lockOpenIcon();
-      lockIcon.setAttribute('viewBox', pagesFixed ? '2.5 1.75 13.5 13.5' : '2.75 1.75 13.5 13.5');
-      lockBtn.append(lockIcon);
-      lockBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        pagesFixed = !pagesFixed;
-        // Rebuilding the pager removes this button under the pointer, and the
-        // same click hits the new lock and toggles the flag straight back off.
-        lockBtn.classList.toggle('is-fixed', pagesFixed);
-        lockBtn.title = pagesFixed ? t('pagesUnfix') : t('pagesFix');
-        lockBtn.setAttribute('aria-label', lockBtn.title);
-        lockBtn.setAttribute('aria-pressed', pagesFixed ? 'true' : 'false');
-        const nextIcon = pagesFixed ? lockClosedIcon() : lockOpenIcon();
-        nextIcon.setAttribute('viewBox', pagesFixed ? '2.5 1.75 13.5 13.5' : '2.75 1.75 13.5 13.5');
-        lockBtn.replaceChildren(nextIcon);
-        applyPushButton(pushAll, countPush(list));
-        for (const chip of pager.querySelectorAll('.pager-chip[data-page-id]')) {
-          const badge = chip.querySelector('.pager-chip-lock');
-          if (pagesFixed) {
-            if (!badge) {
-              const next = el('span', 'pager-chip-lock');
-              const icon = lockClosedIcon();
-              icon.setAttribute('viewBox', '2.5 1.75 13.5 13.5');
-              next.append(icon);
-              chip.append(next);
-            }
-          } else if (badge) {
-            badge.remove();
-          }
-        }
-        vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
       });
       const checkBtn = el('button', 'pager-sync pager-sync-check');
       checkBtn.type = 'button';
@@ -9048,7 +9287,7 @@
         vscode.postMessage({ type: 'pageCloud', action: 'pullAll' });
       });
       const tools = el('div', 'pager-tools');
-      tools.append(checkBtn, pullAll, lockBtn, pushAll);
+      tools.append(checkBtn, pullAll, pushAll);
       if (pageCloudBusy) {
         const loader = el('span', 'pager-cloud-loader');
         loader.title = t('pageCloudWorking');

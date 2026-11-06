@@ -3,7 +3,7 @@ import {
   EXPLORER_CONFIG_PREFIX,
   LINKS_CONFIG_PREFIX,
   NOTES_CONFIG_PREFIX,
-  PROFILE_CONFIG_PREFIX,
+  BASE_CONFIG_PREFIX as PROFILE_CONFIG_PREFIX,
   REVIEW_CONFIG_PREFIX,
 } from './configFormat';
 import { listChannelMessages, postChannelMessage } from './discordApi';
@@ -28,7 +28,7 @@ const PREFIX_BY_KIND: Record<SetupChannelKind, string> = {
 };
 
 const HELLO_ROLE_EN: Record<SetupChannelKind, string> = {
-  profile: 'profile',
+  profile: 'storing project, profile, and page settings',
   explorer: 'the explorer map',
   notes: 'the notes map',
   links: 'the links map',
@@ -36,7 +36,7 @@ const HELLO_ROLE_EN: Record<SetupChannelKind, string> = {
 };
 
 const HELLO_ROLE_RU: Record<SetupChannelKind, string> = {
-  profile: 'профиля',
+  profile: 'хранения настроек проектов, профилей и страниц',
   explorer: 'карты проводника',
   notes: 'карты заметок',
   links: 'карты ссылок',

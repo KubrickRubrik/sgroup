@@ -30,7 +30,11 @@
         "problemsWarning": true,
         "problemsInfo": true,
         "language": "ru",
-        "reviewRefreshSec": 60
+        "reviewRefreshSec": 60,
+        "projectFetchSec": 60,
+        "filesFetchSec": 60,
+        "notesFetchSec": 60,
+        "linksFetchSec": 60
       },
       "open": {
         "bottom": false,

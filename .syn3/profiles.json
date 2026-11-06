@@ -3,7 +3,7 @@
   "profiles": [
     {
       "id": "general",
-      "name": "Общий",
+      "name": "Админ",
       "sProfileIds": [
         "006048e5b595917b50ffc76109a305faf4dabcbc279c90cabc75664736adfde8"
       ]

@@ -78,6 +78,11 @@ export interface PositionsFile {
   /** Fingerprint of the last pushed or pulled page snapshot. A mismatch means the page can be sent. */
   pageClean?: Record<string, string>;
   /**
+   * Fingerprints of the last pushed/pulled base snapshot.
+   * `project` covers channel + project meta/pages; `profile` covers profile styles in base.
+   */
+  baseClean?: { project?: string; profile?: string };
+  /**
    * Pages removed locally whose Discord message still exists.
    * Retried until the channel accepts a deleted page config.
    */
@@ -434,6 +439,25 @@ export function normalizePageClean(raw: unknown): Record<string, string> | undef
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+/** Last synced base fingerprints. Local-only, same lifetime as pageClean. */
+export function normalizeBaseClean(
+  raw: unknown,
+): { project?: string; profile?: string } | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const source = raw as { project?: unknown; profile?: unknown };
+  const project = typeof source.project === 'string' ? source.project.trim() : '';
+  const profile = typeof source.profile === 'string' ? source.profile.trim() : '';
+  if (!project && !profile) {
+    return undefined;
+  }
+  return {
+    ...(project ? { project } : {}),
+    ...(profile ? { profile } : {}),
+  };
+}
+
 function normalizePageTombstones(raw: unknown): Record<string, PageTombstone> | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return undefined;
@@ -508,6 +532,7 @@ export function normalizePositions(
     focus?: unknown;
     drafts?: unknown;
     pageClean?: unknown;
+    baseClean?: unknown;
     pageTombstones?: unknown;
     surfaces?: unknown;
     pagesFixed?: unknown;
@@ -531,6 +556,10 @@ export function normalizePositions(
     const pageClean = normalizePageClean(source.pageClean);
     if (pageClean) {
       result.pageClean = pageClean;
+    }
+    const baseClean = normalizeBaseClean(source.baseClean);
+    if (baseClean) {
+      result.baseClean = baseClean;
     }
     const pageTombstones = normalizePageTombstones(source.pageTombstones);
     if (pageTombstones) {
