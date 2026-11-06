@@ -392,6 +392,11 @@ export class ReviewMapController {
   private readonly skeletonSeq = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
   private readonly replyMeta = new Map<string, { isPill: boolean; pillLabel?: string }>();
+  /**
+   * Channel last used to list a page when access.json has no channel.
+   * A project switch pins the new review channel here before access is rewritten.
+   */
+  private readonly listedChannel = new Map<string, string>();
   /** Downloaded review attachments, keyed by Discord message id. */
   private readonly fileCache = new Map<string, { filename: string; text: string }>();
 
@@ -531,6 +536,30 @@ export class ReviewMapController {
   dropWindow(pageId: string): void {
     this.windows.delete(pageId);
     this.errors.delete(pageId);
+    this.listedChannel.delete(pageId);
+  }
+
+  /** Forget every review window. The next open reads the current project channel. */
+  dropAllWindows(): void {
+    this.windows.clear();
+    this.errors.clear();
+    this.listedChannel.clear();
+    this.loading.clear();
+    this.loadEdge.clear();
+    this.mrSkeleton.clear();
+    this.reviewSkeleton.clear();
+  }
+
+  /** Discord channel for listing this page: explicit override, then access, then the last list. */
+  private async listingChannel(pageId: string, channelOverride?: string): Promise<string> {
+    const accessChannel = (await this.getAccess(pageId))?.channelId?.trim() || '';
+    const channel = (channelOverride ?? (accessChannel || this.listedChannel.get(pageId) || '')).trim();
+    if (channel) {
+      this.listedChannel.set(pageId, channel);
+    } else {
+      this.listedChannel.delete(pageId);
+    }
+    return channel;
   }
 
   isLoading(pageId: string): boolean {
@@ -638,13 +667,13 @@ export class ReviewMapController {
     }
   }
 
-  async loadInitial(pageId: string): Promise<ReviewPageState> {
+  async loadInitial(pageId: string, channelOverride?: string): Promise<ReviewPageState> {
     this.loading.add(pageId);
     this.errors.delete(pageId);
     try {
-      const access = await this.getAccess(pageId);
+      const channel = await this.listingChannel(pageId, channelOverride);
       const token = await this.discordToken();
-      if (!access) {
+      if (!channel) {
         this.errors.set(pageId, 'Review page access is not configured');
         this.windows.delete(pageId);
       } else if (!token) {
@@ -652,7 +681,7 @@ export class ReviewMapController {
         this.windows.delete(pageId);
       } else {
         // Tip: visible + 1 older probe. No newer probe — we are at the channel tip.
-        const result = await listChannelMessages(token, access.channelId, {
+        const result = await listChannelMessages(token, channel, {
           limit: CHANNEL_FETCH_SIDE,
         });
         if (!result.ok) {
@@ -731,16 +760,16 @@ export class ReviewMapController {
 
   private async extendWindow(pageId: string, direction: 'older' | 'newer'): Promise<ReviewPageState> {
     const win = this.windows.get(pageId);
-    const access = await this.getAccess(pageId);
+    const channel = await this.listingChannel(pageId);
     const token = await this.discordToken();
-    if (!win || !access || !token || win.messages.length === 0) {
+    if (!win || !channel || !token || win.messages.length === 0) {
       return this.snapshot(pageId);
     }
     this.loading.add(pageId);
     this.errors.delete(pageId);
     try {
       const edge = direction === 'older' ? win.messages[0] : win.messages[win.messages.length - 1];
-      const result = await listChannelMessages(token, access.channelId, {
+      const result = await listChannelMessages(token, channel, {
         limit: CHANNEL_FETCH_SIDE,
         ...(direction === 'older' ? { before: edge.id } : { after: edge.id }),
       });
@@ -858,16 +887,16 @@ export class ReviewMapController {
   }
 
   async jumpAroundMessage(pageId: string, messageId: string): Promise<ReviewPageState> {
-    const access = await this.getAccess(pageId);
+    const channel = await this.listingChannel(pageId);
     const token = await this.discordToken();
-    if (!access || !token) {
+    if (!channel || !token) {
       return this.snapshot(pageId);
     }
     this.loading.add(pageId);
     this.errors.delete(pageId);
     try {
       // 5 visible + 1 older probe + 1 newer probe.
-      const result = await listChannelMessages(token, access.channelId, {
+      const result = await listChannelMessages(token, channel, {
         around: messageId,
         limit: CHANNEL_FETCH_AROUND,
       });
@@ -901,6 +930,9 @@ export class ReviewMapController {
    */
   async pollRefresh(pageId: string): Promise<ReviewPageState> {
     if (this.loading.has(pageId)) {
+      return this.snapshot(pageId);
+    }
+    if (!(await this.listingChannel(pageId))) {
       return this.snapshot(pageId);
     }
     const win = this.windows.get(pageId);

@@ -4006,7 +4006,8 @@ button.review-neurofix-btn:hover {
   z-index: 60;
 }
 
-.discord-gate-panel.review-mr-panel {
+.discord-gate-panel.review-mr-panel,
+.project-create-panel.review-mr-panel {
   left: 50%;
   max-height: calc(100% - 72px);
   overflow: auto;
@@ -4092,6 +4093,33 @@ button.review-neurofix-btn:hover {
   right: 12px;
   top: 56px;
   z-index: 50;
+}
+
+.review-mr-panel.is-busy {
+  pointer-events: none;
+}
+
+.panel-busy-overlay {
+  align-items: center;
+  backdrop-filter: blur(1px);
+  background: color-mix(in srgb, var(--vscode-editorWidget-background) 78%, transparent);
+  border-radius: inherit;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  pointer-events: all;
+  position: absolute;
+  right: 0;
+  top: 0;
+  z-index: 8;
+}
+
+.panel-busy-overlay .review-ico {
+  animation: pager-cloud-spin 0.9s linear infinite;
+  color: var(--vscode-foreground);
+  height: 28px;
+  width: 28px;
 }
 
 .review-mr-title-row {
@@ -4200,6 +4228,56 @@ button.review-neurofix-btn:hover {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.project-create-panel .review-mr-field.has-error .review-mr-title,
+.page-settings-panel .review-mr-field.has-error .review-mr-title {
+  border-color: var(--vscode-inputValidation-errorBorder, #f14c4c);
+}
+
+.project-create-panel .project-create-submit-wrap .review-btn.is-primary.is-idle,
+.page-settings-panel .review-mr-actions .review-btn.is-primary.is-idle {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+
+.project-create-panel .project-create-submit-wrap .review-btn.is-primary.is-idle:hover,
+.page-settings-panel .review-mr-actions .review-btn.is-primary.is-idle:hover {
+  background: var(--vscode-button-background);
+}
+
+.project-create-modes {
+  display: flex;
+  gap: 6px;
+}
+
+.project-create-modes .review-btn {
+  flex: 1;
+}
+
+.project-create-submit-wrap {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.project-create-loader {
+  align-items: center;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.project-create-loader[hidden] {
+  display: none;
+}
+
+.project-create-loader .review-ico {
+  animation: pager-cloud-spin 0.9s linear infinite;
+  color: var(--vscode-foreground);
+  height: 18px;
+  width: 18px;
 }
 
 .review-mr-squash {

@@ -26,11 +26,12 @@ import { instructionPageHtml, instructionTitle } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
-import { ReviewChipStatus } from './discordApi';
+import { postChannelMessage, ReviewChipStatus } from './discordApi';
 import {
   ensureSetupProbe,
   isValidChannelId,
   reviewChannelConflicts,
+  setupHelloText,
   type SetupChannelKind,
 } from './discordSetup';
 import { ReviewDepth, ReviewKind } from './reviewPending';
@@ -346,8 +347,12 @@ type IncomingMessage =
     }
   | {
       type: 'project';
-      action: 'select' | 'create' | 'syncPush' | 'syncPull' | 'join';
+      action: 'select' | 'create' | 'createSubmit' | 'selectSubmit' | 'syncPush' | 'syncPull' | 'join';
       id?: string;
+      name?: string;
+      channelId?: string;
+      discordToken?: string;
+      mode?: 'create' | 'select';
     }
   | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
   | { type: 'pageCloud'; action: 'pushAll' }
@@ -735,6 +740,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastSyncedOpenKey = '';
   /** Note id to focus in the next state push (after create). */
   private focusNoteId?: string;
+  /** Active project and its review channel. A change drops the review window. */
+  private reviewProjectKey = '';
   private readonly languages: CodeLanguageService;
   private readonly ownsLanguages: boolean;
   /** On-disk uncommitted paths from the built-in Git extension. */
@@ -825,6 +832,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         this.postOpenFlags();
         void this.syncOpenSurfacesIfNeeded();
         this.armSyncFetchTimersIfNeeded();
+        void this.reloadReviewOnProjectChange();
       }),
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.viewColumn !== undefined) {
@@ -2257,7 +2265,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (await this.needsDiscordGate()) {
       // Overlay owns the webview until Discord is configured.
+      // Create / select submit must reach the handler or the gate can never finish.
+      const projectSubmit =
+        message.type === 'project' &&
+        (message.action === 'createSubmit' || message.action === 'selectSubmit');
       if (
+        !projectSubmit &&
         message.type !== 'mapFocus' &&
         message.type !== 'activePage' &&
         message.type !== 'listProjectDir' &&
@@ -2269,6 +2282,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         void webview.postMessage({ type: 'baseConfigBusy', busy: false });
         void webview.postMessage({ type: 'pageCloudBusy', busy: false });
         await this.postDiscordGate(webview);
+        // Sync clicks looked dead when the gate swallowed them with no toast.
+        if (
+          (message.type === 'profile' || message.type === 'project') &&
+          (message.action === 'syncPush' || message.action === 'syncPull')
+        ) {
+          const locale = normalizeLocale(this.store.appearance.language);
+          void vscode.window.showWarningMessage(`Syn3: ${t(locale, 'discordGateTitle')}`);
+        }
         return;
       }
     }
@@ -2396,7 +2417,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'project') {
-      await this.onProject(message.action, message.id);
+      await this.onProject(
+        webview,
+        message.action,
+        message.id,
+        message.name,
+        message.channelId,
+        message.discordToken,
+        message.mode,
+      );
       return;
     }
     if (message.type === 'pageCloud') {
@@ -4298,8 +4327,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private async onProject(
-    action: 'select' | 'create' | 'syncPush' | 'syncPull' | 'join',
+    webview: vscode.Webview,
+    action: 'select' | 'create' | 'createSubmit' | 'selectSubmit' | 'syncPush' | 'syncPull' | 'join',
     id?: string,
+    name?: string,
+    channelId?: string,
+    discordToken?: string,
+    mode?: 'create' | 'select',
   ): Promise<void> {
     const locale = normalizeLocale(this.store.appearance.language);
     if (action === 'select') {
@@ -4311,44 +4345,127 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (action === 'create') {
       const projects = this.store.projects();
       const needChannel = projects.length === 0 || !this.store.baseChannelId().trim();
-      const title = t(locale, 'projectCreateTitle');
-      const name = await vscode.window.showInputBox({
-        title,
-        prompt: t(locale, 'projectName'),
-        validateInput: (v) => {
-          const trimmed = v.trim();
-          if (!trimmed) {
-            return t(locale, 'projectNameEmpty');
-          }
-          return undefined;
-        },
+      const status = await secretsStatus(this.hostSecrets);
+      await webview.postMessage({
+        type: 'projectCreatePanel',
+        needChannel,
+        hasDiscord: status.hasDiscord,
+        mode: mode === 'select' ? 'select' : 'create',
+        gate: false,
       });
-      if (!name?.trim()) {
+      return;
+    }
+    if (action === 'createSubmit') {
+      const trimmedName = (name || '').trim();
+      if (!trimmedName) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectNameEmpty'),
+          canRetry: false,
+        });
         return;
       }
-      let channelId: string | undefined;
+      const projects = this.store.projects();
+      const needChannel = projects.length === 0 || !this.store.baseChannelId().trim();
+      let nextChannel: string | undefined;
       if (needChannel) {
-        const ch = await vscode.window.showInputBox({
-          title,
-          prompt: t(locale, 'projectChannel'),
-          placeHolder: t(locale, 'channelIdPlaceholder'),
-          validateInput: (v) => {
-            const trimmed = v.trim();
-            if (!trimmed) {
-              return t(locale, 'projectChannelEmpty');
-            }
-            if (!isValidChannelId(trimmed)) {
-              return t(locale, 'projectChannelInvalid');
-            }
-            return undefined;
-          },
-        });
-        if (!ch?.trim()) {
+        const ch = (channelId || '').trim();
+        if (!ch) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'projectChannelEmpty'),
+            canRetry: false,
+          });
           return;
         }
-        channelId = ch.trim();
+        if (!isValidChannelId(ch)) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'projectChannelInvalid'),
+            canRetry: false,
+          });
+          return;
+        }
+        nextChannel = ch;
       }
-      await this.store.createProject(name.trim(), channelId);
+      const newToken = (discordToken || '').trim();
+      if (newToken) {
+        await storeSecrets(this.hostSecrets, { discord: newToken });
+      }
+      try {
+        const result = await this.store.publishNewProject(trimmedName, nextChannel);
+        if (!result.ok) {
+          const text = result.message || 'Failed to post base.json';
+          void vscode.window.showErrorMessage(`Syn3: ${text}`);
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: result.canRetry ? t(locale, 'projectCreateRetryHint') : text,
+            canRetry: result.canRetry,
+          });
+          return;
+        }
+        await webview.postMessage({ type: 'projectCreateDone' });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: text,
+          canRetry: false,
+        });
+      }
+      return;
+    }
+    if (action === 'selectSubmit') {
+      const ch = (channelId || '').trim();
+      if (!ch) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectChannelEmpty'),
+          canRetry: false,
+        });
+        return;
+      }
+      if (!isValidChannelId(ch)) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectChannelInvalid'),
+          canRetry: false,
+        });
+        return;
+      }
+      const newToken = (discordToken || '').trim();
+      if (newToken) {
+        await storeSecrets(this.hostSecrets, { discord: newToken });
+      }
+      try {
+        const pull = await this.store.pullBaseFromChannel(ch);
+        if (pull.applied) {
+          if (pull.message && pull.message !== 'Nothing to pull') {
+            void vscode.window.showErrorMessage(`Syn3: ${pull.message}`);
+          }
+          await webview.postMessage({ type: 'projectCreateDone' });
+          return;
+        }
+        if (!pull.ok && pull.message && pull.message !== 'Nothing to pull') {
+          void vscode.window.showErrorMessage(`Syn3: ${pull.message}`);
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: pull.message,
+            canRetry: false,
+          });
+          return;
+        }
+        await webview.postMessage({ type: 'projectCreateDone' });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: text,
+          canRetry: false,
+        });
+      }
       return;
     }
     if (action === 'join') {
@@ -4397,12 +4514,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private showBaseConfigResult(result: { ok: boolean; message?: string }): void {
-    if (result.ok || !result.message) {
+    if (result.ok) {
       return;
     }
+    this.showBaseConfigError(result.message || 'Failed to post base.json');
+  }
+
+  private showBaseConfigError(message: string): void {
     const locale = normalizeLocale(this.store.appearance.language);
-    const text =
-      result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
+    const text = message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : message;
     void vscode.window.showErrorMessage(`Syn3: ${text}`);
   }
 
@@ -4414,12 +4534,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private async withBaseConfigBusy(task: () => Promise<void>): Promise<void> {
     if (this.baseConfigBatch) {
+      this.postBaseConfigBusy(true);
+      this.showBaseConfigError('Base config sync is already running');
       return;
     }
     this.baseConfigBatch = true;
     this.postBaseConfigBusy(true);
     try {
       await task();
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      this.showBaseConfigError(text);
     } finally {
       this.baseConfigBatch = false;
       this.postBaseConfigBusy(false);
@@ -4599,6 +4724,37 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
+  private pageSetupKind(kind: PageKind): SetupChannelKind {
+    if (kind === 'notes') {
+      return 'notes';
+    }
+    if (kind === 'links') {
+      return 'links';
+    }
+    if (kind === 'review') {
+      return 'review';
+    }
+    return 'explorer';
+  }
+
+  /** Post the map hello into the page channel. Does not look for an older hello. */
+  private async postPageChannelHello(
+    kind: PageKind,
+    channelId: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const token = (await getSecret(this.hostSecrets, SECRET_DISCORD)) || '';
+    if (!token) {
+      return { ok: false, message: t(locale, 'reviewFieldDiscordToken') };
+    }
+    const setupKind = this.pageSetupKind(kind);
+    const posted = await postChannelMessage(token, channelId, setupHelloText(setupKind, locale));
+    if (!posted.ok) {
+      return posted;
+    }
+    return { ok: true };
+  }
+
   private async savePageDiscordAndChannel(
     kind: PageKind,
     channelId: string | undefined,
@@ -4634,11 +4790,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
-    const channelId = typeof message.channelId === 'string' ? message.channelId.trim() : undefined;
-    if (channelId !== undefined && channelId && !/^\d{5,}$/.test(channelId)) {
+    const channelId = typeof message.channelId === 'string' ? message.channelId.trim() : '';
+    if (channelId && !/^\d{5,}$/.test(channelId)) {
       await webview.postMessage({
         type: 'pageSettingsError',
-        message: t(locale, 'reviewFieldChannelId'),
+        message: t(locale, 'projectChannelInvalid'),
       });
       return;
     }
@@ -4652,14 +4808,45 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (this.store.pages().length >= MAX_PAGES) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: 'Too many pages',
+      });
+      return;
+    }
+    if (!/^\d{5,}$/.test(channelId)) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: channelId ? t(locale, 'projectChannelInvalid') : t(locale, 'projectChannelEmpty'),
+      });
       return;
     }
     const kind = normalizePageKind(message.kind) ?? 'files';
     if (kind === 'review') {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: 'Use review create panel',
+      });
+      return;
+    }
+    if (message.discordToken?.trim()) {
+      await storeSecrets(this.hostSecrets, { discord: message.discordToken });
+    }
+    const hello = await this.postPageChannelHello(kind, channelId);
+    if (!hello.ok) {
+      void vscode.window.showErrorMessage(`Syn3: ${hello.message}`);
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: hello.message,
+      });
       return;
     }
     const id = await this.store.createPage(name, kind, message.description);
     if (!id) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: 'Failed to create page',
+      });
       return;
     }
     await this.savePageDiscordAndChannel(kind, channelId, message.discordToken);
@@ -4682,22 +4869,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       discordToken?: string;
     },
   ): Promise<void> {
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'reviewCreatePageError', message: text });
+      void vscode.window.showErrorMessage(`Syn3: ${text}`);
+    };
     if (this.store.pages().length >= MAX_PAGES) {
+      await fail('Too many pages');
       return;
     }
     const name = message.name.trim();
     if (!name) {
-      void vscode.window.showErrorMessage('Syn3: page name is required');
+      await fail('page name is required');
       return;
     }
     const provider = isReviewHostProvider(message.provider) ? message.provider : undefined;
     if (!provider) {
-      void vscode.window.showErrorMessage('Syn3: choose GitLab or GitHub');
+      await fail('choose GitLab or GitHub');
       return;
     }
     const defaults = await this.review.createPageDefaults();
     if ('error' in defaults) {
-      void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+      await fail(defaults.error);
       return;
     }
     const accessError = this.review.validateCreateAccess({
@@ -4707,7 +4899,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       origin: defaults.origin,
     });
     if (accessError) {
-      void vscode.window.showErrorMessage(`Syn3: ${accessError}`);
+      await fail(accessError);
       return;
     }
     const secrets = await this.review.applyCreatePageSecrets({
@@ -4717,11 +4909,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       discordToken: message.discordToken,
     });
     if (!secrets.ok) {
-      void vscode.window.showErrorMessage(`Syn3: ${secrets.message}`);
+      await fail(secrets.message);
+      return;
+    }
+    const hello = await this.postPageChannelHello('review', message.channelId.trim());
+    if (!hello.ok) {
+      await fail(hello.message);
       return;
     }
     const id = await this.store.createPage(name, 'review', message.description);
     if (!id) {
+      await fail('Failed to create page');
       return;
     }
     await this.review.savePageAccess(id, {
@@ -4732,6 +4930,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await this.store.touchPageConfig(id);
     this.activePageByWebview.set(webview, id);
     this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'reviewCreatePageDone' });
     await webview.postMessage({ type: 'openPage', pageId: id });
     // Load once here. Later activePage events for the same pageId are ignored (rate limits).
     await this.runReviewChannelLoad(webview, id, 'initial', () => this.review.loadInitial(id));
@@ -4848,8 +5047,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /**
    * Open a review page. A window already fetched for this page is shown as-is.
    * Discord is hit only for the first load, or when a fetch is not already running.
+   * The project's review channel is used when the page binding has none.
    */
   private async showReviewPage(webview: vscode.Webview, pageId: string): Promise<void> {
+    const access = await this.review.getAccess(pageId);
+    const projectChannel = (this.store.catalogChannels().review || '').trim();
+    const channel = (access?.channelId || projectChannel).trim();
+    if (!channel) {
+      this.review.dropWindow(pageId);
+      await this.pushReviewState(webview, this.review.snapshot(pageId));
+      return;
+    }
     if (this.review.hasWindow(pageId)) {
       await this.pushReviewState(webview, this.review.snapshot(pageId));
       return;
@@ -4857,9 +5065,39 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (this.review.isLoading(pageId)) {
       return;
     }
+    const override = access?.channelId?.trim() ? undefined : projectChannel;
     await this.runReviewChannelLoad(webview, pageId, 'initial', () =>
-      this.review.loadInitial(pageId),
+      this.review.loadInitial(pageId, override),
     );
+  }
+
+  /**
+   * Project switch: forget messages from the previous review channel.
+   * If the new project has a review channel, open review pages read it.
+   */
+  private async reloadReviewOnProjectChange(): Promise<void> {
+    const projectId = this.store.activeProjectId() ?? '';
+    const channel = (this.store.catalogChannels().review || '').trim();
+    const key = `${projectId}\n${channel}`;
+    if (key === this.reviewProjectKey) {
+      return;
+    }
+    const first = this.reviewProjectKey === '';
+    this.reviewProjectKey = key;
+    if (first) {
+      return;
+    }
+    this.review.dropAllWindows();
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      const pageId = this.pageIdFor(webview);
+      if (this.store.page(pageId)?.kind !== 'review') {
+        continue;
+      }
+      await this.showReviewPage(webview, pageId);
+    }
   }
 
   /**

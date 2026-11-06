@@ -95,25 +95,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function discordFetch(
+type DiscordFetchAttempt = DiscordResult<unknown> & { retryAfterMs?: number };
+
+async function discordFetchOnce(
   token: string,
   method: string,
   route: string,
-  body?: string | FormData,
+  body?: string | FormData | Uint8Array,
   contentType?: string,
-  attempt = 0,
-): Promise<DiscordResult<unknown>> {
+): Promise<DiscordFetchAttempt> {
   const headers: Record<string, string> = {
     Authorization: `Bot ${token}`,
   };
   if (contentType) {
     headers['Content-Type'] = contentType;
   }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
   try {
     const response = await fetch(`${API}${route}`, {
       method,
       headers,
       body,
+      signal: controller.signal,
     });
     const text = await response.text();
     let json: unknown = undefined;
@@ -124,36 +128,68 @@ async function discordFetch(
         json = text;
       }
     }
-    if (response.status === 429 && attempt < 3) {
+    if (!response.ok) {
+      const raw =
+        json && typeof json === 'object' && 'message' in json
+          ? String((json as { message: unknown }).message)
+          : `HTTP ${response.status}`;
+      const msg = `Discord ${response.status}: ${raw}`;
       const retryAfterHeader = response.headers.get('Retry-After');
       const retryFromBody =
         json && typeof json === 'object' && 'retry_after' in json
           ? Number((json as { retry_after: unknown }).retry_after)
           : NaN;
       const retrySec = Number(retryAfterHeader);
-      const waitMs = Number.isFinite(retrySec)
+      const retryAfterMs = Number.isFinite(retrySec)
         ? Math.ceil(retrySec * 1000)
         : Number.isFinite(retryFromBody)
           ? Math.ceil(retryFromBody * 1000)
-          : 1000 * (attempt + 1);
-      await sleep(Math.min(Math.max(waitMs, 250), 10_000));
-      return discordFetch(token, method, route, body, contentType, attempt + 1);
-    }
-    if (!response.ok) {
-      const msg =
-        json && typeof json === 'object' && 'message' in json
-          ? String((json as { message: unknown }).message)
-          : `HTTP ${response.status}`;
-      return { ok: false, status: response.status, message: msg };
+          : undefined;
+      return { ok: false, status: response.status, message: msg, retryAfterMs };
     }
     return { ok: true, value: json };
   } catch (error) {
+    const aborted = error instanceof Error && error.name === 'AbortError';
     return {
       ok: false,
       status: 0,
-      message: error instanceof Error ? error.message : String(error),
+      message: aborted
+        ? 'Discord request timed out'
+        : error instanceof Error
+          ? error.message
+          : String(error),
     };
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+function retryWaitMs(result: DiscordFetchAttempt, attempt: number): number {
+  const fallback = 1000 * (attempt + 1);
+  const fromHeader = result.retryAfterMs;
+  const waitMs = typeof fromHeader === 'number' && Number.isFinite(fromHeader) ? fromHeader : fallback;
+  return Math.min(Math.max(waitMs, 250), 10_000);
+}
+
+async function discordFetch(
+  token: string,
+  method: string,
+  route: string,
+  body?: string | FormData | Uint8Array,
+  contentType?: string,
+  attempt = 0,
+): Promise<DiscordResult<unknown>> {
+  // FormData can only be read once — callers that need 429 retries with files
+  // must rebuild the body (see postMessageWithAttachment).
+  if (body instanceof FormData) {
+    return discordFetchOnce(token, method, route, body, contentType);
+  }
+  const result = await discordFetchOnce(token, method, route, body, contentType);
+  if (result.ok || result.status !== 429 || attempt >= 3) {
+    return result;
+  }
+  await sleep(retryWaitMs(result, attempt));
+  return discordFetch(token, method, route, body, contentType, attempt + 1);
 }
 
 function embedFallback(embeds: unknown): string {
@@ -605,6 +641,35 @@ export async function postMessageWithFile(
   return postMessageWithAttachment(token, channelId, content, filename, bytes);
 }
 
+/**
+ * Raw multipart body. Extension-host fetch often drops or hangs on FormData/Blob
+ * file parts, so the JSON config never appears in the channel.
+ */
+function encodeAttachmentMultipart(
+  payload: string,
+  filename: string,
+  bytes: Uint8Array,
+): { body: Uint8Array; contentType: string } {
+  const boundary = `Syn3Boundary${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const safeName = filename.replace(/["\r\n]/g, '_');
+  const preamble = Buffer.from(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="payload_json"\r\n` +
+      `Content-Type: application/json\r\n\r\n` +
+      `${payload}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="files[0]"; filename="${safeName}"\r\n` +
+      `Content-Type: application/json; charset=utf-8\r\n\r\n`,
+    'utf8',
+  );
+  const ending = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+  const file = Buffer.from(bytes);
+  return {
+    body: Buffer.concat([preamble, file, ending]),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 /** Post a channel message with an in-memory attachment. */
 export async function postMessageWithAttachment(
   token: string,
@@ -613,18 +678,42 @@ export async function postMessageWithAttachment(
   filename: string,
   bytes: Uint8Array | Buffer,
 ): Promise<DiscordResult<DiscordMessage>> {
-  const form = new FormData();
-  form.append('payload_json', JSON.stringify(messagePayload(content)));
-  form.append('files[0]', new Blob([new Uint8Array(bytes)]), filename);
-  const result = await discordFetch(token, 'POST', `/channels/${channelId}/messages`, form);
-  if (!result.ok) {
-    return result;
+  const payload = JSON.stringify({
+    ...messagePayload(content),
+    attachments: [{ id: 0, filename }],
+  });
+  const fileBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const encoded = encodeAttachmentMultipart(payload, filename, fileBytes);
+  let last: DiscordFetchAttempt = { ok: false, status: 0, message: 'Upload failed' };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    last = await discordFetchOnce(
+      token,
+      'POST',
+      `/channels/${channelId}/messages`,
+      encoded.body,
+      encoded.contentType,
+    );
+    if (last.ok) {
+      const msg = asMessage(last.value);
+      if (!msg) {
+        return { ok: false, status: 0, message: 'Invalid Discord message response' };
+      }
+      const attached = msg.attachments?.some((file) => file.filename === filename);
+      if (!attached) {
+        return {
+          ok: false,
+          status: 0,
+          message: `Discord accepted the message but did not attach ${filename}`,
+        };
+      }
+      return { ok: true, value: msg };
+    }
+    if (last.status !== 429 || attempt >= 5) {
+      return { ok: false, status: last.status, message: last.message };
+    }
+    await sleep(retryWaitMs(last, attempt));
   }
-  const msg = asMessage(result.value);
-  if (!msg) {
-    return { ok: false, status: 0, message: 'Invalid Discord message response' };
-  }
-  return { ok: true, value: msg };
+  return { ok: false, status: last.status, message: last.message };
 }
 
 /** Strip `.git` and trailing slash from a repo URL. */

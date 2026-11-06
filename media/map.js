@@ -450,6 +450,23 @@
     closeProjectMenu();
     vscode.postMessage({ type: 'project', action: 'create' });
   });
+  toolbarProjectList?.addEventListener('pointerup', (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    const actionBtn = target?.closest('[data-project-action]');
+    if (!(actionBtn instanceof HTMLElement)) {
+      return;
+    }
+    const action = actionBtn.getAttribute('data-project-action');
+    if (action !== 'syncPush' && action !== 'syncPull') {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    sendBaseSync('project', action, actionBtn.getAttribute('data-project-id') || undefined, actionBtn);
+  });
   toolbarProjectList?.addEventListener('click', (event) => {
     // SVG icons inside cloud buttons are Element, not HTMLElement.
     const target = event.target instanceof Element ? event.target : null;
@@ -462,15 +479,12 @@
         if (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled)) {
           return;
         }
-        vscode.postMessage({ type: 'project', action: 'join' });
+        vscode.postMessage({ type: 'project', action: 'create', mode: 'select' });
         closeProjectMenu();
         return;
       }
       if (action === 'syncPush' || action === 'syncPull') {
-        if (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled)) {
-          return;
-        }
-        vscode.postMessage({ type: 'project', action, id });
+        sendBaseSync('project', action, id, actionBtn);
       }
       return;
     }
@@ -513,6 +527,23 @@
     renderPager();
     vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
   });
+  toolbarProfileList?.addEventListener('pointerup', (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    const actionBtn = target?.closest('[data-profile-action]');
+    if (!(actionBtn instanceof HTMLElement)) {
+      return;
+    }
+    const action = actionBtn.getAttribute('data-profile-action');
+    if (action !== 'syncPush' && action !== 'syncPull') {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    sendBaseSync('profile', action, actionBtn.getAttribute('data-profile-id') || undefined, actionBtn);
+  });
   toolbarProfileList?.addEventListener('click', (event) => {
     // SVG icons inside cloud buttons are Element, not HTMLElement.
     const target = event.target instanceof Element ? event.target : null;
@@ -526,17 +557,13 @@
         closeProfileMenu();
         return;
       }
-      if (action === 'delete' || action === 'syncPush' || action === 'syncPull') {
-        if (
-          (action === 'syncPush' || action === 'syncPull') &&
-          (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled))
-        ) {
-          return;
-        }
+      if (action === 'syncPush' || action === 'syncPull') {
+        sendBaseSync('profile', action, id, actionBtn);
+        return;
+      }
+      if (action === 'delete') {
         vscode.postMessage({ type: 'profile', action, id });
-        if (action === 'delete') {
-          closeProfileMenu();
-        }
+        closeProfileMenu();
       }
       return;
     }
@@ -1054,12 +1081,15 @@
         hasDiscord: message.hasDiscord === true,
       });
     } else if (message.type === 'pageSettingsError') {
-      const error = document.querySelector('#page-settings-panel .review-panel-error');
+      const panel = document.getElementById('page-settings-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
       if (error instanceof HTMLElement) {
         error.hidden = false;
         error.textContent = typeof message.message === 'string' ? message.message : '';
       }
     } else if (message.type === 'pageSettingsSaved') {
+      setPanelBusy(document.getElementById('page-settings-panel'), false);
       closePageSettingsPanel();
     } else if (message.type === 'reviewCreatePagePanel') {
       openReviewCreatePagePanel({
@@ -1072,14 +1102,26 @@
         githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
         gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
       });
+    } else if (message.type === 'reviewCreatePageDone') {
+      setPanelBusy(document.getElementById('review-create-page-panel'), false);
+      closeReviewCreatePagePanel();
+    } else if (message.type === 'reviewCreatePageError') {
+      const panel = document.getElementById('review-create-page-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
     } else if (message.type === 'discordGatePanel') {
       if (message.i18n && typeof message.i18n === 'object') {
         i18nBag = message.i18n;
       }
-      openDiscordGatePanel({
-        channels:
-          message.channels && typeof message.channels === 'object' ? message.channels : {},
+      openProjectCreatePanel({
+        needChannel: true,
+        gate: true,
         hasDiscord: message.hasDiscord === true,
+        mode: 'create',
       });
     } else if (message.type === 'discordGateClear') {
       closeDiscordGatePanel();
@@ -1122,6 +1164,32 @@
         typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
         data?.profileConfigSync,
       );
+    } else if (message.type === 'projectCreatePanel') {
+      if (message.i18n && typeof message.i18n === 'object') {
+        i18nBag = message.i18n;
+      }
+      openProjectCreatePanel({
+        needChannel: message.needChannel === true,
+        gate: message.gate === true,
+        hasDiscord: message.hasDiscord !== false,
+        mode: message.mode === 'select' ? 'select' : 'create',
+      });
+    } else if (message.type === 'projectCreateDone') {
+      setProjectCreateBusy(false);
+      closeProjectCreatePanel();
+    } else if (message.type === 'projectCreateError') {
+      setProjectCreateBusy(false);
+      const panel = document.getElementById('project-create-panel');
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+      const submit = panel?.querySelector('[data-project-create-submit]');
+      if (submit instanceof HTMLButtonElement && message.canRetry === true) {
+        submit.textContent = t('projectCreateRetry');
+        submit.dataset.projectCreateRetry = '1';
+      }
     } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
         if (message.stateSeq < stateSeq) {
@@ -3219,46 +3287,39 @@
     toolbarBaseLoader.replaceChildren(reviewProgressIcon());
   }
 
-  /**
-   * Direct listeners — delegated clicks on SVG paths were easy to miss.
-   * @param {HTMLButtonElement} button
-   * @param {'syncPush' | 'syncPull'} action
-   * @param {string} id
-   */
-  function bindProjectSyncButton(button, action, id) {
-    // Do not preventDefault on pointerdown — that cancels the following click.
-    button.addEventListener('pointerdown', (event) => {
-      event.stopPropagation();
-      cancelMenuClose('toolbar-project');
-    });
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (baseConfigBusy || button.disabled) {
-        return;
-      }
-      vscode.postMessage({ type: 'project', action, id });
-    });
-  }
+  /** Ignore the click that follows a pointerup on the same cloud button. */
+  let baseSyncStamp = 0;
 
   /**
-   * @param {HTMLButtonElement} button
+   * Post first, then show the loader. Rebuilding the menu before postMessage
+   * dropped the event when the button node was replaced mid-click.
+   * @param {'project' | 'profile'} kind
    * @param {'syncPush' | 'syncPull'} action
-   * @param {string} id
+   * @param {string | undefined} id
+   * @param {Element} actionBtn
    */
-  function bindProfileSyncButton(button, action, id) {
-    button.addEventListener('pointerdown', (event) => {
-      event.stopPropagation();
-      cancelMenuClose('toolbar-profile');
-    });
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (baseConfigBusy || button.disabled) {
-        return;
-      }
-      vscode.postMessage({ type: 'profile', action, id });
-    });
+  function sendBaseSync(kind, action, id, actionBtn) {
+    if (actionBtn instanceof HTMLButtonElement && actionBtn.disabled) {
+      return;
+    }
+    if (baseConfigBusy) {
+      return;
+    }
+    const now = Date.now();
+    if (now - baseSyncStamp < 400) {
+      return;
+    }
+    baseSyncStamp = now;
+    cancelMenuClose(kind === 'project' ? 'toolbar-project' : 'toolbar-profile');
+    vscode.postMessage({ type: kind, action, id });
+    baseConfigBusy = true;
+    applyBaseConfigLoader();
+    renderProjects(projectsList, activeProjectId, projectConfigSync);
+    renderProfiles(
+      Array.isArray(data?.profiles) ? data.profiles : undefined,
+      typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
+      data?.profileConfigSync,
+    );
   }
 
   function renderProjects(projects, activeId, sync) {
@@ -3314,8 +3375,6 @@
         pushBtn.setAttribute('data-project-id', project.id);
         pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
         pushBtn.disabled = !canPush;
-        bindProjectSyncButton(pullBtn, 'syncPull', project.id);
-        bindProjectSyncButton(pushBtn, 'syncPush', project.id);
         actions.append(pullBtn, pushBtn);
       }
       if (actions.childNodes.length > 0) {
@@ -3416,8 +3475,6 @@
         pushBtn.setAttribute('data-profile-id', profile.id);
         pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
         pushBtn.disabled = !canPush;
-        bindProfileSyncButton(pullBtn, 'syncPull', profile.id);
-        bindProfileSyncButton(pushBtn, 'syncPush', profile.id);
         actions.append(pullBtn, pushBtn);
       }
       const editBtn = el('button', '');
@@ -6699,6 +6756,61 @@
   }
 
   /**
+   * Full-panel busy overlay: disables interaction and covers the whole panel.
+   * @param {HTMLElement | null | undefined} panel
+   * @param {boolean} busy
+   */
+  function setPanelBusy(panel, busy) {
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    panel.classList.toggle('is-busy', busy);
+    panel.setAttribute('aria-busy', busy ? 'true' : 'false');
+    let overlay = panel.querySelector(':scope > .panel-busy-overlay');
+    if (busy) {
+      if (!(overlay instanceof HTMLElement)) {
+        overlay = el('div', 'panel-busy-overlay');
+        overlay.setAttribute('role', 'status');
+        overlay.setAttribute('aria-live', 'polite');
+        overlay.append(reviewProgressIcon());
+        panel.append(overlay);
+      }
+      for (const btn of panel.querySelectorAll('button')) {
+        if (btn instanceof HTMLButtonElement) {
+          btn.disabled = true;
+        }
+      }
+      for (const input of panel.querySelectorAll('input, textarea, select')) {
+        if (
+          input instanceof HTMLInputElement ||
+          input instanceof HTMLTextAreaElement ||
+          input instanceof HTMLSelectElement
+        ) {
+          input.disabled = true;
+        }
+      }
+      return;
+    }
+    if (overlay) {
+      overlay.remove();
+    }
+    for (const btn of panel.querySelectorAll('button')) {
+      if (btn instanceof HTMLButtonElement) {
+        btn.disabled = false;
+      }
+    }
+    for (const input of panel.querySelectorAll('input, textarea, select')) {
+      if (
+        input instanceof HTMLInputElement ||
+        input instanceof HTMLTextAreaElement ||
+        input instanceof HTMLSelectElement
+      ) {
+        input.disabled = false;
+      }
+    }
+  }
+
+  /**
    * @param {HTMLElement} panel
    * @param {() => void} close
    */
@@ -6709,6 +6821,10 @@
       pressed = event.target === backdrop;
     });
     backdrop.addEventListener('click', (event) => {
+      if (panel.classList.contains('is-busy')) {
+        pressed = false;
+        return;
+      }
       if (pressed && event.target === backdrop) {
         close();
       }
@@ -6718,12 +6834,301 @@
     document.body.append(backdrop);
   }
 
+  function closeProjectCreatePanel() {
+    removeOverlay('project-create-panel');
+  }
+
+  /**
+   * Create mode needs a non-empty project name. Select mode does not.
+   * @param {HTMLElement} panel
+   */
+  function projectCreateSubmitAllowed(panel) {
+    if (panel.dataset.projectMode === 'select') {
+      return true;
+    }
+    const nameInput = panel.querySelector('[data-project-name]');
+    return nameInput instanceof HTMLInputElement && nameInput.value.trim().length > 0;
+  }
+
+  /**
+   * Busy state for project create: disable Create/Retry and show a spinner to its left.
+   * Cancel stays available.
+   * @param {boolean} busy
+   */
+  function setProjectCreateBusy(busy) {
+    const panel = document.getElementById('project-create-panel');
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    panel.classList.toggle('is-creating', busy);
+    const submit = panel.querySelector('[data-project-create-submit]');
+    if (submit instanceof HTMLButtonElement) {
+      submit.disabled = busy;
+      if (!busy) {
+        submit.classList.add('is-primary');
+        const selectMode = panel.dataset.projectMode === 'select';
+        submit.classList.toggle('is-idle', !selectMode && !projectCreateSubmitAllowed(panel));
+      }
+    }
+    panel.querySelectorAll('.project-create-modes button').forEach((btn) => {
+      if (btn instanceof HTMLButtonElement) {
+        btn.disabled = busy;
+      }
+    });
+    const loader = panel.querySelector('.project-create-loader');
+    if (loader instanceof HTMLElement) {
+      loader.hidden = !busy;
+      if (busy) {
+        loader.replaceChildren(reviewProgressIcon());
+      } else {
+        loader.replaceChildren();
+      }
+    }
+  }
+
+  /**
+   * @param {{ needChannel: boolean, gate?: boolean, hasDiscord?: boolean, mode?: 'create' | 'select' }} opts
+   */
+  function openProjectCreatePanel(opts) {
+    if (opts.gate && document.getElementById('project-create-panel')) {
+      return;
+    }
+    closeProjectCreatePanel();
+    closeMapSettingsPanels();
+    const panel = el('div', 'review-mr-panel review-create-page-panel project-create-panel');
+    panel.id = 'project-create-panel';
+    const title = el('div', 'review-mr-people-title', '');
+    panel.append(title);
+
+    const modes = el('div', 'project-create-modes');
+    const createModeBtn = el('button', 'review-btn', t('projectModeCreate'));
+    createModeBtn.type = 'button';
+    const selectModeBtn = el('button', 'review-btn', t('projectSelect'));
+    selectModeBtn.type = 'button';
+    modes.append(createModeBtn, selectModeBtn);
+    panel.append(modes);
+
+    const nameLabel = el('label', 'review-mr-field', t('projectName'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.required = true;
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 64;
+    nameInput.dataset.projectName = '1';
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+
+    const channelLabel = el('label', 'review-mr-field', t('projectChannel'));
+    const channelInput = document.createElement('input');
+    channelInput.className = 'review-mr-title';
+    channelInput.type = 'text';
+    channelInput.spellcheck = false;
+    channelInput.inputMode = 'numeric';
+    channelInput.placeholder = t('channelIdPlaceholder');
+    channelLabel.append(channelInput);
+    panel.append(channelLabel);
+
+    /** @type {HTMLInputElement | null} */
+    let tokenInput = null;
+    if (opts.hasDiscord === false) {
+      const tokenLabel = el('label', 'review-mr-field', t('reviewFieldDiscordToken'));
+      tokenInput = document.createElement('input');
+      tokenInput.className = 'review-mr-title';
+      tokenInput.type = 'password';
+      tokenInput.spellcheck = false;
+      tokenInput.autocomplete = 'new-password';
+      tokenLabel.append(tokenInput);
+      panel.append(tokenLabel);
+    }
+
+    if (opts.gate) {
+      const howToBtn = el('button', 'review-btn discord-gate-howto', t('discordGateHowTo'));
+      howToBtn.type = 'button';
+      howToBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'discordGateOpenHowTo' });
+      });
+      panel.append(howToBtn);
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    const actions = el('div', 'review-mr-actions');
+    /** @type {HTMLButtonElement | null} */
+    let cancel = null;
+    if (!opts.gate) {
+      cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        closeProjectCreatePanel();
+      });
+    }
+    const submitWrap = el('span', 'project-create-submit-wrap');
+    const loader = el('span', 'project-create-loader');
+    loader.hidden = true;
+    loader.setAttribute('role', 'status');
+    loader.setAttribute('aria-live', 'polite');
+    const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+    submit.type = 'button';
+    submit.dataset.projectCreateSubmit = '1';
+
+    /** @type {'create' | 'select'} */
+    let mode = opts.mode === 'select' ? 'select' : 'create';
+
+    function channelRequired() {
+      return mode === 'select' || opts.needChannel || opts.gate === true;
+    }
+
+    function applyMode(next) {
+      mode = next;
+      panel.dataset.projectMode = mode;
+      createModeBtn.classList.toggle('is-primary', mode === 'create');
+      selectModeBtn.classList.toggle('is-primary', mode === 'select');
+      title.textContent = mode === 'select' ? t('projectSelect') : t('projectModeCreate');
+      nameLabel.hidden = mode !== 'create';
+      channelLabel.hidden = !channelRequired();
+      if (submit.dataset.projectCreateRetry !== '1' || mode !== 'create') {
+        delete submit.dataset.projectCreateRetry;
+        submit.textContent = mode === 'select' ? t('projectSelect') : t('reviewCreatePageSubmit');
+      }
+      syncProjectCreateSubmit();
+    }
+
+    function syncProjectCreateSubmit() {
+      if (panel.classList.contains('is-creating')) {
+        return;
+      }
+      submit.disabled = false;
+      submit.classList.add('is-primary');
+      submit.classList.toggle('is-idle', mode === 'create' && nameInput.value.trim().length === 0);
+    }
+
+    function markProjectField(label, invalid) {
+      label.classList.toggle('has-error', invalid);
+    }
+
+    nameInput.addEventListener('input', () => {
+      if (nameInput.value.trim()) {
+        markProjectField(nameLabel, false);
+      }
+      syncProjectCreateSubmit();
+    });
+    channelInput.addEventListener('input', () => {
+      if (channelInput.value.trim()) {
+        markProjectField(channelLabel, false);
+      }
+    });
+
+    createModeBtn.addEventListener('click', () => {
+      if (submit.disabled) {
+        return;
+      }
+      applyMode('create');
+      nameInput.focus();
+    });
+    selectModeBtn.addEventListener('click', () => {
+      if (submit.disabled) {
+        return;
+      }
+      applyMode('select');
+      channelInput.focus();
+    });
+
+    submit.addEventListener('click', () => {
+      if (submit.disabled) {
+        return;
+      }
+      error.hidden = true;
+      error.textContent = '';
+      markProjectField(nameLabel, false);
+      markProjectField(channelLabel, false);
+      if (tokenInput?.parentElement instanceof HTMLElement) {
+        tokenInput.parentElement.classList.remove('has-error');
+      }
+      const discordToken = tokenInput ? tokenInput.value.trim() : '';
+      if (tokenInput && !discordToken) {
+        if (tokenInput.parentElement instanceof HTMLElement) {
+          tokenInput.parentElement.classList.add('has-error');
+        }
+        error.textContent = t('reviewFieldDiscordToken');
+        error.hidden = false;
+        tokenInput.focus();
+        return;
+      }
+      if (mode === 'select') {
+        const channelId = channelInput.value.trim();
+        if (!channelId || !/^\d{5,}$/.test(channelId)) {
+          markProjectField(channelLabel, true);
+          error.textContent = channelId ? t('projectChannelInvalid') : t('projectChannelEmpty');
+          error.hidden = false;
+          channelInput.focus();
+          return;
+        }
+        setProjectCreateBusy(true);
+        vscode.postMessage({
+          type: 'project',
+          action: 'selectSubmit',
+          channelId,
+          discordToken: discordToken || undefined,
+        });
+        return;
+      }
+      const name = nameInput.value.trim();
+      if (!name) {
+        markProjectField(nameLabel, true);
+        error.textContent = t('projectNameEmpty');
+        error.hidden = false;
+        nameInput.focus();
+        return;
+      }
+      let channelId = '';
+      if (channelRequired()) {
+        channelId = channelInput.value.trim();
+        if (!channelId || !/^\d{5,}$/.test(channelId)) {
+          markProjectField(channelLabel, true);
+          error.textContent = channelId ? t('projectChannelInvalid') : t('projectChannelEmpty');
+          error.hidden = false;
+          channelInput.focus();
+          return;
+        }
+      }
+      setProjectCreateBusy(true);
+      vscode.postMessage({
+        type: 'project',
+        action: 'createSubmit',
+        name,
+        channelId: channelId || undefined,
+        discordToken: discordToken || undefined,
+      });
+    });
+    submitWrap.append(loader, submit);
+    if (cancel) {
+      actions.append(cancel, submitWrap);
+    } else {
+      actions.append(submitWrap);
+    }
+    panel.append(actions);
+    mountSettingsOverlay(panel, opts.gate ? () => {} : closeProjectCreatePanel);
+    if (opts.gate && panel.parentElement) {
+      panel.parentElement.classList.add('discord-gate-backdrop');
+    }
+    applyMode(mode);
+    if (mode === 'select') {
+      channelInput.focus();
+    } else {
+      nameInput.focus();
+    }
+  }
+
   function closeMapSettingsPanels() {
     closeProfileSettingsPanel();
     closePageSettingsPanel();
     closeReviewCreatePagePanel();
     closeReviewMrPanel();
     closeReviewRenamePanel();
+    closeProjectCreatePanel();
   }
 
   function closeDiscordGatePanel() {
@@ -6783,191 +7188,6 @@
     if (input instanceof HTMLInputElement) {
       input.focus();
     }
-  }
-
-  /**
-   * @param {{
-   *   channels: {
-   *     profile?: string,
-   *     explorer?: string,
-   *     notes?: string,
-   *     links?: string,
-   *     review?: string
-   *   },
-   *   hasDiscord: boolean
-   * }} opts
-   */
-  function openDiscordGatePanel(opts) {
-    if (document.getElementById('discord-gate-panel')) {
-      return;
-    }
-    closeMapSettingsPanels();
-    const channels = opts.channels || {};
-    const initial = {
-      profile: typeof channels.profile === 'string' ? channels.profile.trim() : '',
-      explorer: typeof channels.explorer === 'string' ? channels.explorer.trim() : '',
-      notes: typeof channels.notes === 'string' ? channels.notes.trim() : '',
-      links: typeof channels.links === 'string' ? channels.links.trim() : '',
-      review: typeof channels.review === 'string' ? channels.review.trim() : '',
-    };
-
-    const backdrop = el('div', 'map-settings-backdrop discord-gate-backdrop');
-    const panel = el('div', 'review-mr-panel review-create-page-panel discord-gate-panel');
-    panel.id = 'discord-gate-panel';
-    panel.append(el('div', 'review-mr-people-title', t('discordGateTitle')));
-    panel.append(el('div', 'discord-gate-blurb', t('discordGateBlurb')));
-
-    /**
-     * @param {string} field
-     * @param {string} labelKey
-     * @param {string} value
-     * @param {{ password?: boolean }} [opts]
-     */
-    function fieldBlock(field, labelKey, value, fieldOpts) {
-      const wrap = el('div', 'discord-gate-field review-mr-field');
-      wrap.dataset.gateField = field;
-      const label = el('label', '', t(labelKey));
-      const input = document.createElement('input');
-      input.className = 'review-mr-title';
-      input.type = fieldOpts?.password ? 'password' : 'text';
-      input.spellcheck = false;
-      input.value = value || '';
-      if (fieldOpts?.password) {
-        input.autocomplete = 'new-password';
-      } else {
-        input.inputMode = 'numeric';
-        input.placeholder = t('channelIdPlaceholder');
-      }
-      label.append(input);
-      wrap.append(label);
-      const err = el('div', 'discord-gate-field-error');
-      err.hidden = true;
-      wrap.append(err);
-      panel.append(wrap);
-      return input;
-    }
-
-    const profileInput = fieldBlock('profile', 'labelChannelProfile', initial.profile);
-    const tokenInput = fieldBlock('token', 'reviewFieldDiscordToken', '', { password: true });
-    if (opts.hasDiscord) {
-      const hint = el('div', 'review-token-hint', t('discordGateTokenSavedHint'));
-      panel.append(hint);
-    }
-
-    const toggles = el('div', 'discord-gate-toggles');
-    const extraToggle = el('button', 'review-btn discord-gate-extra-btn', t('discordGateExtra'));
-    extraToggle.type = 'button';
-    extraToggle.dataset.gateExtraToggle = '1';
-    extraToggle.setAttribute('aria-expanded', 'false');
-    toggles.append(extraToggle);
-    panel.append(toggles);
-
-    const extra = el('div', 'discord-gate-extra');
-    extra.dataset.gateExtra = '1';
-    extra.hidden = true;
-    extraToggle.addEventListener('click', () => {
-      const open = extra.hidden;
-      extra.hidden = !open;
-      extraToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-      extraToggle.classList.toggle('is-active', open);
-    });
-
-    /**
-     * @param {string} field
-     * @param {string} labelKey
-     * @param {string} value
-     */
-    function extraField(field, labelKey, value) {
-      const wrap = el('div', 'discord-gate-field review-mr-field');
-      wrap.dataset.gateField = field;
-      const label = el('label', '', t(labelKey));
-      const input = document.createElement('input');
-      input.className = 'review-mr-title';
-      input.type = 'text';
-      input.spellcheck = false;
-      input.inputMode = 'numeric';
-      input.placeholder = t('channelIdPlaceholder');
-      input.value = value || '';
-      label.append(input);
-      wrap.append(label);
-      const err = el('div', 'discord-gate-field-error');
-      err.hidden = true;
-      wrap.append(err);
-      extra.append(wrap);
-      return input;
-    }
-
-    const explorerInput = extraField('explorer', 'labelChannelExplorer', initial.explorer);
-    const notesInput = extraField('notes', 'labelChannelNotes', initial.notes);
-    const linksInput = extraField('links', 'labelChannelLinks', initial.links);
-    const reviewInput = extraField('review', 'labelChannelReview', initial.review);
-    panel.append(extra);
-
-    const howToBtn = el('button', 'review-btn discord-gate-howto', t('discordGateHowTo'));
-    howToBtn.type = 'button';
-    howToBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'discordGateOpenHowTo' });
-    });
-    panel.append(howToBtn);
-
-    const actions = el('div', 'review-mr-actions');
-    const save = el('button', 'review-btn is-primary', t('discordGateSave'));
-    save.type = 'button';
-    save.dataset.gateSave = '1';
-    save.addEventListener('click', () => {
-      panel.querySelectorAll('.discord-gate-field').forEach((node) => {
-        if (node instanceof HTMLElement) {
-          node.classList.remove('has-error');
-        }
-      });
-      panel.querySelectorAll('.discord-gate-field-error').forEach((node) => {
-        if (node instanceof HTMLElement) {
-          node.hidden = true;
-          node.textContent = '';
-        }
-      });
-      const next = {
-        profile: profileInput.value.trim(),
-        explorer: explorerInput.value.trim(),
-        notes: notesInput.value.trim(),
-        links: linksInput.value.trim(),
-        review: reviewInput.value.trim(),
-      };
-      /** @type {string[]} */
-      const dirty = [];
-      for (const key of /** @type {const} */ ([
-        'profile',
-        'explorer',
-        'notes',
-        'links',
-        'review',
-      ])) {
-        if (next[key] !== initial[key]) {
-          dirty.push(key);
-        }
-      }
-      // First save always treats profile as dirty so the probe runs.
-      if (!dirty.includes('profile')) {
-        dirty.push('profile');
-      }
-      save.disabled = true;
-      vscode.postMessage({
-        type: 'discordGateSave',
-        profile: next.profile,
-        explorer: next.explorer,
-        notes: next.notes,
-        links: next.links,
-        review: next.review,
-        discordToken: tokenInput.value.trim() || undefined,
-        dirty,
-      });
-    });
-    actions.append(save);
-    panel.append(actions);
-
-    backdrop.append(panel);
-    document.body.append(backdrop);
-    profileInput.focus();
   }
 
   function closeReviewRenamePanel() {
@@ -7313,9 +7533,21 @@
         }
         return null;
       }
-      if (channelId && !/^\d{5,}$/.test(channelId)) {
+      if (creating && !/^\d{5,}$/.test(channelId)) {
         if (report) {
-          error.textContent = t('reviewFieldChannelId');
+          const channelLabel = channelInput.closest('.review-mr-field');
+          if (channelLabel instanceof HTMLElement) {
+            channelLabel.classList.add('has-error');
+          }
+          error.textContent = channelId ? t('projectChannelInvalid') : t('projectChannelEmpty');
+          error.hidden = false;
+          channelInput.focus();
+        }
+        return null;
+      }
+      if (!creating && channelId && !/^\d{5,}$/.test(channelId)) {
+        if (report) {
+          error.textContent = t('projectChannelInvalid');
           error.hidden = false;
           channelInput.focus();
         }
@@ -7338,14 +7570,39 @@
       const actions = el('div', 'review-mr-actions');
       const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
       cancel.type = 'button';
-      cancel.addEventListener('click', () => closePageSettingsPanel());
+      cancel.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        closePageSettingsPanel();
+      });
       const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
       submit.type = 'button';
+      const syncPageCreateSubmit = () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        submit.classList.toggle('is-idle', !/^\d{5,}$/.test(channelInput.value.trim()));
+      };
+      channelInput.addEventListener('input', () => {
+        if (/^\d{5,}$/.test(channelInput.value.trim())) {
+          const channelLabel = channelInput.closest('.review-mr-field');
+          if (channelLabel instanceof HTMLElement) {
+            channelLabel.classList.remove('has-error');
+          }
+        }
+        syncPageCreateSubmit();
+      });
+      syncPageCreateSubmit();
       submit.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
         const fields = readPageForm(true);
         if (!fields) {
           return;
         }
+        setPanelBusy(panel, true);
         vscode.postMessage({
           type: 'pageSaveSettings',
           kind: fields.kind,
@@ -7891,19 +8148,27 @@
       const actions = el('div', 'review-mr-actions');
       const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
       cancel.type = 'button';
-      cancel.addEventListener('click', () => closeReviewCreatePagePanel());
+      cancel.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        closeReviewCreatePagePanel();
+      });
       const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
       submit.type = 'button';
       submit.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
         const fields = readReviewPageForm('focus');
         if (!fields) {
           return;
         }
+        setPanelBusy(panel, true);
         vscode.postMessage({
           type: 'reviewCreatePage',
           ...fields,
         });
-        closeReviewCreatePagePanel();
       });
       actions.append(cancel, submit);
       panel.append(actions);

@@ -29,18 +29,18 @@ const PREFIX_BY_KIND: Record<SetupChannelKind, string> = {
 
 const HELLO_ROLE_EN: Record<SetupChannelKind, string> = {
   profile: 'storing project, profile, and page settings',
-  explorer: 'the explorer map',
-  notes: 'the notes map',
-  links: 'the links map',
-  review: 'the review map',
+  explorer: 'the content of the explorer map',
+  notes: 'the content of the notes map',
+  links: 'the content of the links map',
+  review: 'the content of the review map',
 };
 
 const HELLO_ROLE_RU: Record<SetupChannelKind, string> = {
   profile: 'хранения настроек проектов, профилей и страниц',
-  explorer: 'карты проводника',
-  notes: 'карты заметок',
-  links: 'карты ссылок',
-  review: 'карты ревью',
+  explorer: 'контента карты проводника',
+  notes: 'контента карты заметок',
+  links: 'контента карты ссылок',
+  review: 'контента карты ревью',
 };
 
 export function setupPrefix(kind: SetupChannelKind): string {
@@ -87,13 +87,14 @@ export function reviewChannelConflicts(
 /**
  * Find an existing setup hello (or any message containing the kind prefix).
  * If missing, post a new hello and confirm the response content.
+ * `posted` is true only when this call actually sent the hello (rate-limit gap needed).
  */
 export async function ensureSetupProbe(
   token: string,
   channelId: string,
   kind: SetupChannelKind,
   locale: Syn3Locale,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true; posted: boolean } | { ok: false; message: string }> {
   const prefix = setupPrefix(kind);
   const listed = await listChannelMessages(token, channelId, { limit: 100 });
   if (!listed.ok) {
@@ -101,7 +102,7 @@ export async function ensureSetupProbe(
   }
   const existing = listed.value.find((msg) => msg.content.includes(prefix));
   if (existing) {
-    return { ok: true };
+    return { ok: true, posted: false };
   }
   const posted = await postChannelMessage(token, channelId, setupHelloText(kind, locale));
   if (!posted.ok) {
@@ -110,5 +111,5 @@ export async function ensureSetupProbe(
   if (!posted.value.content.includes(prefix)) {
     return { ok: false, message: 'Discord returned an empty setup message' };
   }
-  return { ok: true };
+  return { ok: true, posted: true };
 }

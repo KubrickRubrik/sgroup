@@ -41,6 +41,47 @@
         "left": false,
         "right": true
       }
+    },
+    "profile-мой-профиль-1": {
+      "appearance": {
+        "fontGroup": 1.15,
+        "fontSubgroup": 1.05,
+        "fontFolder": 0.95,
+        "fontFile": 0.9,
+        "fontScale": 1,
+        "gradientDirection": 0,
+        "cardGradient": true,
+        "cardFill": 9,
+        "cardBorder": 55,
+        "bgFolder": 4,
+        "bgFile": 5,
+        "bgSubgroup": 0,
+        "bgClass": 8,
+        "bgNote": 0,
+        "bgHover": 10,
+        "labelSaturation": 20,
+        "openFileMark": true,
+        "showErrorIcon": true,
+        "openFileAnimate": true,
+        "openFileDuration": 1,
+        "showProblemsTab": true,
+        "cyclePageScroll": true,
+        "openLinksInCursor": false,
+        "problemsError": true,
+        "problemsWarning": true,
+        "problemsInfo": true,
+        "language": "ru",
+        "reviewRefreshSec": 60,
+        "projectFetchSec": 60,
+        "filesFetchSec": 60,
+        "notesFetchSec": 60,
+        "linksFetchSec": 60
+      },
+      "open": {
+        "bottom": false,
+        "left": false,
+        "right": true
+      }
     }
   }
 }

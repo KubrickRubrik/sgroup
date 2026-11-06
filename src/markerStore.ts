@@ -75,6 +75,7 @@ import {
   postConfigMessage,
   stampFromLatest,
 } from './configCloud';
+import { ensureSetupProbe } from './discordSetup';
 import {
   cloneProfileLayout,
   emptyPositions,
@@ -921,50 +922,21 @@ export class MarkerStore implements vscode.Disposable {
     return id ? this.base.projects[id] : undefined;
   }
 
-  private ensureActiveProject(): ProjectEntry {
+  /** Active project, or the first saved one. Never invents a named placeholder. */
+  private ensureActiveProject(): ProjectEntry | undefined {
     let id = this.activeProjectId();
     if (!id) {
-      id = this.ensureDefaultProject();
-    }
-    return this.base.projects[id];
-  }
-
-  private ensureDefaultProject(): string {
-    const existing = Object.keys(this.base.projects)[0];
-    if (existing) {
-      this.base.activeProjectId = existing;
-      return existing;
-    }
-    const id = 'project-default';
-    this.base.projects[id] = emptyProject('Проект');
-    this.base.activeProjectId = id;
-    this.seedProjectProfiles(this.base.projects[id]);
-    return id;
-  }
-
-  private seedProjectProfiles(project: ProjectEntry): void {
-    for (const profile of this.profilesData.profiles) {
-      const style = this.stylesData.styles[profile.id];
-      if (!style) {
-        continue;
+      id = Object.keys(this.base.projects)[0];
+      if (id) {
+        this.base.activeProjectId = id;
       }
-      project.profiles[profile.id] = packProfileEntry({
-        profile,
-        style,
-        version: 1,
-      });
     }
+    return id ? this.base.projects[id] : undefined;
   }
 
   private buildBaseFromCurrentPages(channelId = ''): BaseConfigFile {
     const base = emptyBaseConfig();
     base.channelId = channelId.trim();
-    const id = 'project-default';
-    const project = emptyProject('Проект');
-    this.seedProjectProfiles(project);
-    this.syncProjectPagesFromData(project);
-    base.projects[id] = project;
-    base.activeProjectId = id;
     return base;
   }
 
@@ -979,6 +951,9 @@ export class MarkerStore implements vscode.Disposable {
   async setProjectChannels(partial: Partial<ProjectChannels>): Promise<void> {
     await this.enqueue(async () => {
       const project = this.ensureActiveProject();
+      if (!project) {
+        return;
+      }
       project.channels = mergeProjectChannels(project.channels, partial);
       project.version = (project.version || 1) + 1;
       this.projectDirty = true;
@@ -1026,25 +1001,77 @@ export class MarkerStore implements vscode.Disposable {
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }
 
+  private allocateProjectId(name: string): string {
+    const id =
+      'project-' +
+      (name
+        .toLowerCase()
+        .replace(/[^a-z0-9а-яё]+/gi, '-')
+        .replace(/^-+|-+$/g, '') || 'project');
+    let unique = id;
+    let counter = 2;
+    while (this.base.projects[unique]) {
+      unique = `${id}-${counter++}`;
+    }
+    return unique;
+  }
+
+  /**
+   * Seed that used to be written before the user published a project.
+   * Id and name are fixed; it never has pages.
+   */
+  private isPlaceholderProject(id: string, entry: ProjectEntry): boolean {
+    return (
+      id === 'project-default' &&
+      entry.name === 'Проект' &&
+      Object.keys(entry.pages).length === 0
+    );
+  }
+
+  /** Drop the unnamed seed. Returns true when a project was removed. */
+  private omitPlaceholderProjects(base: BaseConfigFile): boolean {
+    let dropped = false;
+    for (const [id, entry] of Object.entries(base.projects)) {
+      if (!this.isPlaceholderProject(id, entry)) {
+        continue;
+      }
+      delete base.projects[id];
+      dropped = true;
+    }
+    if (dropped && base.activeProjectId && !base.projects[base.activeProjectId]) {
+      const next = Object.keys(base.projects)[0];
+      if (next) {
+        base.activeProjectId = next;
+      } else {
+        delete base.activeProjectId;
+      }
+    }
+    return dropped;
+  }
+
+  /** New project entry with only Админ and no pages. */
+  private buildAdminOnlyProject(name: string): ProjectEntry {
+    const project = emptyProject(name);
+    const profile = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    const style = this.stylesData.styles[GENERAL_PROFILE_ID];
+    if (profile && style) {
+      project.profiles[GENERAL_PROFILE_ID] = packProfileEntry({
+        profile,
+        style,
+        version: 1,
+      });
+    }
+    return project;
+  }
+
   async createProject(name: string, channelId?: string): Promise<string | undefined> {
     return this.enqueueResult(async () => {
       const trimmed = name.trim();
       if (!trimmed) {
         return undefined;
       }
-      const id =
-        'project-' +
-        (trimmed
-          .toLowerCase()
-          .replace(/[^a-z0-9а-яё]+/gi, '-')
-          .replace(/^-+|-+$/g, '') || 'project');
-      let unique = id;
-      let counter = 2;
-      while (this.base.projects[unique]) {
-        unique = `${id}-${counter++}`;
-      }
-      const project = emptyProject(trimmed);
-      this.seedProjectProfiles(project);
+      const unique = this.allocateProjectId(trimmed);
+      const project = this.buildAdminOnlyProject(trimmed);
       // New projects start with zero pages; content is added later via «создать страницу».
       this.base.projects[unique] = project;
       if (channelId !== undefined) {
@@ -1063,6 +1090,106 @@ export class MarkerStore implements vscode.Disposable {
       this.pagePresent = this.captureAllPageSnapshots();
       this.changeEmitter.fire();
       return unique;
+    });
+  }
+
+  /**
+   * Create a project by publishing hello + base.json first, then committing locally.
+   * Local disk is untouched until Discord accepts the config. `canRetry` is true when
+   * the setup probe succeeded but posting base.json failed (hello is already in the channel).
+   */
+  async publishNewProject(
+    name: string,
+    channelId?: string,
+  ): Promise<{ ok: true; id: string } | { ok: false; message: string; canRetry: boolean }> {
+    return this.enqueueResult(async () => {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        return { ok: false, message: 'Name cannot be empty', canRetry: false };
+      }
+      const token = await this.discordToken();
+      if (!token) {
+        return { ok: false, message: 'Discord token is not set', canRetry: false };
+      }
+      const nextChannel =
+        channelId !== undefined ? channelId.trim() : this.base.channelId.trim();
+      if (!nextChannel) {
+        return { ok: false, message: 'Base Discord channel is not set', canRetry: false };
+      }
+
+      const unique = this.allocateProjectId(trimmed);
+      const project = this.buildAdminOnlyProject(trimmed);
+      this.omitPlaceholderProjects(this.base);
+      const projects: Record<string, ProjectEntry> = { ...this.base.projects };
+      projects[unique] = project;
+      const staged: BaseConfigFile = {
+        ...this.base,
+        channelId: nextChannel,
+        activeProjectId: unique,
+        projects,
+      };
+
+      const locale = normalizeLocale(this.appearance.language);
+      const probed = await ensureSetupProbe(token, nextChannel, 'profile', locale);
+      if (!probed.ok) {
+        return { ok: false, message: probed.message, canRetry: false };
+      }
+      // Hello + attachment back-to-back often hits Discord channel rate limits.
+      await new Promise((resolve) => setTimeout(resolve, probed.posted ? 1600 : 400));
+
+      const body = packBaseConfigBody(staged);
+      const number = nextConfigNumber(this.base.cloud);
+      const headerDate = formatConfigHeaderDate();
+      const posted = await postConfigMessage({
+        token,
+        channelId: nextChannel,
+        kind: 'BASE',
+        number,
+        headerDate,
+        filename: 'base.json',
+        body: JSON.stringify(body, null, 2) + '\n',
+      });
+      if (!posted.ok) {
+        return {
+          ok: false,
+          message: posted.message || 'Failed to post base.json',
+          canRetry: true,
+        };
+      }
+
+      const parsed = parseConfigHeader(posted.value.content);
+      this.base.channelId = nextChannel;
+      this.base.projects = staged.projects;
+      this.base.activeProjectId = unique;
+      this.base.cloud = parsed
+        ? {
+            number: parsed.number,
+            headerDate: parsed.headerDate,
+            messageId: posted.value.id,
+          }
+        : {
+            number,
+            headerDate,
+            messageId: posted.value.id,
+          };
+      this.data = emptyData();
+      this.pageCloud = {};
+      this.dirtyPages.clear();
+      this.pageCloudNewer = {};
+      this.pendingRemote = {};
+      this.projectDirty = false;
+      this.profileDirty = false;
+      this.baseCloudNewer = false;
+      this.rememberPagesFixedSent();
+      this.rememberBaseClean();
+      await this.persistBaseOnly();
+      await this.persistPosLocal();
+      this.present = this.capture();
+      this.baseline = undefined;
+      this.pagePresent = this.captureAllPageSnapshots();
+      this.changeEmitter.fire();
+      void this.refreshCloudHints();
+      return { ok: true, id: unique };
     });
   }
 
@@ -1427,6 +1554,9 @@ export class MarkerStore implements vscode.Disposable {
         return { ok: false, message: 'cloudPullFirst' };
       }
       const project = this.ensureActiveProject();
+      if (!project) {
+        return { ok: false, message: 'No project' };
+      }
       const profileId = this.ensureActiveProfileId();
       const current = project.lock;
       if (fixed) {
@@ -1498,6 +1628,9 @@ export class MarkerStore implements vscode.Disposable {
     if (activeId && remote.projects[activeId]) {
       const remoteLock = remote.projects[activeId].lock;
       const local = this.ensureActiveProject();
+      if (!local) {
+        return { ok: true };
+      }
       if (remoteLock) {
         local.lock = { profileId: remoteLock.profileId };
       } else {
@@ -1529,6 +1662,24 @@ export class MarkerStore implements vscode.Disposable {
     };
   }
 
+  /**
+   * Point the workspace at a base channel before a pull.
+   * A different id drops the local cloud stamp so the next pull is not skipped.
+   */
+  async retargetBaseChannel(channelId: string): Promise<void> {
+    await this.enqueue(async () => {
+      const next = channelId.trim();
+      if (!next || this.base.channelId.trim() === next) {
+        return;
+      }
+      this.base.channelId = next;
+      delete this.base.cloud;
+      this.baseCloudNewer = true;
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
+  }
+
   async setCatalogChannels(partial: Partial<CatalogChannels>): Promise<void> {
     await this.enqueue(async () => {
       if (partial.profile !== undefined) {
@@ -1550,9 +1701,11 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (Object.keys(projectPartial).length > 0) {
         const project = this.ensureActiveProject();
-        project.channels = mergeProjectChannels(project.channels, projectPartial);
-        project.version = (project.version || 1) + 1;
-        this.projectDirty = true;
+        if (project) {
+          project.channels = mergeProjectChannels(project.channels, projectPartial);
+          project.version = (project.version || 1) + 1;
+          this.projectDirty = true;
+        }
       }
       if (this.usingSplitConfig) {
         await this.persistBaseOnly();
@@ -1637,8 +1790,23 @@ export class MarkerStore implements vscode.Disposable {
     return this.enqueueResult(() => this.pushProfileConfigNow());
   }
 
-  async pullProfileConfig(): Promise<{ ok: boolean; message?: string }> {
+  async pullProfileConfig(): Promise<{ ok: boolean; message?: string; applied?: boolean }> {
     return this.enqueueResult(() => this.pullProfileConfigNow());
+  }
+
+  /**
+   * Read BASE_SYN3 from `channelId` without pointing the workspace at it first.
+   * A different snapshot is written locally, the active project is opened, and
+   * page content is pulled from the channels stored in that snapshot.
+   */
+  async pullBaseFromChannel(
+    channelId: string,
+  ): Promise<{ ok: boolean; message?: string; applied?: boolean }> {
+    const channel = channelId.trim();
+    if (!channel) {
+      return { ok: false, message: 'Base Discord channel is not set' };
+    }
+    return this.enqueueResult(() => this.pullProfileConfigNow(channel));
   }
 
   dispose(): void {
@@ -2763,7 +2931,7 @@ export class MarkerStore implements vscode.Disposable {
     if (!trimmed) {
       return undefined;
     }
-    const id = this.uniquePageId(trimmed);
+    const id = this.uniquePageId(trimmed, kind);
     const maxOrder = Math.max(0, ...this.pages().map(([, p]) => p.order));
     const page = {
       ...defaultPage(capitalize(trimmed)),
@@ -2819,7 +2987,7 @@ export class MarkerStore implements vscode.Disposable {
       if (!project?.pages[pageId]) {
         this.syncProjectPagesFromData();
       }
-      const entry = this.ensureActiveProject().pages[pageId];
+      const entry = this.ensureActiveProject()?.pages[pageId];
       if (entry) {
         entry.version = (entry.version || 1) + 1;
         entry.name = this.data.pages[pageId]?.name ?? entry.name;
@@ -2930,7 +3098,7 @@ export class MarkerStore implements vscode.Disposable {
       }
       const page = this.data.pages[pageId];
       this.syncProjectPagesFromData();
-      const entry = this.ensureActiveProject().pages[pageId];
+      const entry = this.ensureActiveProject()?.pages[pageId];
       if (entry) {
         entry.version = (entry.version || 1) + 1;
         const access = this.projectPageAccessFor(pageId);
@@ -2978,7 +3146,7 @@ export class MarkerStore implements vscode.Disposable {
     await this.enqueue(async () => {
       const project = this.ensureActiveProject();
       const profileId = this.ensureActiveProfileId();
-      const profile = project.profiles[profileId];
+      const profile = project?.profiles[profileId];
       if (profile) {
         const layouts = { ...(profile.pageLayouts ?? {}) };
         layouts[id] = { layout: page.layout, groupsLayout: page.groupsLayout };
@@ -4959,12 +5127,15 @@ export class MarkerStore implements vscode.Disposable {
     return { ok: false, message: lines.join('\n') };
   }
 
-  private async pullPageConfigNow(pageId: string): Promise<{ ok: boolean; message?: string }> {
+  private async pullPageConfigNow(
+    pageId: string,
+    force = false,
+  ): Promise<{ ok: boolean; message?: string }> {
     const page = this.data.pages[pageId];
     if (!page) {
       return { ok: false, message: 'Page not found' };
     }
-    if (!this.pageCloudNewer[pageId] && this.pageCloud[pageId]) {
+    if (!force && !this.pageCloudNewer[pageId] && this.pageCloud[pageId]) {
       // Still allow pull when a newer tip exists; refresh first.
       await this.refreshCloudHints();
       if (!this.pageCloudNewer[pageId]) {
@@ -5016,7 +5187,7 @@ export class MarkerStore implements vscode.Disposable {
       this.changeEmitter.fire();
       return { ok: true };
     }
-    const localDirty = this.dirtyPages.has(pageId);
+    const localDirty = !force && this.dirtyPages.has(pageId);
     const stamp = stampFromLatest(latest.value);
     if (!localDirty) {
       await this.applyRemotePageFile(pageId, remoteFile, stamp, []);
@@ -5287,17 +5458,18 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async pushProfileConfigNow(): Promise<{ ok: boolean; message?: string }> {
-    if (this.baseCloudNewer) {
-      return { ok: false, message: 'cloudPullFirst' };
-    }
     if (this.pageContentLockedOut()) {
       return { ok: false, message: 'projectLocked' };
     }
     const firstPublish = this.baseNeedsFirstPublish();
+    // Remote BASE must not block the very first local publish (create / empty cloud).
+    if (this.baseCloudNewer && !firstPublish) {
+      return { ok: false, message: 'cloudPullFirst' };
+    }
     if (!this.profileDirty && !this.projectDirty && !firstPublish) {
       return { ok: false, message: 'Nothing to push' };
     }
-    if (firstPublish && !this.projectDirty) {
+    if (firstPublish) {
       this.projectDirty = true;
     }
     const token = await this.discordToken();
@@ -5308,19 +5480,28 @@ export class MarkerStore implements vscode.Disposable {
     if (!channel) {
       return { ok: false, message: 'Base Discord channel is not set' };
     }
-    if (this.profileDirty) {
+    if (firstPublish) {
+      const locale = normalizeLocale(this.appearance.language);
+      const probed = await ensureSetupProbe(token, channel, 'profile', locale);
+      if (!probed.ok) {
+        return { ok: false, message: probed.message };
+      }
+      // Hello + attachment back-to-back often hits Discord channel rate limits.
+      // Wait longer when we just posted the hello; still pause briefly after a list.
+      await new Promise((resolve) => setTimeout(resolve, probed.posted ? 1600 : 400));
+    }
+    // First publish always packs Admin (and other profiles) into the snapshot.
+    // Do not flip profileDirty on failure — only real style edits should light it.
+    if (firstPublish || this.profileDirty) {
       this.mirrorProfilesStylesToProject(true);
     } else {
       this.mirrorProfilesStylesToProject(false);
     }
-    if (this.projectDirty) {
-      const project = this.ensureActiveProject();
-      // Page settings already bumped their versions; bump project version only for
-      // name/channels-style dirt that did not already increment it.
-      this.syncProjectPagesFromData(project);
-    } else {
-      this.syncProjectPagesFromData();
+    const project = this.ensureActiveProject();
+    if (!project) {
+      return { ok: false, message: 'No project' };
     }
+    this.syncProjectPagesFromData(project);
     const body = packBaseConfigBody(this.base);
     const number = nextConfigNumber(this.base.cloud);
     const headerDate = formatConfigHeaderDate();
@@ -5334,7 +5515,7 @@ export class MarkerStore implements vscode.Disposable {
       body: JSON.stringify(body, null, 2) + '\n',
     });
     if (!posted.ok) {
-      return { ok: false, message: posted.message };
+      return { ok: false, message: posted.message || 'Failed to post base.json' };
     }
     const parsed = parseConfigHeader(posted.value.content);
     this.base.cloud = parsed
@@ -5360,16 +5541,21 @@ export class MarkerStore implements vscode.Disposable {
     return { ok: true };
   }
 
-  private async pullProfileConfigNow(): Promise<{ ok: boolean; message?: string }> {
-    await this.refreshCloudHints();
-    if (!this.baseCloudNewer && this.base.cloud) {
-      return { ok: false, message: 'Nothing to pull' };
+  private async pullProfileConfigNow(
+    channelOverride?: string,
+  ): Promise<{ ok: boolean; message?: string; applied?: boolean }> {
+    const channel = (channelOverride || this.base.channelId).trim();
+    const switching = !!channelOverride && channel !== this.base.channelId.trim();
+    if (!switching) {
+      await this.refreshCloudHints();
+      if (!this.baseCloudNewer && this.base.cloud) {
+        return { ok: false, message: 'Nothing to pull' };
+      }
     }
     const token = await this.discordToken();
     if (!token) {
       return { ok: false, message: 'Discord token is not set' };
     }
-    const channel = this.base.channelId.trim();
     if (!channel) {
       return { ok: false, message: 'Base Discord channel is not set' };
     }
@@ -5393,27 +5579,132 @@ export class MarkerStore implements vscode.Disposable {
         message: error instanceof Error ? error.message : String(error),
       };
     }
-    this.base = normalizeBaseConfig(body);
-    this.base.cloud = stampFromLatest(latest.value);
+    const remote = normalizeBaseConfig(body);
+    remote.channelId = channel;
+    this.omitPlaceholderProjects(remote);
+    this.omitPlaceholderProjects(this.base);
+    const same =
+      JSON.stringify(packBaseConfigBody(remote)) === JSON.stringify(packBaseConfigBody(this.base));
+    const stamp = stampFromLatest(latest.value);
+    if (same) {
+      this.base.cloud = stamp;
+      this.baseCloudNewer = false;
+      this.rememberBaseClean();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+      return { ok: false, message: 'Nothing to pull' };
+    }
+    if (!remote.activeProjectId || !remote.projects[remote.activeProjectId]) {
+      const first = Object.keys(remote.projects)[0];
+      if (first) {
+        remote.activeProjectId = first;
+      }
+    }
+    remote.cloud = stamp;
+    this.base = remote;
+    await this.persistBaseOnly();
+    this.dirtyPages.clear();
+    this.pageCloudNewer = {};
+    this.pendingRemote = {};
     await this.reloadSplitFromDisk(false);
+    this.retargetSurfacesToActivePages();
     this.baseCloudNewer = false;
     this.rememberPagesFixedSent();
-    await this.persistProfiles();
-    await this.persistStyles();
-    await this.persistSplitConfig();
-    // persistProfiles/Styles mark profile dirty; clear after the pull write-back.
+    await this.persistProfiles(false);
+    await this.persistStyles(false);
+    const pages = await this.pullActiveProjectPagesNow();
     this.profileDirty = false;
     this.projectDirty = false;
+    this.dirtyPages.clear();
     this.rememberBaseClean();
     await this.persistPosLocal();
     this.present = this.capture();
     this.pagePresent = this.captureAllPageSnapshots();
     this.changeEmitter.fire();
-    return { ok: true };
+    if (!pages.ok) {
+      return { ok: false, applied: true, message: pages.message };
+    }
+    return { ok: true, applied: true };
   }
 
-  private async persistProfiles(): Promise<void> {
-    this.mirrorProfilesStylesToProject(true);
+  /** Point open surfaces at a page that exists in the active project. */
+  private retargetSurfacesToActivePages(): void {
+    if (Object.keys(this.data.pages).length === 0) {
+      return;
+    }
+    const fallback = this.defaultFilesPageId();
+    if (!this.data.pages[fallback]) {
+      return;
+    }
+    for (const surface of MAP_SURFACES) {
+      const current = this.data.surfaces[surface]?.page;
+      if (!current || !this.data.pages[current]) {
+        this.data.surfaces[surface] = { page: fallback };
+      }
+    }
+    if (!this.posLocal.surfaces) {
+      this.posLocal.surfaces = {
+        explorer: { page: this.data.surfaces.explorer.page },
+        bottom: { page: this.data.surfaces.bottom.page },
+        left: { page: this.data.surfaces.left.page },
+        right: { page: this.data.surfaces.right.page },
+      };
+      return;
+    }
+    for (const surface of MAP_SURFACES) {
+      const current = this.posLocal.surfaces[surface]?.page;
+      if (!current || !this.data.pages[current]) {
+        this.posLocal.surfaces[surface] = { page: this.data.surfaces[surface].page };
+      }
+    }
+  }
+
+  /**
+   * Download content for the active project's pages from the Discord channels
+   * stored on that project. Review messages are not a page file: the open map
+   * drops them and reads the active project's review channel.
+   * A page with no channel, or with no config message yet, stays visible empty.
+   */
+  private async pullActiveProjectPagesNow(): Promise<{ ok: boolean; message?: string }> {
+    const project = this.activeProject();
+    if (!project) {
+      return { ok: true };
+    }
+    const lines: string[] = [];
+    const ids = Object.entries(project.pages)
+      .sort((a, b) => a[1].order - b[1].order || a[0].localeCompare(b[0]))
+      .map(([id]) => id);
+    for (const pageId of ids) {
+      const page = this.data.pages[pageId];
+      if (!page || page.kind === 'review') {
+        continue;
+      }
+      const kind = pageKindToConfigKind(page.kind);
+      if (!kind || kind === 'BASE') {
+        continue;
+      }
+      const pageChannel = resolveProjectChannel(project.channels, kind);
+      if (!pageChannel) {
+        continue;
+      }
+      const result = await this.pullPageConfigNow(pageId, true);
+      if (result.ok || !result.message || result.message === 'Nothing to pull') {
+        continue;
+      }
+      if (result.message === 'No cloud config found') {
+        continue;
+      }
+      const name = page.name?.trim() || pageId;
+      lines.push(`${name}\t${result.message}`);
+    }
+    if (lines.length === 0) {
+      return { ok: true };
+    }
+    return { ok: false, message: lines.join('\n') };
+  }
+
+  private async persistProfiles(bumpVersion = true): Promise<void> {
+    this.mirrorProfilesStylesToProject(bumpVersion);
     this.profileDirty = true;
     this.writingProfiles = true;
     try {
@@ -5444,8 +5735,8 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private async persistStyles(): Promise<void> {
-    this.mirrorProfilesStylesToProject(true);
+  private async persistStyles(bumpVersion = true): Promise<void> {
+    this.mirrorProfilesStylesToProject(bumpVersion);
     this.profileDirty = true;
     this.writingStyles = true;
     try {
@@ -6578,6 +6869,9 @@ export class MarkerStore implements vscode.Disposable {
 
   private mirrorProfilesStylesToProject(bumpVersion = false): void {
     const project = this.ensureActiveProject();
+    if (!project) {
+      return;
+    }
     for (const profile of this.profilesData.profiles) {
       const style = this.stylesData.styles[profile.id];
       if (!style) {
@@ -6594,16 +6888,20 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private syncProjectPagesFromData(project: ProjectEntry = this.ensureActiveProject()): void {
+  private syncProjectPagesFromData(project?: ProjectEntry): void {
+    const target = project ?? this.ensureActiveProject();
+    if (!target) {
+      return;
+    }
     const pages: Record<string, ProjectPageEntry> = {};
     for (const [id, page] of Object.entries(this.data.pages)) {
       pages[id] = projectPageEntryFromPage(
         page,
         this.projectPageAccessFor(id),
-        project.pages[id]?.version ?? 1,
+        target.pages[id]?.version ?? 1,
       );
     }
-    project.pages = pages;
+    target.pages = pages;
   }
 
   private projectPageAccessFor(
@@ -6678,18 +6976,33 @@ export class MarkerStore implements vscode.Disposable {
     await this.accessStore?.ensureLoaded();
     const channelId = this.reviewChannelId();
     const project = this.activeProject();
-    if (!project) {
+    if (!project || !this.accessStore) {
       return;
     }
     for (const [pageId, meta] of Object.entries(project.pages)) {
-      if (meta.kind !== 'review' || !meta.access) {
+      if (meta.kind !== 'review') {
         continue;
       }
-      await this.accessStore?.setPage(pageId, {
-        provider: meta.access.provider,
-        channelId,
-        repoUrl: meta.access.repoUrl,
-      });
+      const existing = this.accessStore.page(pageId);
+      if (!channelId) {
+        if (existing) {
+          await this.accessStore.deletePage(pageId);
+        }
+        continue;
+      }
+      const provider = meta.access?.provider ?? existing?.provider;
+      const repoUrl = (meta.access?.repoUrl || existing?.repoUrl || '').trim();
+      if (!provider || !repoUrl) {
+        continue;
+      }
+      if (
+        existing?.channelId === channelId &&
+        existing.provider === provider &&
+        existing.repoUrl === repoUrl
+      ) {
+        continue;
+      }
+      await this.accessStore.setPage(pageId, { provider, channelId, repoUrl });
     }
   }
 
@@ -6770,6 +7083,7 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     const base = normalizeBaseConfig(JSON.parse(baseRaw));
+    const droppedPlaceholder = this.omitPlaceholderProjects(base);
     const projectId =
       (base.activeProjectId && base.projects[base.activeProjectId]
         ? base.activeProjectId
@@ -6814,6 +7128,9 @@ export class MarkerStore implements vscode.Disposable {
       surfaces: surfaces ?? emptySurfaces(Object.keys(assembled.pages)[0] || DEFAULT_PAGE_ID),
     };
     this.base = assembled.base;
+    if (droppedPlaceholder) {
+      await this.persistBaseOnly();
+    }
     this.pageCloud = assembled.pageCloud;
     this.usingSplitConfig = true;
     this.data = next;
@@ -7573,13 +7890,13 @@ export class MarkerStore implements vscode.Disposable {
     return id;
   }
 
-  private uniquePageId(name: string): string {
-    const base =
-      'page-' +
-      (name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'page');
+  private uniquePageId(name: string, kind: PageKind): string {
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const kindSlug = kind === 'files' ? 'explorer' : kind;
+    const base = slug ? `page-${slug}` : `page-${kindSlug}`;
     let id = base;
     let counter = 2;
     while (this.data.pages[id]) {
