@@ -603,41 +603,6 @@ export class SettingsPanel implements vscode.Disposable {
       cursor: default;
       opacity: 0.35;
     }
-    .sync-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin: 0;
-    }
-    .sync-actions button {
-      align-items: center;
-      background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-      border: none;
-      border-radius: 4px;
-      color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
-      cursor: pointer;
-      display: inline-flex;
-      font: inherit;
-      font-size: 12px;
-      gap: 6px;
-      height: 28px;
-      justify-content: center;
-      line-height: 1;
-      min-width: 36px;
-      padding: 0 10px;
-      white-space: nowrap;
-    }
-    .sync-actions button .sync-arrow {
-      font-size: 14px;
-      line-height: 1;
-    }
-    .sync-actions button:hover:not(:disabled) {
-      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
-    }
-    .sync-actions button:disabled {
-      cursor: default;
-      opacity: 0.4;
-    }
     .profile-create {
       align-items: center;
       border-top: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -1082,16 +1047,6 @@ export class SettingsPanel implements vscode.Disposable {
           </div>
         </div>
       </div>
-      <div class="sync-actions">
-        <button type="button" id="pos-sync-pull" data-i18n-title="profileSyncPull" data-i18n-aria="profileSyncPull">
-          <span class="sync-arrow" aria-hidden="true">↓</span>
-          <span data-i18n="labelPositionsPull">Pull</span>
-        </button>
-        <button type="button" id="pos-sync-push" data-i18n-title="profileSyncPush" data-i18n-aria="profileSyncPush">
-          <span class="sync-arrow" aria-hidden="true">↑</span>
-          <span data-i18n="labelPositionsPush">Send</span>
-        </button>
-      </div>
     </div>
     <p class="note" data-i18n="notePositions"></p>
     <section class="bindings">
@@ -1390,8 +1345,6 @@ export class SettingsPanel implements vscode.Disposable {
     const profileAdd = document.getElementById('profile-add');
     const languageSelect = document.getElementById('language');
     const settingsHint = document.getElementById('settings-hint');
-    const posSyncPush = document.getElementById('pos-sync-push');
-    const posSyncPull = document.getElementById('pos-sync-pull');
     const channelProfile = document.getElementById('channelProfile');
     const channelExplorer = document.getElementById('channelExplorer');
     const channelNotes = document.getElementById('channelNotes');
@@ -1427,8 +1380,6 @@ export class SettingsPanel implements vscode.Disposable {
     const githubTokenClear = document.getElementById('githubTokenClear');
     const gitlabTokenClear = document.getElementById('gitlabTokenClear');
     let boundProfileId = '';
-    /** @type {{ canPush?: boolean, canPull?: boolean }} */
-    let positionSync = { canPush: false, canPull: false };
 
     function tr(key) {
       return i18n[key] || key;
@@ -1465,12 +1416,6 @@ export class SettingsPanel implements vscode.Disposable {
         channelReview: channelReview instanceof HTMLInputElement ? channelReview.value : '',
         discordToken: discordToken instanceof HTMLInputElement ? discordToken.value : undefined,
       });
-    }
-
-    function applyPositionSync(sync) {
-      positionSync = sync && typeof sync === 'object' ? sync : { canPush: false, canPull: false };
-      if (posSyncPush) posSyncPush.disabled = !positionSync.canPush;
-      if (posSyncPull) posSyncPull.disabled = !positionSync.canPull;
     }
 
     function format(key, value) {
@@ -1720,11 +1665,9 @@ export class SettingsPanel implements vscode.Disposable {
           closeProfileMenu();
           return;
         }
-        if (action === 'delete' || action === 'syncPush' || action === 'syncPull') {
+        if (action === 'delete') {
           vscode.postMessage({ type: 'profile', action, id });
-          if (action === 'delete') {
-            closeProfileMenu();
-          }
+          closeProfileMenu();
         }
         return;
       }
@@ -1739,13 +1682,6 @@ export class SettingsPanel implements vscode.Disposable {
       if (!switchWrap || !profileMenu || profileMenu.hidden) return;
       if (event.target instanceof Node && switchWrap.contains(event.target)) return;
       closeProfileMenu();
-    });
-
-    posSyncPush?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'profile', action: 'syncPush' });
-    });
-    posSyncPull?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'profile', action: 'syncPull' });
     });
 
     for (const input of [
@@ -1930,7 +1866,6 @@ export class SettingsPanel implements vscode.Disposable {
         );
         applyGitBindings(event.data.activeProfileId, event.data.gitBindings);
         applyCatalogChannels(event.data.catalogChannels, event.data.hasDiscord);
-        applyPositionSync(event.data.positionSync);
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);
       }
       if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {

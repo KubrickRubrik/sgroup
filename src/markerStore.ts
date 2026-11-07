@@ -981,6 +981,46 @@ export class MarkerStore implements vscode.Disposable {
     });
   }
 
+  /**
+   * Unsent work of the active project.
+   * The active-project pointer alone does not count: switching sets it
+   * without discarding page, profile, or project content.
+   */
+  hasUnsentChanges(): boolean {
+    if (this.profileDirty || this.baseNeedsFirstPublish()) {
+      return true;
+    }
+    if (this.pagesFixed() !== this.pagesFixedSent()) {
+      return true;
+    }
+    for (const [id, page] of this.pages()) {
+      if (page.kind === 'review') {
+        continue;
+      }
+      if (this.dirtyPages.has(id)) {
+        return true;
+      }
+    }
+    return this.projectDirty && this.projectBodyDiffersFromSent();
+  }
+
+  /** True when base content differs from the last send, not only activeProjectId. */
+  private projectBodyDiffersFromSent(): boolean {
+    const clean = this.posLocal.baseClean?.project;
+    if (!clean) {
+      return true;
+    }
+    if (this.projectSyncFingerprint() === clean) {
+      return false;
+    }
+    for (const id of Object.keys(this.base.projects)) {
+      if (this.projectSyncFingerprint(id) === clean) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** Local base exists with a channel but was never successfully posted to Discord. */
   private baseNeedsFirstPublish(): boolean {
     return (
@@ -1205,9 +1245,20 @@ export class MarkerStore implements vscode.Disposable {
       if (this.base.activeProjectId === id) {
         return true;
       }
+      // Keep the project we are leaving in sync, then write the new id.
+      // A disk reload must not put the previous project back: the file watcher
+      // can deliver the write late, and a stale read used to undo the click.
+      this.syncProjectPagesFromData();
       this.base.activeProjectId = id;
       this.projectDirty = true;
-      await this.reloadSplitFromDisk(false);
+      this.holdCatalogWrite();
+      try {
+        await this.persistBaseOnly();
+        await this.reloadSplitFromDisk(false, id);
+        this.retargetSurfacesToActivePages();
+      } finally {
+        this.releaseCatalogWrite();
+      }
       this.present = this.capture();
       this.baseline = undefined;
       this.pagePresent = this.captureAllPageSnapshots();
@@ -1804,7 +1855,7 @@ export class MarkerStore implements vscode.Disposable {
 
   /**
    * Toolbar Accept: newer BASE without bulk page download, then known pages
-   * that already showed pageCloudNewer. Does not adopt pendingRemote tabs.
+   * that already showed pageCloudNewer, then pages that exist only in Discord.
    */
   async pullWorkspaceCloud(): Promise<{ ok: boolean; message?: string }> {
     return this.enqueueResult(() => this.pullWorkspaceCloudNow());
@@ -5113,6 +5164,9 @@ export class MarkerStore implements vscode.Disposable {
     const newerPageIds = this.pages()
       .map(([id]) => id)
       .filter((id) => !!this.pageCloudNewer[id]);
+    const pendingSnapshot = Object.entries(this.pendingRemote).flatMap(([pageId, pending]) =>
+      pending ? [[pageId, pending] as const] : [],
+    );
     if (this.baseCloudNewer) {
       const base = await this.pullProfileConfigNow(undefined, { skipPages: true });
       if (!base.ok && base.message && base.message !== 'Nothing to pull') {
@@ -5130,6 +5184,19 @@ export class MarkerStore implements vscode.Disposable {
       }
       const name = this.data.pages[id]?.name?.trim() || id;
       lines.push(`${name}\t${result.message}`);
+    }
+    for (const [pageId, pending] of pendingSnapshot) {
+      if (this.data.pages[pageId]) {
+        delete this.pendingRemote[pageId];
+        continue;
+      }
+      try {
+        await this.adoptRemotePageNow(pageId, pending.file, pending.stamp);
+        delete this.pendingRemote[pageId];
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        lines.push(`${pageId}\t${detail}`);
+      }
     }
     if (lines.length === 0) {
       return { ok: true };
@@ -6192,7 +6259,7 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /** Channel + project meta/pages (not profile styles, not lock). */
-  private projectSyncFingerprint(): string {
+  private projectSyncFingerprint(activeProjectId = this.base.activeProjectId): string {
     const projects: Record<string, unknown> = {};
     for (const id of Object.keys(this.base.projects).sort()) {
       const project = this.base.projects[id];
@@ -6206,7 +6273,7 @@ export class MarkerStore implements vscode.Disposable {
     return fingerprint(
       JSON.stringify({
         channelId: this.base.channelId.trim(),
-        activeProjectId: this.base.activeProjectId,
+        activeProjectId,
         projects,
       }),
     );
@@ -6952,8 +7019,28 @@ export class MarkerStore implements vscode.Disposable {
     await this.persistSplitConfig();
   }
 
-  private async persistBaseOnly(): Promise<void> {
+  /** Nested catalog writes share one guard so a late watcher event cannot reload mid-switch. */
+  private catalogWrites = 0;
+
+  private holdCatalogWrite(): void {
+    this.catalogWrites += 1;
     this.writingCatalog = true;
+  }
+
+  private releaseCatalogWrite(): void {
+    this.catalogWrites = Math.max(0, this.catalogWrites - 1);
+    if (this.catalogWrites > 0) {
+      return;
+    }
+    setTimeout(() => {
+      if (this.catalogWrites === 0) {
+        this.writingCatalog = false;
+      }
+    }, 200);
+  }
+
+  private async persistBaseOnly(): Promise<void> {
+    this.holdCatalogWrite();
     try {
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.baseUri, '..'));
       await vscode.workspace.fs.writeFile(
@@ -6961,9 +7048,7 @@ export class MarkerStore implements vscode.Disposable {
         Buffer.from(stringifyBaseConfig(this.base), 'utf8'),
       );
     } finally {
-      setTimeout(() => {
-        this.writingCatalog = false;
-      }, 100);
+      this.releaseCatalogWrite();
     }
   }
 
@@ -7107,7 +7192,7 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async persistSplitConfig(): Promise<void> {
-    this.writingCatalog = true;
+    this.holdCatalogWrite();
     try {
       await this.accessStore?.ensureLoaded();
       this.mirrorProfilesStylesToProject(false);
@@ -7152,9 +7237,7 @@ export class MarkerStore implements vscode.Disposable {
         Buffer.from(stringifyBaseConfig(this.base), 'utf8'),
       );
     } finally {
-      setTimeout(() => {
-        this.writingCatalog = false;
-      }, 100);
+      this.releaseCatalogWrite();
     }
   }
 
@@ -7171,7 +7254,7 @@ export class MarkerStore implements vscode.Disposable {
     return catalogPart + pageParts.join('\n');
   }
 
-  private async reloadSplitFromDisk(notify: boolean): Promise<void> {
+  private async reloadSplitFromDisk(notify: boolean, forceProjectId?: string): Promise<void> {
     let baseRaw: string;
     try {
       baseRaw = Buffer.from(await vscode.workspace.fs.readFile(this.baseUri)).toString('utf8');
@@ -7183,6 +7266,9 @@ export class MarkerStore implements vscode.Disposable {
       return;
     }
     const base = normalizeBaseConfig(JSON.parse(baseRaw));
+    if (forceProjectId && base.projects[forceProjectId]) {
+      base.activeProjectId = forceProjectId;
+    }
     const droppedPlaceholder = this.omitPlaceholderProjects(base);
     const projectId =
       (base.activeProjectId && base.projects[base.activeProjectId]

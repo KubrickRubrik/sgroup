@@ -295,12 +295,14 @@ html::-webkit-scrollbar {
   position: relative;
 }
 
-.toolbar-profile {
-  position: relative;
-}
-
 .toolbar-project {
   position: relative;
+  z-index: 6;
+}
+
+.toolbar-profile {
+  position: relative;
+  z-index: 6;
 }
 
 .toolbar-cloud-btn .cloud-ico {
@@ -415,17 +417,6 @@ html::-webkit-scrollbar {
 .toolbar-profile-row .profile-actions button:disabled {
   cursor: default;
   opacity: 0.35;
-}
-
-.toolbar-profile-row .profile-actions button.profile-cloud-push:not(:disabled) {
-  background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 16%, transparent);
-  border-radius: 3px;
-  color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
-  opacity: 1;
-}
-
-.toolbar-profile-row .profile-actions button.profile-cloud-push:not(:disabled):hover {
-  background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 28%, transparent);
 }
 
 .toolbar-profile-create {
@@ -1235,6 +1226,7 @@ button.toolbar-lock.is-fixed:hover {
 }
 
 .pager {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -1243,14 +1235,18 @@ button.toolbar-lock.is-fixed:hover {
   position: relative;
 }
 
-.pager-tools {
-  align-items: center;
-  display: inline-flex;
-  gap: 3px;
-  margin-right: 8px;
+.pager[hidden] {
+  display: none;
 }
 
-.pager-sync,
+.pager-history {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-right: 12px;
+}
+
 .pager-lock {
   align-items: center;
   background: transparent;
@@ -1276,31 +1272,13 @@ button.toolbar-lock.is-fixed:hover {
   width: calc(1.2em + 6px);
 }
 
-.pager-sync:disabled,
 .pager-lock:not(.is-fixed) {
   color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground, #8b8b8b));
 }
 
-.pager-sync:hover,
-.pager-lock:hover,
-.pager-sync:disabled,
-.pager-sync:disabled:hover {
-  cursor: pointer;
-}
-
-.pager-sync-push:not(:disabled) {
-  background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 16%, transparent);
-  border-color: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 55%, transparent);
-  color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
-}
-
-.pager-sync:hover,
 .pager-lock:hover {
   background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-}
-
-.pager-sync-push:not(:disabled):hover {
-  background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d) 28%, transparent);
+  cursor: pointer;
 }
 
 button.pager-lock.is-fixed,
@@ -1512,12 +1490,6 @@ button.pager-lock.is-fixed:hover {
   width: 14px;
   height: 14px;
   display: block;
-}
-
-.profile-cloud-btn .cloud-ico {
-  height: 14px;
-  pointer-events: none;
-  width: 14px;
 }
 
 .cards-draft-divider {
@@ -4186,6 +4158,10 @@ button.review-neurofix-btn:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.review-mr-field[hidden] {
+  display: none;
 }
 
 .page-kind-line {

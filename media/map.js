@@ -54,6 +54,7 @@
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
   const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
   const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
+  const toolbarCloudCheck = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-check'));
   const toolbarCloudPull = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-pull'));
   const toolbarCloudPush = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-push'));
   const toolbarBaseLoader = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-base-loader'));
@@ -455,31 +456,31 @@
     closeProjectMenu();
     vscode.postMessage({ type: 'project', action: 'create' });
   });
-  toolbarProjectList?.addEventListener('pointerup', (event) => {
-    if (event.button !== 0) {
-      return;
-    }
+  toolbarProjectList?.addEventListener('pointerdown', (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const actionBtn = target?.closest('[data-project-action]');
-    if (!(actionBtn instanceof HTMLElement)) {
+    if (actionBtn instanceof HTMLElement) {
       return;
     }
-    const action = actionBtn.getAttribute('data-project-action');
-    if (action !== 'syncPush' && action !== 'syncPull') {
+    const row = target?.closest('[data-project-id]');
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const id = row.getAttribute('data-project-id');
+    if (!id || id === activeProjectId) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
-    sendBaseSync('project', action, actionBtn.getAttribute('data-project-id') || undefined, actionBtn);
+    vscode.postMessage({ type: 'project', action: 'select', id });
+    closeProjectMenu();
   });
   toolbarProjectList?.addEventListener('click', (event) => {
-    // SVG icons inside cloud buttons are Element, not HTMLElement.
     const target = event.target instanceof Element ? event.target : null;
     const actionBtn = target?.closest('[data-project-action]');
     if (actionBtn instanceof HTMLElement) {
       event.stopPropagation();
       const action = actionBtn.getAttribute('data-project-action');
-      const id = actionBtn.getAttribute('data-project-id') || undefined;
       if (action === 'join') {
         if (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled)) {
           return;
@@ -487,9 +488,6 @@
         vscode.postMessage({ type: 'project', action: 'create', mode: 'select' });
         closeProjectMenu();
         return;
-      }
-      if (action === 'syncPush' || action === 'syncPull') {
-        sendBaseSync('project', action, id, actionBtn);
       }
       return;
     }
@@ -532,25 +530,7 @@
     renderPager();
     vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
   });
-  toolbarProfileList?.addEventListener('pointerup', (event) => {
-    if (event.button !== 0) {
-      return;
-    }
-    const target = event.target instanceof Element ? event.target : null;
-    const actionBtn = target?.closest('[data-profile-action]');
-    if (!(actionBtn instanceof HTMLElement)) {
-      return;
-    }
-    const action = actionBtn.getAttribute('data-profile-action');
-    if (action !== 'syncPush' && action !== 'syncPull') {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    sendBaseSync('profile', action, actionBtn.getAttribute('data-profile-id') || undefined, actionBtn);
-  });
   toolbarProfileList?.addEventListener('click', (event) => {
-    // SVG icons inside cloud buttons are Element, not HTMLElement.
     const target = event.target instanceof Element ? event.target : null;
     const actionBtn = target?.closest('[data-profile-action]');
     if (actionBtn instanceof HTMLElement) {
@@ -560,10 +540,6 @@
       if (action === 'edit') {
         vscode.postMessage({ type: 'profileOpenSettings', id });
         closeProfileMenu();
-        return;
-      }
-      if (action === 'syncPush' || action === 'syncPull') {
-        sendBaseSync('profile', action, id, actionBtn);
         return;
       }
       if (action === 'delete') {
@@ -1158,9 +1134,10 @@
       pageCloudBusy = message.busy === true;
       if (!pageCloudBusy && message.ok === true && message.pushed > 0) {
         pagesFixedSent = pagesFixed;
+        applyToolbarLock();
       }
+      applyBaseConfigLoader();
       applyWorkspaceCloudButtons();
-      renderPager();
     } else if (message.type === 'baseConfigBusy') {
       baseConfigBusy = message.busy === true;
       applyBaseConfigLoader();
@@ -1232,6 +1209,17 @@
       }
       if (typeof message.themeGeneration === 'number') {
         themeGeneration = message.themeGeneration;
+      }
+      const incomingProjectId =
+        typeof message.activeProjectId === 'string' ? message.activeProjectId : '';
+      if (activeProjectId && incomingProjectId !== activeProjectId) {
+        cancelSlide();
+        isFolding = false;
+        renderDeferred = false;
+        pageBodies.clear();
+        uiState.activePageId = '';
+        vscode.setState(uiState);
+        activeProjectId = incomingProjectId;
       }
       ensureActivePage();
       syncPageBodies();
@@ -1424,6 +1412,10 @@
   function ensureActivePage() {
     const list = pages();
     if (list.length === 0) {
+      if (uiState.activePageId) {
+        uiState.activePageId = '';
+        vscode.setState(uiState);
+      }
       return;
     }
     if (!list.some((page) => page.id === uiState.activePageId)) {
@@ -1467,6 +1459,12 @@
     }
     if (typeof data.contentPageId === 'string') {
       rememberPageBody(data.contentPageId);
+    }
+    const alive = new Set(pages().map((page) => page.id));
+    for (const id of pageBodies.keys()) {
+      if (!alive.has(id)) {
+        pageBodies.delete(id);
+      }
     }
     const activeId = activePage()?.id;
     if (activeId && data.contentPageId !== activeId) {
@@ -3271,16 +3269,11 @@
     toolbarProject?.setAttribute('aria-expanded', 'false');
   }
 
-  /**
-   * @param {{ id: string, name: string, active?: boolean }[] | undefined} projects
-   * @param {string | undefined} activeId
-   * @param {{ canPush?: boolean, canPull?: boolean } | undefined} sync
-   */
   function applyBaseConfigLoader() {
     if (!toolbarBaseLoader) {
       return;
     }
-    if (!baseConfigBusy) {
+    if (!baseConfigBusy && !pageCloudBusy) {
       toolbarBaseLoader.hidden = true;
       toolbarBaseLoader.replaceChildren();
       toolbarBaseLoader.removeAttribute('title');
@@ -3288,7 +3281,7 @@
       toolbarBaseLoader.removeAttribute('aria-label');
       return;
     }
-    const label = t('baseConfigWorking');
+    const label = baseConfigBusy ? t('baseConfigWorking') : t('pageCloudWorking');
     toolbarBaseLoader.hidden = false;
     toolbarBaseLoader.title = label;
     toolbarBaseLoader.setAttribute('aria-label', label);
@@ -3325,7 +3318,7 @@
         return true;
       }
     }
-    return false;
+    return pendingRemoteCount > 0;
   }
 
   function applyWorkspaceCloudButtons() {
@@ -3346,6 +3339,31 @@
       toolbarCloudPush.disabled = busy || !canPush;
       toolbarCloudPush.classList.toggle('is-cloud-active', canPush);
     }
+    applyToolbarCloudCheck();
+  }
+
+  function applyToolbarCloudCheck() {
+    if (!toolbarCloudCheck) {
+      return;
+    }
+    const label = t('pageCloudCheck');
+    toolbarCloudCheck.title = label;
+    toolbarCloudCheck.setAttribute('aria-label', label);
+    toolbarCloudCheck.hidden = !hasConfigChannel;
+    toolbarCloudCheck.disabled = !hasConfigChannel || baseConfigBusy || pageCloudBusy;
+  }
+
+  function sendWorkspaceCheck() {
+    if (!toolbarCloudCheck || toolbarCloudCheck.disabled || toolbarCloudCheck.hidden) {
+      return;
+    }
+    if (baseConfigBusy || pageCloudBusy || !hasConfigChannel) {
+      return;
+    }
+    pageCloudBusy = true;
+    applyBaseConfigLoader();
+    applyWorkspaceCloudButtons();
+    vscode.postMessage({ type: 'pageCloud', action: 'check' });
   }
 
   /** @param {'push' | 'pull'} action */
@@ -3376,10 +3394,18 @@
     );
   }
 
-  /** Ignore the click that follows a pointerup on the same cloud button. */
+  /** Ignore a second click on the same cloud button. */
   let baseSyncStamp = 0;
 
   function initWorkspaceCloudButtons() {
+    if (toolbarCloudCheck && !toolbarCloudCheck.querySelector('.cloud-ico')) {
+      toolbarCloudCheck.append(cloudSvgIcon('cloud-ico-reload', CLOUD_RELOAD_D));
+      toolbarCloudCheck.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendWorkspaceCheck();
+      });
+    }
     if (toolbarCloudPull && !toolbarCloudPull.querySelector('.cloud-ico')) {
       toolbarCloudPull.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
       toolbarCloudPull.addEventListener('click', (event) => {
@@ -3399,45 +3425,10 @@
     applyWorkspaceCloudButtons();
   }
 
-  /**
-   * Post first, then show the loader. Rebuilding the menu before postMessage
-   * dropped the event when the button node was replaced mid-click.
-   * @param {'project' | 'profile'} kind
-   * @param {'syncPush' | 'syncPull'} action
-   * @param {string | undefined} id
-   * @param {Element} actionBtn
-   */
-  function sendBaseSync(kind, action, id, actionBtn) {
-    if (actionBtn instanceof HTMLButtonElement && actionBtn.disabled) {
-      return;
-    }
-    if (baseConfigBusy) {
-      return;
-    }
-    const now = Date.now();
-    if (now - baseSyncStamp < 400) {
-      return;
-    }
-    baseSyncStamp = now;
-    cancelMenuClose(kind === 'project' ? 'toolbar-project' : 'toolbar-profile');
-    vscode.postMessage({ type: kind, action, id });
-    baseConfigBusy = true;
-    applyBaseConfigLoader();
-    applyWorkspaceCloudButtons();
-    renderProjects(projectsList, activeProjectId, projectConfigSync);
-    renderProfiles(
-      Array.isArray(data?.profiles) ? data.profiles : undefined,
-      typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
-      data?.profileConfigSync,
-    );
-  }
-
-  function renderProjects(projects, activeId, sync) {
+  function renderProjects(projects, activeId, _sync) {
     if (!toolbarProjectList) {
       return;
     }
-    const canPush = !baseConfigBusy && !!(sync && sync.canPush);
-    const canPull = !baseConfigBusy && !!(sync && sync.canPull);
     toolbarProjectList.replaceChildren();
     const list = Array.isArray(projects) ? projects : [];
     if (list.length === 0) {
@@ -3467,29 +3458,6 @@
       const name = el('span', 'profile-name');
       name.textContent = project.name;
       row.append(name);
-      const actions = el('span', 'profile-actions');
-      if (project.id === activeId) {
-        const pullBtn = el('button', 'profile-cloud-btn');
-        pullBtn.type = 'button';
-        pullBtn.title = t('projectSyncPull');
-        pullBtn.setAttribute('aria-label', t('projectSyncPull'));
-        pullBtn.setAttribute('data-project-action', 'syncPull');
-        pullBtn.setAttribute('data-project-id', project.id);
-        pullBtn.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
-        pullBtn.disabled = !canPull;
-        const pushBtn = el('button', 'profile-cloud-btn profile-cloud-push');
-        pushBtn.type = 'button';
-        pushBtn.title = t('projectSyncPush');
-        pushBtn.setAttribute('aria-label', t('projectSyncPush'));
-        pushBtn.setAttribute('data-project-action', 'syncPush');
-        pushBtn.setAttribute('data-project-id', project.id);
-        pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
-        pushBtn.disabled = !canPush;
-        actions.append(pullBtn, pushBtn);
-      }
-      if (actions.childNodes.length > 0) {
-        row.append(actions);
-      }
       toolbarProjectList.append(row);
     }
   }
@@ -3545,12 +3513,10 @@
    * @param {string | undefined} activeId
    * @param {{ canPush?: boolean, canPull?: boolean } | undefined} sync
    */
-  function renderProfiles(profiles, activeId, sync) {
+  function renderProfiles(profiles, activeId, _sync) {
     if (!toolbarProfileList) {
       return;
     }
-    const canPush = !baseConfigBusy && !!(sync && sync.canPush);
-    const canPull = !baseConfigBusy && !!(sync && sync.canPull);
     toolbarProfileList.replaceChildren();
     const list = Array.isArray(profiles) ? profiles : [];
     for (const profile of list) {
@@ -3568,25 +3534,6 @@
         row.append(count);
       }
       const actions = el('span', 'profile-actions');
-      if (profile.id === activeId) {
-        const pullBtn = el('button', 'profile-cloud-btn');
-        pullBtn.type = 'button';
-        pullBtn.title = t('profileSyncPull');
-        pullBtn.setAttribute('aria-label', t('profileSyncPull'));
-        pullBtn.setAttribute('data-profile-action', 'syncPull');
-        pullBtn.setAttribute('data-profile-id', profile.id);
-        pullBtn.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
-        pullBtn.disabled = !canPull;
-        const pushBtn = el('button', 'profile-cloud-btn profile-cloud-push');
-        pushBtn.type = 'button';
-        pushBtn.title = t('profileSyncPush');
-        pushBtn.setAttribute('aria-label', t('profileSyncPush'));
-        pushBtn.setAttribute('data-profile-action', 'syncPush');
-        pushBtn.setAttribute('data-profile-id', profile.id);
-        pushBtn.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
-        pushBtn.disabled = !canPush;
-        actions.append(pullBtn, pushBtn);
-      }
       const editBtn = el('button', '');
       editBtn.type = 'button';
       editBtn.title = t('profileEdit');
@@ -4384,6 +4331,11 @@
     if (!data) {
       return;
     }
+    if (!activePage() && !isProblemsPageOpen()) {
+      paintNoPage();
+      syncPageLoadingChrome();
+      return;
+    }
     const skeletonKind = pageSkeletonKind();
     if (!pageContentReady() && !skeletonKind) {
       const active = document.activeElement;
@@ -4462,6 +4414,24 @@
     }
     bar.style.animationDelay = delayMs + 'ms';
     return bar;
+  }
+
+  /** Drop the previous project's map when this project has no pages. */
+  function paintNoPage() {
+    closeContextMenu();
+    dismissLinkPreview();
+    closeGroupPanel(true);
+    openLinkPanelId = null;
+    cancelSlide();
+    isFolding = false;
+    renderDeferred = false;
+    clearPageSkeletonMark();
+    root.classList.remove('is-page-loading', 'is-page-skeleton');
+    root.removeAttribute('aria-busy');
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page';
+    clearDropHighlights();
   }
 
   /** @param {'files' | 'notes' | 'links'} kind */
@@ -9592,26 +9562,6 @@
     });
   }
 
-  function countPush(list) {
-    return list.filter((page) => pageConfigSync[page.id]?.canPush).length;
-  }
-
-  function applyPushButton(button, count) {
-    button.disabled = pageCloudBusy || count === 0;
-    button.title = count > 0 ? t('pageCloudPushAll') : t('pagesSent');
-    button.setAttribute('aria-label', button.title);
-    const badge = button.querySelector('.pager-sync-count');
-    if (count > 0) {
-      if (badge) {
-        badge.textContent = String(count);
-      } else {
-        button.append(el('span', 'pager-sync-count', String(count)));
-      }
-    } else if (badge) {
-      badge.remove();
-    }
-  }
-
   function renderPager() {
     if (!pager) {
       return;
@@ -9620,10 +9570,18 @@
     bindPagerDrag();
     armScrollKeep();
     const focused = document.activeElement;
-    if (focused instanceof HTMLElement && pager.contains(focused)) {
+    if (
+      focused instanceof HTMLElement &&
+      pager.contains(focused) &&
+      !focused.closest('.pager-history')
+    ) {
       focused.blur();
     }
-    pager.textContent = '';
+    for (const child of [...pager.children]) {
+      if (!(child instanceof HTMLElement) || !child.classList.contains('pager-history')) {
+        child.remove();
+      }
+    }
     const list = pages();
     const problemsTab = showProblemsTab();
     if (!problemsTab) {
@@ -9635,74 +9593,6 @@
     }
     pager.hidden = false;
     const problemsOpen = isProblemsPageOpen();
-    if (list.length > 0) {
-      const pushCount = countPush(list);
-      const pullCount =
-        list.filter((page) => pageConfigSync[page.id]?.canPull).length + pendingRemoteCount;
-      const pushAll = el('button', 'pager-sync pager-sync-push');
-      pushAll.type = 'button';
-      pushAll.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
-      applyPushButton(pushAll, pushCount);
-      pushAll.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (pageCloudBusy) {
-          return;
-        }
-        pageCloudBusy = true;
-        applyWorkspaceCloudButtons();
-        renderPager();
-        vscode.postMessage({ type: 'pageCloud', action: 'pushAll' });
-      });
-      const checkBtn = el('button', 'pager-sync pager-sync-check');
-      checkBtn.type = 'button';
-      checkBtn.hidden = !hasConfigChannel;
-      checkBtn.disabled = pageCloudBusy || !hasConfigChannel;
-      checkBtn.title = t('pageCloudCheck');
-      checkBtn.setAttribute('aria-label', checkBtn.title);
-      checkBtn.append(cloudSvgIcon('cloud-ico-reload', CLOUD_RELOAD_D));
-      checkBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (pageCloudBusy || !hasConfigChannel) {
-          return;
-        }
-        pageCloudBusy = true;
-        applyWorkspaceCloudButtons();
-        renderPager();
-        vscode.postMessage({ type: 'pageCloud', action: 'check' });
-      });
-      const pullAll = el('button', 'pager-sync pager-sync-pull');
-      pullAll.type = 'button';
-      pullAll.disabled = pageCloudBusy || pullCount === 0;
-      pullAll.title = t('pageCloudPullAll');
-      pullAll.setAttribute('aria-label', pullAll.title);
-      pullAll.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
-      if (pullCount > 0) {
-        pullAll.append(el('span', 'pager-sync-count', String(pullCount)));
-      }
-      pullAll.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (pageCloudBusy) {
-          return;
-        }
-        pageCloudBusy = true;
-        applyWorkspaceCloudButtons();
-        renderPager();
-        vscode.postMessage({ type: 'pageCloud', action: 'pullAll' });
-      });
-      const tools = el('div', 'pager-tools');
-      tools.append(checkBtn, pullAll, pushAll);
-      if (pageCloudBusy) {
-        const loader = el('span', 'pager-cloud-loader');
-        loader.title = t('pageCloudWorking');
-        loader.setAttribute('aria-label', loader.title);
-        loader.append(reviewProgressIcon());
-        tools.append(loader);
-      }
-      pager.append(tools);
-    }
     for (const page of list) {
       const chip = el(
         'button',

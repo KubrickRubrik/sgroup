@@ -4342,9 +4342,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   ): Promise<void> {
     const locale = normalizeLocale(this.store.appearance.language);
     if (action === 'select') {
-      if (id) {
-        await this.store.setActiveProject(id);
+      if (!id || id === this.store.activeProjectId()) {
+        return;
       }
+      if (this.store.hasUnsentChanges()) {
+        const continueLabel = t(locale, 'projectSwitchContinue');
+        const choice = await vscode.window.showWarningMessage(
+          t(locale, 'projectSwitchUnsynced'),
+          { modal: true },
+          t(locale, 'projectSwitchCancel'),
+          continueLabel,
+        );
+        if (choice !== continueLabel) {
+          return;
+        }
+      }
+      await this.store.setActiveProject(id);
       return;
     }
     if (action === 'create') {
@@ -5411,18 +5424,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </div>
       </div>
     </div>
+    <button id="toolbar-cloud-check" class="history-btn toolbar-cloud-btn" type="button" title="Проверить Discord" aria-label="Проверить Discord" hidden></button>
     <button id="toolbar-cloud-pull" class="history-btn toolbar-cloud-btn" type="button" title="Принять" aria-label="Принять" disabled></button>
     <button id="toolbar-cloud-push" class="history-btn toolbar-cloud-btn" type="button" title="Отправить" aria-label="Отправить" disabled></button>
     <span id="toolbar-base-loader" class="toolbar-base-loader pager-cloud-loader" hidden aria-hidden="true"></span>
-    <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
-      ${icon('arrow-left')}
-    </button>
-    <button id="history-accept" class="history-btn" type="button" title="Готово" aria-label="Готово" hidden>
-      ${icon('check')}
-    </button>
-    <button id="history-forward" class="history-btn" type="button" title="Вперёд" aria-label="Вперёд" disabled>
-      ${icon('arrow-right')}
-    </button>
     <div class="toolbar-extra">
       <div class="toolbar-format" id="toolbar-format-wrap" hidden>
         <button id="toolbar-format" class="history-btn" type="button" title="Оформление текста" aria-label="Оформление текста" aria-haspopup="menu" aria-expanded="false">
@@ -5495,7 +5500,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
     </div>
   </div>
-  <div id="pager" class="pager" hidden></div>
+  <div id="pager" class="pager" hidden>
+    <div class="pager-history">
+      <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
+        ${icon('arrow-left')}
+      </button>
+      <button id="history-accept" class="history-btn" type="button" title="Готово" aria-label="Готово" hidden>
+        ${icon('check')}
+      </button>
+      <button id="history-forward" class="history-btn" type="button" title="Вперёд" aria-label="Вперёд" disabled>
+        ${icon('arrow-right')}
+      </button>
+    </div>
+  </div>
   </div>
   <div id="stage" class="page-stage">
     <div id="root" class="map-page"></div>
