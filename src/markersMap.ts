@@ -358,6 +358,7 @@ type IncomingMessage =
   | { type: 'pageCloud'; action: 'pushAll' }
   | { type: 'pageCloud'; action: 'pullAll' }
   | { type: 'pageCloud'; action: 'check' }
+  | { type: 'workspaceCloud'; action: 'push' | 'pull' }
   | { type: 'setPagesFixed'; fixed: boolean }
   | { type: 'profileOpenSettings'; id?: string }
   | {
@@ -2442,6 +2443,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       await this.onPageCloud(message.action, message.pageId);
+      return;
+    }
+    if (message.type === 'workspaceCloud') {
+      await this.onWorkspaceCloud(message.action);
       return;
     }
     if (message.type === 'profileOpenSettings') {
@@ -4576,6 +4581,32 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
+  /** Toolbar Accept / Send: BASE then dirty or newer known pages. */
+  private async onWorkspaceCloud(action: 'push' | 'pull'): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    if (action === 'pull') {
+      this.bodyCache.clear();
+      this.bodyFlight.clear();
+      this.bodyGen += 1;
+      this.scheduleAll();
+    }
+    await this.withBaseConfigBusy(async () => {
+      const result =
+        action === 'push'
+          ? await this.store.pushWorkspaceCloud()
+          : await this.store.pullWorkspaceCloud();
+      if (!result.ok && result.message) {
+        if (result.message === 'cloudPullFirst' || !result.message.includes('\t')) {
+          this.showBaseConfigError(result.message);
+          return;
+        }
+        void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+      }
+    });
+  }
+
   /** Send pages that differ from Discord. The lock is one of those differences. */
   private async onPageCloudPushAll(webview: vscode.Webview): Promise<void> {
     if (this.pageCloudBatch) {
@@ -5380,6 +5411,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </div>
       </div>
     </div>
+    <button id="toolbar-cloud-pull" class="history-btn toolbar-cloud-btn" type="button" title="Принять" aria-label="Принять" disabled></button>
+    <button id="toolbar-cloud-push" class="history-btn toolbar-cloud-btn" type="button" title="Отправить" aria-label="Отправить" disabled></button>
     <span id="toolbar-base-loader" class="toolbar-base-loader pager-cloud-loader" hidden aria-hidden="true"></span>
     <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
       ${icon('arrow-left')}

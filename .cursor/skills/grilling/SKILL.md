@@ -61,6 +61,7 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
    - An assumption that needs a confirmation is a form question. Do not hide it inside the mirror
    - End the turn after the mirror and the form — no “ещё на потом” list, no coding, no plan
    - Next round only after the user replies; rewrite or drop questions that answers already covered
+   - If an answer means the question itself could not be understood, follow **Unclear question** before any new concerns
 
 4. **Stop condition** — when answers are coherent enough for a thin vertical slice:
    - Brief **decision summary** in the message: in scope / out of scope / open risks. No recommendation in the message. Do not write «Дальше» or «1. Дальше»
@@ -71,6 +72,20 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
    - Options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`. No «Не выполнять»
    - The prompt does not ask them to type «выполняй», «скажи», «если хочешь», or «переключись в Plan»
    - Wait for the click. On `execute`, implement in the next turn. On `plan`, the next turn calls `SwitchMode` with `target_mode_id: "plan"` and a short `explanation`, and does nothing else until they approve
+
+## Unclear question (hard rule)
+
+If the user answers a question — by picking an option or by free text — with «не понял», «вопрос непонятен», «варианты непонятны», or a close paraphrase in the session language, the meaning is the same: the proposed question and its options cannot be understood.
+
+That is not a decision, not a vague product answer, and not an open risk. Do not record it and move on. Do not repeat the same wording.
+
+Repair only the unclear question before asking anything new. Other answers in the round stay answered. Do one of these:
+
+- ask the same concern in different words
+- rewrite the options so each one is concrete and distinguishable
+- split one overloaded question into several questions, one concern each
+
+Keep the repair inside one `AskQuestion` call. A short mirror may say what was unclear; the new question and options live only in the form. If several questions in the round were marked unclear, repair all of them in that next round.
 
 ## Question angles (pick what fits; don't dump all)
 
@@ -87,6 +102,7 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
 
 - Direct, curious, not theatrical
 - Challenge vague answers once; if still vague, record as open risk and move on
+- «Не понял» / «вопрос непонятен» / «варианты непонятны» is not vagueness — repair the question (see **Unclear question**)
 - Follow the user's language and address rules from the session
 
 ## Anti-patterns
@@ -99,6 +115,7 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
 - Jumping to implementation or architecture essays mid-grill
 - Interrogation without reading the project
 - Asking the next round before the user answered the current one
+- Repeating a question in the same words after the user said it or its options could not be understood
 - Rewarding hand-waving without noting the risk
 - A stop form whose prompt is «Дальше», or a recommendation written in the message instead of the form prompt
 - A stop option «Не выполнять», or calling `SwitchMode` in the stop turn before they pick «Сделать план»

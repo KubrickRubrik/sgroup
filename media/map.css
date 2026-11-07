@@ -303,6 +303,17 @@ html::-webkit-scrollbar {
   position: relative;
 }
 
+.toolbar-cloud-btn .cloud-ico {
+  display: block;
+  height: 14px;
+  pointer-events: none;
+  width: 14px;
+}
+
+.toolbar-cloud-btn.is-cloud-active {
+  color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
+}
+
 .toolbar-base-loader {
   flex: 0 0 auto;
   margin-inline: 2px;

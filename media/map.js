@@ -54,6 +54,8 @@
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
   const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
   const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
+  const toolbarCloudPull = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-pull'));
+  const toolbarCloudPush = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-push'));
   const toolbarBaseLoader = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-base-loader'));
   const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
   const toolbarPanelsMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-panels-menu'));
@@ -218,7 +220,7 @@
 
   toolbarView?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarViewMenu) {
+    if (!toolbarViewMenu || toolbarView?.disabled) {
       return;
     }
     const open = toolbarViewMenu.hidden;
@@ -231,7 +233,7 @@
   });
   toolbarViewWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-view');
-    if (!toolbarViewMenu || !toolbarViewMenu.hidden) {
+    if (toolbarView?.disabled || !toolbarViewMenu || !toolbarViewMenu.hidden) {
       return;
     }
     closeToolbarMenus();
@@ -245,6 +247,9 @@
   });
   toolbarCreate?.addEventListener('click', (event) => {
     event.stopPropagation();
+    if (toolbarCreate?.disabled) {
+      return;
+    }
     if (activePage()?.kind === 'links') {
       cancelMenuClose();
       closeToolbarMenus();
@@ -265,7 +270,7 @@
   });
   toolbarCreateWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-create');
-    if (activePage()?.kind === 'links') {
+    if (toolbarCreate?.disabled || activePage()?.kind === 'links') {
       return;
     }
     if (!toolbarCreateMenu || !toolbarCreateMenu.hidden) {
@@ -1154,10 +1159,12 @@
       if (!pageCloudBusy && message.ok === true && message.pushed > 0) {
         pagesFixedSent = pagesFixed;
       }
+      applyWorkspaceCloudButtons();
       renderPager();
     } else if (message.type === 'baseConfigBusy') {
       baseConfigBusy = message.busy === true;
       applyBaseConfigLoader();
+      applyWorkspaceCloudButtons();
       renderProjects(projectsList, activeProjectId, projectConfigSync);
       renderProfiles(
         Array.isArray(data?.profiles) ? data.profiles : undefined,
@@ -1262,6 +1269,7 @@
       canToggleProjectLock = message.canToggleProjectLock !== false;
       renderProjects(projectsList, activeProjectId, projectConfigSync);
       applyToolbarLock();
+      applyWorkspaceCloudButtons();
       applyAppearance(message.appearance);
       if (!showProblemsTab()) {
         problemsPageOpen = false;
@@ -1731,6 +1739,7 @@
     setBtnLocale(toolbarProfile, 'toolbarProfile');
     setElLocale(toolbarProfileMenu, 'profiles', 'aria-label');
     setBtnLocale(toolbarProfileAdd, 'profileCreate');
+    applyWorkspaceCloudButtons();
     setBtnLocale(toolbarView, 'toolbarView');
     setElLocale(toolbarViewMenu, 'toolbarView', 'aria-label');
     setBtnLocale(toolbarCreate, 'toolbarCreate');
@@ -1903,7 +1912,7 @@
   }
 
   function openToolbarCreateMenu() {
-    if (!toolbarCreateMenu || !toolbarCreateWrap) {
+    if (!toolbarCreateMenu || !toolbarCreateWrap || !canUseCreateViewToolbar()) {
       return;
     }
     openMenuState = { kind: 'toolbar-create', viewExpanded: false };
@@ -2061,7 +2070,7 @@
   }
 
   function openToolbarViewMenu() {
-    if (!toolbarViewMenu || !toolbarView || !toolbarViewWrap) {
+    if (!toolbarViewMenu || !toolbarView || !toolbarViewWrap || !canUseCreateViewToolbar()) {
       return;
     }
     cancelMenuClose('toolbar-view');
@@ -3287,8 +3296,108 @@
     toolbarBaseLoader.replaceChildren(reviewProgressIcon());
   }
 
+  function workspaceCloudCanPush() {
+    if (projectConfigSync && projectConfigSync.canPush) {
+      return true;
+    }
+    const profileSync = data?.profileConfigSync;
+    if (profileSync && profileSync.canPush) {
+      return true;
+    }
+    for (const id of Object.keys(pageConfigSync)) {
+      if (pageConfigSync[id]?.canPush) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function workspaceCloudCanPull() {
+    if (projectConfigSync && projectConfigSync.canPull) {
+      return true;
+    }
+    const profileSync = data?.profileConfigSync;
+    if (profileSync && profileSync.canPull) {
+      return true;
+    }
+    for (const id of Object.keys(pageConfigSync)) {
+      if (pageConfigSync[id]?.canPull) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function applyWorkspaceCloudButtons() {
+    const busy = baseConfigBusy || pageCloudBusy;
+    if (toolbarCloudPull) {
+      const canPull = workspaceCloudCanPull();
+      const pullLabel = t('workspaceCloudPull');
+      toolbarCloudPull.title = pullLabel;
+      toolbarCloudPull.setAttribute('aria-label', pullLabel);
+      toolbarCloudPull.disabled = busy || !canPull;
+      toolbarCloudPull.classList.toggle('is-cloud-active', canPull);
+    }
+    if (toolbarCloudPush) {
+      const canPush = workspaceCloudCanPush();
+      const pushLabel = t('workspaceCloudPush');
+      toolbarCloudPush.title = pushLabel;
+      toolbarCloudPush.setAttribute('aria-label', pushLabel);
+      toolbarCloudPush.disabled = busy || !canPush;
+      toolbarCloudPush.classList.toggle('is-cloud-active', canPush);
+    }
+  }
+
+  /** @param {'push' | 'pull'} action */
+  function sendWorkspaceCloud(action) {
+    if (baseConfigBusy || pageCloudBusy) {
+      return;
+    }
+    if (action === 'push' && !workspaceCloudCanPush()) {
+      return;
+    }
+    if (action === 'pull' && !workspaceCloudCanPull()) {
+      return;
+    }
+    const now = Date.now();
+    if (now - baseSyncStamp < 400) {
+      return;
+    }
+    baseSyncStamp = now;
+    vscode.postMessage({ type: 'workspaceCloud', action });
+    baseConfigBusy = true;
+    applyBaseConfigLoader();
+    applyWorkspaceCloudButtons();
+    renderProjects(projectsList, activeProjectId, projectConfigSync);
+    renderProfiles(
+      Array.isArray(data?.profiles) ? data.profiles : undefined,
+      typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
+      data?.profileConfigSync,
+    );
+  }
+
   /** Ignore the click that follows a pointerup on the same cloud button. */
   let baseSyncStamp = 0;
+
+  function initWorkspaceCloudButtons() {
+    if (toolbarCloudPull && !toolbarCloudPull.querySelector('.cloud-ico')) {
+      toolbarCloudPull.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
+      toolbarCloudPull.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendWorkspaceCloud('pull');
+      });
+    }
+    if (toolbarCloudPush && !toolbarCloudPush.querySelector('.cloud-ico')) {
+      toolbarCloudPush.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
+      toolbarCloudPush.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendWorkspaceCloud('push');
+      });
+    }
+    applyWorkspaceCloudButtons();
+  }
 
   /**
    * Post first, then show the loader. Rebuilding the menu before postMessage
@@ -3314,6 +3423,7 @@
     vscode.postMessage({ type: kind, action, id });
     baseConfigBusy = true;
     applyBaseConfigLoader();
+    applyWorkspaceCloudButtons();
     renderProjects(projectsList, activeProjectId, projectConfigSync);
     renderProfiles(
       Array.isArray(data?.profiles) ? data.profiles : undefined,
@@ -3614,6 +3724,28 @@
     return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
 
+  /** Create / View need a real map page, not Problems and not an empty workspace. */
+  function canUseCreateViewToolbar() {
+    if (isProblemsPageOpen() || pageSkeletonKind() !== '') {
+      return false;
+    }
+    return !!activePage();
+  }
+
+  function syncCreateViewToolbar() {
+    const enabled = canUseCreateViewToolbar();
+    if (toolbarCreate) {
+      toolbarCreate.disabled = !enabled;
+    }
+    if (toolbarView) {
+      toolbarView.disabled = !enabled;
+    }
+    if (!enabled) {
+      closeToolbarCreateMenu();
+      closeToolbarViewMenu();
+    }
+  }
+
   function syncToolbarView() {
     const kind = activePage()?.kind;
     const hide = !isProblemsPageOpen() && (kind === 'links' || kind === 'review');
@@ -3623,6 +3755,7 @@
     if (hide) {
       closeToolbarViewMenu();
     }
+    syncCreateViewToolbar();
   }
 
   function setCollapseButton() {
@@ -4108,8 +4241,6 @@
       toolbarPanels?.setAttribute('aria-expanded', 'false');
     }
     const contentButtons = [
-      toolbarView,
-      toolbarCreate,
       toolbarCollapse,
       toolbarFormat,
       toolbarReviewTab,
@@ -4123,6 +4254,12 @@
         if (button) {
           button.disabled = true;
         }
+      }
+      if (toolbarView) {
+        toolbarView.disabled = true;
+      }
+      if (toolbarCreate) {
+        toolbarCreate.disabled = true;
       }
       if (historyBack) {
         historyBack.disabled = true;
@@ -4139,6 +4276,7 @@
           button.disabled = false;
         }
       }
+      syncCreateViewToolbar();
       setHistoryButtons(data && data.history);
       setCollapseButton();
     }
@@ -9512,6 +9650,7 @@
           return;
         }
         pageCloudBusy = true;
+        applyWorkspaceCloudButtons();
         renderPager();
         vscode.postMessage({ type: 'pageCloud', action: 'pushAll' });
       });
@@ -9529,6 +9668,7 @@
           return;
         }
         pageCloudBusy = true;
+        applyWorkspaceCloudButtons();
         renderPager();
         vscode.postMessage({ type: 'pageCloud', action: 'check' });
       });
@@ -9548,6 +9688,7 @@
           return;
         }
         pageCloudBusy = true;
+        applyWorkspaceCloudButtons();
         renderPager();
         vscode.postMessage({ type: 'pageCloud', action: 'pullAll' });
       });
@@ -14711,6 +14852,8 @@
     let pressAt = 0;
     let x = 0;
     let y = 0;
+    /** Squared pointer travel. dragstart coordinates are not trustworthy. */
+    let travel = 0;
 
     node.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) {
@@ -14730,18 +14873,23 @@
       moved = false;
       dragged = false;
       activated = false;
+      travel = 0;
       x = event.clientX;
       y = event.clientY;
     });
 
     node.addEventListener('pointermove', (event) => {
-      if (!tracking || moved || event.buttons === 0) {
+      if (!tracking || event.buttons === 0) {
         return;
       }
       const dx = event.clientX - x;
       const dy = event.clientY - y;
+      const dist = dx * dx + dy * dy;
+      if (dist > travel) {
+        travel = dist;
+      }
       // A 1px slip on a draggable header used to cancel the fold.
-      if (dx * dx + dy * dy >= 36) {
+      if (!moved && dist >= 36) {
         moved = true;
       }
     });
@@ -14771,9 +14919,12 @@
       (event) => {
         const dx = event.clientX - x;
         const dy = event.clientY - y;
-        // The first press after the panel takes focus can start a drag without
-        // leaving the point, and that drag eats the click. A real drag has moved.
-        if (dx * dx + dy * dy < 4) {
+        // dragstart clientX/clientY stay on the press point (or are 0) in the
+        // webview, so a real move looked like no move and the header never grabbed.
+        // Trust pointer travel. A focus-click still fires dragstart with none.
+        const reported = dx * dx + dy * dy;
+        const coordsLive = event.clientX !== 0 || event.clientY !== 0;
+        if (travel < 4 && !(coordsLive && reported >= 4)) {
           event.preventDefault();
           event.stopPropagation();
           return;
@@ -17505,6 +17656,7 @@
     if (lightSrc) {
       const light = document.createElement('img');
       light.className = 'type-glyph tone-light';
+      light.draggable = false;
       light.src = lightSrc;
       light.alt = '';
       wrap.append(light);
@@ -17512,6 +17664,7 @@
     if (darkSrc) {
       const dark = document.createElement('img');
       dark.className = 'type-glyph tone-dark';
+      dark.draggable = false;
       dark.src = darkSrc;
       dark.alt = '';
       wrap.append(dark);
@@ -17789,5 +17942,6 @@
     { passive: false },
   );
 
+  initWorkspaceCloudButtons();
   vscode.postMessage({ type: 'ready', pageId: uiState.activePageId });
 })();

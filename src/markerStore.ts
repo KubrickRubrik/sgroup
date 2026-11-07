@@ -1795,6 +1795,22 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
+   * Toolbar Send: dirty BASE (project + profile) then dirty page configs.
+   * Stops before any Discord write when cloud is newer than a dirty local piece.
+   */
+  async pushWorkspaceCloud(): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pushWorkspaceCloudNow());
+  }
+
+  /**
+   * Toolbar Accept: newer BASE without bulk page download, then known pages
+   * that already showed pageCloudNewer. Does not adopt pendingRemote tabs.
+   */
+  async pullWorkspaceCloud(): Promise<{ ok: boolean; message?: string }> {
+    return this.enqueueResult(() => this.pullWorkspaceCloudNow());
+  }
+
+  /**
    * Read BASE_SYN3 from `channelId` without pointing the workspace at it first.
    * A different snapshot is written locally, the active project is opened, and
    * page content is pulled from the channels stored in that snapshot.
@@ -4560,13 +4576,13 @@ export class MarkerStore implements vscode.Disposable {
         this.stylesData.styles[GENERAL_PROFILE_ID]?.appearance ?? DEFAULT_APPEARANCE,
         this.data.surfaces.open,
       );
-      if (this.bindMachineToProfiles()) {
-        await this.persistProfiles();
-      }
+      // Reload must not remirror/bump into project.profiles: that changes the
+      // baseClean fingerprint and falsely lights Send after every IDE restart.
+      const machineChanged = this.bindMachineToProfiles();
       this.mirrorActiveOpenToSurfaces();
       await this.syncReviewAccessFromProject();
-      await this.persistProfiles();
-      await this.persistStyles();
+      await this.persistProfiles(false, machineChanged);
+      await this.persistStyles(false, machineChanged);
       return;
     }
     const stylesExist = await fileExists(this.stylesUri);
@@ -4579,8 +4595,8 @@ export class MarkerStore implements vscode.Disposable {
       this.profilesData = emptyProfiles();
       this.bindMachineToProfiles();
       this.mirrorActiveOpenToSurfaces();
-      await this.persistStyles();
-      await this.persistProfiles();
+      await this.persistStyles(false);
+      await this.persistProfiles(false);
       return;
     }
 
@@ -4603,17 +4619,18 @@ export class MarkerStore implements vscode.Disposable {
         ],
       };
       this.bindMachineToProfiles();
-      await this.persistProfiles();
-      await this.persistStyles();
+      await this.persistProfiles(false);
+      await this.persistStyles(false);
     } else {
       await this.reloadProfilesFromDisk(false, seedOpen);
     }
     this.ensureGeneralProfile(seed, seedOpen);
-    if (this.bindMachineToProfiles()) {
-      await this.persistProfiles();
-    }
+    const machineChanged = this.bindMachineToProfiles();
     this.mirrorActiveOpenToSurfaces();
-    await this.persistStyles();
+    if (machineChanged) {
+      await this.persistProfiles(false);
+    }
+    await this.persistStyles(false, machineChanged);
   }
 
   private async reloadProfilesFromDisk(notify = true, seedOpen?: PanelOpenState): Promise<void> {
@@ -4629,7 +4646,7 @@ export class MarkerStore implements vscode.Disposable {
     const seed = this.stylesData.styles[GENERAL_PROFILE_ID]?.appearance ?? DEFAULT_APPEARANCE;
     this.ensureGeneralProfile(seed, seedOpen ?? this.data.surfaces.open);
     if (this.bindMachineToProfiles()) {
-      await this.persistProfiles();
+      await this.persistProfiles(false);
     }
     this.mirrorActiveOpenToSurfaces();
     if (notify) {
@@ -5063,6 +5080,61 @@ export class MarkerStore implements vscode.Disposable {
       .map(([id]) => id)
       .filter((id) => this.configSync(id).canPush);
     return this.pushPageIds(ids, false);
+  }
+
+  private async pushWorkspaceCloudNow(): Promise<{ ok: boolean; message?: string }> {
+    const baseDirty =
+      this.profileDirty || this.projectDirty || this.baseNeedsFirstPublish();
+    const dirtyPageIds = this.pages()
+      .map(([id]) => id)
+      .filter((id) => this.configSync(id).canPush);
+    if (baseDirty && this.baseCloudNewer) {
+      return { ok: false, message: 'cloudPullFirst' };
+    }
+    for (const id of dirtyPageIds) {
+      if (this.pageCloudNewer[id]) {
+        return { ok: false, message: 'cloudPullFirst' };
+      }
+    }
+    if (baseDirty) {
+      const base = await this.pushProfileConfigNow();
+      if (!base.ok) {
+        return base;
+      }
+    }
+    if (dirtyPageIds.length === 0) {
+      return { ok: true };
+    }
+    const pages = await this.pushPageIds(dirtyPageIds, false);
+    return { ok: pages.ok, message: pages.message };
+  }
+
+  private async pullWorkspaceCloudNow(): Promise<{ ok: boolean; message?: string }> {
+    const newerPageIds = this.pages()
+      .map(([id]) => id)
+      .filter((id) => !!this.pageCloudNewer[id]);
+    if (this.baseCloudNewer) {
+      const base = await this.pullProfileConfigNow(undefined, { skipPages: true });
+      if (!base.ok && base.message && base.message !== 'Nothing to pull') {
+        return { ok: false, message: base.message };
+      }
+    }
+    const lines: string[] = [];
+    for (const id of newerPageIds) {
+      if (!this.data.pages[id]) {
+        continue;
+      }
+      const result = await this.pullPageConfigNow(id, true);
+      if (result.ok || !result.message || result.message === 'Nothing to pull') {
+        continue;
+      }
+      const name = this.data.pages[id]?.name?.trim() || id;
+      lines.push(`${name}\t${result.message}`);
+    }
+    if (lines.length === 0) {
+      return { ok: true };
+    }
+    return { ok: false, message: lines.join('\n') };
   }
 
   private async pushPageIds(
@@ -5543,7 +5615,9 @@ export class MarkerStore implements vscode.Disposable {
 
   private async pullProfileConfigNow(
     channelOverride?: string,
+    opts?: { skipPages?: boolean },
   ): Promise<{ ok: boolean; message?: string; applied?: boolean }> {
+    const skipPages = opts?.skipPages === true;
     const channel = (channelOverride || this.base.channelId).trim();
     const switching = !!channelOverride && channel !== this.base.channelId.trim();
     if (!switching) {
@@ -5604,15 +5678,31 @@ export class MarkerStore implements vscode.Disposable {
     this.base = remote;
     await this.persistBaseOnly();
     this.dirtyPages.clear();
-    this.pageCloudNewer = {};
-    this.pendingRemote = {};
+    if (!skipPages) {
+      this.pageCloudNewer = {};
+      this.pendingRemote = {};
+    }
     await this.reloadSplitFromDisk(false);
     this.retargetSurfacesToActivePages();
     this.baseCloudNewer = false;
     this.rememberPagesFixedSent();
     await this.persistProfiles(false);
     await this.persistStyles(false);
-    const pages = await this.pullActiveProjectPagesNow();
+    if (skipPages) {
+      for (const id of Object.keys(this.pageCloudNewer)) {
+        if (!this.data.pages[id]) {
+          delete this.pageCloudNewer[id];
+        }
+      }
+      for (const id of Object.keys(this.pendingRemote)) {
+        if (!this.data.pages[id] && !this.activeProject()?.pages[id]) {
+          delete this.pendingRemote[id];
+        }
+      }
+    }
+    const pages = skipPages
+      ? { ok: true as const }
+      : await this.pullActiveProjectPagesNow();
     this.profileDirty = false;
     this.projectDirty = false;
     this.dirtyPages.clear();
@@ -5703,8 +5793,15 @@ export class MarkerStore implements vscode.Disposable {
     return { ok: false, message: lines.join('\n') };
   }
 
-  private async persistProfiles(bumpVersion = true): Promise<void> {
-    this.mirrorProfilesStylesToProject(bumpVersion);
+  /**
+   * @param bumpVersion when mirroring, bump packed profile versions (real edits).
+   * @param mirror write into the active project's profiles; false on reload so
+   *   baseClean fingerprints stay aligned with the published BASE.
+   */
+  private async persistProfiles(bumpVersion = true, mirror = true): Promise<void> {
+    if (mirror) {
+      this.mirrorProfilesStylesToProject(bumpVersion);
+    }
     this.profileDirty = true;
     this.writingProfiles = true;
     try {
@@ -5735,8 +5832,11 @@ export class MarkerStore implements vscode.Disposable {
     }
   }
 
-  private async persistStyles(bumpVersion = true): Promise<void> {
-    this.mirrorProfilesStylesToProject(bumpVersion);
+  /** @see persistProfiles */
+  private async persistStyles(bumpVersion = true, mirror = true): Promise<void> {
+    if (mirror) {
+      this.mirrorProfilesStylesToProject(bumpVersion);
+    }
     this.profileDirty = true;
     this.writingStyles = true;
     try {
