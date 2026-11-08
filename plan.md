@@ -1,8 +1,7 @@
 2.Профили меняют вид и запоминают рабочую карточку, а сами маркеры пишутся в общий syn3.json. Черновик «сейчас делаю это» некуда положить, не задев команду.
 
 3.Показываем не группы/заметки -> cущность, а
- сущность -> группы/заметки.
-
+сущность -> группы/заметки.
 
 9. картинки в заметках.
 
@@ -15,7 +14,7 @@
 Ветка: ссылка на ветку.
 Репозиторий: ссылка на репозиторий.
 Автор: Имя 1, Имя 2, Имя N.
-Ревьюверы: Имя 1, Имя 2, Имя N. 
+Ревьюверы: Имя 1, Имя 2, Имя N.
 
 Сообщение ревью в тред к МР|PR в Discord:
 
@@ -23,25 +22,69 @@
 Модель: Grok 4.6 Hight (модель, которую указал в настройках).
 Скилл: .cursor/review/SKILL.md (путь, который указал в настройках).
 
-
 SYN3_CONFIG: 04.11.26
- - syn3.json
- - styles.json
- - profiles.json
- - access.json
- Прикрепленные файлы:
+
+- syn3.json
+- styles.json
+- profiles.json
+- access.json
+  Прикрепленные файлы:
 
 PROFILE_SYN3
 EXPLORER_SYN3
 NOTES_SYN3
 LINKS_SYN3
 
-
- Формирование full версии конфигов (в том числе для всех каналов).
- Замок на таб страницы - менять страницу нельзя.
-
+Формирование full версии конфигов (в том числе для всех каналов).
+Замок на таб страницы - менять страницу нельзя.
 
 Источника проекта.
-Запрос активных данных.
+
 Добавить апрувы.
 Подключение модели и агента.
+
+тест создания и переключения групп.
+переделать настройки
+
+
+{
+  version:1,
+  profiles:[
+    {
+      version:1, 
+      id: idProfileValue,
+      title: "Мой профиль",
+      idActiveProject: idProjectValue1,
+    },
+    {
+      version:1, 
+      id: idProfileValue2,
+      profile: "Другой профиль 2",
+      idActiveProject: idProjectValue2,
+    },
+  ],
+  project: [
+    {
+      version:1, 
+      id: idProjectValue1,
+      title: "Мой проект, 
+      dChannels: {
+        explorer: idExplorerDiscordChannel,
+        note: idNotesDiscordChannel,
+        link: idLinkDiscordChannel,
+        review: idLinkDiscordChannel,
+      },
+    },
+    {
+      version:1, 
+      id: idProjectValue1,
+      title: "Мой проект, 
+      dChannels: {
+        explorer: idExplorerDiscordChannel,
+        note: idNotesDiscordChannel,
+        link: idLinkDiscordChannel,
+        review: idLinkDiscordChannel,
+      },
+    },
+  ],
+}

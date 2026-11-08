@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import {
   type BaseConfigFile,
   type BaseProfileEntry,
@@ -12,6 +13,7 @@ import {
   type ProjectRepo,
   emptyBaseConfig,
   emptyProject,
+  isLegacyBaseRaw,
   normalizeCloudStamp,
   normalizeProjectChannels,
   packProjectChannels,
@@ -39,7 +41,7 @@ import type {
 import type { Syn3Locale } from './i18n';
 
 const GENERAL_PROFILE_ID = 'general';
-const GENERAL_PROFILE_NAME = 'Админ';
+const GENERAL_PROFILE_NAME = 'Общий';
 
 const DEFAULT_APPEARANCE_LOCAL: Appearance = {
   fontGroup: 1.15,
@@ -368,12 +370,8 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
   const source =
     raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as Partial<ProjectProfileEntry> & {
-          name?: string;
-          sProfileIds?: unknown;
-          reviewSkillPath?: string;
-          reviewDirPath?: string;
-          reviewModel?: string;
-          reviewFixModel?: string;
+          sidebar?: unknown;
+          repositoryUsername?: string;
         })
       : {};
   const version =
@@ -381,40 +379,22 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
       ? Math.floor(source.version)
       : 1;
   const pageLayouts = normalizePageLayoutsLocal(source.pageLayouts);
-  return {
-    version,
-    ...(normalizeGitNick(source.githubNick) ? { githubNick: normalizeGitNick(source.githubNick) } : {}),
-    ...(normalizeGitNick(source.gitlabNick) ? { gitlabNick: normalizeGitNick(source.gitlabNick) } : {}),
-    appearance: normalizeAppearanceLocal(source.appearance),
-    open: normalizeOpenLocal(source.open),
-    ...(pageLayouts ? { pageLayouts } : {}),
-  };
-}
-
-function normalizeBaseProfileEntry(id: string, raw: unknown): BaseProfileEntry {
-  const source =
-    raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as Partial<BaseProfileEntry>)
-      : {};
-  const name =
-    typeof source.name === 'string' && source.name.trim()
-      ? source.name.trim()
-      : id === GENERAL_PROFILE_ID
-        ? GENERAL_PROFILE_NAME
-        : id;
-  const version =
-    typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
-      ? Math.floor(source.version)
-      : 1;
-  const activeProjectId =
-    typeof source.activeProjectId === 'string' && source.activeProjectId.trim()
-      ? source.activeProjectId.trim()
+  const githubNick =
+    normalizeGitNick(source.githubNick) ||
+    normalizeGitNick(source.repositoryUsername);
+  const gitlabNick = normalizeGitNick(source.gitlabNick);
+  const tokenKey =
+    typeof source.repositoryTokenKey === 'string' && source.repositoryTokenKey.trim()
+      ? source.repositoryTokenKey.trim()
       : undefined;
   return {
     version,
-    name,
-    ...(activeProjectId ? { activeProjectId } : {}),
-    sProfileIds: normalizeSProfileIds(source.sProfileIds),
+    ...(githubNick ? { githubNick } : {}),
+    ...(gitlabNick ? { gitlabNick } : {}),
+    ...(tokenKey ? { repositoryTokenKey: tokenKey } : {}),
+    appearance: normalizeAppearanceLocal(source.appearance),
+    open: normalizeOpenLocal(source.open ?? source.sidebar),
+    ...(pageLayouts ? { pageLayouts } : {}),
     ...(typeof source.reviewSkillPath === 'string' && source.reviewSkillPath.trim()
       ? { reviewSkillPath: source.reviewSkillPath.trim() }
       : {}),
@@ -427,6 +407,44 @@ function normalizeBaseProfileEntry(id: string, raw: unknown): BaseProfileEntry {
     ...(typeof source.reviewFixModel === 'string' && source.reviewFixModel.trim()
       ? { reviewFixModel: source.reviewFixModel.trim().toLowerCase() }
       : {}),
+  };
+}
+
+function normalizeBaseProfileEntry(id: string, raw: unknown): BaseProfileEntry {
+  const source =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Partial<BaseProfileEntry> & {
+          title?: string;
+          idActiveProject?: string;
+          idMashines?: unknown;
+        })
+      : {};
+  const name =
+    (typeof source.title === 'string' && source.title.trim()) ||
+    (typeof source.name === 'string' && source.name.trim())
+      ? ((typeof source.title === 'string' && source.title.trim()) ||
+          (typeof source.name === 'string' && source.name.trim()) ||
+          '')
+      : id === GENERAL_PROFILE_ID
+        ? GENERAL_PROFILE_NAME
+        : id;
+  const version =
+    typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
+      ? Math.floor(source.version)
+      : 1;
+  const activeProjectId =
+    (typeof source.idActiveProject === 'string' && source.idActiveProject.trim()) ||
+    (typeof source.activeProjectId === 'string' && source.activeProjectId.trim())
+      ? ((typeof source.idActiveProject === 'string' && source.idActiveProject.trim()) ||
+          (typeof source.activeProjectId === 'string' && source.activeProjectId.trim()) ||
+          undefined)
+      : undefined;
+  const machines = normalizeSProfileIds(source.idMashines ?? source.sProfileIds);
+  return {
+    version,
+    name: id === GENERAL_PROFILE_ID ? GENERAL_PROFILE_NAME : name,
+    ...(activeProjectId ? { activeProjectId } : {}),
+    sProfileIds: machines,
   };
 }
 
@@ -466,15 +484,41 @@ export function normalizeProjectEntry(raw: unknown, fallbackName = 'Project'): P
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return emptyProject(fallbackName);
   }
-  const source = raw as Partial<ProjectEntry>;
+  const source = raw as Partial<ProjectEntry> & {
+    title?: string;
+    host?: string;
+    repository?: string;
+    dChannels?: unknown;
+    profiling?: unknown;
+  };
   const name =
-    typeof source.name === 'string' && source.name.trim() ? source.name.trim() : fallbackName;
+    (typeof source.title === 'string' && source.title.trim()) ||
+    (typeof source.name === 'string' && source.name.trim())
+      ? ((typeof source.title === 'string' && source.title.trim()) ||
+          (typeof source.name === 'string' && source.name.trim()) ||
+          fallbackName)
+      : fallbackName;
   const version =
     typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
       ? Math.floor(source.version)
       : 1;
   const profiles: Record<string, ProjectProfileEntry> = {};
-  if (source.profiles && typeof source.profiles === 'object' && !Array.isArray(source.profiles)) {
+  const profilingList = Array.isArray(source.profiling) ? source.profiling : undefined;
+  if (profilingList) {
+    for (const item of profilingList) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
+      const id =
+        typeof (item as { id?: unknown }).id === 'string'
+          ? (item as { id: string }).id.trim()
+          : '';
+      if (!id) {
+        continue;
+      }
+      profiles[id] = normalizeProjectProfileEntry(item);
+    }
+  } else if (source.profiles && typeof source.profiles === 'object' && !Array.isArray(source.profiles)) {
     for (const [id, value] of Object.entries(source.profiles)) {
       profiles[id] = normalizeProjectProfileEntry(value);
     }
@@ -495,11 +539,21 @@ export function normalizeProjectEntry(raw: unknown, fallbackName = 'Project'): P
     }
   }
   const lock = normalizeLock(source.lock);
-  const repo = normalizeProjectRepoBody(source.repo);
+  const host: 'github' | 'gitlab' | undefined =
+    source.host === 'github' || source.host === 'gitlab'
+      ? source.host
+      : undefined;
+  const repository =
+    typeof source.repository === 'string' ? source.repository.trim() : '';
+  const repo: ProjectRepo | undefined =
+    host && repository
+      ? { provider: host, repoUrl: repository }
+      : normalizeProjectRepoBody(source.repo);
+  const channels = normalizeProjectChannels(source.dChannels ?? source.channels);
   return {
     version,
     name,
-    channels: normalizeProjectChannels(source.channels),
+    channels,
     ...(lock ? { lock } : {}),
     ...(repo ? { repo } : {}),
     profiles,
@@ -512,15 +566,61 @@ export function normalizeBaseConfig(raw: unknown): BaseConfigFile {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return result;
   }
-  const source = raw as Partial<BaseConfigFile> & { activeProjectId?: string };
-  result.channelId = typeof source.channelId === 'string' ? source.channelId.trim() : '';
-  if (source.projects && typeof source.projects === 'object' && !Array.isArray(source.projects)) {
-    for (const [id, value] of Object.entries(source.projects)) {
+  // Old base.json / BASE_SYN3 without the new wire shape — skip, do not migrate.
+  if (isLegacyBaseRaw(raw)) {
+    return result;
+  }
+  const source = raw as Partial<BaseConfigFile> & {
+    dChannel?: string;
+    profiles?: unknown;
+    projects?: unknown;
+  };
+  result.channelId =
+    (typeof source.dChannel === 'string' && source.dChannel.trim()) ||
+    (typeof source.channelId === 'string' && source.channelId.trim()) ||
+    '';
+  result.snapshot = typeof source.snapshot === 'string' ? source.snapshot.trim() : '';
+
+  if (Array.isArray(source.projects)) {
+    for (const item of source.projects) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
+      const id =
+        typeof (item as { id?: unknown }).id === 'string'
+          ? (item as { id: string }).id.trim()
+          : '';
+      if (!id) {
+        continue;
+      }
+      result.projects[id] = normalizeProjectEntry(item, id);
+    }
+  } else if (source.projects && typeof source.projects === 'object') {
+    for (const [id, value] of Object.entries(source.projects as Record<string, unknown>)) {
       result.projects[id] = normalizeProjectEntry(value, id);
     }
   }
-  if (source.profiles && typeof source.profiles === 'object' && !Array.isArray(source.profiles)) {
-    for (const [id, value] of Object.entries(source.profiles)) {
+
+  if (Array.isArray(source.profiles)) {
+    for (const item of source.profiles) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
+      const id =
+        typeof (item as { id?: unknown }).id === 'string'
+          ? (item as { id: string }).id.trim()
+          : '';
+      if (!id) {
+        continue;
+      }
+      const entry = normalizeBaseProfileEntry(id, item);
+      if (entry.activeProjectId && !result.projects[entry.activeProjectId]) {
+        delete entry.activeProjectId;
+      }
+      result.profiles[id] = entry;
+    }
+  } else if (source.profiles && typeof source.profiles === 'object') {
+    for (const [id, value] of Object.entries(source.profiles as Record<string, unknown>)) {
       const entry = normalizeBaseProfileEntry(id, value);
       if (entry.activeProjectId && !result.projects[entry.activeProjectId]) {
         delete entry.activeProjectId;
@@ -528,7 +628,7 @@ export function normalizeBaseConfig(raw: unknown): BaseConfigFile {
       result.profiles[id] = entry;
     }
   }
-  // No migration of legacy root activeProjectId / project-embedded identity.
+
   if (!result.profiles[GENERAL_PROFILE_ID]) {
     const firstProject = Object.keys(result.projects)[0];
     result.profiles[GENERAL_PROFILE_ID] = normalizeBaseProfileEntry(GENERAL_PROFILE_ID, {
@@ -537,14 +637,6 @@ export function normalizeBaseConfig(raw: unknown): BaseConfigFile {
       version: 1,
       ...(firstProject ? { activeProjectId: firstProject } : {}),
     });
-  }
-  const cloud = normalizeCloudStamp(source.cloud);
-  if (cloud) {
-    result.cloud = cloud;
-  }
-  const lockCloud = normalizeCloudStamp(source.lockCloud);
-  if (lockCloud) {
-    result.lockCloud = lockCloud;
   }
   return result;
 }
@@ -939,32 +1031,36 @@ export function packBaseProfileEntry(opts: {
 }): BaseProfileEntry {
   return {
     version: opts.version,
-    name: opts.profile.name,
+    name: opts.profile.id === GENERAL_PROFILE_ID ? GENERAL_PROFILE_NAME : opts.profile.name,
     ...(opts.activeProjectId ? { activeProjectId: opts.activeProjectId } : {}),
     sProfileIds: [...opts.profile.sProfileIds],
-    ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
-    ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
-    ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
-    ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
   };
 }
 
-/** Styles + nicks for one profile inside a project. */
+/** Styles + nicks + review for one profile inside a project. */
 export function packProfileEntry(opts: {
   profile: StyleProfile;
   style: ProfileStyle;
   pageLayouts?: Record<string, PageLayoutPrefs>;
   version: number;
+  repositoryTokenKey?: string;
 }): ProjectProfileEntry {
   const pageLayouts =
     opts.pageLayouts && Object.keys(opts.pageLayouts).length > 0 ? opts.pageLayouts : undefined;
+  const tokenKey =
+    (opts.repositoryTokenKey || opts.profile.repositoryTokenKey || '').trim() || undefined;
   return {
     version: opts.version,
     ...(opts.profile.githubNick ? { githubNick: opts.profile.githubNick } : {}),
     ...(opts.profile.gitlabNick ? { gitlabNick: opts.profile.gitlabNick } : {}),
+    ...(tokenKey ? { repositoryTokenKey: tokenKey } : {}),
     appearance: opts.style.appearance,
     open: opts.style.open,
     ...(pageLayouts ? { pageLayouts } : {}),
+    ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
+    ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
+    ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
+    ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
   };
 }
 
@@ -996,14 +1092,15 @@ export function unpackProfilesFromBase(
     const data = project?.profiles[id];
     profiles.push({
       id,
-      name: root.name,
+      name: id === GENERAL_PROFILE_ID ? GENERAL_PROFILE_NAME : root.name,
       sProfileIds: [...root.sProfileIds],
-      ...(root.reviewSkillPath ? { reviewSkillPath: root.reviewSkillPath } : {}),
-      ...(root.reviewDirPath ? { reviewDirPath: root.reviewDirPath } : {}),
-      ...(root.reviewModel ? { reviewModel: root.reviewModel } : {}),
-      ...(root.reviewFixModel ? { reviewFixModel: root.reviewFixModel } : {}),
+      ...(data?.reviewSkillPath ? { reviewSkillPath: data.reviewSkillPath } : {}),
+      ...(data?.reviewDirPath ? { reviewDirPath: data.reviewDirPath } : {}),
+      ...(data?.reviewModel ? { reviewModel: data.reviewModel } : {}),
+      ...(data?.reviewFixModel ? { reviewFixModel: data.reviewFixModel } : {}),
       ...(data?.githubNick ? { githubNick: data.githubNick } : {}),
       ...(data?.gitlabNick ? { gitlabNick: data.gitlabNick } : {}),
+      ...(data?.repositoryTokenKey ? { repositoryTokenKey: data.repositoryTokenKey } : {}),
     });
     styles[id] = {
       appearance: data?.appearance ?? { ...DEFAULT_APPEARANCE_LOCAL },
@@ -1037,7 +1134,7 @@ export function unpackProfilesFromProject(project: ProjectEntry): {
 } {
   return unpackProfilesFromBase(
     {
-      version: 1,
+      snapshot: '',
       channelId: '',
       profiles: Object.fromEntries(
         Object.keys(project.profiles).map((id) => [
@@ -1188,35 +1285,57 @@ export function assembleSplitWorkspace(
   };
 }
 
-export function stringifyBaseConfig(base: BaseConfigFile): string {
-  const normalized = normalizeBaseConfig(base);
-  const rootProfiles: Record<string, BaseProfileEntry> = {};
-  for (const id of Object.keys(normalized.profiles).sort((a, b) => {
-    if (a === GENERAL_PROFILE_ID) {
-      return -1;
-    }
-    if (b === GENERAL_PROFILE_ID) {
-      return 1;
-    }
-    return a.localeCompare(b);
-  })) {
-    const profile = normalized.profiles[id];
-    rootProfiles[id] = {
-      version: profile.version,
-      name: profile.name,
-      ...(profile.activeProjectId ? { activeProjectId: profile.activeProjectId } : {}),
-      sProfileIds: [...profile.sProfileIds],
-      ...(profile.reviewSkillPath ? { reviewSkillPath: profile.reviewSkillPath } : {}),
-      ...(profile.reviewDirPath ? { reviewDirPath: profile.reviewDirPath } : {}),
-      ...(profile.reviewModel ? { reviewModel: profile.reviewModel } : {}),
-      ...(profile.reviewFixModel ? { reviewFixModel: profile.reviewFixModel } : {}),
+/** Wire project page meta without internal version bump field noise. */
+function packWirePageEntry(page: ProjectPageEntry): Record<string, unknown> {
+  return {
+    name: page.name,
+    kind: page.kind,
+    order: page.order,
+    ...(page.description ? { description: page.description } : {}),
+  };
+}
+
+function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<string, unknown> {
+  return {
+    id,
+    ...(entry.githubNick ? { githubNick: entry.githubNick } : {}),
+    ...(entry.gitlabNick ? { gitlabNick: entry.gitlabNick } : {}),
+    ...(entry.repositoryTokenKey ? { repositoryTokenKey: entry.repositoryTokenKey } : {}),
+    sidebar: {
+      bottom: entry.open.bottom === true,
+      left: entry.open.left === true,
+      right: entry.open.right !== false,
+    },
+    appearance: entry.appearance,
+    ...(entry.pageLayouts && Object.keys(entry.pageLayouts).length > 0
+      ? { pageLayouts: entry.pageLayouts }
+      : {}),
+    ...(entry.reviewSkillPath ? { reviewSkillPath: entry.reviewSkillPath } : {}),
+    ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
+    ...(entry.reviewModel ? { reviewModel: entry.reviewModel } : {}),
+    ...(entry.reviewFixModel ? { reviewFixModel: entry.reviewFixModel } : {}),
+  };
+}
+
+/** Canonical Discord / disk body (arrays, dChannel, no snapshot). */
+export function packBaseConfigWireBody(base: BaseConfigFile): Record<string, unknown> {
+  const normalized: BaseConfigFile = {
+    snapshot: base.snapshot || '',
+    channelId: (base.channelId || '').trim(),
+    profiles: { ...base.profiles },
+    projects: { ...base.projects },
+  };
+  if (!normalized.profiles[GENERAL_PROFILE_ID]) {
+    const firstProject = Object.keys(normalized.projects)[0];
+    normalized.profiles[GENERAL_PROFILE_ID] = {
+      version: 1,
+      name: GENERAL_PROFILE_NAME,
+      sProfileIds: [],
+      ...(firstProject ? { activeProjectId: firstProject } : {}),
     };
   }
-  const projects: Record<string, ProjectEntry> = {};
-  for (const id of Object.keys(normalized.projects).sort()) {
-    const project = normalized.projects[id];
-    const profiles: Record<string, ProjectProfileEntry> = {};
-    for (const profileId of Object.keys(project.profiles).sort((a, b) => {
+  const profiles = Object.keys(normalized.profiles)
+    .sort((a, b) => {
       if (a === GENERAL_PROFILE_ID) {
         return -1;
       }
@@ -1224,45 +1343,88 @@ export function stringifyBaseConfig(base: BaseConfigFile): string {
         return 1;
       }
       return a.localeCompare(b);
-    })) {
-      profiles[profileId] = project.profiles[profileId];
-    }
-    const pages: Record<string, ProjectPageEntry> = {};
-    for (const pageId of Object.keys(project.pages).sort(
-      (a, b) => project.pages[a].order - project.pages[b].order || a.localeCompare(b),
-    )) {
-      pages[pageId] = project.pages[pageId];
-    }
-    const repo = packProjectRepo(project.repo);
-    projects[id] = {
-      version: project.version,
-      name: project.name,
-      channels: packProjectChannels(project.channels),
-      ...(project.lock ? { lock: project.lock } : {}),
-      ...(repo ? { repo } : {}),
-      profiles,
-      pages,
-    };
-  }
-  const payload: BaseConfigFile = {
-    version: 1,
-    channelId: normalized.channelId,
-    profiles: rootProfiles,
+    })
+    .map((id) => {
+      const profile = normalized.profiles[id];
+      return {
+        id,
+        title: id === GENERAL_PROFILE_ID ? GENERAL_PROFILE_NAME : profile.name,
+        idMashines: [...profile.sProfileIds],
+        ...(profile.activeProjectId ? { idActiveProject: profile.activeProjectId } : {}),
+      };
+    });
+  const projects = Object.keys(normalized.projects)
+    .sort()
+    .map((id) => {
+      const project = normalized.projects[id];
+      const repo = packProjectRepo(project.repo);
+      const pages: Record<string, Record<string, unknown>> = {};
+      for (const pageId of Object.keys(project.pages).sort(
+        (a, b) => project.pages[a].order - project.pages[b].order || a.localeCompare(b),
+      )) {
+        pages[pageId] = packWirePageEntry(project.pages[pageId]);
+      }
+      const profiling = Object.keys(project.profiles)
+        .sort((a, b) => {
+          if (a === GENERAL_PROFILE_ID) {
+            return -1;
+          }
+          if (b === GENERAL_PROFILE_ID) {
+            return 1;
+          }
+          return a.localeCompare(b);
+        })
+        .map((profileId) => packWireProfilingEntry(profileId, project.profiles[profileId]));
+      return {
+        id,
+        title: project.name,
+        host: repo?.provider ?? 'github',
+        repository: repo?.repoUrl ?? '',
+        dChannels: packProjectChannels(project.channels),
+        profiling,
+        pages,
+        ...(project.lock ? { lock: { profileId: project.lock.profileId } } : {}),
+      };
+    });
+  return {
+    dChannel: normalized.channelId,
+    profiles,
     projects,
   };
-  if (normalized.cloud) {
-    payload.cloud = normalized.cloud;
-  }
-  if (normalized.lockCloud) {
-    payload.lockCloud = normalized.lockCloud;
-  }
+}
+
+/** SHA-256 of canonical wire JSON without snapshot. */
+export function computeBaseSnapshot(base: BaseConfigFile): string {
+  const body = packBaseConfigWireBody(base);
+  return crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+export function stringifyBaseConfig(base: BaseConfigFile): string {
+  const normalized = normalizeBaseConfig(base);
+  const wire = packBaseConfigWireBody(normalized);
+  const snapshot = computeBaseSnapshot(normalized);
+  const payload = {
+    snapshot,
+    ...wire,
+  };
   return JSON.stringify(payload, null, 2) + '\n';
 }
 
-/** Body posted to Discord — same as disk without local cloud stamps. */
+/** Body posted to Discord — same wire shape as disk, with fresh snapshot. */
 export function packBaseConfigBody(base: BaseConfigFile): BaseConfigFile {
-  const { cloud: _cloud, lockCloud: _lockCloud, ...rest } = normalizeBaseConfig(base);
-  return rest;
+  const normalized = normalizeBaseConfig(base);
+  const snapshot = computeBaseSnapshot(normalized);
+  return {
+    ...normalized,
+    snapshot,
+  };
+}
+
+/** Wire JSON string for Discord attachment (arrays + snapshot). */
+export function stringifyBaseConfigBody(base: BaseConfigFile): string {
+  const packed = packBaseConfigBody(base);
+  const wire = packBaseConfigWireBody(packed);
+  return JSON.stringify({ snapshot: packed.snapshot, ...wire }, null, 2) + '\n';
 }
 
 export function stringifyPageConfig(file: PageContentFile): string {

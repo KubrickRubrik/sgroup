@@ -105,32 +105,34 @@ export interface PageLayoutPrefs {
 }
 
 /**
- * Root profile in BASE: identity, machine binds, review paths, active project.
- * Styles and git nicks live under the project.
+ * Root profile in BASE (memory): identity, machine binds, active project.
+ * Styles, nicks, review paths and token refs live under the project profiling.
  */
 export interface BaseProfileEntry {
   version: number;
   name: string;
   activeProjectId?: string;
   sProfileIds: string[];
+}
+
+/** Styles, nicks and review settings for one profile inside one project. */
+export interface ProjectProfileEntry {
+  version: number;
+  githubNick?: string;
+  gitlabNick?: string;
+  /** Opaque SecretStorage key for the host token. Never the token itself. */
+  repositoryTokenKey?: string;
+  appearance: Appearance;
+  open: PanelOpenState;
+  /** Layout prefs keyed by page id. */
+  pageLayouts?: Record<string, PageLayoutPrefs>;
   reviewSkillPath?: string;
   reviewDirPath?: string;
   reviewModel?: string;
   reviewFixModel?: string;
 }
 
-/** Styles and nicks for one profile inside one project. */
-export interface ProjectProfileEntry {
-  version: number;
-  githubNick?: string;
-  gitlabNick?: string;
-  appearance: Appearance;
-  open: PanelOpenState;
-  /** Layout prefs keyed by page id. */
-  pageLayouts?: Record<string, PageLayoutPrefs>;
-}
-
-/** One project inside the base snapshot. */
+/** One project inside the base snapshot (memory keeps Records by id). */
 export interface ProjectEntry {
   version: number;
   name: string;
@@ -143,20 +145,17 @@ export interface ProjectEntry {
 }
 
 /**
- * Full base config: every profile (with its active project) and every project.
- * Lives at `.syn3/base.json` and as the BASE_SYN3 Discord attachment.
+ * Full base config in memory. Disk / Discord wire uses arrays, `dChannel`,
+ * `snapshot`, `title`, `idMashines`, `host`/`repository`, `dChannels`, `profiling`.
  */
 export interface BaseConfigFile {
-  version: 1;
-  /** Discord channel that stores this snapshot. */
+  /** SHA-256 of canonical JSON without this field. */
+  snapshot: string;
+  /** Discord channel that stores this snapshot (wire: dChannel). */
   channelId: string;
   /** Profiles at the root; each keeps its own activeProjectId. */
   profiles: Record<string, BaseProfileEntry>;
   projects: Record<string, ProjectEntry>;
-  /** Stamp of the last fully applied base message. */
-  cloud?: CloudStamp;
-  /** Stamp of the last lock field applied by auto-fetch. */
-  lockCloud?: CloudStamp;
 }
 
 export interface ParsedConfigHeader {
@@ -331,7 +330,7 @@ export function isCloudNewer(
 
 export function emptyBaseConfig(): BaseConfigFile {
   return {
-    version: 1,
+    snapshot: '',
     channelId: '',
     profiles: {},
     projects: {},
@@ -346,6 +345,23 @@ export function emptyProject(name: string): ProjectEntry {
     profiles: {},
     pages: {},
   };
+}
+
+/** Old base.json / BASE_SYN3 body: has version+channelId and no dChannel/snapshot arrays. */
+export function isLegacyBaseRaw(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return false;
+  }
+  const source = raw as Record<string, unknown>;
+  const hasNew =
+    typeof source.dChannel === 'string' ||
+    typeof source.snapshot === 'string' ||
+    Array.isArray(source.profiles) ||
+    Array.isArray(source.projects);
+  if (hasNew) {
+    return false;
+  }
+  return source.version === 1 || typeof source.channelId === 'string';
 }
 
 export function packProjectRepo(repo?: ProjectRepo): ProjectRepo | undefined {

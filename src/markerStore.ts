@@ -44,6 +44,7 @@ import {
   emptyBaseConfig,
   emptyProject,
   formatConfigHeaderDate,
+  isLegacyBaseRaw,
   packProjectChannels,
   packProjectRepo,
   pageKindToConfigKind,
@@ -55,6 +56,7 @@ import {
   mergeProjectChannels,
   normalizeBaseConfig,
   normalizePageConfig,
+  computeBaseSnapshot,
   packBaseConfigBody,
   packBaseProfileEntry,
   packPageConfig,
@@ -64,6 +66,7 @@ import {
   PAGES_DIR,
   projectPageEntryFromPage,
   stringifyBaseConfig,
+  stringifyBaseConfigBody,
   stringifyPageConfig,
   unpackProfilesFromBase,
   type PageAccessConfig,
@@ -123,9 +126,9 @@ export const STYLES_PATH = '.syn3/styles.json';
 export { POS_LOCAL_PATH, POS_REMOTE_PATH, BASE_PATH, PAGES_DIR };
 /** Built-in profile: always present, cannot be renamed or deleted. */
 export const GENERAL_PROFILE_ID = 'general';
-export const GENERAL_PROFILE_NAME = 'Админ';
+export const GENERAL_PROFILE_NAME = 'Общий';
 
-/** SHA-256 of `vscode.env.machineId` — stored in profile `sProfileIds`, not the raw id. */
+/** SHA-256 of `vscode.env.machineId` — stored in profile `idMashines` / `sProfileIds`, not the raw id. */
 export function hashMachineId(machineId: string = vscode.env.machineId): string {
   return crypto.createHash('sha256').update(machineId).digest('hex');
 }
@@ -142,8 +145,8 @@ const LEGACY_HISTORY_PATH = '.sgroup/history.json';
 export type ColumnsMode = 'flow' | '1' | '2' | '3';
 export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '1', '2', '3'];
 
-/** Max named map pages (pager slides). */
-export const MAX_PAGES = 6;
+/** Max named map pages (one per kind: files, notes, links, review). */
+export const MAX_PAGES = 4;
 /** Default page id created for legacy files and empty stores. */
 export const DEFAULT_PAGE_ID = 'map';
 
@@ -208,6 +211,8 @@ export interface StyleProfile {
   githubNick?: string;
   /** GitLab username for this profile. The token is not stored here. */
   gitlabNick?: string;
+  /** Opaque SecretStorage key for the host token. */
+  repositoryTokenKey?: string;
 }
 
 /** Profile row for UI — no machine hashes. */
@@ -661,7 +666,7 @@ export interface PanelOpenState {
   right: boolean;
 }
 
-/** Default for «Админ»: only the right sidebar. */
+/** Default for «Общий»: only the right sidebar. */
 export function emptyPanelOpen(): PanelOpenState {
   return { bottom: false, left: false, right: true };
 }
@@ -1078,10 +1083,19 @@ export class MarkerStore implements vscode.Disposable {
   /** Local base exists with a channel but was never successfully posted to Discord. */
   private baseNeedsFirstPublish(): boolean {
     return (
-      !this.base.cloud &&
+      !this.posLocal.baseClean &&
       !!this.base.channelId.trim() &&
       Object.keys(this.base.projects).length > 0
     );
+  }
+
+  /** Next BASE_SYN3 | #N from the latest message in the channel (not from local stamps). */
+  private async nextBaseHeaderNumber(token: string, channel: string): Promise<number> {
+    const latest = await findLatestConfigMessage(token, channel, 'BASE', undefined);
+    if (latest.ok && latest.value) {
+      return nextConfigNumber(stampFromLatest(latest.value));
+    }
+    return 1;
   }
 
   projects(): { id: string; name: string; active: boolean }[] {
@@ -1147,7 +1161,7 @@ export class MarkerStore implements vscode.Disposable {
     return dropped;
   }
 
-  /** New project entry with only Админ and no pages. */
+  /** New project entry with only «Общий» and no pages. */
   private buildAdminOnlyProject(name: string): ProjectEntry {
     const project = emptyProject(name);
     const profile = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
@@ -1222,7 +1236,11 @@ export class MarkerStore implements vscode.Disposable {
       const packedRepo = packProjectRepo(repo);
       if (packedRepo) {
         project.repo = packedRepo;
+      } else {
+        return { ok: false, message: 'Repository is required', canRetry: false };
       }
+      // Creating a project binds this IDE to «Общий» before the first BASE post.
+      this.moveMachineToProfile(GENERAL_PROFILE_ID);
       this.omitPlaceholderProjects(this.base);
       this.mirrorRootProfilesToBase(false);
       const projects: Record<string, ProjectEntry> = { ...this.base.projects };
@@ -1257,8 +1275,8 @@ export class MarkerStore implements vscode.Disposable {
       // Hello + attachment back-to-back often hits Discord channel rate limits.
       await new Promise((resolve) => setTimeout(resolve, probed.posted ? 1600 : 400));
 
-      const body = packBaseConfigBody(staged);
-      const number = nextConfigNumber(this.base.cloud);
+      const packed = packBaseConfigBody(staged);
+      const number = await this.nextBaseHeaderNumber(token, nextChannel);
       const headerDate = formatConfigHeaderDate();
       const posted = await postConfigMessage({
         token,
@@ -1267,7 +1285,7 @@ export class MarkerStore implements vscode.Disposable {
         number,
         headerDate,
         filename: 'base.json',
-        body: JSON.stringify(body, null, 2) + '\n',
+        body: stringifyBaseConfigBody(packed),
       });
       if (!posted.ok) {
         return {
@@ -1277,21 +1295,10 @@ export class MarkerStore implements vscode.Disposable {
         };
       }
 
-      const parsed = parseConfigHeader(posted.value.content);
       this.base.channelId = nextChannel;
       this.base.projects = staged.projects;
       this.base.profiles = staged.profiles;
-      this.base.cloud = parsed
-        ? {
-            number: parsed.number,
-            headerDate: parsed.headerDate,
-            messageId: posted.value.id,
-          }
-        : {
-            number,
-            headerDate,
-            messageId: posted.value.id,
-          };
+      this.base.snapshot = packed.snapshot;
       this.data = emptyData();
       this.pageCloud = {};
       this.dirtyPages.clear();
@@ -1374,7 +1381,7 @@ export class MarkerStore implements vscode.Disposable {
     );
   }
 
-  /** Profiles in creation order. «Админ» is always first. Machine hashes stay private. */
+  /** Profiles in creation order. «Общий» is always first. Machine hashes stay private. */
   profiles(): StyleProfileInfo[] {
     return this.profilesData.profiles.map((p) => ({
       id: p.id,
@@ -1425,6 +1432,50 @@ export class MarkerStore implements vscode.Disposable {
     }
     await this.persistProfiles();
     this.changeEmitter.fire();
+  }
+
+  /** Opaque repositoryTokenKey for one profile in the active project. */
+  repositoryTokenKey(profileId: string): string | undefined {
+    const key = this.activeProject()?.profiles[profileId]?.repositoryTokenKey?.trim();
+    return key || this.profilesData.profiles.find((p) => p.id === profileId)?.repositoryTokenKey;
+  }
+
+  async setRepositoryTokenKey(profileId: string, tokenKey: string | undefined): Promise<void> {
+    await this.enqueue(async () => {
+      const profile = this.profilesData.profiles.find((p) => p.id === profileId);
+      if (profile) {
+        if (tokenKey?.trim()) {
+          profile.repositoryTokenKey = tokenKey.trim();
+        } else {
+          delete profile.repositoryTokenKey;
+        }
+      }
+      const project = this.ensureActiveProject();
+      if (project) {
+        const entry = project.profiles[profileId] ?? {
+          version: 1,
+          appearance: { ...DEFAULT_APPEARANCE },
+          open: emptyPanelOpen(),
+        };
+        if (tokenKey?.trim()) {
+          entry.repositoryTokenKey = tokenKey.trim();
+        } else {
+          delete entry.repositoryTokenKey;
+        }
+        project.profiles[profileId] = entry;
+        this.projectDirty = true;
+      }
+      this.profileDirty = true;
+      await this.persistProfiles(false);
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
+  }
+
+  /** True when this IDE hash is already listed on a profile. */
+  machineIsBound(): boolean {
+    const hash = hashMachineId();
+    return this.profilesData.profiles.some((p) => p.sProfileIds.includes(hash));
   }
 
   /** GitHub / GitLab logins of one profile. Tokens stay in SecretStorage. */
@@ -1715,69 +1766,16 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Auto-fetch: apply only the lock field from a newer base message.
-   * Does not replace pages or profiles.
+   * Auto-fetch: refresh BASE snapshot hints. Lock arrives only with a full accept.
    */
   async fetchBaseLockOnly(): Promise<{ ok: boolean; message?: string }> {
-    return this.enqueueResult(() => this.fetchBaseLockOnlyNow());
-  }
-
-  private async fetchBaseLockOnlyNow(): Promise<{ ok: boolean; message?: string }> {
-    const token = await this.discordToken();
-    if (!token) {
-      return { ok: false, message: 'Discord token is not set' };
-    }
-    const channel = this.base.channelId.trim();
-    if (!channel) {
-      return { ok: false, message: 'Base Discord channel is not set' };
-    }
-    const latest = await findLatestConfigMessage(token, channel, 'BASE', undefined);
-    if (!latest.ok) {
-      return { ok: false, message: latest.message };
-    }
-    if (!latest.value) {
-      return { ok: true };
-    }
-    const stamp = stampFromLatest(latest.value);
-    if (!latestIsNewer(latest.value, this.base.lockCloud ?? this.base.cloud)) {
-      return { ok: true };
-    }
-    const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
-    if (!downloaded.ok) {
-      return { ok: false, message: downloaded.message };
-    }
-    let body: unknown;
-    try {
-      body = JSON.parse(downloaded.value);
-    } catch (error) {
-      return {
-        ok: false,
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-    const remote = normalizeBaseConfig(body);
-    const activeId = this.activeProjectId();
-    if (activeId && remote.projects[activeId]) {
-      const remoteLock = remote.projects[activeId].lock;
-      const local = this.ensureActiveProject();
-      if (!local) {
-        return { ok: true };
+    return this.enqueueResult(async () => {
+      const errors = await this.refreshCloudHintsNow();
+      if (errors.length > 0) {
+        return { ok: false, message: errors[0] };
       }
-      if (remoteLock) {
-        local.lock = { profileId: remoteLock.profileId };
-      } else {
-        delete local.lock;
-      }
-      this.rememberPagesFixedSent();
-    }
-    if (latestIsNewer(latest.value, this.base.cloud)) {
-      this.baseCloudNewer = true;
-      this.relevantBaseCloudNewer = this.relevantSliceDiffers(remote);
-    }
-    this.base.lockCloud = stamp;
-    await this.persistBaseOnly();
-    this.changeEmitter.fire();
-    return { ok: true };
+      return { ok: true };
+    });
   }
 
   pageDraftIds(pageId: string): string[] {
@@ -1797,7 +1795,7 @@ export class MarkerStore implements vscode.Disposable {
 
   /**
    * Point the workspace at a base channel before a pull.
-   * A different id drops the local cloud stamp so the next pull is not skipped.
+   * A different id clears the local snapshot so the next pull is not skipped.
    */
   async retargetBaseChannel(channelId: string): Promise<void> {
     await this.enqueue(async () => {
@@ -1806,8 +1804,9 @@ export class MarkerStore implements vscode.Disposable {
         return;
       }
       this.base.channelId = next;
-      delete this.base.cloud;
+      this.base.snapshot = '';
       this.baseCloudNewer = true;
+      this.relevantBaseCloudNewer = true;
       await this.persistBaseOnly();
       this.changeEmitter.fire();
     });
@@ -1848,7 +1847,7 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
-   * Full Syn3 wipe: markers, pages, profiles (except Админ), styles, positions,
+   * Full Syn3 wipe: markers, pages, profiles (except «Общий»), styles, positions,
    * history, catalog channels, access bindings. Tokens cleared separately via SecretStorage.
    */
   async clearAllData(): Promise<void> {
@@ -2128,7 +2127,12 @@ export class MarkerStore implements vscode.Disposable {
       return false;
     }
     const lower = trimmed.toLocaleLowerCase();
-    if (lower === GENERAL_PROFILE_NAME.toLocaleLowerCase() || lower === 'general') {
+    if (
+      lower === GENERAL_PROFILE_NAME.toLocaleLowerCase() ||
+      lower === 'general' ||
+      lower === 'админ' ||
+      lower === 'admin'
+    ) {
       return false;
     }
     return !this.profilesData.profiles.some(
@@ -3072,8 +3076,16 @@ export class MarkerStore implements vscode.Disposable {
 
   // ---- pages ----
 
+  /** True when the active project already has a page of this kind. */
+  hasPageKind(kind: PageKind): boolean {
+    return this.pages().some(([, page]) => page.kind === kind);
+  }
+
   async createPage(name: string, kind: PageKind, description?: string): Promise<string | undefined> {
     if (this.pages().length >= MAX_PAGES) {
+      return undefined;
+    }
+    if (this.hasPageKind(kind)) {
       return undefined;
     }
     const trimmed = name.trim();
@@ -4815,12 +4827,9 @@ export class MarkerStore implements vscode.Disposable {
           id: GENERAL_PROFILE_ID,
           name: GENERAL_PROFILE_NAME,
           sProfileIds,
-          ...(general?.reviewSkillPath ? { reviewSkillPath: general.reviewSkillPath } : {}),
-          ...(general?.reviewDirPath ? { reviewDirPath: general.reviewDirPath } : {}),
-          ...(general?.reviewModel ? { reviewModel: general.reviewModel } : {}),
-          ...(general?.reviewFixModel ? { reviewFixModel: general.reviewFixModel } : {}),
-          ...(general?.githubNick ? { githubNick: general.githubNick } : {}),
-          ...(general?.gitlabNick ? { gitlabNick: general.gitlabNick } : {}),
+          ...(general?.repositoryTokenKey
+            ? { repositoryTokenKey: general.repositoryTokenKey }
+            : {}),
         },
         ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
       ];
@@ -4843,7 +4852,8 @@ export class MarkerStore implements vscode.Disposable {
 
   /**
    * Resolve this machine's active profile from `sProfileIds`.
-   * Exactly one owner → use it. Zero or many → «Админ», strip our hash elsewhere, seed Админ.
+   * Exactly one owner → use it. Zero or many → strip our hash, leave «Общий» selected
+   * without writing the hash (picker / create binds later).
    * @returns true when profiles were mutated and should be persisted.
    */
   private bindMachineToProfiles(): boolean {
@@ -4860,11 +4870,6 @@ export class MarkerStore implements vscode.Disposable {
         profile.sProfileIds = next;
         changed = true;
       }
-    }
-    const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
-    if (general && !general.sProfileIds.includes(hash)) {
-      general.sProfileIds.push(hash);
-      changed = true;
     }
     this.activeId = GENERAL_PROFILE_ID;
     return changed;
@@ -4945,19 +4950,27 @@ export class MarkerStore implements vscode.Disposable {
       if (!latest.ok) {
         errors.push(latest.message);
       } else if (latest.value) {
-        const newer = latestIsNewer(latest.value, this.base.cloud);
+        let newer = false;
         let relevant = false;
-        if (newer) {
-          const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
-          if (downloaded.ok) {
-            try {
-              relevant = this.relevantSliceDiffers(normalizeBaseConfig(JSON.parse(downloaded.value)));
-            } catch {
-              relevant = true;
+        const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
+        if (downloaded.ok) {
+          try {
+            const raw = JSON.parse(downloaded.value) as unknown;
+            if (!isLegacyBaseRaw(raw)) {
+              const remote = normalizeBaseConfig(raw);
+              newer =
+                !!remote.snapshot &&
+                remote.snapshot !== this.base.snapshot &&
+                Object.keys(remote.projects).length > 0;
+              relevant = newer && this.relevantSliceDiffers(remote);
             }
-          } else {
+          } catch {
+            newer = true;
             relevant = true;
           }
+        } else {
+          newer = true;
+          relevant = true;
         }
         if (this.baseCloudNewer !== newer || this.relevantBaseCloudNewer !== relevant) {
           this.baseCloudNewer = newer;
@@ -5720,7 +5733,7 @@ export class MarkerStore implements vscode.Disposable {
       // Wait longer when we just posted the hello; still pause briefly after a list.
       await new Promise((resolve) => setTimeout(resolve, probed.posted ? 1600 : 400));
     }
-    // First publish always packs Admin (and other profiles) into the snapshot.
+    // First publish always packs «Общий» (and other profiles) into the snapshot.
     // Do not flip profileDirty on failure — only real style edits should light it.
     this.mirrorRootProfilesToBase(firstPublish || this.profileDirty);
     if (firstPublish || this.profileDirty) {
@@ -5767,8 +5780,9 @@ export class MarkerStore implements vscode.Disposable {
       : normalizeBaseConfig(this.base);
     this.base.profiles = merged.profiles;
     this.base.projects = merged.projects;
-    const body = packBaseConfigBody(merged);
-    const number = nextConfigNumber(this.base.cloud);
+    const packed = packBaseConfigBody(merged);
+    this.base.snapshot = packed.snapshot;
+    const number = await this.nextBaseHeaderNumber(token, channel);
     const headerDate = formatConfigHeaderDate();
     const posted = await postConfigMessage({
       token,
@@ -5777,23 +5791,11 @@ export class MarkerStore implements vscode.Disposable {
       number,
       headerDate,
       filename: 'base.json',
-      body: JSON.stringify(body, null, 2) + '\n',
+      body: stringifyBaseConfigBody(packed),
     });
     if (!posted.ok) {
       return { ok: false, message: posted.message || 'Failed to post base.json' };
     }
-    const parsed = parseConfigHeader(posted.value.content);
-    this.base.cloud = parsed
-      ? {
-          number: parsed.number,
-          headerDate: parsed.headerDate,
-          messageId: posted.value.id,
-        }
-      : {
-          number,
-          headerDate,
-          messageId: posted.value.id,
-        };
     this.profileDirty = false;
     this.projectDirty = false;
     this.baseCloudNewer = false;
@@ -5902,10 +5904,10 @@ export class MarkerStore implements vscode.Disposable {
     const switching = !!channelOverride && channel !== this.base.channelId.trim();
     if (!switching) {
       await this.refreshCloudHints();
-      if (!this.relevantBaseCloudNewer && !this.baseCloudNewer && this.base.cloud) {
+      if (!this.relevantBaseCloudNewer && !this.baseCloudNewer) {
         return { ok: false, message: 'Nothing to pull' };
       }
-      if (!this.relevantBaseCloudNewer && this.base.cloud) {
+      if (!this.relevantBaseCloudNewer) {
         return { ok: false, message: 'Nothing to pull' };
       }
     }
@@ -5936,15 +5938,19 @@ export class MarkerStore implements vscode.Disposable {
         message: error instanceof Error ? error.message : String(error),
       };
     }
+    if (isLegacyBaseRaw(body)) {
+      return { ok: false, message: 'Legacy base ignored' };
+    }
     const remote = normalizeBaseConfig(body);
     remote.channelId = channel;
     this.omitPlaceholderProjects(remote);
     this.omitPlaceholderProjects(this.base);
     const same =
+      !!remote.snapshot &&
+      remote.snapshot === this.base.snapshot &&
       JSON.stringify(packBaseConfigBody(remote)) === JSON.stringify(packBaseConfigBody(this.base));
-    const stamp = stampFromLatest(latest.value);
     if (same) {
-      this.base.cloud = stamp;
+      this.base.snapshot = remote.snapshot || computeBaseSnapshot(remote);
       this.baseCloudNewer = false;
       this.relevantBaseCloudNewer = false;
       this.rememberBaseClean();
@@ -5962,7 +5968,9 @@ export class MarkerStore implements vscode.Disposable {
         }
       }
     }
-    remote.cloud = stamp;
+    if (!remote.snapshot) {
+      remote.snapshot = computeBaseSnapshot(remote);
+    }
     this.base = remote;
     await this.persistBaseOnly();
     this.dirtyPages.clear();
@@ -6452,7 +6460,7 @@ export class MarkerStore implements vscode.Disposable {
   private async reconcileBaseDirty(): Promise<void> {
     const projectFp = this.projectSyncFingerprint();
     const profileFp = this.profileSyncFingerprint();
-    if (!this.base.cloud) {
+    if (!this.posLocal.baseClean) {
       // First publish is a project action; profile send stays off until styles change.
       if (this.base.channelId.trim() && Object.keys(this.base.projects).length > 0) {
         this.projectDirty = true;

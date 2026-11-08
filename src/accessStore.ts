@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -12,6 +13,8 @@ export const ACCESS_FILE = '.syn3/access.json';
 export const SECRET_GITLAB = 'syn3.gitlabToken';
 export const SECRET_GITHUB = 'syn3.githubToken';
 export const SECRET_DISCORD = 'syn3.discordBotToken';
+/** Opaque host-token refs written into base profiling.repositoryTokenKey. */
+export const SECRET_REPO_TOKEN_PREFIX = 'syn3.repoToken.';
 
 export type GitHostProvider = 'github' | 'gitlab';
 
@@ -19,6 +22,51 @@ export type GitHostProvider = 'github' | 'gitlab';
 export function profileHostSecretKey(provider: GitHostProvider, profileId: string): string {
   const base = provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB;
   return `${base}.${profileId}`;
+}
+
+/** Opaque SecretStorage key for a repositoryTokenKey value stored in base.json. */
+export function repositoryTokenSecretKey(tokenKey: string): string {
+  return `${SECRET_REPO_TOKEN_PREFIX}${tokenKey.trim()}`;
+}
+
+/** Random id written into profiling.repositoryTokenKey (never the token itself). */
+export function createRepositoryTokenKey(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+export async function readRepositoryToken(
+  secrets: vscode.SecretStorage,
+  tokenKey: string | undefined,
+): Promise<string | undefined> {
+  const key = (tokenKey || '').trim();
+  if (!key) {
+    return undefined;
+  }
+  return getSecret(secrets, repositoryTokenSecretKey(key));
+}
+
+export async function writeRepositoryToken(
+  secrets: vscode.SecretStorage,
+  tokenKey: string,
+  token: string,
+): Promise<void> {
+  const key = tokenKey.trim();
+  const trimmed = token.trim();
+  if (!key || !trimmed) {
+    return;
+  }
+  await secrets.store(repositoryTokenSecretKey(key), trimmed);
+}
+
+export async function deleteRepositoryToken(
+  secrets: vscode.SecretStorage,
+  tokenKey: string | undefined,
+): Promise<void> {
+  const key = (tokenKey || '').trim();
+  if (!key) {
+    return;
+  }
+  await secrets.delete(repositoryTokenSecretKey(key));
 }
 
 export interface ReviewPageAccess {
@@ -258,10 +306,14 @@ export async function ensureSecrets(
   secrets: vscode.SecretStorage,
   provider: ReviewHostProvider,
   profileId?: string,
+  repositoryTokenKey?: string,
 ): Promise<{ hostToken: string; discord: string } | undefined> {
-  const hostToken = profileId
-    ? (await readProfileHostToken(secrets, profileId, provider)) || ''
-    : (await secrets.get(provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB))?.trim() || '';
+  const byKey = (await readRepositoryToken(secrets, repositoryTokenKey)) || '';
+  const hostToken =
+    byKey ||
+    (profileId
+      ? (await readProfileHostToken(secrets, profileId, provider)) || ''
+      : (await secrets.get(provider === 'github' ? SECRET_GITHUB : SECRET_GITLAB))?.trim() || '');
   const discord = (await secrets.get(SECRET_DISCORD))?.trim() || '';
   if (!hostToken || !discord) {
     return undefined;

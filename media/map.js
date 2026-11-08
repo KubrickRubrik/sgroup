@@ -1691,11 +1691,34 @@
 
   function updatePageMenu() {
     const list = pages();
-    const max = typeof data?.maxPages === 'number' ? data.maxPages : 6;
+    const max = typeof data?.maxPages === 'number' ? data.maxPages : 4;
+    const usedKinds = new Set(
+      Array.isArray(data?.usedPageKinds)
+        ? data.usedPageKinds
+        : list.map((page) => page.kind).filter(Boolean),
+    );
     const createBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-create-page'));
     const deleteBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-delete-page'));
+    const kindActions = [
+      ['createPageFiles', 'files'],
+      ['createPageNotes', 'notes'],
+      ['createPageLinks', 'links'],
+      ['createPageReview', 'review'],
+    ];
+    let available = 0;
+    for (const [action, kind] of kindActions) {
+      const btn = document.querySelector(`[data-action="${action}"]`);
+      if (!(btn instanceof HTMLElement)) {
+        continue;
+      }
+      const taken = usedKinds.has(kind);
+      btn.hidden = taken;
+      if (!taken) {
+        available += 1;
+      }
+    }
     if (createBtn) {
-      createBtn.disabled = list.length >= max;
+      createBtn.disabled = list.length >= max || available === 0;
     }
     if (deleteBtn) {
       deleteBtn.disabled = list.length <= 1;

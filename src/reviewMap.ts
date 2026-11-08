@@ -5,6 +5,7 @@ import {
   getSecret,
   readOriginRepoUrl,
   readProfileHostToken,
+  readRepositoryToken,
   repoUrlsMatch,
   ReviewPageAccess,
   SECRET_DISCORD,
@@ -373,6 +374,7 @@ export type ReviewProfileContext = ReviewProfilePaths & {
   profileName: string;
   githubNick: string;
   gitlabNick: string;
+  repositoryTokenKey?: string;
 };
 
 export class ReviewMapController {
@@ -412,6 +414,7 @@ export class ReviewMapController {
       profileName: '',
       githubNick: '',
       gitlabNick: '',
+      repositoryTokenKey: '',
     }),
   ) {
     this.access = new AccessStore(root);
@@ -625,6 +628,11 @@ export class ReviewMapController {
   }
 
   private async hostToken(provider: ReviewHostProvider): Promise<string | undefined> {
+    const key = this.profileContext().repositoryTokenKey;
+    const byKey = key ? await readRepositoryToken(this.secrets, key) : undefined;
+    if (byKey) {
+      return byKey;
+    }
     return readProfileHostToken(this.secrets, this.profileId(), provider);
   }
 
@@ -962,8 +970,12 @@ export class ReviewMapController {
       return { error: 'git remote origin not found' };
     }
     const profileId = this.profileId();
-    const githubToken = (await readProfileHostToken(this.secrets, profileId, 'github')) || '';
-    const gitlabToken = (await readProfileHostToken(this.secrets, profileId, 'gitlab')) || '';
+    const tokenKey = this.profileContext().repositoryTokenKey;
+    const byKey = (await readRepositoryToken(this.secrets, tokenKey)) || '';
+    const githubToken =
+      byKey || (await readProfileHostToken(this.secrets, profileId, 'github')) || '';
+    const gitlabToken =
+      byKey || (await readProfileHostToken(this.secrets, profileId, 'gitlab')) || '';
     const discord = (await this.discordToken()) || '';
     return {
       origin,
@@ -983,13 +995,14 @@ export class ReviewMapController {
     discordToken?: string;
   }): Promise<{ ok: true } | { ok: false; message: string }> {
     const profileId = this.profileId();
+    const tokenKey = this.profileContext().repositoryTokenKey;
     await storeSecrets(this.secrets, {
       profileId,
       gitlab: opts.gitlabToken,
       github: opts.githubToken,
       discord: opts.discordToken,
     });
-    const tokens = await ensureSecrets(this.secrets, opts.provider, profileId);
+    const tokens = await ensureSecrets(this.secrets, opts.provider, profileId, tokenKey);
     if (!tokens) {
       const hostLabel = opts.provider === 'github' ? 'GitHub' : 'GitLab';
       return {

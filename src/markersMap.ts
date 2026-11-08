@@ -37,12 +37,16 @@ import {
 import { ReviewDepth, ReviewKind } from './reviewPending';
 import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
 import {
+  createRepositoryTokenKey,
   deleteProfileHostToken,
+  deleteRepositoryToken,
   getSecret,
   readProfileHostToken,
+  readRepositoryToken,
   SECRET_DISCORD,
   secretsStatus,
   storeSecrets,
+  writeRepositoryToken,
   writeProfileHostToken,
 } from './accessStore';
 import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
@@ -807,6 +811,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           profileName: this.store.activeProfileName,
           githubNick: nicks.githubNick,
           gitlabNick: nicks.gitlabNick,
+          repositoryTokenKey: this.store.repositoryTokenKey(this.store.activeProfileId) || '',
         };
       },
     );
@@ -1607,17 +1612,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
-  /** True when profile channel or Discord bot token is missing. */
+  /** True when there is no base channel yet (empty start: create or connect a project). */
   async needsDiscordGate(): Promise<boolean> {
     if (!this.store.ready) {
       return false;
     }
-    const profile = (this.store.catalogChannels().profile ?? '').trim();
-    if (!profile) {
-      return true;
-    }
-    const status = await secretsStatus(this.hostSecrets);
-    return !status.hasDiscord;
+    return !this.store.baseChannelId().trim();
   }
 
   /** Focus a visible map webview; returns false when none is visible. */
@@ -1678,19 +1678,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await webview.postMessage({ type: 'discordGateClear' });
       return;
     }
-    const channels = this.store.catalogChannels();
     const status = await secretsStatus(this.hostSecrets);
     const locale = normalizeLocale(this.store.appearance.language);
     await webview.postMessage({
-      type: 'discordGatePanel',
-      channels: {
-        profile: channels.profile || '',
-        explorer: channels.explorer || '',
-        notes: channels.notes || '',
-        links: channels.links || '',
-        review: channels.review || '',
-      },
+      type: 'projectCreatePanel',
+      needChannel: true,
       hasDiscord: status.hasDiscord,
+      mode: 'create',
+      gate: true,
       locale,
       i18n: stringsFor(locale),
     });
@@ -3638,6 +3633,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       links: body.links,
       focusNoteId,
       maxPages: MAX_PAGES,
+      usedPageKinds: this.store.pages().map(([, p]) => p.kind),
       layout: page?.layout ?? 'chips',
       groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
@@ -4140,12 +4136,25 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const nicks = profile ? this.store.gitNicks(profile.id) : { githubNick: '', gitlabNick: '' };
-    const githubToken = profile
-      ? (await readProfileHostToken(this.hostSecrets, profile.id, 'github')) || ''
+    const host = this.store.projectRepo()?.provider;
+    const tokenKey = profile ? this.store.repositoryTokenKey(profile.id) : undefined;
+    const opaqueToken = tokenKey
+      ? (await readRepositoryToken(this.hostSecrets, tokenKey)) || ''
       : '';
-    const gitlabToken = profile
-      ? (await readProfileHostToken(this.hostSecrets, profile.id, 'gitlab')) || ''
-      : '';
+    const githubToken = opaqueToken
+      ? host === 'github'
+        ? opaqueToken
+        : ''
+      : profile
+        ? (await readProfileHostToken(this.hostSecrets, profile.id, 'github')) || ''
+        : '';
+    const gitlabToken = opaqueToken
+      ? host === 'gitlab'
+        ? opaqueToken
+        : ''
+      : profile
+        ? (await readProfileHostToken(this.hostSecrets, profile.id, 'gitlab')) || ''
+        : '';
     await webview.postMessage({
       type: 'profileSettingsPanel',
       id: profile?.id ?? '',
@@ -4156,6 +4165,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       gitlabNick: nicks.gitlabNick,
       githubToken,
       gitlabToken,
+      projectHost: host || '',
     });
   }
 
@@ -4173,7 +4183,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const locale = normalizeLocale(this.store.appearance.language);
     const name = message.name.trim();
     let id = message.id?.trim() || '';
-    if (!id) {
+    const creating = !id;
+    const host = this.store.projectRepo()?.provider;
+    const nick =
+      host === 'gitlab' ? message.gitlabNick.trim() : message.githubNick.trim();
+    const token =
+      host === 'gitlab' ? message.gitlabToken.trim() : message.githubToken.trim();
+    if (creating) {
       if (!name) {
         await webview.postMessage({
           type: 'profileSettingsError',
@@ -4185,6 +4201,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         await webview.postMessage({
           type: 'profileSettingsError',
           message: t(locale, 'profileNameTaken'),
+        });
+        return;
+      }
+      if (!host) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'projectRepositoryRequired'),
+        });
+        return;
+      }
+      if (!nick) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNickRequired'),
+        });
+        return;
+      }
+      if (!token) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileTokenRequired'),
         });
         return;
       }
@@ -4231,22 +4268,44 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       githubNick: message.githubNick,
       gitlabNick: message.gitlabNick,
     });
-    await this.storeHostToken(id, 'github', message.githubToken);
-    await this.storeHostToken(id, 'gitlab', message.gitlabToken);
+    await this.storeProfileRepositoryToken(id, host, token);
+    if (!this.store.machineIsBound() || creating) {
+      await this.store.setActiveProfile(id);
+    }
+    await this.withBaseConfigBusy(async () => {
+      const result = await this.store.pushProfileConfig();
+      if (!result.ok && result.message && result.message !== 'Nothing to push') {
+        this.showBaseConfigResult(result);
+      }
+    });
     await webview.postMessage({ type: 'profileSettingsSaved' });
   }
 
-  private async storeHostToken(
+  private async storeProfileRepositoryToken(
     profileId: string,
-    provider: 'github' | 'gitlab',
+    host: 'github' | 'gitlab' | undefined,
     token: string,
   ): Promise<void> {
     const trimmed = token.trim();
-    if (trimmed) {
-      await writeProfileHostToken(this.hostSecrets, profileId, provider, trimmed);
+    let key = this.store.repositoryTokenKey(profileId);
+    if (!trimmed) {
+      if (key) {
+        await deleteRepositoryToken(this.hostSecrets, key);
+        await this.store.setRepositoryTokenKey(profileId, undefined);
+      }
+      if (host) {
+        await deleteProfileHostToken(this.hostSecrets, profileId, host);
+      }
       return;
     }
-    await deleteProfileHostToken(this.hostSecrets, profileId, provider);
+    if (!key) {
+      key = createRepositoryTokenKey();
+      await this.store.setRepositoryTokenKey(profileId, key);
+    }
+    await writeRepositoryToken(this.hostSecrets, key, trimmed);
+    if (host) {
+      await writeProfileHostToken(this.hostSecrets, profileId, host, trimmed);
+    }
   }
 
   private async onProfile(
@@ -4258,15 +4317,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (id) {
         await this.store.setActiveProfile(id);
         await this.syncOpenSurfacesIfNeeded(true);
+        await this.withBaseConfigBusy(async () => {
+          const result = await this.store.pushProfileConfig();
+          if (!result.ok && result.message && result.message !== 'Nothing to push') {
+            this.showBaseConfigResult(result);
+          }
+        });
       }
       return;
     }
     if (action === 'create') {
-      const trimmed = (name ?? '').trim();
-      if (!trimmed || !this.store.isValidProfileName(trimmed)) {
-        return;
-      }
-      await this.store.createProfile(trimmed);
+      await this.showProfileSettings();
       return;
     }
     if (action === 'rename') {
@@ -4415,12 +4476,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       const newToken = (discordToken || '').trim();
       if (newToken) {
         await storeSecrets(this.hostSecrets, { discord: newToken });
+      } else {
+        const status = await secretsStatus(this.hostSecrets);
+        if (!status.hasDiscord) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'discordTokenRequired'),
+            canRetry: false,
+          });
+          return;
+        }
       }
       const trimmedRepo = (repoUrl || '').trim();
-      const repo =
-        trimmedRepo && (repoProvider === 'github' || repoProvider === 'gitlab')
-          ? { provider: repoProvider, repoUrl: trimmedRepo }
-          : undefined;
+      if (!trimmedRepo || (repoProvider !== 'github' && repoProvider !== 'gitlab')) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectRepositoryRequired'),
+          canRetry: false,
+        });
+        return;
+      }
+      const repo = { provider: repoProvider, repoUrl: trimmedRepo };
       try {
         const result = await this.store.publishNewProject(trimmedName, nextChannel, repo);
         if (!result.ok) {
@@ -4466,16 +4542,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       const newToken = (discordToken || '').trim();
       if (newToken) {
         await storeSecrets(this.hostSecrets, { discord: newToken });
+      } else {
+        const status = await secretsStatus(this.hostSecrets);
+        if (!status.hasDiscord) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'discordTokenRequired'),
+            canRetry: false,
+          });
+          return;
+        }
       }
       try {
         const pull = await this.store.pullBaseFromChannel(ch);
-        if (pull.applied) {
-          if (pull.message && pull.message !== 'Nothing to pull') {
-            void vscode.window.showErrorMessage(`Syn3: ${pull.message}`);
-          }
-          await webview.postMessage({ type: 'projectCreateDone' });
-          return;
-        }
         if (!pull.ok && pull.message && pull.message !== 'Nothing to pull') {
           void vscode.window.showErrorMessage(`Syn3: ${pull.message}`);
           await webview.postMessage({
@@ -4486,6 +4565,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           return;
         }
         await webview.postMessage({ type: 'projectCreateDone' });
+        if (this.store.machineIsBound()) {
+          await this.syncOpenSurfacesIfNeeded(true);
+        } else {
+          await this.postProfileSettings(webview, GENERAL_PROFILE_ID);
+        }
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
         void vscode.window.showErrorMessage(`Syn3: ${text}`);
@@ -4695,6 +4779,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const pageKind = normalizePageKind(kind) ?? 'files';
+    if (this.store.hasPageKind(pageKind)) {
+      return;
+    }
     if (pageKind === 'review') {
       const defaults = await this.review.createPageDefaults();
       if ('error' in defaults) {
@@ -4884,6 +4971,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await webview.postMessage({
         type: 'pageSettingsError',
         message: 'Use review create panel',
+      });
+      return;
+    }
+    if (this.store.hasPageKind(kind)) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: t(locale, 'pageKindTaken'),
       });
       return;
     }

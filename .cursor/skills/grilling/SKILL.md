@@ -1,13 +1,13 @@
 ---
-name: gr
+name: grilling
 description: >-
   Grills a feature idea with clarifying questions grounded in the current
-  project's code, patterns, and constraints. Use when the user invokes /gr,
+  project's code, patterns, and constraints. Use when the user invokes /grilling,
   asks for гриллинг, grilling, or wants a pre-implementation Q&A before coding.
 disable-model-invocation: true
 ---
 
-# /gr — Гриллинг фичи
+# /grilling — Гриллинг фичи
 
 Socratic pre-design: clarify the idea before any implementation. Do **not** write code, scaffolds, or "how I'd build it" unless the user explicitly asks after grilling.
 
@@ -21,9 +21,9 @@ Expect (any subset; ask only for what's missing if the rest is clear):
 
 Optional depth hint in the same message:
 
-- `/gr light …` — core only
-- `/gr` or `/gr medium …` — default
-- `/gr deep …` — adversarial / thorough
+- `/grilling light …` — core only
+- `/grilling` or `/grilling medium …` — default
+- `/grilling deep …` — adversarial / thorough
 
 If depth omitted → **medium**.
 
@@ -57,6 +57,7 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
    - One form question per concern. `prompt` is that question, options sit under it. No extra commentary in the form
    - Each question needs at least two options (`id` + `label`). The form always adds a free-text choice besides those options — that is the normal path for a caveat or a clarification
    - Options follow the question. A natural pair may use any short labels («Да» / «Нет», «Верно» / «Неверно», «Сейчас» / «Потом», and so on). Do not rewrite a complex question into a yes/no pair; write the real options and leave the nuance to the free-text choice
+   - Every grill question ends with `{ id: "simplify", label: "упростить или разбить на подвопросы" }`, after the real options. It is not a product answer. The stop form does not include it
    - If unsure whether a question is binary, still put it in the form
    - An assumption that needs a confirmation is a form question. Do not hide it inside the mirror
    - End the turn after the mirror and the form — no “ещё на потом” list, no coding, no plan
@@ -69,21 +70,21 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
    - One question. Its `prompt` is the recommendation, above the options — not «Дальше», and do not number it yourself:
      - `Рекомендую сделать план` — the slice is wide, touches several modules, sequencing is unclear, or an open fork has to be decided first
      - `Рекомендую выполнить` — the slice is thin, the answers close the gaps, and the path is obvious
-   - Options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`. No «Не выполнять»
+   - Options in this order: `{ id: "execute", label: "Выполнить" }`, `{ id: "plan", label: "Сделать план" }`. No «Не выполнять». No «упростить или разбить на подвопросы»
    - The prompt does not ask them to type «выполняй», «скажи», «если хочешь», or «переключись в Plan»
    - Wait for the click. On `execute`, implement in the next turn. On `plan`, the next turn calls `SwitchMode` with `target_mode_id: "plan"` and a short `explanation`, and does nothing else until they approve
 
 ## Unclear question (hard rule)
 
-If the user answers a question — by picking an option or by free text — with «не понял», «вопрос непонятен», «варианты непонятны», or a close paraphrase in the session language, the meaning is the same: the proposed question and its options cannot be understood.
+If the user picks «упростить или разбить на подвопросы», or answers in free text with «не понял», «вопрос непонятен», «варианты непонятны», or a close paraphrase in the session language, the meaning is the same: this question needs a simpler form. The proposed question and its options could not be used as they stand.
 
 That is not a decision, not a vague product answer, and not an open risk. Do not record it and move on. Do not repeat the same wording.
 
-Repair only the unclear question before asking anything new. Other answers in the round stay answered. Do one of these:
+Repair only that question before asking anything new. Other answers in the round stay answered. Do one of these:
 
-- ask the same concern in different words
+- simplify: ask the same concern in shorter, plainer words
 - rewrite the options so each one is concrete and distinguishable
-- split one overloaded question into several questions, one concern each
+- split one overloaded question into several sub-questions, one concern each
 
 Keep the repair inside one `AskQuestion` call. A short mirror may say what was unclear; the new question and options live only in the form. If several questions in the round were marked unclear, repair all of them in that next round.
 
@@ -102,7 +103,7 @@ Keep the repair inside one `AskQuestion` call. A short mirror may say what was u
 
 - Direct, curious, not theatrical
 - Challenge vague answers once; if still vague, record as open risk and move on
-- «Не понял» / «вопрос непонятен» / «варианты непонятны» is not vagueness — repair the question (see **Unclear question**)
+- «упростить или разбить на подвопросы», «не понял», «вопрос непонятен», «варианты непонятны» is not vagueness — repair the question (see **Unclear question**)
 - Follow the user's language and address rules from the session
 
 ## Anti-patterns
@@ -115,7 +116,9 @@ Keep the repair inside one `AskQuestion` call. A short mirror may say what was u
 - Jumping to implementation or architecture essays mid-grill
 - Interrogation without reading the project
 - Asking the next round before the user answered the current one
-- Repeating a question in the same words after the user said it or its options could not be understood
+- A grill question without the last option «упростить или разбить на подвопросы»
+- That same option on the stop form
+- Repeating a question in the same words after the user asked to simplify it or said it could not be understood
 - Rewarding hand-waving without noting the risk
 - A stop form whose prompt is «Дальше», or a recommendation written in the message instead of the form prompt
 - A stop option «Не выполнять», or calling `SwitchMode` in the stop turn before they pick «Сделать план»
