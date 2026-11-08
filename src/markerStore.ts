@@ -1733,7 +1733,7 @@ export class MarkerStore implements vscode.Disposable {
 
   async setPagesFixed(fixed: boolean): Promise<{ ok: boolean; message?: string }> {
     return this.enqueueResult(async () => {
-      if (this.baseCloudNewer) {
+      if (this.relevantBaseCloudNewer) {
         return { ok: false, message: 'cloudPullFirst' };
       }
       const project = this.ensureActiveProject();
@@ -5705,8 +5705,9 @@ export class MarkerStore implements vscode.Disposable {
       return { ok: false, message: 'projectLocked' };
     }
     const firstPublish = this.baseNeedsFirstPublish();
-    // Remote BASE must not block the very first local publish (create / empty cloud).
-    if (this.baseCloudNewer && !firstPublish) {
+    // A local snapshot rewrite (new page, channel) is not a remote update.
+    // Accept lights only when this profile's slice version in Discord is higher.
+    if (this.relevantBaseCloudNewer && !firstPublish) {
       return { ok: false, message: 'cloudPullFirst' };
     }
     if (!this.profileDirty && !this.projectDirty && !firstPublish) {
@@ -5755,22 +5756,21 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (latest.value) {
         const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
-        if (!downloaded.ok) {
-          return { ok: false, message: downloaded.message };
-        }
-        try {
-          remoteBase = normalizeBaseConfig(JSON.parse(downloaded.value));
-        } catch (error) {
-          return {
-            ok: false,
-            message: error instanceof Error ? error.message : String(error),
-          };
-        }
-        if (this.projectDirty && this.remoteSharedProjectIsNewer(remoteBase)) {
-          this.baseCloudNewer = true;
-          this.relevantBaseCloudNewer = true;
-          this.changeEmitter.fire();
-          return { ok: false, message: 'cloudPullFirst' };
+        if (downloaded.ok) {
+          try {
+            remoteBase = normalizeBaseConfig(JSON.parse(downloaded.value));
+          } catch (error) {
+            return {
+              ok: false,
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+          if (this.relevantSliceDiffers(remoteBase)) {
+            this.baseCloudNewer = true;
+            this.relevantBaseCloudNewer = true;
+            this.changeEmitter.fire();
+            return { ok: false, message: 'cloudPullFirst' };
+          }
         }
       }
     }
@@ -5854,20 +5854,6 @@ export class MarkerStore implements vscode.Disposable {
       merged.projects[projectId] = next;
     }
     return merged;
-  }
-
-  /** Shared fields of the active project in Discord are ahead of local. */
-  private remoteSharedProjectIsNewer(remote: BaseConfigFile): boolean {
-    const activeId = this.activeProjectId();
-    if (!activeId) {
-      return false;
-    }
-    const local = this.base.projects[activeId];
-    const cloud = remote.projects[activeId];
-    if (!local || !cloud) {
-      return !!cloud;
-    }
-    return (cloud.version || 1) > (local.version || 1);
   }
 
   /** Accept lights only for this profile's active project / own profile slice. */

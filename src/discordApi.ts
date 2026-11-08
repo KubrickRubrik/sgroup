@@ -362,20 +362,30 @@ export async function fetchAttachmentText(
   token: string,
   url: string,
 ): Promise<DiscordResult<string>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
   try {
     const response = await fetch(url, {
       headers: { Authorization: `Bot ${token}` },
+      signal: controller.signal,
     });
     if (!response.ok) {
       return { ok: false, status: response.status, message: `HTTP ${response.status}` };
     }
     return { ok: true, value: await response.text() };
   } catch (error) {
+    const aborted = error instanceof Error && error.name === 'AbortError';
     return {
       ok: false,
       status: 0,
-      message: error instanceof Error ? error.message : String(error),
+      message: aborted
+        ? 'Discord request timed out'
+        : error instanceof Error
+          ? error.message
+          : String(error),
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
