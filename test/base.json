@@ -1,0 +1,167 @@
+{
+    "version": 1,
+    "profile": {
+        "general": {
+            "version": 1,
+            "id": "general",
+            "title": "Общий",
+            "idActiveProject": "idProjectValue1",
+            "access": {
+                "ask": "ask",
+                "pass": ""
+            }
+        },
+        "idProfileValue": {
+            "version": 1,
+            "id": "idProfileValue",
+            "title": "Мой профиль",
+            "idActiveProject": "idProjectValue1",
+            "access": {
+                "ask": "ask",
+                "pass": ""
+            }
+        },
+        "idProfileValue2": {
+            "version": 1,
+            "id": "idProfileValue2",
+            "title": "Другой профиль 2",
+            "idActiveProject": "idProjectValue2",
+            "access": {
+                "ask": "ask",
+                "pass": ""
+            }
+        }
+    },
+    "project": {
+        "idProjectValue1": {
+            "version": 1,
+            "id": "idProjectValue1",
+            "title": "Мой проект",
+            "host": "github",
+            "repository": "https://github.com/user/project1",
+            "dChannels": {
+                "explorer": "idExplorerDiscordChannel",
+                "note": "idNotesDiscordChannel",
+                "link": "idLinkDiscordChannel",
+                "review": "idReviewDiscordChannel"
+            },
+            "access": {
+                "ask": "ask",
+                "pass": ""
+            },
+            "profiling": {
+                "general": {
+                    "version": 1,
+                    "appearance": {},
+                    "open": {
+                        "bottom": false,
+                        "left": false,
+                        "right": true
+                    },
+                    "dependencies": {
+                        "github": {
+                            "username": "user",
+                            "token": "token"
+                        }
+                    }
+                },
+                "idProfileValue": {
+                    "version": 1,
+                    "appearance": {},
+                    "open": {
+                        "bottom": false,
+                        "left": false,
+                        "right": true
+                    },
+                    "dependencies": {
+                        "github": {
+                            "username": "user1",
+                            "token": "token1"
+                        }
+                    }
+                },
+                "idProfileValue2": {
+                    "version": 1,
+                    "appearance": {},
+                    "open": {
+                        "bottom": false,
+                        "left": false,
+                        "right": true
+                    },
+                    "dependencies": {
+                        "github": {
+                            "username": "user2",
+                            "token": "token2"
+                        }
+                    }
+                }
+            },
+            "pages": []
+        },
+        "idProjectValue2": {
+            "version": 1,
+            "id": "idProjectValue2",
+            "title": "Другой проект",
+            "host": "gitlab",
+            "repository": "https://gitlab.com/user/project2",
+            "dChannels": {
+                "explorer": "idExplorerDiscordChannel2",
+                "note": "idNotesDiscordChannel2",
+                "link": "idLinkDiscordChannel2",
+                "review": "idReviewDiscordChannel2"
+            },
+            "access": {
+                "ask": "ask",
+                "pass": ""
+            },
+            "profiling": {
+                "general": {
+                    "version": 1,
+                    "appearance": {},
+                    "open": {
+                        "bottom": false,
+                        "left": false,
+                        "right": true
+                    },
+                    "dependencies": {
+                        "gitlab": {
+                            "username": "user",
+                            "token": "token"
+                        }
+                    }
+                },
+                "idProfileValue": {
+                    "version": 1,
+                    "appearance": {},
+                    "open": {
+                        "bottom": false,
+                        "left": false,
+                        "right": true
+                    },
+                    "dependencies": {
+                        "gitlab": {
+                            "username": "user1",
+                            "token": "token1"
+                        }
+                    }
+                },
+                "idProfileValue2": {
+                    "version": 1,
+                    "appearance": {},
+                    "open": {
+                        "bottom": false,
+                        "left": false,
+                        "right": true
+                    },
+                    "dependencies": {
+                        "gitlab": {
+                            "username": "user2",
+                            "token": "token2"
+                        }
+                    }
+                }
+            },
+            "pages": []
+        }
+    }
+}

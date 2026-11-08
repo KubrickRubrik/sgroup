@@ -80,11 +80,14 @@ export interface ProjectLock {
   profileId: string;
 }
 
-/** Review binding without channel — channel lives on the project. */
-export interface ProjectPageAccess {
+/** Review host + repo URL. Lives on the project, not on a page. */
+export interface ProjectRepo {
   provider: 'github' | 'gitlab';
   repoUrl: string;
 }
+
+/** @deprecated Page-level access; prefer ProjectEntry.repo. */
+export type ProjectPageAccess = ProjectRepo;
 
 /** Page settings in the base snapshot (no map content). */
 export interface ProjectPageEntry {
@@ -93,7 +96,6 @@ export interface ProjectPageEntry {
   kind: PageKind;
   description?: string;
   order: number;
-  access?: ProjectPageAccess;
 }
 
 /** Per-page map/group layout stored on the profile. */
@@ -102,15 +104,24 @@ export interface PageLayoutPrefs {
   groupsLayout: GroupsLayout;
 }
 
-/** Profile settings bound to a project. */
-export interface ProjectProfileEntry {
+/**
+ * Root profile in BASE: identity, machine binds, review paths, active project.
+ * Styles and git nicks live under the project.
+ */
+export interface BaseProfileEntry {
   version: number;
   name: string;
+  activeProjectId?: string;
   sProfileIds: string[];
   reviewSkillPath?: string;
   reviewDirPath?: string;
   reviewModel?: string;
   reviewFixModel?: string;
+}
+
+/** Styles and nicks for one profile inside one project. */
+export interface ProjectProfileEntry {
+  version: number;
   githubNick?: string;
   gitlabNick?: string;
   appearance: Appearance;
@@ -125,20 +136,22 @@ export interface ProjectEntry {
   name: string;
   channels: ProjectChannels;
   lock?: ProjectLock;
+  /** Shared review repository for this project. */
+  repo?: ProjectRepo;
   profiles: Record<string, ProjectProfileEntry>;
   pages: Record<string, ProjectPageEntry>;
 }
 
 /**
- * Full base config: every project, its profiles and page settings.
+ * Full base config: every profile (with its active project) and every project.
  * Lives at `.syn3/base.json` and as the BASE_SYN3 Discord attachment.
  */
 export interface BaseConfigFile {
   version: 1;
   /** Discord channel that stores this snapshot. */
   channelId: string;
-  /** Active project for this workspace. */
-  activeProjectId?: string;
+  /** Profiles at the root; each keeps its own activeProjectId. */
+  profiles: Record<string, BaseProfileEntry>;
   projects: Record<string, ProjectEntry>;
   /** Stamp of the last fully applied base message. */
   cloud?: CloudStamp;
@@ -320,6 +333,7 @@ export function emptyBaseConfig(): BaseConfigFile {
   return {
     version: 1,
     channelId: '',
+    profiles: {},
     projects: {},
   };
 }
@@ -332,6 +346,18 @@ export function emptyProject(name: string): ProjectEntry {
     profiles: {},
     pages: {},
   };
+}
+
+export function packProjectRepo(repo?: ProjectRepo): ProjectRepo | undefined {
+  if (!repo) {
+    return undefined;
+  }
+  const provider = repo.provider === 'github' || repo.provider === 'gitlab' ? repo.provider : undefined;
+  const repoUrl = typeof repo.repoUrl === 'string' ? repo.repoUrl.trim() : '';
+  if (!provider || !repoUrl) {
+    return undefined;
+  }
+  return { provider, repoUrl };
 }
 
 export function normalizeCloudStamp(raw: unknown): CloudStamp | undefined {

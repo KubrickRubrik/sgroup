@@ -1077,6 +1077,8 @@
         origin: typeof message.origin === 'string' ? message.origin : '',
         suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
         channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        projectRepoLocked: message.projectRepoLocked === true,
         hasGitlab: message.hasGitlab === true,
         hasGithub: message.hasGithub === true,
         hasDiscord: message.hasDiscord === true,
@@ -7037,6 +7039,35 @@
     channelLabel.append(channelInput);
     panel.append(channelLabel);
 
+    const repoLabel = el('label', 'review-mr-field', t('projectRepoUrl'));
+    const repoInput = document.createElement('input');
+    repoInput.className = 'review-mr-title';
+    repoInput.type = 'text';
+    repoInput.spellcheck = false;
+    repoInput.placeholder = t('projectRepoOptional');
+    repoInput.dataset.projectRepo = '1';
+    repoLabel.append(repoInput);
+    panel.append(repoLabel);
+    /** @type {'github' | 'gitlab'} */
+    let repoProvider = 'github';
+    const repoProviderRow = el('div', 'review-provider-choices');
+    const githubBtn = el('button', 'review-btn review-provider-btn is-primary', t('reviewProviderGithub'));
+    githubBtn.type = 'button';
+    const gitlabBtn = el('button', 'review-btn review-provider-btn', t('reviewProviderGitlab'));
+    gitlabBtn.type = 'button';
+    githubBtn.addEventListener('click', () => {
+      repoProvider = 'github';
+      githubBtn.classList.add('is-primary');
+      gitlabBtn.classList.remove('is-primary');
+    });
+    gitlabBtn.addEventListener('click', () => {
+      repoProvider = 'gitlab';
+      gitlabBtn.classList.add('is-primary');
+      githubBtn.classList.remove('is-primary');
+    });
+    repoProviderRow.append(githubBtn, gitlabBtn);
+    panel.append(repoProviderRow);
+
     /** @type {HTMLInputElement | null} */
     let tokenInput = null;
     if (opts.hasDiscord === false) {
@@ -7096,6 +7127,8 @@
       selectModeBtn.classList.toggle('is-primary', mode === 'select');
       title.textContent = mode === 'select' ? t('projectSelect') : t('projectModeCreate');
       nameLabel.hidden = mode !== 'create';
+      repoLabel.hidden = mode !== 'create';
+      repoProviderRow.hidden = mode !== 'create';
       channelLabel.hidden = !channelRequired();
       if (submit.dataset.projectCreateRetry !== '1' || mode !== 'create') {
         delete submit.dataset.projectCreateRetry;
@@ -7202,6 +7235,12 @@
           return;
         }
       }
+      const repoUrl = repoInput.value.trim();
+      if (repoUrl && /gitlab/i.test(repoUrl) && !/github\.com/i.test(repoUrl)) {
+        repoProvider = 'gitlab';
+      } else if (repoUrl && /github\.com/i.test(repoUrl)) {
+        repoProvider = 'github';
+      }
       setProjectCreateBusy(true);
       vscode.postMessage({
         type: 'project',
@@ -7209,6 +7248,8 @@
         name,
         channelId: channelId || undefined,
         discordToken: discordToken || undefined,
+        repoUrl: repoUrl || undefined,
+        repoProvider: repoUrl ? repoProvider : undefined,
       });
     });
     submitWrap.append(loader, submit);
@@ -7779,6 +7820,7 @@
    *   description?: string,
    *   channelId?: string,
    *   repoUrl?: string,
+   *   projectRepoLocked?: boolean,
    *   githubToken?: string,
    *   gitlabToken?: string,
    *   reviewSkillPath?: string,
@@ -7882,7 +7924,12 @@
     providerBox.append(providerChoices);
     panel.append(providerBox);
 
-    const repoInput = fieldRow('reviewFieldRepoUrl', { value: opts.repoUrl || opts.origin });
+    const repoInput = fieldRow('reviewFieldRepoUrl', {
+      value: opts.repoUrl || (opts.projectRepoLocked ? '' : opts.origin),
+    });
+    if (opts.projectRepoLocked) {
+      repoInput.readOnly = true;
+    }
 
     const hostTokenSlot = el('div', 'review-host-token-slot');
     panel.append(hostTokenSlot);
@@ -8183,7 +8230,7 @@
         return fail('reviewFieldChannelId', channelInput);
       }
       if (!repoUrl) {
-        return fail('reviewFieldRepoUrl', repoInput);
+        return fail('projectRepoRequired', repoInput);
       }
       const hostLabelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
       if (!(hostTokenInput?.value || '').trim()) {

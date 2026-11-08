@@ -353,6 +353,8 @@ type IncomingMessage =
       channelId?: string;
       discordToken?: string;
       mode?: 'create' | 'select';
+      repoUrl?: string;
+      repoProvider?: 'github' | 'gitlab';
     }
   | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
   | { type: 'pageCloud'; action: 'pushAll' }
@@ -2426,6 +2428,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.channelId,
         message.discordToken,
         message.mode,
+        message.repoUrl,
+        message.repoProvider,
       );
       return;
     }
@@ -4339,6 +4343,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     channelId?: string,
     discordToken?: string,
     mode?: 'create' | 'select',
+    repoUrl?: string,
+    repoProvider?: 'github' | 'gitlab',
   ): Promise<void> {
     const locale = normalizeLocale(this.store.appearance.language);
     if (action === 'select') {
@@ -4410,8 +4416,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (newToken) {
         await storeSecrets(this.hostSecrets, { discord: newToken });
       }
+      const trimmedRepo = (repoUrl || '').trim();
+      const repo =
+        trimmedRepo && (repoProvider === 'github' || repoProvider === 'gitlab')
+          ? { provider: repoProvider, repoUrl: trimmedRepo }
+          : undefined;
       try {
-        const result = await this.store.publishNewProject(trimmedName, nextChannel);
+        const result = await this.store.publishNewProject(trimmedName, nextChannel, repo);
         if (!result.ok) {
           const text = result.message || 'Failed to post base.json';
           void vscode.window.showErrorMessage(`Syn3: ${text}`);
@@ -4690,11 +4701,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
         return;
       }
+      const projectRepo = this.store.projectRepo();
       await webview.postMessage({
         type: 'reviewCreatePagePanel',
         origin: defaults.origin,
-        suggestedProvider: defaults.suggestedProvider,
+        suggestedProvider: projectRepo?.provider || defaults.suggestedProvider,
         channelId: this.store.catalogChannels().review || '',
+        repoUrl: projectRepo?.repoUrl || '',
+        projectRepoLocked: !!projectRepo,
         hasGitlab: defaults.hasGitlab,
         hasGithub: defaults.hasGithub,
         hasDiscord: defaults.hasDiscord,
@@ -4936,10 +4950,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail(defaults.error);
       return;
     }
+    const repoUrl = (message.repoUrl || '').trim() || this.store.projectRepo()?.repoUrl || '';
+    if (!repoUrl) {
+      await fail(t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired'));
+      return;
+    }
     const accessError = this.review.validateCreateAccess({
       provider,
       channelId: message.channelId,
-      repoUrl: message.repoUrl,
+      repoUrl,
       origin: defaults.origin,
     });
     if (accessError) {
@@ -4961,6 +4980,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail(hello.message);
       return;
     }
+    await this.store.setProjectRepo({ provider, repoUrl });
     const id = await this.store.createPage(name, 'review', message.description);
     if (!id) {
       await fail('Failed to create page');
@@ -4969,7 +4989,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await this.review.savePageAccess(id, {
       provider,
       channelId: message.channelId.trim(),
-      repoUrl: defaults.origin,
+      repoUrl,
     });
     await this.store.touchPageConfig(id);
     this.activePageByWebview.set(webview, id);
@@ -4992,6 +5012,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     const access = await this.review.getAccess(pageId);
+    const projectRepo = this.store.projectRepo();
     const paths = this.store.activeReviewPaths();
     await webview.postMessage({
       type: 'reviewPageSettingsPanel',
@@ -4999,8 +5020,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       name: page.name,
       description: page.description || '',
       origin: defaults.origin,
-      repoUrl: access?.repoUrl || defaults.origin,
-      suggestedProvider: access?.provider || defaults.suggestedProvider,
+      repoUrl: projectRepo?.repoUrl || access?.repoUrl || defaults.origin,
+      suggestedProvider: projectRepo?.provider || access?.provider || defaults.suggestedProvider,
       channelId: access?.channelId || this.store.catalogChannels().review || '',
       hasGitlab: defaults.hasGitlab,
       hasGithub: defaults.hasGithub,
@@ -5070,10 +5091,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const previous = await this.review.getAccess(message.pageId);
     await this.store.setPageMeta(message.pageId, name, message.description);
     const channelId = message.channelId.trim();
+    const repoUrl = (message.repoUrl || '').trim() || this.store.projectRepo()?.repoUrl || '';
+    if (!repoUrl) {
+      void vscode.window.showErrorMessage(
+        `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired')}`,
+      );
+      return;
+    }
+    await this.store.setProjectRepo({ provider, repoUrl });
     await this.review.savePageAccess(message.pageId, {
       provider,
       channelId,
-      repoUrl: defaults.origin,
+      repoUrl,
     });
     await this.store.touchPageConfig(message.pageId);
     if (previous?.channelId !== channelId) {
@@ -5397,6 +5426,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 <body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="map-chrome">
   <div class="history-bar">
+    <div class="toolbar-profile">
+      <button id="toolbar-profile" class="history-btn" type="button" aria-label="Профиль" aria-haspopup="menu" aria-expanded="false">
+        ${icon('person')}
+      </button>
+      <div id="toolbar-profile-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Профили">
+        <div id="toolbar-profile-list" class="toolbar-profile-list"></div>
+        <div class="toolbar-profile-create">
+          <button id="toolbar-profile-add" class="history-btn" type="button" title="Создать профиль" aria-label="Создать профиль">
+            ${icon('add')}
+          </button>
+        </div>
+      </div>
+    </div>
     <div class="toolbar-project">
       <button id="toolbar-project" class="history-btn" type="button" aria-label="Project" aria-haspopup="menu" aria-expanded="false">
         ${icon('apps-line')}
@@ -5411,19 +5453,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
     </div>
     <button id="toolbar-lock" class="history-btn toolbar-lock" type="button" title="Fix pages" aria-label="Fix pages" aria-pressed="false"></button>
-    <div class="toolbar-profile">
-      <button id="toolbar-profile" class="history-btn" type="button" aria-label="Профиль" aria-haspopup="menu" aria-expanded="false">
-        ${icon('person')}
-      </button>
-      <div id="toolbar-profile-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Профили">
-        <div id="toolbar-profile-list" class="toolbar-profile-list"></div>
-        <div class="toolbar-profile-create">
-          <button id="toolbar-profile-add" class="history-btn" type="button" title="Создать профиль" aria-label="Создать профиль">
-            ${icon('add')}
-          </button>
-        </div>
-      </div>
-    </div>
     <button id="toolbar-cloud-check" class="history-btn toolbar-cloud-btn" type="button" title="Проверить Discord" aria-label="Проверить Discord" hidden></button>
     <button id="toolbar-cloud-pull" class="history-btn toolbar-cloud-btn" type="button" title="Принять" aria-label="Принять" disabled></button>
     <button id="toolbar-cloud-push" class="history-btn toolbar-cloud-btn" type="button" title="Отправить" aria-label="Отправить" disabled></button>

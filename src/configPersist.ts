@@ -1,5 +1,6 @@
 import {
   type BaseConfigFile,
+  type BaseProfileEntry,
   type CloudStamp,
   type PageLayoutPrefs,
   type ProjectChannels,
@@ -8,11 +9,13 @@ import {
   type ProjectPageAccess,
   type ProjectPageEntry,
   type ProjectProfileEntry,
+  type ProjectRepo,
   emptyBaseConfig,
   emptyProject,
   normalizeCloudStamp,
   normalizeProjectChannels,
   packProjectChannels,
+  packProjectRepo,
   pageFilePath,
   BASE_PATH,
   PAGES_DIR,
@@ -222,32 +225,32 @@ export interface SplitWorkspace {
 
 export { BASE_PATH, PAGES_DIR, pageFilePath };
 
-export function projectPageEntryFromPage(
-  page: PageDef,
-  access?: ProjectPageAccess,
-  version = 1,
-): ProjectPageEntry {
+export function projectPageEntryFromPage(page: PageDef, version = 1): ProjectPageEntry {
   return {
     version,
     name: page.name,
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
-    ...(access ? { access } : {}),
   };
 }
 
-function normalizePageAccessBody(raw: unknown): ProjectPageAccess | undefined {
+function normalizeProjectRepoBody(raw: unknown): ProjectRepo | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return undefined;
   }
-  const source = raw as Partial<ProjectPageAccess> & { channelId?: string };
+  const source = raw as Partial<ProjectRepo> & { channelId?: string };
   const provider = source.provider === 'github' || source.provider === 'gitlab' ? source.provider : undefined;
   const repoUrl = typeof source.repoUrl === 'string' ? source.repoUrl.trim() : '';
   if (!provider || !repoUrl) {
     return undefined;
   }
   return { provider, repoUrl };
+}
+
+/** @deprecated Prefer normalizeProjectRepoBody / project.repo. */
+function normalizePageAccessBody(raw: unknown): ProjectPageAccess | undefined {
+  return normalizeProjectRepoBody(raw);
 }
 
 function normalizeSProfileIds(raw: unknown): string[] {
@@ -361,10 +364,37 @@ function normalizePageLayoutsLocal(raw: unknown): Record<string, PageLayoutPrefs
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function normalizeProfileEntry(id: string, raw: unknown): ProjectProfileEntry {
+function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
   const source =
     raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as Partial<ProjectProfileEntry>)
+      ? (raw as Partial<ProjectProfileEntry> & {
+          name?: string;
+          sProfileIds?: unknown;
+          reviewSkillPath?: string;
+          reviewDirPath?: string;
+          reviewModel?: string;
+          reviewFixModel?: string;
+        })
+      : {};
+  const version =
+    typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
+      ? Math.floor(source.version)
+      : 1;
+  const pageLayouts = normalizePageLayoutsLocal(source.pageLayouts);
+  return {
+    version,
+    ...(normalizeGitNick(source.githubNick) ? { githubNick: normalizeGitNick(source.githubNick) } : {}),
+    ...(normalizeGitNick(source.gitlabNick) ? { gitlabNick: normalizeGitNick(source.gitlabNick) } : {}),
+    appearance: normalizeAppearanceLocal(source.appearance),
+    open: normalizeOpenLocal(source.open),
+    ...(pageLayouts ? { pageLayouts } : {}),
+  };
+}
+
+function normalizeBaseProfileEntry(id: string, raw: unknown): BaseProfileEntry {
+  const source =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Partial<BaseProfileEntry>)
       : {};
   const name =
     typeof source.name === 'string' && source.name.trim()
@@ -376,13 +406,15 @@ function normalizeProfileEntry(id: string, raw: unknown): ProjectProfileEntry {
     typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
       ? Math.floor(source.version)
       : 1;
-  const pageLayouts = normalizePageLayoutsLocal(source.pageLayouts);
+  const activeProjectId =
+    typeof source.activeProjectId === 'string' && source.activeProjectId.trim()
+      ? source.activeProjectId.trim()
+      : undefined;
   return {
     version,
     name,
+    ...(activeProjectId ? { activeProjectId } : {}),
     sProfileIds: normalizeSProfileIds(source.sProfileIds),
-    ...(normalizeGitNick(source.githubNick) ? { githubNick: normalizeGitNick(source.githubNick) } : {}),
-    ...(normalizeGitNick(source.gitlabNick) ? { gitlabNick: normalizeGitNick(source.gitlabNick) } : {}),
     ...(typeof source.reviewSkillPath === 'string' && source.reviewSkillPath.trim()
       ? { reviewSkillPath: source.reviewSkillPath.trim() }
       : {}),
@@ -395,16 +427,13 @@ function normalizeProfileEntry(id: string, raw: unknown): ProjectProfileEntry {
     ...(typeof source.reviewFixModel === 'string' && source.reviewFixModel.trim()
       ? { reviewFixModel: source.reviewFixModel.trim().toLowerCase() }
       : {}),
-    appearance: normalizeAppearanceLocal(source.appearance),
-    open: normalizeOpenLocal(source.open),
-    ...(pageLayouts ? { pageLayouts } : {}),
   };
 }
 
 function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPageEntry {
   const source =
     raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as Partial<ProjectPageEntry>)
+      ? (raw as Partial<ProjectPageEntry> & { access?: unknown })
       : {};
   const kind = normalizePageKindLocal(source.kind) ?? 'files';
   const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : id;
@@ -413,14 +442,12 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
     typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
       ? Math.floor(source.version)
       : 1;
-  const access = normalizePageAccessBody(source.access);
   return {
     version,
     name,
     kind,
     order: typeof source.order === 'number' && Number.isFinite(source.order) ? source.order : index,
     ...(description ? { description } : {}),
-    ...(access ? { access } : {}),
   };
 }
 
@@ -449,13 +476,11 @@ export function normalizeProjectEntry(raw: unknown, fallbackName = 'Project'): P
   const profiles: Record<string, ProjectProfileEntry> = {};
   if (source.profiles && typeof source.profiles === 'object' && !Array.isArray(source.profiles)) {
     for (const [id, value] of Object.entries(source.profiles)) {
-      profiles[id] = normalizeProfileEntry(id, value);
+      profiles[id] = normalizeProjectProfileEntry(value);
     }
   }
   if (!profiles[GENERAL_PROFILE_ID]) {
-    profiles[GENERAL_PROFILE_ID] = normalizeProfileEntry(GENERAL_PROFILE_ID, {
-      name: GENERAL_PROFILE_NAME,
-      sProfileIds: [],
+    profiles[GENERAL_PROFILE_ID] = normalizeProjectProfileEntry({
       appearance: DEFAULT_APPEARANCE_LOCAL,
       open: emptyPanelOpenLocal(),
       version: 1,
@@ -470,11 +495,13 @@ export function normalizeProjectEntry(raw: unknown, fallbackName = 'Project'): P
     }
   }
   const lock = normalizeLock(source.lock);
+  const repo = normalizeProjectRepoBody(source.repo);
   return {
     version,
     name,
     channels: normalizeProjectChannels(source.channels),
     ...(lock ? { lock } : {}),
+    ...(repo ? { repo } : {}),
     profiles,
     pages,
   };
@@ -485,15 +512,31 @@ export function normalizeBaseConfig(raw: unknown): BaseConfigFile {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return result;
   }
-  const source = raw as Partial<BaseConfigFile>;
+  const source = raw as Partial<BaseConfigFile> & { activeProjectId?: string };
   result.channelId = typeof source.channelId === 'string' ? source.channelId.trim() : '';
-  if (typeof source.activeProjectId === 'string' && source.activeProjectId.trim()) {
-    result.activeProjectId = source.activeProjectId.trim();
-  }
   if (source.projects && typeof source.projects === 'object' && !Array.isArray(source.projects)) {
     for (const [id, value] of Object.entries(source.projects)) {
       result.projects[id] = normalizeProjectEntry(value, id);
     }
+  }
+  if (source.profiles && typeof source.profiles === 'object' && !Array.isArray(source.profiles)) {
+    for (const [id, value] of Object.entries(source.profiles)) {
+      const entry = normalizeBaseProfileEntry(id, value);
+      if (entry.activeProjectId && !result.projects[entry.activeProjectId]) {
+        delete entry.activeProjectId;
+      }
+      result.profiles[id] = entry;
+    }
+  }
+  // No migration of legacy root activeProjectId / project-embedded identity.
+  if (!result.profiles[GENERAL_PROFILE_ID]) {
+    const firstProject = Object.keys(result.projects)[0];
+    result.profiles[GENERAL_PROFILE_ID] = normalizeBaseProfileEntry(GENERAL_PROFILE_ID, {
+      name: GENERAL_PROFILE_NAME,
+      sProfileIds: [],
+      version: 1,
+      ...(firstProject ? { activeProjectId: firstProject } : {}),
+    });
   }
   const cloud = normalizeCloudStamp(source.cloud);
   if (cloud) {
@@ -502,9 +545,6 @@ export function normalizeBaseConfig(raw: unknown): BaseConfigFile {
   const lockCloud = normalizeCloudStamp(source.lockCloud);
   if (lockCloud) {
     result.lockCloud = lockCloud;
-  }
-  if (result.activeProjectId && !result.projects[result.activeProjectId]) {
-    delete result.activeProjectId;
   }
   return result;
 }
@@ -892,6 +932,24 @@ export function normalizePageContent(raw: unknown): PageContentFile {
 /** @deprecated Use normalizePageContent. */
 export const normalizePageConfig = normalizePageContent;
 
+export function packBaseProfileEntry(opts: {
+  profile: StyleProfile;
+  activeProjectId?: string;
+  version: number;
+}): BaseProfileEntry {
+  return {
+    version: opts.version,
+    name: opts.profile.name,
+    ...(opts.activeProjectId ? { activeProjectId: opts.activeProjectId } : {}),
+    sProfileIds: [...opts.profile.sProfileIds],
+    ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
+    ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
+    ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
+    ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
+  };
+}
+
+/** Styles + nicks for one profile inside a project. */
 export function packProfileEntry(opts: {
   profile: StyleProfile;
   style: ProfileStyle;
@@ -902,12 +960,6 @@ export function packProfileEntry(opts: {
     opts.pageLayouts && Object.keys(opts.pageLayouts).length > 0 ? opts.pageLayouts : undefined;
   return {
     version: opts.version,
-    name: opts.profile.name,
-    sProfileIds: [...opts.profile.sProfileIds],
-    ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
-    ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
-    ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
-    ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
     ...(opts.profile.githubNick ? { githubNick: opts.profile.githubNick } : {}),
     ...(opts.profile.gitlabNick ? { gitlabNick: opts.profile.gitlabNick } : {}),
     appearance: opts.style.appearance,
@@ -916,7 +968,10 @@ export function packProfileEntry(opts: {
   };
 }
 
-export function unpackProfilesFromProject(project: ProjectEntry): {
+export function unpackProfilesFromBase(
+  base: BaseConfigFile,
+  project?: ProjectEntry,
+): {
   profiles: StyleProfile[];
   styles: Record<string, ProfileStyle>;
   pageLayouts: Record<string, PageLayoutPrefs>;
@@ -924,7 +979,7 @@ export function unpackProfilesFromProject(project: ProjectEntry): {
   const profiles: StyleProfile[] = [];
   const styles: Record<string, ProfileStyle> = {};
   const pageLayouts: Record<string, PageLayoutPrefs> = {};
-  const ids = Object.keys(project.profiles).sort((a, b) => {
+  const ids = Object.keys(base.profiles).sort((a, b) => {
     if (a === GENERAL_PROFILE_ID) {
       return -1;
     }
@@ -934,27 +989,28 @@ export function unpackProfilesFromProject(project: ProjectEntry): {
     return a.localeCompare(b);
   });
   for (const id of ids) {
-    const entry = project.profiles[id];
-    if (!entry) {
+    const root = base.profiles[id];
+    if (!root) {
       continue;
     }
+    const data = project?.profiles[id];
     profiles.push({
       id,
-      name: entry.name,
-      sProfileIds: [...entry.sProfileIds],
-      ...(entry.reviewSkillPath ? { reviewSkillPath: entry.reviewSkillPath } : {}),
-      ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
-      ...(entry.reviewModel ? { reviewModel: entry.reviewModel } : {}),
-      ...(entry.reviewFixModel ? { reviewFixModel: entry.reviewFixModel } : {}),
-      ...(entry.githubNick ? { githubNick: entry.githubNick } : {}),
-      ...(entry.gitlabNick ? { gitlabNick: entry.gitlabNick } : {}),
+      name: root.name,
+      sProfileIds: [...root.sProfileIds],
+      ...(root.reviewSkillPath ? { reviewSkillPath: root.reviewSkillPath } : {}),
+      ...(root.reviewDirPath ? { reviewDirPath: root.reviewDirPath } : {}),
+      ...(root.reviewModel ? { reviewModel: root.reviewModel } : {}),
+      ...(root.reviewFixModel ? { reviewFixModel: root.reviewFixModel } : {}),
+      ...(data?.githubNick ? { githubNick: data.githubNick } : {}),
+      ...(data?.gitlabNick ? { gitlabNick: data.gitlabNick } : {}),
     });
     styles[id] = {
-      appearance: entry.appearance,
-      open: entry.open,
+      appearance: data?.appearance ?? { ...DEFAULT_APPEARANCE_LOCAL },
+      open: data?.open ?? emptyPanelOpenLocal(),
     };
-    if (entry.pageLayouts) {
-      for (const [pageId, layout] of Object.entries(entry.pageLayouts)) {
+    if (data?.pageLayouts) {
+      for (const [pageId, layout] of Object.entries(data.pageLayouts)) {
         pageLayouts[pageId] = layout;
       }
     }
@@ -973,6 +1029,32 @@ export function unpackProfilesFromProject(project: ProjectEntry): {
   return { profiles, styles, pageLayouts };
 }
 
+/** @deprecated Prefer unpackProfilesFromBase. */
+export function unpackProfilesFromProject(project: ProjectEntry): {
+  profiles: StyleProfile[];
+  styles: Record<string, ProfileStyle>;
+  pageLayouts: Record<string, PageLayoutPrefs>;
+} {
+  return unpackProfilesFromBase(
+    {
+      version: 1,
+      channelId: '',
+      profiles: Object.fromEntries(
+        Object.keys(project.profiles).map((id) => [
+          id,
+          {
+            version: 1,
+            name: id === GENERAL_PROFILE_ID ? GENERAL_PROFILE_NAME : id,
+            sProfileIds: [] as string[],
+          },
+        ]),
+      ),
+      projects: {},
+    },
+    project,
+  );
+}
+
 export function assembleSplitWorkspace(
   base: BaseConfigFile,
   pageFiles: Record<string, PageContentFile>,
@@ -981,7 +1063,9 @@ export function assembleSplitWorkspace(
   const normalized = normalizeBaseConfig(base);
   const activeId =
     (projectId && normalized.projects[projectId] ? projectId : undefined) ||
-    normalized.activeProjectId ||
+    normalized.profiles[GENERAL_PROFILE_ID]?.activeProjectId ||
+    Object.values(normalized.profiles).find((p) => p.activeProjectId && normalized.projects[p.activeProjectId])
+      ?.activeProjectId ||
     Object.keys(normalized.projects)[0];
   const project = activeId ? normalized.projects[activeId] : undefined;
   const pages: Record<string, PageDef> = {};
@@ -996,19 +1080,12 @@ export function assembleSplitWorkspace(
   const links: Record<string, LinkDef> = {};
   const pageCloud: Record<string, CloudStamp> = {};
 
-  let profiles: StyleProfile[] = [
-    { id: GENERAL_PROFILE_ID, name: GENERAL_PROFILE_NAME, sProfileIds: [] },
-  ];
-  let styles: Record<string, ProfileStyle> = {
-    [GENERAL_PROFILE_ID]: { appearance: { ...DEFAULT_APPEARANCE_LOCAL }, open: emptyPanelOpenLocal() },
-  };
-  let pageLayouts: Record<string, PageLayoutPrefs> = {};
+  const unpacked = unpackProfilesFromBase(normalized, project);
+  let profiles: StyleProfile[] = unpacked.profiles;
+  let styles: Record<string, ProfileStyle> = unpacked.styles;
+  let pageLayouts: Record<string, PageLayoutPrefs> = unpacked.pageLayouts;
 
   if (project) {
-    const unpacked = unpackProfilesFromProject(project);
-    profiles = unpacked.profiles;
-    styles = unpacked.styles;
-    pageLayouts = unpacked.pageLayouts;
 
     const orderedIds = Object.keys(project.pages).sort(
       (a, b) => project.pages[a].order - project.pages[b].order || a.localeCompare(b),
@@ -1113,6 +1190,28 @@ export function assembleSplitWorkspace(
 
 export function stringifyBaseConfig(base: BaseConfigFile): string {
   const normalized = normalizeBaseConfig(base);
+  const rootProfiles: Record<string, BaseProfileEntry> = {};
+  for (const id of Object.keys(normalized.profiles).sort((a, b) => {
+    if (a === GENERAL_PROFILE_ID) {
+      return -1;
+    }
+    if (b === GENERAL_PROFILE_ID) {
+      return 1;
+    }
+    return a.localeCompare(b);
+  })) {
+    const profile = normalized.profiles[id];
+    rootProfiles[id] = {
+      version: profile.version,
+      name: profile.name,
+      ...(profile.activeProjectId ? { activeProjectId: profile.activeProjectId } : {}),
+      sProfileIds: [...profile.sProfileIds],
+      ...(profile.reviewSkillPath ? { reviewSkillPath: profile.reviewSkillPath } : {}),
+      ...(profile.reviewDirPath ? { reviewDirPath: profile.reviewDirPath } : {}),
+      ...(profile.reviewModel ? { reviewModel: profile.reviewModel } : {}),
+      ...(profile.reviewFixModel ? { reviewFixModel: profile.reviewFixModel } : {}),
+    };
+  }
   const projects: Record<string, ProjectEntry> = {};
   for (const id of Object.keys(normalized.projects).sort()) {
     const project = normalized.projects[id];
@@ -1134,11 +1233,13 @@ export function stringifyBaseConfig(base: BaseConfigFile): string {
     )) {
       pages[pageId] = project.pages[pageId];
     }
+    const repo = packProjectRepo(project.repo);
     projects[id] = {
       version: project.version,
       name: project.name,
       channels: packProjectChannels(project.channels),
       ...(project.lock ? { lock: project.lock } : {}),
+      ...(repo ? { repo } : {}),
       profiles,
       pages,
     };
@@ -1146,11 +1247,9 @@ export function stringifyBaseConfig(base: BaseConfigFile): string {
   const payload: BaseConfigFile = {
     version: 1,
     channelId: normalized.channelId,
+    profiles: rootProfiles,
     projects,
   };
-  if (normalized.activeProjectId) {
-    payload.activeProjectId = normalized.activeProjectId;
-  }
   if (normalized.cloud) {
     payload.cloud = normalized.cloud;
   }

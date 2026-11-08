@@ -48,6 +48,8 @@ type IncomingMessage =
       channelLinks?: string;
       channelReview?: string;
       discordToken?: string;
+      projectRepoUrl?: string;
+      projectRepoProvider?: 'github' | 'gitlab';
     }
   | {
       type: 'profile';
@@ -310,6 +312,8 @@ export class SettingsPanel implements vscode.Disposable {
     channelLinks?: string;
     channelReview?: string;
     discordToken?: string;
+    projectRepoUrl?: string;
+    projectRepoProvider?: 'github' | 'gitlab';
   }): Promise<void> {
     const values = [
       message.channelProfile,
@@ -348,6 +352,12 @@ export class SettingsPanel implements vscode.Disposable {
       links: message.channelLinks ?? '',
       review: message.channelReview ?? '',
     });
+    const repoUrl = (message.projectRepoUrl ?? '').trim();
+    const provider =
+      message.projectRepoProvider === 'gitlab' || message.projectRepoProvider === 'github'
+        ? message.projectRepoProvider
+        : undefined;
+    await this.store.setProjectRepo(repoUrl && provider ? { provider, repoUrl } : undefined);
     await this.postState();
   }
 
@@ -405,6 +415,7 @@ export class SettingsPanel implements vscode.Disposable {
         links: channels.links || '',
         review: channels.review || '',
       },
+      projectRepo: this.store.projectRepo() ?? null,
       hasDiscord: secrets.hasDiscord,
       locale,
       i18n: stringsFor(locale),
@@ -1018,6 +1029,18 @@ export class SettingsPanel implements vscode.Disposable {
         <label for="channelReview" data-i18n="labelChannelReview">Review channel</label>
         <input id="channelReview" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="channelIdPlaceholder" inputmode="numeric">
       </div>
+      <p class="note" data-i18n="noteProjectRepo"></p>
+      <div class="row text-row">
+        <label for="projectRepoUrl" data-i18n="labelProjectRepo">Project repository</label>
+        <input id="projectRepoUrl" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="projectRepoOptional">
+      </div>
+      <div class="row text-row">
+        <label for="projectRepoProvider" data-i18n="reviewFieldProvider">Provider</label>
+        <select id="projectRepoProvider">
+          <option value="github">GitHub</option>
+          <option value="gitlab">GitLab</option>
+        </select>
+      </div>
       <div class="row text-row" id="discord-token-row">
         <label for="discordToken" data-i18n="reviewFieldDiscordToken">Discord bot token</label>
         <input id="discordToken" type="password" spellcheck="false" autocomplete="new-password">
@@ -1385,13 +1408,22 @@ export class SettingsPanel implements vscode.Disposable {
       return i18n[key] || key;
     }
 
-    function applyCatalogChannels(channels, hasDiscord) {
+    function applyCatalogChannels(channels, hasDiscord, projectRepo) {
       const next = channels && typeof channels === 'object' ? channels : {};
       if (channelProfile instanceof HTMLInputElement) channelProfile.value = next.profile || '';
       if (channelExplorer instanceof HTMLInputElement) channelExplorer.value = next.explorer || '';
       if (channelNotes instanceof HTMLInputElement) channelNotes.value = next.notes || '';
       if (channelLinks instanceof HTMLInputElement) channelLinks.value = next.links || '';
       if (channelReview instanceof HTMLInputElement) channelReview.value = next.review || '';
+      const repo = projectRepo && typeof projectRepo === 'object' ? projectRepo : null;
+      const projectRepoUrl = document.getElementById('projectRepoUrl');
+      const projectRepoProvider = document.getElementById('projectRepoProvider');
+      if (projectRepoUrl instanceof HTMLInputElement) {
+        projectRepoUrl.value = repo && typeof repo.repoUrl === 'string' ? repo.repoUrl : '';
+      }
+      if (projectRepoProvider instanceof HTMLSelectElement) {
+        projectRepoProvider.value = repo && repo.provider === 'gitlab' ? 'gitlab' : 'github';
+      }
       const saved = hasDiscord === true;
       if (discordTokenRow) discordTokenRow.hidden = saved;
       if (discordTokenSaved) {
@@ -1407,6 +1439,8 @@ export class SettingsPanel implements vscode.Disposable {
 
     function emitCatalogChannels() {
       if (suppress) return;
+      const projectRepoUrl = document.getElementById('projectRepoUrl');
+      const projectRepoProvider = document.getElementById('projectRepoProvider');
       vscode.postMessage({
         type: 'setCatalogChannels',
         channelProfile: channelProfile instanceof HTMLInputElement ? channelProfile.value : '',
@@ -1415,6 +1449,11 @@ export class SettingsPanel implements vscode.Disposable {
         channelLinks: channelLinks instanceof HTMLInputElement ? channelLinks.value : '',
         channelReview: channelReview instanceof HTMLInputElement ? channelReview.value : '',
         discordToken: discordToken instanceof HTMLInputElement ? discordToken.value : undefined,
+        projectRepoUrl: projectRepoUrl instanceof HTMLInputElement ? projectRepoUrl.value : '',
+        projectRepoProvider:
+          projectRepoProvider instanceof HTMLSelectElement && projectRepoProvider.value === 'gitlab'
+            ? 'gitlab'
+            : 'github',
       });
     }
 
@@ -1691,6 +1730,8 @@ export class SettingsPanel implements vscode.Disposable {
       channelLinks,
       channelReview,
       discordToken,
+      document.getElementById('projectRepoUrl'),
+      document.getElementById('projectRepoProvider'),
     ]) {
       input?.addEventListener('change', () => emitCatalogChannels());
     }
@@ -1865,7 +1906,11 @@ export class SettingsPanel implements vscode.Disposable {
           event.data.reviewFixModel,
         );
         applyGitBindings(event.data.activeProfileId, event.data.gitBindings);
-        applyCatalogChannels(event.data.catalogChannels, event.data.hasDiscord);
+        applyCatalogChannels(
+          event.data.catalogChannels,
+          event.data.hasDiscord,
+          event.data.projectRepo,
+        );
         renderProfiles(event.data.profiles, event.data.activeProfileId, event.data.activeProfileName);
       }
       if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {
