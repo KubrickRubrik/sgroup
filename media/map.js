@@ -74,6 +74,7 @@
 
   /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
+  /** Create-menu «Создать ревью» uses the same scope/depth flyout as the MR chip. */
   const MENU_CLOSE_MS = 300;
   /** Pointer travel from the click before an unentered context menu dismisses. */
   const CONTEXT_AWAY_PX = 24;
@@ -841,11 +842,16 @@
    *     author?: string,
    *     timestamp: string,
    *     isMr: boolean,
+   *     isReviewRoot?: boolean,
    *     webUrl?: string,
    *     title?: string,
    *     draft?: boolean,
    *     color?: string,
+   *     pillLabel?: string,
    *     status?: 'open' | 'closed',
+   *     reviewStatus?: 'inProgress' | 'done',
+   *     hasFile?: boolean,
+   *     filename?: string,
    *     locked?: boolean,
    *     threadId?: string,
    *     hasThread?: boolean,
@@ -857,6 +863,7 @@
    *       isReview: boolean,
    *       isPill?: boolean,
    *       pillLabel?: string,
+   *       status?: 'inProgress' | 'done',
    *       hasFile?: boolean,
    *       filename?: string,
    *       contentMissing?: boolean
@@ -869,6 +876,7 @@
    *   canLoadNewer?: boolean,
    *   focusMessageId?: string,
    *   pendingMr?: { title: string, draft?: boolean },
+   *   pendingRoot?: { branch: string },
    *   pendingReviewId?: string,
    *   skeletonSeq?: number
    * }} ReviewState
@@ -890,6 +898,12 @@
    * @type {{ pageId: string, messageId: string } | null}
    */
   let localPendingReview = null;
+  /**
+   * Root review chip drawn before the host snapshot. Cleared once that snapshot
+   * carries the same branch.
+   * @type {{ pageId: string, branch: string } | null}
+   */
+  let localPendingRoot = null;
   /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
   const reviewSkeletonSeq = new Map();
   /** Last placeholder scrolled into view, so later paints do not jump. */
@@ -967,6 +981,7 @@
       error: '',
       skeletonSeq: incoming.skeletonSeq,
       pendingMr: incoming.pendingMr || kept.pendingMr,
+      pendingRoot: incoming.pendingRoot || kept.pendingRoot,
       pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
     };
   }
@@ -999,6 +1014,12 @@
         if (localPendingReview && localPendingReview.pageId === reviewState.pageId) {
           if (reviewState.pendingReviewId === localPendingReview.messageId) {
             localPendingReview = null;
+          }
+        }
+        if (localPendingRoot && localPendingRoot.pageId === reviewState.pageId) {
+          // Host skeleton (any branch) replaces the optimistic «…» row.
+          if (reviewState.pendingRoot) {
+            localPendingRoot = null;
           }
         }
         if (reviewState.pendingReviewId) {
@@ -1925,6 +1946,7 @@
 
   function closeToolbarCreateMenu() {
     cancelMenuClose('toolbar-create');
+    clearReviewDepthMenu();
     if (toolbarCreateMenu) {
       toolbarCreateMenu.hidden = true;
     }
@@ -1938,21 +1960,53 @@
     if (!toolbarCreateMenu || !toolbarCreateWrap || !canUseCreateViewToolbar()) {
       return;
     }
-    openMenuState = { kind: 'toolbar-create', viewExpanded: false };
+    openMenuState = {
+      kind: 'toolbar-create',
+      viewExpanded: false,
+      reviewExpanded: false,
+      reviewScope: '',
+    };
     fillCreateMenu(toolbarCreateMenu);
     positionToolbarMenu(toolbarCreateMenu, toolbarCreateWrap);
     toolbarCreate?.setAttribute('aria-expanded', 'true');
+  }
+
+  function rerenderCreateMenu() {
+    if (!openMenuState || openMenuState.kind !== 'toolbar-create' || !toolbarCreateMenu) {
+      return;
+    }
+    fillCreateMenu(toolbarCreateMenu);
+    cancelMenuClose('toolbar-create');
+    if (openMenuState.reviewExpanded && openMenuState.reviewScope) {
+      mountReviewDepthMenu(
+        openMenuState.reviewScope,
+        String(activePage()?.id || ''),
+        '',
+        true,
+      );
+    }
   }
 
   /** @param {HTMLElement} root */
   function fillCreateMenu(menuRoot) {
     const isMenu = menuRoot.classList.contains('syn3-menu');
     const target = isMenu ? ensureMenuChrome(menuRoot).scroller : menuRoot;
+    clearReviewDepthMenu();
     target.replaceChildren();
     if (activePage()?.kind === 'links') {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
     } else if (activePage()?.kind === 'review') {
       target.append(menuActionChoice(t('createMr'), { toolbar: 'createMr' }));
+      appendExpandableMenuBlock(
+        target,
+        t('createReview'),
+        !!openMenuState?.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+      );
     } else {
       target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
       target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
@@ -1964,7 +2018,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1982,6 +2036,9 @@
     }
     if (attrs.reviewDepth) {
       button.dataset.reviewDepth = attrs.reviewDepth;
+    }
+    if (attrs.reviewRoot) {
+      button.dataset.reviewRoot = '1';
     }
     if (attrs.reviewEdit) {
       button.dataset.reviewEdit = attrs.reviewEdit;
@@ -2232,13 +2289,20 @@
    * @param {'branch' | 'changes'} scope
    * @param {string} pageId
    * @param {string} messageId
+   * @param {boolean} [asRoot]
    */
-  function mountReviewDepthMenu(scope, pageId, messageId) {
+  function mountReviewDepthMenu(scope, pageId, messageId, asRoot) {
     clearReviewDepthMenu();
-    const anchor = contextMenu.querySelector('[data-review-scope="' + scope + '"]');
+    const hostMenu =
+      openMenuState?.kind === 'toolbar-create' ? toolbarCreateMenu : contextMenu;
+    if (!(hostMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = hostMenu.querySelector('[data-review-scope="' + scope + '"]');
     if (!(anchor instanceof HTMLElement)) {
       return;
     }
+    const closeKind = openMenuState?.kind === 'toolbar-create' ? 'toolbar-create' : 'context';
     const fly = document.createElement('div');
     fly.className = 'syn3-menu syn3-menu-sub';
     fly.setAttribute('role', 'menu');
@@ -2252,24 +2316,29 @@
         menuActionChoice(t(key), {
           review: scope,
           reviewDepth: depth,
+          reviewRoot: !!asRoot,
           pageId,
           messageId,
         }),
       );
     }
     fly.addEventListener('mouseenter', () => {
-      cancelMenuClose('context');
+      cancelMenuClose(closeKind);
     });
     fly.addEventListener('mouseleave', () => {
-      scheduleMenuClose('context', () => closeContextMenu());
+      if (closeKind === 'toolbar-create') {
+        scheduleMenuClose('toolbar-create', () => closeToolbarCreateMenu());
+      } else {
+        scheduleMenuClose('context', () => closeContextMenu());
+      }
     });
     fly.addEventListener('click', (event) => {
-      handleSyn3MenuClick(event, 'context');
+      handleSyn3MenuClick(event, closeKind === 'toolbar-create' ? 'toolbar-create' : 'context');
     });
     document.body.append(fly);
     reviewDepthMenu = fly;
     const anchorRect = anchor.getBoundingClientRect();
-    const menuRect = contextMenu.getBoundingClientRect();
+    const menuRect = hostMenu.getBoundingClientRect();
     const flyWidth = fly.offsetWidth || 196;
     const flyHeight = fly.offsetHeight || 96;
     let top = anchorRect.top;
@@ -2399,6 +2468,109 @@
       updateMenuScrollbar(contextMenu);
       return;
     }
+    if (section === 'reviewRoot') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const status = chip?.reviewStatus || '';
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewMenu'),
+        !!openMenuState.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+      );
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewStatus'),
+        !!openMenuState.reviewStatusExpanded,
+        'toggleReviewStatus',
+        (nest) => {
+          appendReviewStatusChoice(
+            nest,
+            'inProgress',
+            t('reviewStatusProgress'),
+            status === 'inProgress',
+            pageId,
+            messageId,
+          );
+          appendReviewStatusChoice(
+            nest,
+            'done',
+            t('reviewStatusDone'),
+            status === 'done',
+            pageId,
+            messageId,
+          );
+        },
+      );
+      const counts = parsePillSeverityCounts(chip?.pillLabel);
+      if (counts) {
+        /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
+        const items = [
+          { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
+          { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
+          { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
+          {
+            scope: 'all',
+            label: t('neurofixAll'),
+            show: counts.H > 0 || counts.M > 0 || counts.S > 0,
+          },
+        ];
+        for (const item of items) {
+          if (!item.show) {
+            continue;
+          }
+          scroller.append(
+            menuActionChoice(item.label, {
+              neuroFix: item.scope,
+              pageId,
+              messageId,
+            }),
+          );
+        }
+      }
+      scroller.append(
+        menuActionChoice(t('menuChangeColor'), {
+          reviewEdit: 'color',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.locked ? 'reviewUnlock' : 'reviewLock'), {
+          reviewEdit: 'lock',
+          pageId,
+          messageId,
+        }),
+      );
+      if (chip?.locked) {
+        scroller.querySelectorAll('button').forEach((button) => {
+          if (button.dataset.reviewEdit === 'lock') {
+            return;
+          }
+          if (
+            button.dataset.menuAction === 'toggleReview' ||
+            button.dataset.menuAction === 'toggleReviewScope'
+          ) {
+            return;
+          }
+          button.disabled = true;
+        });
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
     if (section === 'reviewPill') {
       const pageId = String(ctx.reviewPageId || '');
       const messageId = String(ctx.reviewMessageId || '');
@@ -2442,7 +2614,10 @@
       const pageId = String(ctx.reviewPageId || '');
       const messageId = String(ctx.reviewMessageId || '');
       const reply = findReviewReply(messageId);
-      const counts = parsePillSeverityCounts(reply?.pillLabel);
+      const rootChip = (reviewState?.messages || []).find(
+        (item) => item.id === messageId && item.isReviewRoot,
+      );
+      const counts = parsePillSeverityCounts(reply?.pillLabel || rootChip?.pillLabel);
       if (counts) {
         /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
         const items = [
@@ -2817,17 +2992,30 @@
     }
 
     if (button.dataset.review) {
-      closeContextMenu();
-      const pageId = button.dataset.pageId || '';
+      const pageId = button.dataset.pageId || activePage()?.id || '';
       const messageId = button.dataset.messageId || '';
-      beginLocalReviewSkeleton(pageId, messageId);
-      vscode.postMessage({
-        type: 'reviewStart',
-        pageId,
-        messageId,
-        kind: button.dataset.review,
-        depth: button.dataset.reviewDepth || 'medium',
-      });
+      const kind = button.dataset.review;
+      const depth = button.dataset.reviewDepth || 'medium';
+      const asRoot = button.dataset.reviewRoot === '1' || !messageId;
+      closeContextMenu();
+      closeToolbarCreateMenu();
+      if (asRoot) {
+        vscode.postMessage({
+          type: 'reviewStartRoot',
+          pageId,
+          kind,
+          depth,
+        });
+      } else {
+        beginLocalReviewSkeleton(pageId, messageId);
+        vscode.postMessage({
+          type: 'reviewStart',
+          pageId,
+          messageId,
+          kind,
+          depth,
+        });
+      }
       return;
     }
 
@@ -2838,6 +3026,12 @@
           openMenuState.reviewScope = '';
         }
         rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
+        if (!openMenuState.reviewExpanded) {
+          openMenuState.reviewScope = '';
+        }
+        rerenderCreateMenu();
       }
       return;
     }
@@ -2867,6 +3061,11 @@
         openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
         openMenuState.reviewExpanded = true;
         rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        const scope = button.dataset.reviewScope || '';
+        openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
+        openMenuState.reviewExpanded = true;
+        rerenderCreateMenu();
       }
       return;
     }
@@ -3661,16 +3860,16 @@
     return [...groups, ...notes];
   }
 
-  /** MR chips and plain messages whose thread can fold. */
+  /** MR chips, root reviews, and plain messages whose thread can fold. */
   function reviewMessageCanFold(msg) {
     if (!msg) {
       return false;
     }
     const pageId = activePage()?.id || '';
-    if (msg.isMr && activePendingReviewId(pageId) === msg.id) {
+    if ((msg.isMr || msg.isReviewRoot) && activePendingReviewId(pageId) === msg.id) {
       return true;
     }
-    if (msg.isMr) {
+    if (msg.isMr || msg.isReviewRoot) {
       return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
     }
     return !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
@@ -5892,6 +6091,17 @@
     return '';
   }
 
+  /** @param {string} pageId */
+  function activePendingRoot(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingRoot && reviewState.pendingRoot.branch) {
+      return reviewState.pendingRoot;
+    }
+    if (localPendingRoot && localPendingRoot.pageId === pageId) {
+      return localPendingRoot;
+    }
+    return null;
+  }
+
   /**
    * @param {string} pageId
    * @param {string} title
@@ -5926,13 +6136,32 @@
     }
   }
 
-  /** @param {'mr' | 'review'} kind */
+  /**
+   * @param {string} pageId
+   * @param {string} branch
+   */
+  function beginLocalRootSkeleton(pageId, branch) {
+    if (!pageId) {
+      return;
+    }
+    localPendingRoot = {
+      pageId,
+      branch: branch || '…',
+    };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /** @param {'mr' | 'review' | 'root'} kind */
   function noteReviewSkeletonScroll(kind) {
     const pageId = activePage()?.id || '';
     const token =
       kind === 'review'
         ? 'review:' + activePendingReviewId(pageId)
-        : 'mr:' + (activePendingMr(pageId)?.title || '');
+        : kind === 'root'
+          ? 'root:' + (activePendingRoot(pageId)?.branch || '')
+          : 'mr:' + (activePendingMr(pageId)?.title || '');
     if (!token || token === reviewSkelShown) {
       return;
     }
@@ -5963,6 +6192,31 @@
     chipWrap.append(chip, side);
     const title = reviewSkeletonBar('180px', 80);
     title.classList.add('review-skel-title');
+    const head = el('div', 'review-mr-head');
+    head.append(chipWrap, title);
+    const body = el('div', 'review-body');
+    body.append(head);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {{ branch: string }} pending
+   * @param {boolean} leadingGap
+   */
+  function renderReviewRootSkeleton(pending, leadingGap) {
+    const row = el('div', 'review-node is-review-root is-skel' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewSkel = 'root';
+    row.style.setProperty('--link-color', '#8e4ec6');
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 20 }), ''),
+    );
+    const chip = el('div', 'review-chip is-review-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('132px', 40));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip);
+    const title = el('span', 'review-mr-title-text is-skel', pending.branch || '…');
     const head = el('div', 'review-mr-head');
     head.append(chipWrap, title);
     const body = el('div', 'review-body');
@@ -6058,7 +6312,15 @@
   }
 
   function dismissMissingReviewFile() {
-    if (!reviewFileView || findReviewReply(reviewFileView.messageId)) {
+    if (!reviewFileView) {
+      return;
+    }
+    const messageId = reviewFileView.messageId;
+    if (findReviewReply(messageId)) {
+      return;
+    }
+    const rootMsg = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (rootMsg && (rootMsg.isReviewRoot || rootMsg.hasFile)) {
       return;
     }
     reviewFileView = null;
@@ -6080,7 +6342,8 @@
       reviewCollapsed.delete(pendingReviewId);
     }
     const pendingMr = activePendingMr(pageId);
-    if (!pendingMr && !pendingReviewId) {
+    const pendingRoot = activePendingRoot(pageId);
+    if (!pendingMr && !pendingRoot && !pendingReviewId) {
       reviewSkelShown = '';
     }
     setCollapseButton();
@@ -6104,7 +6367,7 @@
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page review-page';
     clearDropHighlights();
-    if (edge || pendingMr || pendingReviewId) {
+    if (edge || pendingMr || pendingRoot || pendingReviewId) {
       root.setAttribute('aria-busy', 'true');
     } else {
       root.removeAttribute('aria-busy');
@@ -6141,14 +6404,20 @@
       return;
     }
     if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
-      if (!pendingMr) {
+      if (!pendingMr && !pendingRoot) {
         root.append(el('div', 'empty', t('reviewEmpty')));
         return;
       }
       const tree = el('div', 'review-tree');
-      tree.append(renderReviewMrSkeleton(pendingMr, false));
-      root.append(tree);
-      noteReviewSkeletonScroll('mr');
+      if (pendingMr) {
+        tree.append(renderReviewMrSkeleton(pendingMr, false));
+        root.append(tree);
+        noteReviewSkeletonScroll('mr');
+      } else if (pendingRoot) {
+        tree.append(renderReviewRootSkeleton(pendingRoot, false));
+        root.append(tree);
+        noteReviewSkeletonScroll('root');
+      }
       return;
     }
     if (reviewState.contentBlocked) {
@@ -6187,14 +6456,16 @@
     messages.forEach((msg, index) => {
       const next = messages[index + 1];
       const nextColor = next
-        ? next.color || (next.isMr ? '#8e4ec6' : '#6e6e6e')
-        : pendingMr
+        ? next.color || (next.isMr || next.isReviewRoot ? '#8e4ec6' : '#6e6e6e')
+        : pendingMr || pendingRoot
           ? '#8e4ec6'
           : '';
       tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
     });
     if (pendingMr) {
       tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
+    } else if (pendingRoot) {
+      tree.append(renderReviewRootSkeleton(pendingRoot, messages.length > 0));
     }
     root.append(tree);
     if (edge === 'newer') {
@@ -6224,8 +6495,8 @@
       if (skel instanceof HTMLElement) {
         skel.scrollIntoView({ block: 'nearest' });
       }
-    } else if (pendingReviewId || pendingMr) {
-      noteReviewSkeletonScroll(pendingReviewId ? 'review' : 'mr');
+    } else if (pendingReviewId || pendingMr || pendingRoot) {
+      noteReviewSkeletonScroll(pendingReviewId ? 'review' : pendingMr ? 'mr' : 'root');
     }
     syncReviewFileMark();
   }
@@ -6257,14 +6528,21 @@
         const pending = activePendingMr(pageId);
         return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
       })(),
+      (() => {
+        const pending = activePendingRoot(pageId);
+        return pending ? 'r:' + (pending.branch || '') : '';
+      })(),
     ];
     for (const msg of state.messages || []) {
       chunks.push(
         msg.id,
+        msg.isReviewRoot ? 'R' : '',
         msg.color || '',
         msg.title || '',
+        msg.pillLabel || '',
         msg.draft ? 'd' : '',
         msg.status || '',
+        msg.reviewStatus || '',
         msg.locked ? 'L' : '',
         msg.timestamp || '',
         msg.hasThread ? 't' : '',
@@ -6356,6 +6634,12 @@
       }
       node.classList.toggle('is-file-open', !!openId && node.dataset.reviewReplyId === openId);
     });
+    root.querySelectorAll('.review-node.is-review-root[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewId === openId);
+    });
   }
 
   /** Stamp block above content (10px * 1.2) + body gap — must match .review-stamp / .review-body. */
@@ -6381,18 +6665,20 @@
    * @param {string} nextColor
    */
   function renderReviewNode(msg, pageId, leadingGap, nextColor) {
-    const color = msg.color || (msg.isMr ? '#8e4ec6' : '#6e6e6e');
-    const showReviewSkeleton = !!msg.isMr && activePendingReviewId(pageId) === msg.id;
+    const color = msg.color || (msg.isMr || msg.isReviewRoot ? '#8e4ec6' : '#6e6e6e');
+    const showReviewSkeleton =
+      !!(msg.isMr || msg.isReviewRoot) && activePendingReviewId(pageId) === msg.id;
     const canFold = reviewMessageCanFold(msg);
     const mrCanFold = !!msg.isMr && canFold;
-    const plainCanFold = !msg.isMr && canFold;
+    const rootCanFold = !!msg.isReviewRoot && canFold;
+    const plainCanFold = !msg.isMr && !msg.isReviewRoot && canFold;
     const collapsed = canFold && reviewCollapsed.has(msg.id);
-    const plainOpen = !msg.isMr && reviewPlainExpanded.has(msg.id);
+    const plainOpen = !msg.isMr && !msg.isReviewRoot && reviewPlainExpanded.has(msg.id);
     const stamp = formatReviewStamp(msg.timestamp);
     const row = el(
       'div',
       'review-node' +
-        (msg.isMr ? ' is-mr' : ' is-plain') +
+        (msg.isMr ? ' is-mr' : msg.isReviewRoot ? ' is-review-root' : ' is-plain') +
         (leadingGap ? ' has-gap' : '') +
         (collapsed ? ' is-collapsed' : '') +
         (plainOpen ? ' is-plain-open' : ''),
@@ -6404,7 +6690,7 @@
         reviewElbowMid({
           leadingGap,
           hasStamp: !!stamp,
-          contentHalf: msg.isMr ? 20 : 12,
+          contentHalf: msg.isMr || msg.isReviewRoot ? 20 : 12,
         }),
         nextColor,
       ),
@@ -6490,6 +6776,84 @@
           vscode.postMessage({ type: 'openExternal', url: msg.webUrl });
         });
       }
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap);
+      if (msg.locked) {
+        head.append(reviewLockMark(msg.id, pageId));
+      }
+      head.append(title);
+      body.append(head);
+
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, true, showReviewSkeleton));
+      }
+    } else if (msg.isReviewRoot) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-review-pill');
+      chip.type = 'button';
+      chip.append(reviewStatusIcon(msg.reviewStatus));
+      chip.append(el('span', 'review-chip-label', msg.pillLabel || t('reviewFileTitle')));
+      if (rootCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewFileView(pageId, msg);
+      });
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(chip);
+      const side = el('button', 'review-side review-neurofix-btn');
+      side.type = 'button';
+      side.title = t('neurofix');
+      side.setAttribute('aria-label', t('neurofix'));
+      side.append(reviewSparkleIcon());
+      side.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openNeuroFixMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(side);
+
+      const titleText = msg.title || t('reviewEmptyMessage');
+      const title = el(
+        'button',
+        'review-mr-title-text' + (reviewTitleExpanded.has(msg.id) ? ' is-expanded' : ''),
+        titleText,
+      );
+      title.type = 'button';
+      title.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
+        if (reviewTitleExpanded.has(msg.id)) {
+          reviewTitleExpanded.delete(msg.id);
+        } else {
+          reviewTitleExpanded.add(msg.id);
+        }
+        paintReviewPage();
+      });
+      title.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
       const head = el('div', 'review-mr-head');
       head.append(chipWrap);
       if (msg.locked) {
@@ -6803,6 +7167,20 @@
   function openReviewContextMenu(x, y, pageId, messageId) {
     openContextMenu(
       { webviewSection: 'reviewMr', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewRootContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewRoot', reviewPageId: pageId, reviewMessageId: messageId },
       x,
       y,
     );

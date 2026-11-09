@@ -725,6 +725,10 @@ export function registerCommands(
     fn: (...args: Args) => unknown | Promise<unknown>,
   ): (...args: Args) => Promise<unknown> {
     return async (...args: Args) => {
+      if (!store.ready) {
+        void vscode.window.showInformationMessage('Syn3: сначала выполните команду «Syn3: start».');
+        return;
+      }
       if (await map.refuseIfDiscordGate()) {
         return;
       }

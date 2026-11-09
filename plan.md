@@ -46,45 +46,4 @@ LINKS_SYN3
 тест создания и переключения групп.
 переделать настройки
 
-
-{
-  version:1,
-  profiles:[
-    {
-      version:1, 
-      id: idProfileValue,
-      title: "Мой профиль",
-      idActiveProject: idProjectValue1,
-    },
-    {
-      version:1, 
-      id: idProfileValue2,
-      profile: "Другой профиль 2",
-      idActiveProject: idProjectValue2,
-    },
-  ],
-  project: [
-    {
-      version:1, 
-      id: idProjectValue1,
-      title: "Мой проект, 
-      dChannels: {
-        explorer: idExplorerDiscordChannel,
-        note: idNotesDiscordChannel,
-        link: idLinkDiscordChannel,
-        review: idLinkDiscordChannel,
-      },
-    },
-    {
-      version:1, 
-      id: idProjectValue1,
-      title: "Мой проект, 
-      dChannels: {
-        explorer: idExplorerDiscordChannel,
-        note: idNotesDiscordChannel,
-        link: idLinkDiscordChannel,
-        review: idLinkDiscordChannel,
-      },
-    },
-  ],
-}
+1. когда создается страница - нужно отправлять сообщение и в канал страницы и обновленный конфиг в base канал.

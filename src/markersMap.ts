@@ -419,6 +419,12 @@ type IncomingMessage =
       kind: ReviewKind;
       depth?: ReviewDepth;
     }
+  | {
+      type: 'reviewStartRoot';
+      pageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFileTab'; pageId: string; messageId: string }
@@ -1026,6 +1032,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         this.explorerView = undefined;
       }
     });
+  }
+
+  /** Close map columns after `.syn3` is removed. Does not write config. */
+  async releaseSurfaces(): Promise<void> {
+    this.surfacesBootstrapped = false;
+    this.clearSyncFetchTimers();
+    for (const timer of this.reviewRefreshTimers.values()) {
+      clearInterval(timer);
+    }
+    this.reviewRefreshTimers.clear();
+    try {
+      if (this.leftPanel) {
+        await this.closeColumn('left');
+      }
+      if (this.rightPanel) {
+        await this.closeColumn('right');
+      }
+    } catch {
+      // The column is already gone.
+    }
+    await this.hideBottomTab();
   }
 
   /**
@@ -2623,6 +2650,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ),
       );
       await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewStartRoot') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const branch = await this.review.peekCurrentBranch();
+      if (!branch.ok) {
+        void vscode.window.showErrorMessage(`Syn3: ${branch.message}`);
+        return;
+      }
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginRootSkeleton(message.pageId, branch.value),
+        () => this.review.endRootSkeleton(message.pageId, branch.value),
+        () => this.review.startRootReview(message.pageId, kind, message.depth),
+      );
+      await this.handleReviewRootFileResult(webview, message.pageId, branch.value, result);
       return;
     }
     if (message.type === 'reviewRetryFile') {
@@ -4900,6 +4947,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return { ok: true };
   }
 
+  /** Page-channel hello and base.json are different channels, so post base right away. */
+  private async pushBaseAfterPageHello(): Promise<void> {
+    await this.withBaseConfigBusy(async () => {
+      const result = await this.store.pushProfileConfig();
+      if (!result.ok && result.message && result.message !== 'Nothing to push') {
+        this.showBaseConfigResult(result);
+      }
+    });
+  }
+
   private async savePageDiscordAndChannel(
     kind: PageKind,
     channelId: string | undefined,
@@ -5002,6 +5059,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     await this.savePageDiscordAndChannel(kind, channelId, message.discordToken);
+    await this.pushBaseAfterPageHello();
     await webview.postMessage({ type: 'pageSettingsSaved' });
     this.activePageByWebview.set(webview, id);
     this.persistSurfacePage(webview, id);
@@ -5069,11 +5127,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail(secrets.message);
       return;
     }
-    const hello = await this.postPageChannelHello('review', message.channelId.trim());
+    const channelId = message.channelId.trim();
+    const hello = await this.postPageChannelHello('review', channelId);
     if (!hello.ok) {
       await fail(hello.message);
       return;
     }
+    // Project review channel is what settings and later reloads read.
+    // Page access alone is dropped when that project channel is still empty.
+    await this.store.setCatalogChannels({ review: channelId });
     await this.store.setProjectRepo({ provider, repoUrl });
     const id = await this.store.createPage(name, 'review', message.description);
     if (!id) {
@@ -5082,10 +5144,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     await this.review.savePageAccess(id, {
       provider,
-      channelId: message.channelId.trim(),
+      channelId,
       repoUrl,
     });
+    this.review.bindReviewChannel(channelId);
     await this.store.touchPageConfig(id);
+    await this.pushBaseAfterPageHello();
     this.activePageByWebview.set(webview, id);
     this.persistSurfacePage(webview, id);
     await webview.postMessage({ type: 'reviewCreatePageDone' });
@@ -5192,12 +5256,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       );
       return;
     }
+    await this.store.setCatalogChannels({ review: channelId });
     await this.store.setProjectRepo({ provider, repoUrl });
     await this.review.savePageAccess(message.pageId, {
       provider,
       channelId,
       repoUrl,
     });
+    this.review.bindReviewChannel(channelId);
     await this.store.touchPageConfig(message.pageId);
     if (previous?.channelId !== channelId) {
       this.review.dropWindow(message.pageId);
@@ -5219,6 +5285,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private async showReviewPage(webview: vscode.Webview, pageId: string): Promise<void> {
     const access = await this.review.getAccess(pageId);
     const projectChannel = (this.store.catalogChannels().review || '').trim();
+    this.review.bindReviewChannel(projectChannel);
     const channel = (access?.channelId || projectChannel).trim();
     if (!channel) {
       this.review.dropWindow(pageId);
@@ -5386,6 +5453,40 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           () => this.review.retryReviewFile(pageId, messageId),
         );
         await this.handleReviewFileResult(webview, pageId, messageId, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
+  }
+
+  private async handleReviewRootFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    branch: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+        const retry = await this.withReviewPlaceholder(
+          webview,
+          () => this.review.beginRootSkeleton(pageId, branch),
+          () => this.review.endRootSkeleton(pageId, branch),
+          () => this.review.retryRootReviewFile(pageId),
+        );
+        await this.handleReviewRootFileResult(webview, pageId, branch, retry);
       }
       return;
     }

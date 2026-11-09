@@ -102,21 +102,35 @@ function buildPrompt(opts: {
   depth: ReviewDepth;
   reviewNumber: number;
   title: string;
-  webUrl: string;
+  webUrl?: string;
+  branch?: string;
 }): string {
   const kindLabel = opts.kind === 'branch' ? 'ревью ветки' : 'ревью изменений';
   const command = reviewDepthCommand(opts.depth);
-  return [
+  const lines = [
     `Follow the skill at: ${opts.skillPath}`,
     command,
-    `Task: ${kindLabel} for merge request.`,
-    `Review number: ${opts.reviewNumber}`,
-    `MR title: ${opts.title}`,
-    `MR URL: ${opts.webUrl}`,
+  ];
+  if (opts.webUrl) {
+    lines.push(
+      `Task: ${kindLabel} for merge request.`,
+      `Review number: ${opts.reviewNumber}`,
+      `MR title: ${opts.title}`,
+      `MR URL: ${opts.webUrl}`,
+    );
+  } else {
+    lines.push(
+      `Task: ${kindLabel}.`,
+      `Review number: ${opts.reviewNumber}`,
+      `Branch: ${opts.branch || opts.title}`,
+    );
+  }
+  lines.push(
     'Answer in ask mode. Put the severity line first in the form exactly:',
     'H:N | M:N | S:N',
     'Then write the review body.',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 type AgentStream = {
@@ -277,7 +291,8 @@ export async function runReviewSkill(opts: {
   depth: ReviewDepth;
   reviewNumber: number;
   title: string;
-  webUrl: string;
+  webUrl?: string;
+  branch?: string;
 }): Promise<ReviewAgentResult> {
   const resolved = await resolveAgentBin();
   if (!resolved) {

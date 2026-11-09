@@ -3811,7 +3811,8 @@ button.review-neurofix-btn:hover {
   }
 }
 
-.review-reply-node.is-file-open > .review-body .review-chip {
+.review-reply-node.is-file-open > .review-body .review-chip,
+.review-node.is-review-root.is-file-open > .review-body .review-chip {
   outline: 1px solid var(--vscode-focusBorder, #3794ff);
 }
 

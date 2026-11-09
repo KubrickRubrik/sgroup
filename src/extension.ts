@@ -55,7 +55,21 @@ const COMMAND_IDS = [
   'syn3.openFull',
   'syn3.copyFromEditor',
   'syn3.vsix',
+  'syn3.start',
 ];
+
+const STARTED_CONTEXT = 'syn3.started';
+const START_HINT = 'Syn3: сначала выполните команду «Syn3: start».';
+
+/** True when this workspace already keeps Syn3 files. An empty or missing `.syn3` does not count. */
+async function workspaceHasSyn3(root: vscode.Uri): Promise<boolean> {
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.joinPath(root, '.syn3'));
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 const VSIX_RELOAD_MARKER = 'version/.reload-window';
 
@@ -88,11 +102,48 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void map.showProfileSettings(profileId);
   });
 
+  function requireStarted(): boolean {
+    if (store.ready) {
+      return true;
+    }
+    void vscode.window.showInformationMessage(START_HINT);
+    return false;
+  }
+
   async function gated(run: () => void | PromiseLike<void>): Promise<void> {
+    if (!requireStarted()) {
+      return;
+    }
     if (await map.refuseIfDiscordGate()) {
       return;
     }
     await run();
+  }
+
+  let enableTask: Promise<void> | undefined;
+  async function enableSyn3(create: boolean): Promise<void> {
+    if (!enableTask) {
+      enableTask = (async () => {
+        await map.syncGroupsLayoutContext();
+        await map.syncTopCollapsedContext(false);
+        await store.init({ create });
+        if (!store.ready) {
+          await vscode.commands.executeCommand('setContext', STARTED_CONTEXT, false);
+          return;
+        }
+        map.armSyncFetchTimers();
+        await map.bootstrapSurfaces();
+        if (!store.ready) {
+          return;
+        }
+        await syncExplorerLabelColors(store.appearance.labelSaturation);
+        await vscode.commands.executeCommand('setContext', STARTED_CONTEXT, true);
+      })().catch((error: unknown) => {
+        enableTask = undefined;
+        throw error;
+      });
+    }
+    return enableTask;
   }
 
   context.subscriptions.push(
@@ -122,6 +173,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.commands.registerCommand('syn3.map.openBottom', async () => {
+      if (!requireStarted()) {
+        return;
+      }
       if (await map.refuseIfDiscordGate()) {
         return;
       }
@@ -142,6 +196,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('syn3.map.toggleRight', () => gated(() => map.toggleRight())),
     ...registerCommands(store, tree, map),
     vscode.commands.registerCommand('syn3.openMap', async () => {
+      if (!requireStarted()) {
+        return;
+      }
       await vscode.commands.executeCommand('workbench.view.explorer');
       try {
         await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
@@ -165,6 +222,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       gated(() => map.setTopGroups(false)),
     ),
     vscode.commands.registerCommand('syn3.map.move', async () => {
+      if (!requireStarted()) {
+        return;
+      }
       if (await map.refuseIfDiscordGate()) {
         return;
       }
@@ -172,6 +232,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.commands.executeCommand('workbench.action.moveFocusedView');
     }),
     vscode.workspace.onDidRenameFiles(async (e) => {
+      if (!store.ready) {
+        return;
+      }
       let changed = false;
       for (const { oldUri, newUri } of e.files) {
         const oldRel = store.toRelative(oldUri);
@@ -195,21 +258,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       term.sendText('sh ./sh_vsix.sh');
     }),
     store.onDidChange(() => {
+      if (!store.ready) {
+        return;
+      }
       void syncExplorerLabelColors(store.appearance.labelSaturation);
     }),
     vscode.window.onDidChangeActiveColorTheme(() => {
+      if (!store.ready) {
+        return;
+      }
       void syncExplorerLabelColors(store.appearance.labelSaturation);
+    }),
+    store.onDidStop(() => {
+      enableTask = undefined;
+      void map.releaseSurfaces();
+      void vscode.commands.executeCommand('setContext', STARTED_CONTEXT, false);
+    }),
+    vscode.commands.registerCommand('syn3.start', async () => {
+      try {
+        await enableSyn3(true);
+        if (!store.ready) {
+          return;
+        }
+        await vscode.commands.executeCommand('workbench.view.explorer');
+        await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          'Syn3: не удалось запустить. ' + (error instanceof Error ? error.message : String(error)),
+        );
+      }
     }),
   );
 
   store.bindCloud(map.reviewAccessStore(), context.secrets);
 
-  await map.syncGroupsLayoutContext();
-  await map.syncTopCollapsedContext(false);
-  await store.init();
-  map.armSyncFetchTimers();
-  await map.bootstrapSurfaces();
-  await syncExplorerLabelColors(store.appearance.labelSaturation);
+  if (await workspaceHasSyn3(folder.uri)) {
+    await enableSyn3(false);
+  } else {
+    await vscode.commands.executeCommand('setContext', STARTED_CONTEXT, false);
+  }
 }
 
 export function deactivate(): void {

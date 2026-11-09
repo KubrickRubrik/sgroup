@@ -29,6 +29,8 @@ import {
   parseDiscordLock,
   parseMrChip,
   parseReviewAttachment,
+  parseReviewBranch,
+  parseReviewColor,
   parseReviewMessagePill,
   deleteChannelMessage,
   parseReviewStatus,
@@ -68,7 +70,14 @@ import {
   runReviewSkill,
   writeReviewFile,
 } from './reviewAgent';
-import { parseReviewDepth, ReviewDepth, ReviewKind, ReviewPendingStore } from './reviewPending';
+import {
+  isPendingBranchKey,
+  parseReviewDepth,
+  pendingBranchKey,
+  ReviewDepth,
+  ReviewKind,
+  ReviewPendingStore,
+} from './reviewPending';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -97,12 +106,21 @@ export interface ReviewChip {
   author?: string;
   timestamp: string;
   isMr: boolean;
+  /** Channel-root R_SYN3 (no MR). */
+  isReviewRoot?: boolean;
   webUrl?: string;
   title?: string;
   draft?: boolean;
   color?: string;
+  /** Pill label for a root review, e.g. `Ревью 1 | H:4 | M:4 | S:5`. */
+  pillLabel?: string;
   /** `status: closed` on the Discord MR message. Missing line stays open. */
   status?: 'open' | 'closed';
+  /** `status:` on a root R_SYN3 message. */
+  reviewStatus?: ReviewChipStatus;
+  /** Discord attachment on a root review. */
+  hasFile?: boolean;
+  filename?: string;
   /** `lock: true` on the parent Discord message. Missing line stays open. */
   locked?: boolean;
   threadId?: string;
@@ -132,6 +150,8 @@ export interface ReviewPageState {
   focusMessageId?: string;
   /** Placeholder MR chip while the host request and the Discord post are in flight. */
   pendingMr?: { title: string; draft: boolean };
+  /** Placeholder root review while the agent and Discord post are in flight. */
+  pendingRoot?: { branch: string };
   /** Parent message whose thread shows a review pill until Discord posts it. */
   pendingReviewId?: string;
   /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
@@ -145,18 +165,28 @@ function toChip(
   repliesLoaded = false,
 ): ReviewChip {
   const isMr = isMrMessage(msg.content);
+  const isReviewRoot = !isMr && isReviewMessage(msg.content);
   const parsed = isMr ? parseMrChip(msg.content) : {};
+  const file = isReviewRoot ? reviewAttachment(msg) : undefined;
   return {
     id: msg.id,
     content: msg.content,
     author: msg.author,
     timestamp: msg.timestamp,
     isMr,
+    isReviewRoot,
     webUrl: parsed.webUrl,
-    title: parsed.title,
+    title: isMr ? parsed.title : isReviewRoot ? parseReviewBranch(msg.content) : undefined,
     draft: parsed.draft,
-    color: parsed.color || (isMr ? LINK_PALETTE_DEFAULT : undefined),
+    color:
+      parsed.color ||
+      (isReviewRoot ? parseReviewColor(msg.content) : undefined) ||
+      (isMr ? LINK_PALETTE_DEFAULT : undefined),
+    pillLabel: isReviewRoot ? parseReviewMessagePill(msg.content) : undefined,
     status: isMr ? (parsed.status === 'closed' ? 'closed' : 'open') : undefined,
+    reviewStatus: isReviewRoot ? parseReviewStatus(msg.content) : undefined,
+    hasFile: !!file,
+    filename: file?.filename,
     locked: parseDiscordLock(msg.content),
     threadId: msg.thread?.id,
     hasThread: !!msg.thread?.id || !!msg.hasThread,
@@ -388,6 +418,8 @@ export class ReviewMapController {
   private readonly errors = new Map<string, string>();
   /** MR chip placeholder for a page, while git and Discord are in flight. */
   private readonly mrSkeleton = new Map<string, { title: string; draft: boolean }>();
+  /** Root review placeholder for a page, while the agent and Discord post are in flight. */
+  private readonly rootSkeleton = new Map<string, { branch: string }>();
   /** Review pill placeholder: page id → parent Discord message id. */
   private readonly reviewSkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
@@ -399,6 +431,8 @@ export class ReviewMapController {
    * A project switch pins the new review channel here before access is rewritten.
    */
   private readonly listedChannel = new Map<string, string>();
+  /** Project review channel, used when the page has no access.json binding. */
+  private reviewChannelFallback = '';
   /** Downloaded review attachments, keyed by Discord message id. */
   private readonly fileCache = new Map<string, { filename: string; text: string }>();
 
@@ -437,6 +471,15 @@ export class ReviewMapController {
 
   cwd(): string {
     return this.root.fsPath;
+  }
+
+  /** Current git branch, with a review-oriented detached-HEAD message. */
+  async peekCurrentBranch(): Promise<{ ok: true; value: string } | { ok: false; message: string }> {
+    const branch = await currentBranch(this.cwd());
+    if (!branch.ok) {
+      return { ok: false, message: 'Detached HEAD — cannot start review' };
+    }
+    return branch;
   }
 
   async getAccess(pageId: string): Promise<ReviewPageAccess | undefined> {
@@ -515,17 +558,44 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
+  /** Show a root review placeholder before the agent and the Discord post. */
+  beginRootSkeleton(pageId: string, branch: string): ReviewPageState {
+    this.rootSkeleton.set(pageId, { branch: this.rootSkeletonBranch(branch) });
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  /**
+   * Drop this operation's root placeholder. A newer skeleton on the same page
+   * keeps its chip and its sequence.
+   */
+  endRootSkeleton(pageId: string, branch: string): ReviewPageState {
+    const current = this.rootSkeleton.get(pageId);
+    if (current && current.branch === this.rootSkeletonBranch(branch)) {
+      this.rootSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
   private mrSkeletonTitle(title: string): string {
     return title.trim() || 'MR';
+  }
+
+  private rootSkeletonBranch(branch: string): string {
+    return branch.trim() || '—';
   }
 
   private bumpSkeleton(pageId: string): void {
     this.skeletonSeq.set(pageId, (this.skeletonSeq.get(pageId) ?? 0) + 1);
   }
 
-  private skeletonFields(pageId: string): Pick<ReviewPageState, 'pendingMr' | 'pendingReviewId' | 'skeletonSeq'> {
+  private skeletonFields(
+    pageId: string,
+  ): Pick<ReviewPageState, 'pendingMr' | 'pendingRoot' | 'pendingReviewId' | 'skeletonSeq'> {
     return {
       pendingMr: this.mrSkeleton.get(pageId),
+      pendingRoot: this.rootSkeleton.get(pageId),
       pendingReviewId: this.reviewSkeleton.get(pageId),
       skeletonSeq: this.skeletonSeq.get(pageId) ?? 0,
     };
@@ -553,10 +623,18 @@ export class ReviewMapController {
     this.reviewSkeleton.clear();
   }
 
-  /** Discord channel for listing this page: explicit override, then access, then the last list. */
+  /** Remember the project review channel so posts work without an access.json page row. */
+  bindReviewChannel(channelId: string): void {
+    this.reviewChannelFallback = channelId.trim();
+  }
+
+  /** Discord channel for listing this page: explicit override, then access, then the last list, then the project channel. */
   private async listingChannel(pageId: string, channelOverride?: string): Promise<string> {
     const accessChannel = (await this.getAccess(pageId))?.channelId?.trim() || '';
-    const channel = (channelOverride ?? (accessChannel || this.listedChannel.get(pageId) || '')).trim();
+    const channel = (
+      channelOverride ??
+      (accessChannel || this.listedChannel.get(pageId) || this.reviewChannelFallback || '')
+    ).trim();
     if (channel) {
       this.listedChannel.set(pageId, channel);
     } else {
@@ -1302,6 +1380,7 @@ export class ReviewMapController {
   /**
    * Rename or toggle draft on the host MR/PR, or recolor the Discord chip.
    * Color stays in the Discord body and does not touch the host MR/PR.
+   * Root reviews accept color-only patches.
    */
   async updateMrChip(
     pageId: string,
@@ -1315,13 +1394,17 @@ export class ReviewMapController {
     if (!win || !access || !discord || !parent) {
       return { kind: 'error', message: 'MR message not found on the map' };
     }
-    if (!isMrMessage(parent.content)) {
-      return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    const isRootReview = isReviewMessage(parent.content);
+    if (!isMrMessage(parent.content) && !isRootReview) {
+      return { kind: 'error', message: 'Select an MR_SYN3 or R_SYN3 chip' };
+    }
+    if (isRootReview && (patch.title !== undefined || patch.draft !== undefined)) {
+      return { kind: 'error', message: 'Root review has no rename or draft' };
     }
     if (parseDiscordLock(parent.content)) {
       return { kind: 'error', message: 'Entity is locked' };
     }
-    if (parseMrChip(parent.content).status === 'closed') {
+    if (isMrMessage(parent.content) && parseMrChip(parent.content).status === 'closed') {
       return { kind: 'error', message: 'MR is closed' };
     }
     if (patch.color !== undefined && patch.title === undefined && patch.draft === undefined) {
@@ -1376,7 +1459,7 @@ export class ReviewMapController {
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
-  /** Rewrite `color:` on the Discord MR message, then refresh the chip from that body. */
+  /** Rewrite `color:` on the Discord MR or root-review message, then refresh the chip. */
   private async recolorMrChip(
     pageId: string,
     win: ReviewWindow,
@@ -1389,8 +1472,9 @@ export class ReviewMapController {
     if (!color) {
       return { kind: 'error', message: 'Color is not a hex value' };
     }
-    const parsed = parseMrChip(parent.content);
-    if ((parsed.color || '').toLowerCase() === color) {
+    const current =
+      parseMrChip(parent.content).color || parseReviewColor(parent.content) || '';
+    if (current.toLowerCase() === color) {
       return { kind: 'state', state: this.snapshot(pageId) };
     }
     const edited = await editChannelMessage(
@@ -1408,6 +1492,9 @@ export class ReviewMapController {
         ...edited.value,
         thread: edited.value.thread ?? parent.thread,
         hasThread: edited.value.hasThread || parent.hasThread,
+        attachments: edited.value.attachments?.length
+          ? edited.value.attachments
+          : parent.attachments,
       };
     }
     return { kind: 'state', state: this.snapshot(pageId) };
@@ -1516,7 +1603,7 @@ export class ReviewMapController {
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
-  /** Set `status:` on an R_SYN3 thread message. */
+  /** Set `status:` on an R_SYN3 thread reply or channel-root review. */
   async setReviewStatus(
     pageId: string,
     messageId: string,
@@ -1527,45 +1614,84 @@ export class ReviewMapController {
     if (!win || !token) {
       return { kind: 'error', message: 'Review page is not ready' };
     }
-    let threadId = '';
-    let found: DiscordMessage | undefined;
-    for (const [id, bucket] of win.threads) {
-      found = bucket.replies.find((item) => item.id === messageId);
-      if (found) {
-        threadId = id;
-        break;
-      }
-    }
-    if (!found || !threadId) {
+    const located = this.findReviewMessage(win, messageId);
+    if (!located) {
       return { kind: 'error', message: 'Review message not found on the map' };
     }
+    const { found, channelId } = located;
     if (!isReviewMessage(found.content)) {
       return { kind: 'error', message: 'Select an R_SYN3 chip' };
+    }
+    if (parseDiscordLock(found.content)) {
+      return { kind: 'error', message: 'Entity is locked' };
     }
     if (parseReviewStatus(found.content) === status) {
       return { kind: 'state', state: this.snapshot(pageId) };
     }
+    const access = located.kind === 'channel' ? await this.getAccess(pageId) : undefined;
+    const editChannel =
+      located.kind === 'channel' ? access?.channelId : channelId;
+    if (!editChannel) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
     const edited = await editChannelMessage(
       token,
-      threadId,
+      editChannel,
       found.id,
       replaceReviewDiscordStatus(found.content, status),
     );
     if (!edited.ok) {
       return { kind: 'error', message: edited.message };
     }
-    const bucket = win.threads.get(threadId);
-    if (bucket) {
-      const idx = bucket.replies.findIndex((item) => item.id === found.id);
+    if (located.kind === 'channel') {
+      const idx = win.messages.findIndex((item) => item.id === found.id);
       if (idx >= 0) {
-        const prev = bucket.replies[idx];
-        bucket.replies[idx] = {
+        const prev = win.messages[idx];
+        win.messages[idx] = {
           ...edited.value,
+          thread: edited.value.thread ?? prev.thread,
+          hasThread: edited.value.hasThread || prev.hasThread,
           attachments: edited.value.attachments?.length ? edited.value.attachments : prev.attachments,
         };
       }
+    } else {
+      const bucket = win.threads.get(channelId);
+      if (bucket) {
+        const idx = bucket.replies.findIndex((item) => item.id === found.id);
+        if (idx >= 0) {
+          const prev = bucket.replies[idx];
+          bucket.replies[idx] = {
+            ...edited.value,
+            attachments: edited.value.attachments?.length ? edited.value.attachments : prev.attachments,
+          };
+        }
+      }
     }
     return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Locate an R_SYN3 message: channel root or thread reply.
+   * `channelId` for a reply is the Discord thread id.
+   */
+  private findReviewMessage(
+    win: ReviewWindow,
+    messageId: string,
+  ):
+    | { kind: 'channel'; found: DiscordMessage; channelId: string }
+    | { kind: 'thread'; found: DiscordMessage; channelId: string }
+    | undefined {
+    const parent = win.messages.find((item) => item.id === messageId);
+    if (parent) {
+      return { kind: 'channel', found: parent, channelId: '' };
+    }
+    for (const [threadId, bucket] of win.threads) {
+      const found = bucket.replies.find((item) => item.id === messageId);
+      if (found) {
+        return { kind: 'thread', found, channelId: threadId };
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1662,13 +1788,8 @@ export class ReviewMapController {
     if (!win || !token) {
       return { ok: false, message: 'Review page is not ready' };
     }
-    let found: DiscordMessage | undefined;
-    for (const bucket of win.threads.values()) {
-      found = bucket.replies.find((item) => item.id === messageId);
-      if (found) {
-        break;
-      }
-    }
+    const located = this.findReviewMessage(win, messageId);
+    const found = located?.found;
     const attachment = found ? reviewAttachment(found) : undefined;
     if (!found || !attachment) {
       return { ok: false, message: 'Review file is not attached to this message' };
@@ -1776,19 +1897,51 @@ export class ReviewMapController {
       return { kind: 'error', message: 'Review page is not ready' };
     }
     const parent = win.messages.find((m) => m.id === messageId);
-    if (!parent || !isMrMessage(parent.content)) {
-      return { kind: 'error', message: 'Select an MR_SYN3 chip' };
+    if (!parent) {
+      return { kind: 'error', message: 'Select an MR_SYN3 or R_SYN3 chip' };
     }
-    if (parseMrChip(parent.content).status === 'closed') {
+    const isMr = isMrMessage(parent.content);
+    const isRoot = isReviewMessage(parent.content);
+    if (!isMr && !isRoot) {
+      return { kind: 'error', message: 'Select an MR_SYN3 or R_SYN3 chip' };
+    }
+    if (isMr && parseMrChip(parent.content).status === 'closed') {
       return { kind: 'error', message: 'MR is closed' };
     }
-    const parsed = parseMrChip(parent.content);
-    if (!parsed.webUrl) {
+
+    if (isRoot) {
+      const chipBranch = parseReviewBranch(parent.content);
+      if (!chipBranch) {
+        return { kind: 'error', message: 'Root review has no branch' };
+      }
+      const branch = await currentBranch(this.cwd());
+      if (!branch.ok) {
+        return {
+          kind: 'error',
+          message: 'Detached HEAD — cannot start review',
+        };
+      }
+      if (branch.value !== chipBranch) {
+        return {
+          kind: 'error',
+          message: `Current branch «${branch.value}» does not match «${chipBranch}»`,
+        };
+      }
+    }
+
+    const parsed = isMr ? parseMrChip(parent.content) : {};
+    const pendingKey = isMr
+      ? parsed.webUrl
+      : pendingBranchKey(parseReviewBranch(parent.content) || '');
+    if (isMr && !parsed.webUrl) {
       return { kind: 'error', message: 'MR chip has no web_url' };
+    }
+    if (!pendingKey) {
+      return { kind: 'error', message: 'Review chip has no key' };
     }
 
     const existing = await this.pending.read();
-    if (existing && existing.webUrl === parsed.webUrl) {
+    if (existing && existing.webUrl === pendingKey) {
       return this.sendPendingReview(pageId, parent, existing.fsPath);
     }
     if (existing) {
@@ -1817,8 +1970,10 @@ export class ReviewMapController {
         }
       }
     }
-    const reviewNumber = reviewCount + 1;
-    const title = parsed.title || 'MR';
+    // Root review is #1 on the channel; the first thread reply is #2.
+    const reviewNumber = isRoot ? reviewCount + 2 : reviewCount + 1;
+    const chipBranch = parseReviewBranch(parent.content) || '';
+    const title = isMr ? parsed.title || 'MR' : chipBranch;
     const dirAbs = path.isAbsolute(paths.dirPath)
       ? paths.dirPath
       : path.join(this.cwd(), paths.dirPath);
@@ -1834,17 +1989,20 @@ export class ReviewMapController {
       depth: parseReviewDepth(depth),
       reviewNumber,
       title,
-      webUrl: parsed.webUrl,
+      webUrl: isMr ? parsed.webUrl : undefined,
+      branch: isRoot ? chipBranch : undefined,
     });
     if (!agent.ok) {
       return { kind: 'error', message: agent.message };
     }
 
-    const mrIid = (() => {
-      const m = parsed.webUrl.match(/\/(?:merge_requests|pull)\/(\d+)/);
-      return m ? m[1] : '';
-    })();
-    const mrLine = [mrIid, title, parsed.webUrl].filter(Boolean).join(' ');
+    const mrLine = isMr
+      ? (() => {
+          const m = (parsed.webUrl || '').match(/\/(?:merge_requests|pull)\/(\d+)/);
+          const mrIid = m ? m[1] : '';
+          return [mrIid, title, parsed.webUrl].filter(Boolean).join(' ');
+        })()
+      : `Ветка: ${chipBranch}`;
     try {
       const filePath = await writeReviewFile({
         dirPath: dirAbs,
@@ -1853,10 +2011,105 @@ export class ReviewMapController {
         severity: agent.severity,
         body: agent.body,
       });
-      await this.pending.write(parsed.webUrl, kind, filePath);
+      await this.pending.write(pendingKey, kind, filePath);
       const sent = await this.sendPendingReview(pageId, parent, filePath);
       if (sent.kind === 'state') {
         agent.report('Сообщение опубликовано в треде.', true);
+      } else {
+        agent.report(sent.message, false);
+      }
+      return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
+  }
+
+  /**
+   * Create a channel-root R_SYN3 review (no MR). Posts the file to the channel.
+   */
+  async startRootReview(
+    pageId: string,
+    kind: ReviewKind,
+    depth?: ReviewDepth,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    if (!pageId) {
+      return { kind: 'error', message: 'Review page is not selected' };
+    }
+    // Channel window is optional here: create MR also posts without a local win.
+    // appendPostedMessage loads or rebuilds the window after Discord accepts the file.
+    // The map lists from the project review channel when access.json has no page row.
+    const channelId = await this.listingChannel(pageId);
+    if (!channelId) {
+      return { kind: 'error', message: 'Review Discord channel is not set' };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { kind: 'error', message: 'Discord bot token is missing' };
+    }
+    const branch = await currentBranch(this.cwd());
+    if (!branch.ok) {
+      return { kind: 'error', message: 'Detached HEAD — cannot start review' };
+    }
+    const branchName = branch.value;
+    const pendingKey = pendingBranchKey(branchName);
+
+    const existing = await this.pending.read();
+    if (existing && existing.webUrl === pendingKey) {
+      return this.sendPendingRootReview(pageId, branchName, existing.fsPath);
+    }
+    if (existing) {
+      await deleteReviewFile(existing.fsPath);
+      await this.pending.clear();
+    }
+
+    const paths = this.profilePaths();
+    if (!paths.skillPath) {
+      return { kind: 'error', message: 'Review skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+
+    const reviewNumber = 1;
+    const dirAbs = path.isAbsolute(paths.dirPath)
+      ? paths.dirPath
+      : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.skillPath)
+      ? paths.skillPath
+      : path.join(this.cwd(), paths.skillPath);
+
+    const agent = await runReviewSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind,
+      depth: parseReviewDepth(depth),
+      reviewNumber,
+      title: branchName,
+      branch: branchName,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    try {
+      const filePath = await writeReviewFile({
+        dirPath: dirAbs,
+        reviewNumber,
+        mrLine: `Ветка: ${branchName}`,
+        severity: agent.severity,
+        body: agent.body,
+      });
+      await this.pending.write(pendingKey, kind, filePath);
+      const sent = await this.sendPendingRootReview(pageId, branchName, filePath);
+      if (sent.kind === 'state') {
+        agent.report('Сообщение опубликовано в канале.', true);
       } else {
         agent.report(sent.message, false);
       }
@@ -1878,11 +2131,23 @@ export class ReviewMapController {
     if (!win || !pending) {
       return { kind: 'error', message: 'No pending review file' };
     }
+    if (isPendingBranchKey(pending.webUrl) && !messageId) {
+      const branch = pending.webUrl.slice('branch:'.length).trim();
+      return this.sendPendingRootReview(pageId, branch, pending.fsPath);
+    }
     const parent = win.messages.find((m) => m.id === messageId);
     if (!parent) {
-      return { kind: 'error', message: 'MR message not found on the map' };
+      return { kind: 'error', message: 'Review message not found on the map' };
     }
     return this.sendPendingReview(pageId, parent, pending.fsPath);
+  }
+
+  async retryRootReviewFile(pageId: string): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    return this.retryReviewFile(pageId, '');
   }
 
   private async sendPendingReview(
@@ -1959,6 +2224,54 @@ export class ReviewMapController {
       });
       await this.enrichReplies(token, page.toAdd);
     }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /** Post a pending root review file as a channel message (no thread). */
+  private async sendPendingRootReview(
+    pageId: string,
+    branch: string,
+    filePath: string,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const channelId = await this.listingChannel(pageId);
+    const token = await this.discordToken();
+    if (!channelId || !token) {
+      return { kind: 'error', message: 'Missing Discord access' };
+    }
+    const paths = this.profilePaths();
+    let reviewNumber = 1;
+    let severity = 'H:0 | M:0 | S:0';
+    try {
+      const fileText = await fs.readFile(filePath, 'utf8');
+      const parsedFile = parseReviewAttachment(fileText);
+      if (parsedFile.reviewNumber) {
+        reviewNumber = parsedFile.reviewNumber;
+      }
+      if (parsedFile.severity) {
+        severity = parsedFile.severity;
+      }
+    } catch {
+      // keep defaults
+    }
+    const content = formatReviewDiscordBody({
+      reviewNumber,
+      severity,
+      model: paths.model,
+      skillPath: paths.skillPath,
+      branch,
+      color: randomLinkPaletteColor(),
+    });
+    const posted = await postMessageWithFile(token, channelId, content, filePath);
+    if (!posted.ok) {
+      return { kind: 'fileFail', message: posted.message };
+    }
+    await this.pending.clear();
+    await deleteReviewFile(filePath);
+    await this.appendPostedMessage(pageId, channelId, posted.value);
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 }

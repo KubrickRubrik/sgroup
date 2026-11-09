@@ -25,10 +25,22 @@ export function parseReviewDepth(raw: unknown): ReviewDepth {
 }
 
 export interface PendingReview {
+  /**
+   * Host MR/PR URL, or `branch:<name>` for a root review without MR.
+   */
   webUrl: string;
   kind: ReviewKind;
   /** Absolute fs path to the assembled review file. */
   fsPath: string;
+}
+
+/** Pending key for a channel-root review (no MR URL). */
+export function pendingBranchKey(branch: string): string {
+  return `branch:${branch.trim()}`;
+}
+
+export function isPendingBranchKey(key: string): boolean {
+  return key.startsWith('branch:') && key.slice('branch:'.length).trim().length > 0;
 }
 
 function parseKind(raw: string): ReviewKind | undefined {
@@ -40,6 +52,10 @@ function parseKind(raw: string): ReviewKind | undefined {
     return 'changes';
   }
   return undefined;
+}
+
+function isPendingKey(raw: string): boolean {
+  return raw.startsWith('http') || isPendingBranchKey(raw);
 }
 
 export class ReviewPendingStore {
@@ -57,7 +73,7 @@ export class ReviewPendingStore {
       const webUrl = (lines[0] || '').trim();
       const kind = parseKind(lines[1] || '');
       const fsPath = (lines[2] || '').trim();
-      if (!webUrl.startsWith('http') || !kind || !fsPath) {
+      if (!isPendingKey(webUrl) || !kind || !fsPath) {
         return undefined;
       }
       return { webUrl, kind, fsPath };

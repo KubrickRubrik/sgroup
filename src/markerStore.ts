@@ -824,6 +824,19 @@ export class MarkerStore implements vscode.Disposable {
   private history: PageHistoryBook = emptyHistory();
   /** False until the history file has been read, so startup cannot record a step. */
   private historyReady = false;
+  /** Disk writes are refused after the user removes `.syn3`. */
+  private suspended = false;
+  /** Create the config once, and only for an explicit Syn3: start. */
+  private allowCreate = false;
+  private externalTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingDisk: { catalog: boolean; profiles: boolean; styles: boolean } = {
+    catalog: false,
+    profiles: false,
+    styles: false,
+  };
+  private readonly stopEmitter = new vscode.EventEmitter<void>();
+  /** Fired when `.syn3` disappears and the workspace is no longer opted in. */
+  readonly onDidStop = this.stopEmitter.event;
   /** Bumps when a move rewrites entity links. Webviews show «Рефакторинг» once per bump. */
   private refactorEpoch = 0;
   /** True when the loaded file had no `surfaces` block — workspace state may hydrate it once. */
@@ -1608,18 +1621,44 @@ export class MarkerStore implements vscode.Disposable {
     return result;
   }
 
-  async init(): Promise<void> {
-    await this.migrateHistory();
+  /**
+   * @param create write a new `.syn3` when it is missing. Only the start command passes true.
+   */
+  async init(options?: { create?: boolean }): Promise<void> {
+    this.suspended = false;
+    this.allowCreate = options?.create === true;
+    if (this.allowCreate || (await fileExists(this.baseUri))) {
+      await this.migrateHistory();
+    }
+    if (this.suspended) {
+      return;
+    }
     this.usingSplitConfig = true;
     await this.load();
+    if (this.suspended) {
+      return;
+    }
     await this.loadProfilesAndStyles();
+    if (this.suspended) {
+      return;
+    }
     await this.loadPositions();
+    if (this.suspended) {
+      return;
+    }
     this.dirtyPages.clear();
     this.profileDirty = false;
     this.projectDirty = false;
     await this.loadHistory();
+    if (this.suspended) {
+      return;
+    }
     await this.reconcilePageDirty();
     await this.reconcileBaseDirty();
+    if (this.suspended) {
+      return;
+    }
+    this.allowCreate = false;
     this.historyReady = true;
     this.watch();
     this.changeEmitter.fire();
@@ -1958,10 +1997,15 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   dispose(): void {
+    if (this.externalTimer) {
+      clearTimeout(this.externalTimer);
+      this.externalTimer = undefined;
+    }
     for (const watcher of this.watchers) {
       watcher.dispose();
     }
     this.watchers = [];
+    this.stopEmitter.dispose();
     this.changeEmitter.dispose();
   }
 
@@ -4516,26 +4560,106 @@ export class MarkerStore implements vscode.Disposable {
       if (this.writingCatalog) {
         return;
       }
-      void this.enqueue(() => this.reloadFromDisk(false));
+      this.scheduleDiskReload('catalog');
     });
     attach(`${PAGES_DIR}/*.json`, () => {
       if (this.writingCatalog) {
         return;
       }
-      void this.enqueue(() => this.reloadFromDisk(false));
+      this.scheduleDiskReload('catalog');
     });
     attach(PROFILES_PATH, () => {
       if (this.writingProfiles) {
         return;
       }
-      void this.enqueue(() => this.reloadProfilesFromDisk());
+      this.scheduleDiskReload('profiles');
     });
     attach(STYLES_PATH, () => {
       if (this.writingStyles) {
         return;
       }
-      void this.enqueue(() => this.reloadStylesFromDisk());
+      this.scheduleDiskReload('styles');
     });
+  }
+
+  /**
+   * Folder deletion emits a file event per child. Wait until the burst ends,
+   * then keep the files gone instead of writing them back one by one.
+   */
+  private scheduleDiskReload(kind: 'catalog' | 'profiles' | 'styles'): void {
+    if (this.suspended) {
+      return;
+    }
+    this.pendingDisk[kind] = true;
+    if (this.externalTimer) {
+      clearTimeout(this.externalTimer);
+    }
+    this.externalTimer = setTimeout(() => {
+      this.externalTimer = undefined;
+      const pending = this.pendingDisk;
+      this.pendingDisk = { catalog: false, profiles: false, styles: false };
+      void this.enqueue(() => this.reloadExternal(pending));
+    }, 200);
+  }
+
+  private async reloadExternal(pending: {
+    catalog: boolean;
+    profiles: boolean;
+    styles: boolean;
+  }): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
+    if (!(await fileExists(this.baseUri))) {
+      this.forgetWorkspace();
+      return;
+    }
+    if (pending.catalog && !this.writingCatalog) {
+      await this.reloadFromDisk(false);
+    }
+    if (this.suspended) {
+      return;
+    }
+    if (pending.profiles && !this.writingProfiles) {
+      await this.reloadProfilesFromDisk();
+    }
+    if (this.suspended) {
+      return;
+    }
+    if (pending.styles && !this.writingStyles) {
+      await this.reloadStylesFromDisk();
+    }
+  }
+
+  /** Drop the session when `.syn3` is gone. Does not write. */
+  private forgetWorkspace(): void {
+    if (this.suspended) {
+      return;
+    }
+    this.suspended = true;
+    this.allowCreate = false;
+    this.historyReady = false;
+    if (this.externalTimer) {
+      clearTimeout(this.externalTimer);
+      this.externalTimer = undefined;
+    }
+    this.pendingDisk = { catalog: false, profiles: false, styles: false };
+    for (const watcher of this.watchers) {
+      watcher.dispose();
+    }
+    this.watchers = [];
+    this.data = emptyData();
+    this.base = emptyBaseConfig();
+    this.posLocal = emptyPositions();
+    this.posRemote = emptyPositions();
+    this.history = emptyHistory();
+    this.present = '';
+    this.baseline = undefined;
+    this.pagePresent = {};
+    this.dirtyPages.clear();
+    this.pageCloud = {};
+    this.pendingRemote = {};
+    this.stopEmitter.fire();
   }
 
   /**
@@ -4656,6 +4780,11 @@ export class MarkerStore implements vscode.Disposable {
   private async reloadFromDisk(notify: boolean): Promise<void> {
     this.usingSplitConfig = true;
     if (!(await fileExists(this.baseUri))) {
+      if (!this.allowCreate || this.suspended) {
+        this.forgetWorkspace();
+        return;
+      }
+      this.allowCreate = false;
       this.data = emptyData();
       this.base = this.buildBaseFromCurrentPages('');
       this.pageCloud = {};
@@ -4663,6 +4792,9 @@ export class MarkerStore implements vscode.Disposable {
       this.surfacesNeedLegacyHydration = true;
       this.lastError = undefined;
       await this.persistSplitConfig();
+      if (this.suspended) {
+        return;
+      }
       this.present = this.capture();
       this.baseline = undefined;
       this.pagePresent = this.captureAllPageSnapshots();
@@ -4933,6 +5065,9 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async refreshCloudHintsNow(): Promise<string[]> {
+    if (this.suspended) {
+      return [];
+    }
     const errors: string[] = [];
     const previousPending = Object.keys(this.pendingRemote).sort().join('\0');
     this.pendingRemote = {};
@@ -6082,6 +6217,9 @@ export class MarkerStore implements vscode.Disposable {
    *   baseClean fingerprints stay aligned with the published BASE.
    */
   private async persistProfiles(bumpVersion = true, mirror = true): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     if (mirror) {
       this.mirrorRootProfilesToBase(bumpVersion);
       this.mirrorProfilesStylesToProject(bumpVersion);
@@ -6103,6 +6241,9 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.gitlabNick ? { gitlabNick: p.gitlabNick } : {}),
         })),
       };
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.profilesUri, '..'));
       await vscode.workspace.fs.writeFile(
         this.profilesUri,
@@ -6118,6 +6259,9 @@ export class MarkerStore implements vscode.Disposable {
 
   /** @see persistProfiles */
   private async persistStyles(bumpVersion = true, mirror = true): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     if (mirror) {
       this.mirrorProfilesStylesToProject(bumpVersion);
     }
@@ -6133,6 +6277,9 @@ export class MarkerStore implements vscode.Disposable {
         };
       }
       this.stylesData = { version: 1, styles };
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.stylesUri, '..'));
       await vscode.workspace.fs.writeFile(
         this.stylesUri,
@@ -6241,6 +6388,9 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async persistPosLocal(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     this.writingPosLocal = true;
     try {
       this.mirrorSurfacesToPosLocal();
@@ -6284,6 +6434,9 @@ export class MarkerStore implements vscode.Disposable {
         payload.profiles[id] = packProfileLayout(this.posLocal.profiles[id]);
       }
       this.posLocal = payload;
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.posLocalUri, '..'));
       await vscode.workspace.fs.writeFile(
         this.posLocalUri,
@@ -6297,6 +6450,9 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async persistPosRemote(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     this.writingPosRemote = true;
     try {
       const payload: PositionsFile = {
@@ -6307,6 +6463,9 @@ export class MarkerStore implements vscode.Disposable {
         payload.profiles[id] = packProfileLayout(this.posRemote.profiles[id]);
       }
       this.posRemote = payload;
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.posRemoteUri, '..'));
       await vscode.workspace.fs.writeFile(
         this.posRemoteUri,
@@ -6585,6 +6744,9 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async commitNow(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     const previousPages = { ...this.pagePresent };
     const previousPageIds = new Set(Object.keys(previousPages));
     const next = this.capture();
@@ -6692,8 +6854,14 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async persistHistory(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     try {
       const json = encodeHistory(this.history, this.pageCursors());
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.historyUri, '..'));
       await vscode.workspace.fs.writeFile(this.historyUri, Buffer.from(json, 'utf8'));
     } catch (error) {
@@ -7262,8 +7430,14 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async persistBaseOnly(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     this.holdCatalogWrite();
     try {
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.baseUri, '..'));
       await vscode.workspace.fs.writeFile(
         this.baseUri,
@@ -7396,10 +7570,9 @@ export class MarkerStore implements vscode.Disposable {
         continue;
       }
       const existing = this.accessStore.page(pageId);
+      // An empty project review channel must not wipe a channel typed on the page.
+      // Settings reads that page binding first.
       if (!channelId || !repo) {
-        if (existing) {
-          await this.accessStore.deletePage(pageId);
-        }
         continue;
       }
       if (
@@ -7418,12 +7591,18 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private async persistSplitConfig(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     this.holdCatalogWrite();
     try {
       await this.accessStore?.ensureLoaded();
       this.mirrorRootProfilesToBase(false);
       this.mirrorProfilesStylesToProject(false);
       this.syncProjectPagesFromData();
+      if (this.suspended) {
+        return;
+      }
       await vscode.workspace.fs.createDirectory(this.pagesDirUri);
       // Keep page files for every project — switching/creating an empty project
       // must not wipe another project's content on disk.

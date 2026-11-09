@@ -848,30 +848,70 @@ export function parseMrChip(content: string): {
 }
 
 /**
- * Discord thread message for a review file attachment.
+ * Discord message for a review file attachment.
  *
+ * Thread reply (under MR or under a root review):
  * R_SYN3: Ревью N | H:n | M:n | S:n
  * Модель: …
  * Скилл: …
  * status: -|inProgress|done
+ *
+ * Channel root (no MR):
+ * R_SYN3: Ревью N | H:n | M:n | S:n
+ * Ветка: name
+ * Модель: …
+ * Скилл: …
+ * color: #hex
+ * status: -
+ * lock: false
  */
 export function formatReviewDiscordBody(opts: {
   reviewNumber: number;
   severity: string;
   model: string;
   skillPath: string;
+  branch?: string;
+  color?: string;
 }): string {
   const raw = opts.severity.trim();
   const matched = raw.match(REVIEW_SEVERITY_RE);
   const severity = matched ? normalizeSeverityMatch(matched) : formatSeverityLine(0, 0, 0);
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
-  return [
-    `${REVIEW_PREFIX}: Ревью ${opts.reviewNumber} | ${severity}`,
-    `Модель: ${model}`,
-    `Скилл: ${skill}`,
-    'status: -',
-  ].join('\n');
+  const lines = [`${REVIEW_PREFIX}: Ревью ${opts.reviewNumber} | ${severity}`];
+  const branch = opts.branch?.trim();
+  if (branch) {
+    lines.push(`Ветка: ${branch}`);
+  }
+  lines.push(`Модель: ${model}`, `Скилл: ${skill}`);
+  const color = opts.color?.trim();
+  if (color) {
+    lines.push(`color: ${color}`);
+  }
+  lines.push('status: -');
+  if (branch) {
+    lines.push('lock: false');
+  }
+  return lines.join('\n');
+}
+
+/** `Ветка:` on a root R_SYN3 channel message. */
+export function parseReviewBranch(content: string): string | undefined {
+  const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const line = lines.find((l) => /^Ветка\s*:/i.test(l));
+  if (!line) {
+    return undefined;
+  }
+  const value = line.replace(/^Ветка\s*:/i, '').trim();
+  return value || undefined;
+}
+
+/** `color:` on an R_SYN3 message (root review). */
+export function parseReviewColor(content: string): string | undefined {
+  const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
+  const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
+  return colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
 }
 
 /** `status:` on an R_SYN3 message. `-` and a missing line are the empty default. */
