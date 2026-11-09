@@ -193,6 +193,7 @@ type IncomingToolbarAction =
   | 'createPageLinks'
   | 'createPageReview'
   | 'createMr'
+  | 'pullMr'
   | 'renamePage'
   | 'deletePage'
   | 'toggleBottom'
@@ -3666,6 +3667,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    let reviewProvider: ReviewHostProvider | undefined;
+    if (page?.kind === 'review') {
+      reviewProvider = (await this.review.getAccess(pageId))?.provider;
+      if (!this.webviews.has(webview) || this.stateSeq.get(webview) !== seq) {
+        if (focusNoteId) {
+          this.focusNoteId = focusNoteId;
+        }
+        return;
+      }
+    }
     this.needsPageRestore.delete(webview);
     await webview.postMessage({
       type: 'state',
@@ -3685,6 +3696,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
       locale,
+      ...(reviewProvider ? { reviewProvider } : {}),
       i18n: stringsFor(locale),
       linkPalette: LINK_PALETTE,
       profiles: this.store.profiles(),
@@ -4111,6 +4123,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (action === 'createMr') {
       if (this.store.page(activePage)?.kind === 'review') {
         await this.handleReviewPlus(webview, activePage);
+      }
+      return;
+    }
+    if (action === 'pullMr') {
+      if (this.store.page(activePage)?.kind === 'review') {
+        await this.handleReviewPull(webview, activePage);
       }
       return;
     }
@@ -5389,16 +5407,61 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
-    await this.handleReviewMrResult(webview, pageId, result);
+    if (result.kind === 'notice') {
+      this.toastReviewNotice(result.provider, result.code);
+      return;
+    }
+    void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+  }
+
+  private async handleReviewPull(webview: vscode.Webview, pageId: string): Promise<void> {
+    const title = this.review.pullSkeletonTitle();
+    const result = await this.withReviewPlaceholder(
+      webview,
+      () => this.review.beginMrSkeleton(pageId, title, false),
+      () => this.review.endMrSkeleton(pageId, title),
+      () => this.review.pullExistingMr(pageId),
+    );
+    if (result.kind === 'notice') {
+      this.toastReviewNotice(result.provider, result.code);
+      return;
+    }
+    await this.handleReviewMrResult(webview, pageId, result, true);
+  }
+
+  private toastReviewNotice(
+    provider: ReviewHostProvider,
+    code: 'alreadyOpen' | 'noOpen' | 'alreadyInChannel' | 'added',
+  ): void {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const github = provider === 'github';
+    const key =
+      code === 'alreadyOpen'
+        ? github
+          ? 'reviewPrAlreadyOpen'
+          : 'reviewMrAlreadyOpen'
+        : code === 'noOpen'
+          ? github
+            ? 'reviewNoOpenPr'
+            : 'reviewNoOpenMr'
+          : code === 'alreadyInChannel'
+            ? github
+              ? 'reviewPrInChannel'
+              : 'reviewMrInChannel'
+            : github
+              ? 'reviewPrAdded'
+              : 'reviewMrAdded';
+    void vscode.window.showInformationMessage(`Syn3: ${t(locale, key)}`);
   }
 
   private async handleReviewMrResult(
     webview: vscode.Webview,
     pageId: string,
     result:
-      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'state'; state: ReviewPageState; provider?: ReviewHostProvider }
       | { kind: 'discordFail'; mr: ReviewMr; message: string }
       | { kind: 'error'; message: string },
+    announceAdded = false,
   ): Promise<void> {
     if (result.kind === 'error') {
       void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
@@ -5418,12 +5481,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           () => this.review.endMrSkeleton(pageId, result.mr.title),
           () => this.review.retryDiscordPost(pageId, result.mr),
         );
-        await this.handleReviewMrResult(webview, pageId, retry);
+        await this.handleReviewMrResult(webview, pageId, retry, announceAdded);
       }
       return;
     }
     this.pendingDiscordMr = undefined;
     await this.pushReviewState(webview, result.state);
+    if (!announceAdded) {
+      return;
+    }
+    const provider = result.provider ?? (await this.review.getAccess(pageId))?.provider;
+    if (provider) {
+      this.toastReviewNotice(provider, 'added');
+    }
   }
 
   private async handleReviewFileResult(

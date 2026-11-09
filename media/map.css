@@ -259,6 +259,12 @@ html::-webkit-scrollbar {
   padding: 2px 0;
 }
 
+.syn3-menu-view-block.is-plain {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
 .syn3-menu-nest {
   padding: 0;
 }
@@ -3486,10 +3492,26 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .review-stamp {
+  align-items: center;
   color: var(--vscode-descriptionForeground);
+  display: flex;
   font-size: 10px;
+  gap: 8px;
   line-height: 1.2;
+  max-width: 100%;
+  min-width: 0;
   opacity: 0.75;
+}
+
+.review-stamp-date {
+  flex: 0 0 auto;
+}
+
+.review-stamp-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-mr-head {

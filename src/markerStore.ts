@@ -1426,25 +1426,30 @@ export class MarkerStore implements vscode.Disposable {
     reviewModel?: string;
     reviewFixModel?: string;
   }): Promise<void> {
-    const id = this.ensureActiveProfileId();
-    const profile = this.profilesData.profiles.find((p) => p.id === id);
-    if (!profile) {
-      return;
-    }
-    if (partial.reviewSkillPath !== undefined) {
-      profile.reviewSkillPath = partial.reviewSkillPath.trim();
-    }
-    if (partial.reviewDirPath !== undefined) {
-      profile.reviewDirPath = partial.reviewDirPath.trim();
-    }
-    if (partial.reviewModel !== undefined) {
-      profile.reviewModel = partial.reviewModel.trim().toLowerCase();
-    }
-    if (partial.reviewFixModel !== undefined) {
-      profile.reviewFixModel = partial.reviewFixModel.trim().toLowerCase();
-    }
-    await this.persistProfiles();
-    this.changeEmitter.fire();
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      if (!profile) {
+        return;
+      }
+      if (partial.reviewSkillPath !== undefined) {
+        profile.reviewSkillPath = partial.reviewSkillPath.trim();
+      }
+      if (partial.reviewDirPath !== undefined) {
+        profile.reviewDirPath = partial.reviewDirPath.trim();
+      }
+      if (partial.reviewModel !== undefined) {
+        profile.reviewModel = partial.reviewModel.trim().toLowerCase();
+      }
+      if (partial.reviewFixModel !== undefined) {
+        profile.reviewFixModel = partial.reviewFixModel.trim().toLowerCase();
+      }
+      // profiles.json is a cache. The map reads these fields back from the
+      // active project's profiling in base.json after any catalog reload.
+      await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
   }
 
   /** Opaque repositoryTokenKey for one profile in the active project. */
@@ -4945,26 +4950,23 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   private ensureGeneralProfile(seed: Appearance, seedOpen: PanelOpenState = emptyPanelOpen()): void {
-    if (!this.profilesData.profiles.some((p) => p.id === GENERAL_PROFILE_ID)) {
+    const existing = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    if (!existing) {
       this.profilesData.profiles.unshift({
         id: GENERAL_PROFILE_ID,
         name: GENERAL_PROFILE_NAME,
         sProfileIds: [],
       });
     } else {
-      const general = this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
-      const sProfileIds = general?.sProfileIds ?? [];
-      this.profilesData.profiles = [
-        {
-          id: GENERAL_PROFILE_ID,
-          name: GENERAL_PROFILE_NAME,
-          sProfileIds,
-          ...(general?.repositoryTokenKey
-            ? { repositoryTokenKey: general.repositoryTokenKey }
-            : {}),
-        },
-        ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
-      ];
+      // Keep the same object. Rebuilding it used to drop review paths, models,
+      // and git nicks, so Enter in review settings looked saved and then vanished.
+      existing.name = GENERAL_PROFILE_NAME;
+      if (this.profilesData.profiles[0]?.id !== GENERAL_PROFILE_ID) {
+        this.profilesData.profiles = [
+          existing,
+          ...this.profilesData.profiles.filter((p) => p.id !== GENERAL_PROFILE_ID),
+        ];
+      }
     }
     if (!this.stylesData.styles[GENERAL_PROFILE_ID]) {
       this.stylesData.styles[GENERAL_PROFILE_ID] = {

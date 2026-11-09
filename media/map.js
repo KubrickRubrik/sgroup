@@ -1420,6 +1420,13 @@
         return;
       }
     }
+    if (action === 'pullMr') {
+      const pageId = uiState.activePageId;
+      if (pageId) {
+        // Same title as ReviewMapController.pullSkeletonTitle. The host snapshot clears this row.
+        beginLocalMrSkeleton(pageId, '…', false);
+      }
+    }
     vscode.postMessage({ type: 'toolbar', action, pageId: uiState.activePageId });
   }
 
@@ -1996,7 +2003,9 @@
     if (activePage()?.kind === 'links') {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
     } else if (activePage()?.kind === 'review') {
-      target.append(menuActionChoice(t('createMr'), { toolbar: 'createMr' }));
+      const isGithub = data?.reviewProvider === 'github';
+      target.append(menuActionChoice(t(isGithub ? 'createPr' : 'createMr'), { toolbar: 'createMr' }));
+      target.append(menuActionChoice(t(isGithub ? 'pullPr' : 'pullMr'), { toolbar: 'pullMr' }));
       appendExpandableMenuBlock(
         target,
         t('createReview'),
@@ -2187,14 +2196,16 @@
   }
 
   /**
+   * @param {HTMLElement} scroller
    * @param {string} label
    * @param {boolean} expanded
    * @param {string} toggleAction
    * @param {(nest: HTMLElement) => void} fillNest
+   * @param {{ plain?: boolean }} [opts]
    */
-  function appendExpandableMenuBlock(scroller, label, expanded, toggleAction, fillNest) {
+  function appendExpandableMenuBlock(scroller, label, expanded, toggleAction, fillNest, opts) {
     const block = document.createElement('div');
-    block.className = 'syn3-menu-view-block';
+    block.className = 'syn3-menu-view-block' + (opts?.plain ? ' is-plain' : '');
     const row = menuAction('', expanded ? 'is-expanded' : '');
     row.dataset.menuAction = toggleAction;
     const title = document.createElement('span');
@@ -2402,6 +2413,7 @@
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
         },
+        { plain: true },
       );
       scroller.append(
         menuActionChoice(t(isPr ? 'reviewRenamePr' : 'reviewRenameMr'), {
@@ -2482,6 +2494,7 @@
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
         },
+        { plain: true },
       );
       appendExpandableMenuBlock(
         scroller,
@@ -2506,6 +2519,7 @@
             messageId,
           );
         },
+        { plain: true },
       );
       const counts = parsePillSeverityCounts(chip?.pillLabel);
       if (counts) {
@@ -2599,6 +2613,7 @@
             messageId,
           );
         },
+        { plain: true },
       );
       scroller.append(
         menuActionChoice(t('menuDelete'), {
@@ -5832,6 +5847,31 @@
     );
   }
 
+  /** Branch label from a root review. A full markdown link keeps only its text. */
+  function reviewBranchLabel(raw) {
+    const value = String(raw || '').trim();
+    const linked = /^\[([^\]]+)\]\([^)]+\)$/.exec(value);
+    return (linked ? linked[1] : value).trim();
+  }
+
+  /**
+   * Date, and for a root review the branch to its right.
+   * @param {string} dateText
+   * @param {string} [branchText]
+   */
+  function renderReviewStamp(dateText, branchText) {
+    const stamp = el('div', 'review-stamp');
+    if (dateText) {
+      stamp.append(el('span', 'review-stamp-date', dateText));
+    }
+    if (branchText) {
+      const branch = el('span', 'review-stamp-branch', branchText);
+      branch.title = branchText;
+      stamp.append(branch);
+    }
+    return stamp;
+  }
+
   /** Paths from assets/sparkling-2-fill.svg — Neurofix trigger next to review pill. */
   function reviewSparkleIcon() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -6210,17 +6250,20 @@
     row.style.setProperty('--link-color', '#8e4ec6');
     row.setAttribute('aria-busy', 'true');
     row.append(
-      linkElbow(reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 20 }), ''),
+      linkElbow(reviewElbowMid({ leadingGap, hasStamp: true, contentHalf: 20 }), ''),
     );
+    const stamp = renderReviewStamp('', pending.branch || '…');
+    const dateBar = reviewSkeletonBar('72px', 0);
+    dateBar.classList.add('review-stamp-date');
+    stamp.prepend(dateBar);
     const chip = el('div', 'review-chip is-review-pill is-skel');
     chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('132px', 40));
     const chipWrap = el('div', 'review-chip-wrap');
     chipWrap.append(chip);
-    const title = el('span', 'review-mr-title-text is-skel', pending.branch || '…');
     const head = el('div', 'review-mr-head');
-    head.append(chipWrap, title);
+    head.append(chipWrap);
     const body = el('div', 'review-body');
-    body.append(head);
+    body.append(stamp, head);
     row.append(body);
     return row;
   }
@@ -6674,7 +6717,9 @@
     const plainCanFold = !msg.isMr && !msg.isReviewRoot && canFold;
     const collapsed = canFold && reviewCollapsed.has(msg.id);
     const plainOpen = !msg.isMr && !msg.isReviewRoot && reviewPlainExpanded.has(msg.id);
-    const stamp = formatReviewStamp(msg.timestamp);
+    const stampDate = formatReviewStamp(msg.timestamp);
+    const stampBranch = msg.isReviewRoot ? reviewBranchLabel(msg.title) : '';
+    const hasStamp = !!(stampDate || stampBranch);
     const row = el(
       'div',
       'review-node' +
@@ -6689,7 +6734,7 @@
       linkElbow(
         reviewElbowMid({
           leadingGap,
-          hasStamp: !!stamp,
+          hasStamp,
           contentHalf: msg.isMr || msg.isReviewRoot ? 20 : 12,
         }),
         nextColor,
@@ -6697,8 +6742,16 @@
     );
 
     const body = el('div', 'review-body');
-    if (stamp) {
-      body.append(el('div', 'review-stamp', stamp));
+    if (hasStamp) {
+      const stamp = stampBranch ? renderReviewStamp(stampDate, stampBranch) : el('div', 'review-stamp', stampDate);
+      if (msg.isReviewRoot) {
+        stamp.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
+        });
+      }
+      body.append(stamp);
     }
 
     if (msg.isMr) {
@@ -6829,37 +6882,11 @@
       });
       chipWrap.append(side);
 
-      const titleText = msg.title || t('reviewEmptyMessage');
-      const title = el(
-        'button',
-        'review-mr-title-text' + (reviewTitleExpanded.has(msg.id) ? ' is-expanded' : ''),
-        titleText,
-      );
-      title.type = 'button';
-      title.addEventListener('click', (event) => {
-        event.stopPropagation();
-        if (msg.locked) {
-          flashReviewLock(msg.id);
-          return;
-        }
-        if (reviewTitleExpanded.has(msg.id)) {
-          reviewTitleExpanded.delete(msg.id);
-        } else {
-          reviewTitleExpanded.add(msg.id);
-        }
-        paintReviewPage();
-      });
-      title.addEventListener('contextmenu', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
-      });
       const head = el('div', 'review-mr-head');
       head.append(chipWrap);
       if (msg.locked) {
         head.append(reviewLockMark(msg.id, pageId));
       }
-      head.append(title);
       body.append(head);
 
       if (canFold) {
@@ -7319,6 +7346,35 @@
         input.disabled = false;
       }
     }
+  }
+
+  /**
+   * Enter commits a settings panel. A textarea keeps the line break, a button keeps its click.
+   * @param {KeyboardEvent} event
+   */
+  function isSettingsCommitKey(event) {
+    if (event.key !== 'Enter' || event.repeat || event.isComposing) {
+      return false;
+    }
+    if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) {
+      return false;
+    }
+    const target = event.target;
+    return !(target instanceof HTMLTextAreaElement || target instanceof HTMLButtonElement);
+  }
+
+  /**
+   * @param {HTMLElement} panel
+   * @param {() => void} commit
+   */
+  function bindSettingsCommitKey(panel, commit) {
+    panel.addEventListener('keydown', (event) => {
+      if (!isSettingsCommitKey(event) || panel.classList.contains('is-busy')) {
+        return;
+      }
+      event.preventDefault();
+      commit();
+    });
   }
 
   /**
@@ -8144,7 +8200,7 @@
         syncPageCreateSubmit();
       });
       syncPageCreateSubmit();
-      submit.addEventListener('click', () => {
+      const submitCreate = () => {
         if (panel.classList.contains('is-busy')) {
           return;
         }
@@ -8161,7 +8217,9 @@
           channelId: fields.channelId,
           discordToken: fields.discordToken,
         });
-      });
+      };
+      submit.addEventListener('click', submitCreate);
+      bindSettingsCommitKey(panel, submitCreate);
       actions.append(cancel, submit);
       panel.append(actions);
     } else {
@@ -8171,7 +8229,10 @@
         channelId: (opts.channelId || '').trim(),
         discordToken: '',
       });
-      const saveEditing = () => {
+      /**
+       * @param {boolean} [closeAfter]
+       */
+      const saveEditing = (closeAfter) => {
         const fields = readPageForm(true);
         if (!fields) {
           return;
@@ -8182,25 +8243,28 @@
           channelId: fields.channelId,
           discordToken: fields.discordToken || '',
         });
-        if (sig === savedSig) {
-          return;
+        if (sig !== savedSig) {
+          savedSig = sig;
+          vscode.postMessage({
+            type: 'pageSaveSettings',
+            pageId: opts.pageId,
+            name: fields.name,
+            description: fields.description,
+            channelId: fields.channelId,
+            discordToken: fields.discordToken,
+          });
         }
-        savedSig = sig;
-        vscode.postMessage({
-          type: 'pageSaveSettings',
-          pageId: opts.pageId,
-          name: fields.name,
-          description: fields.description,
-          channelId: fields.channelId,
-          discordToken: fields.discordToken,
-        });
+        if (closeAfter) {
+          closePageSettingsPanel();
+        }
       };
-      nameInput.addEventListener('change', saveEditing);
-      descInput.addEventListener('change', saveEditing);
-      channelInput.addEventListener('change', saveEditing);
+      nameInput.addEventListener('change', () => saveEditing(false));
+      descInput.addEventListener('change', () => saveEditing(false));
+      channelInput.addEventListener('change', () => saveEditing(false));
       if (discordInput) {
-        discordInput.addEventListener('change', saveEditing);
+        discordInput.addEventListener('change', () => saveEditing(false));
       }
+      bindSettingsCommitKey(panel, () => saveEditing(true));
     }
     mountSettingsOverlay(panel, closePageSettingsPanel);
     nameInput.focus();
@@ -8374,6 +8438,8 @@
     let modelInput = null;
     /** @type {HTMLInputElement | null} */
     let fixModelInput = null;
+    /** Flushes skill, directory, and model fields. Set when the review page is being edited. */
+    let flushReviewAgentFields = () => {};
     if (editing) {
       /**
        * @param {string} labelKey
@@ -8458,6 +8524,7 @@
         });
       }
 
+      flushReviewAgentFields = saveReviewPaths;
       for (const input of [skillInput, dirInput, modelInput, fixModelInput]) {
         input.addEventListener('change', () => saveReviewPaths());
       }
@@ -8661,24 +8728,28 @@
 
     let savedSig = '';
 
-    function saveEditing() {
+    /**
+     * @param {boolean | 'focus'} [report]
+     * @returns {boolean}
+     */
+    function saveEditing(report) {
       if (!editing) {
-        return;
+        return false;
       }
-      const fields = readReviewPageForm(true);
+      const fields = readReviewPageForm(report === undefined ? true : report);
       if (!fields) {
-        return;
+        return false;
       }
       const sig = JSON.stringify(fields);
-      if (sig === savedSig) {
-        return;
+      if (sig !== savedSig) {
+        savedSig = sig;
+        vscode.postMessage({
+          type: 'reviewUpdatePage',
+          pageId: opts.pageId,
+          ...fields,
+        });
       }
-      savedSig = sig;
-      vscode.postMessage({
-        type: 'reviewUpdatePage',
-        pageId: opts.pageId,
-        ...fields,
-      });
+      return true;
     }
 
     if (editing) {
@@ -8712,7 +8783,7 @@
       });
       const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
       submit.type = 'button';
-      submit.addEventListener('click', () => {
+      const submitCreate = () => {
         if (panel.classList.contains('is-busy')) {
           return;
         }
@@ -8725,9 +8796,20 @@
           type: 'reviewCreatePage',
           ...fields,
         });
-      });
+      };
+      submit.addEventListener('click', submitCreate);
+      bindSettingsCommitKey(panel, submitCreate);
       actions.append(cancel, submit);
       panel.append(actions);
+    }
+    if (editing) {
+      bindSettingsCommitKey(panel, () => {
+        if (!saveEditing('focus')) {
+          return;
+        }
+        flushReviewAgentFields();
+        closeReviewCreatePagePanel();
+      });
     }
     mountSettingsOverlay(panel, closeReviewCreatePagePanel);
     nameInput.focus();

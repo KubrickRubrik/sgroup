@@ -582,6 +582,11 @@ export class ReviewMapController {
     return title.trim() || 'MR';
   }
 
+  /** Chip placeholder while «Подтянуть» looks up the host MR and posts to Discord. Matches the map. */
+  pullSkeletonTitle(): string {
+    return '…';
+  }
+
   private rootSkeletonBranch(branch: string): string {
     return branch.trim() || '—';
   }
@@ -1203,10 +1208,10 @@ export class ReviewMapController {
   }
 
   /**
-   * «+» on a review page: create MR/PR or post existing one / focus chip.
+   * «Создать» on a review page. An open MR/PR on the current branch blocks a second one.
+   * Posting an existing host MR/PR is {@link pullExistingMr}.
    */
   async handleCreateMr(pageId: string): Promise<
-    | { kind: 'state'; state: ReviewPageState }
     | {
         kind: 'needPanel';
         branches: string[];
@@ -1215,7 +1220,73 @@ export class ReviewMapController {
         defaultAssignee: string;
         provider: ReviewHostProvider;
       }
+    | { kind: 'notice'; code: 'alreadyOpen'; provider: ReviewHostProvider }
+    | { kind: 'error'; message: string }
+  > {
+    const looked = await this.lookupOpenMr(pageId);
+    if (looked.kind === 'error') {
+      return looked;
+    }
+    if (looked.mr) {
+      return { kind: 'notice', code: 'alreadyOpen', provider: looked.access.provider };
+    }
+    const parent = (await detectParentBranch(this.cwd())) || 'development';
+    const branches = await collectMrTargetBranches(this.cwd(), looked.branch, parent);
+    const nick = this.hostNick(looked.access.provider);
+    return {
+      kind: 'needPanel',
+      branches,
+      parent,
+      people: nick ? [{ nick }] : [],
+      defaultAssignee: nick,
+      provider: looked.access.provider,
+    };
+  }
+
+  /**
+   * «Подтянуть» on a review page: post the open MR/PR of the current branch,
+   * or report that the channel already has it. Does not scroll to an existing chip.
+   */
+  async pullExistingMr(pageId: string): Promise<
+    | { kind: 'state'; state: ReviewPageState; notice: 'added'; provider: ReviewHostProvider }
+    | { kind: 'notice'; code: 'noOpen' | 'alreadyInChannel'; provider: ReviewHostProvider }
     | { kind: 'discordFail'; mr: ReviewMr; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const looked = await this.lookupOpenMr(pageId);
+    if (looked.kind === 'error') {
+      return looked;
+    }
+    if (!looked.mr) {
+      return { kind: 'notice', code: 'noOpen', provider: looked.access.provider };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { kind: 'error', message: 'Discord bot token is missing' };
+    }
+    const found = await findMrMessage(token, looked.access.channelId, looked.mr.web_url);
+    if (!found.ok) {
+      return { kind: 'discordFail', mr: looked.mr, message: found.message };
+    }
+    if (found.value) {
+      return { kind: 'notice', code: 'alreadyInChannel', provider: looked.access.provider };
+    }
+    const posted = await this.postMrToDiscord(looked.access, looked.mr);
+    if (!posted.ok) {
+      return { kind: 'discordFail', mr: looked.mr, message: posted.message };
+    }
+    await this.appendPostedMessage(pageId, looked.access.channelId, posted.message);
+    return {
+      kind: 'state',
+      state: this.snapshot(pageId),
+      notice: 'added',
+      provider: looked.access.provider,
+    };
+  }
+
+  /** Open MR/PR of the checked-out branch for this review page's origin. */
+  private async lookupOpenMr(pageId: string): Promise<
+    | { kind: 'ready'; access: ReviewPageAccess; branch: string; mr: ReviewMr | undefined }
     | { kind: 'error'; message: string }
   > {
     const access = await this.getAccess(pageId);
@@ -1227,32 +1298,15 @@ export class ReviewMapController {
       const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
       return { kind: 'error', message: `${label} token is missing` };
     }
-
     const branch = await currentBranch(this.cwd());
     if (!branch.ok) {
       return { kind: 'error', message: branch.message };
     }
-
     const existing = await this.findOpenByBranch(access, host, branch.value);
     if (!existing.ok) {
       return { kind: 'error', message: existing.message };
     }
-
-    if (!existing.value) {
-      const parent = (await detectParentBranch(this.cwd())) || 'development';
-      const branches = await collectMrTargetBranches(this.cwd(), branch.value, parent);
-      const nick = this.hostNick(access.provider);
-      return {
-        kind: 'needPanel',
-        branches,
-        parent,
-        people: nick ? [{ nick }] : [],
-        defaultAssignee: nick,
-        provider: access.provider,
-      };
-    }
-
-    return this.routeExistingMr(pageId, access, existing.value);
+    return { kind: 'ready', access, branch: branch.value, mr: existing.value };
   }
 
   private async routeExistingMr(
