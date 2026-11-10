@@ -38,17 +38,21 @@ import { ReviewDepth, ReviewKind } from './reviewPending';
 import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
 import {
   createRepositoryTokenKey,
+  deleteFigmaToken,
   deleteProfileHostToken,
   deleteRepositoryToken,
   getSecret,
+  readFigmaToken,
   readProfileHostToken,
   readRepositoryToken,
   SECRET_DISCORD,
   secretsStatus,
   storeSecrets,
+  writeFigmaToken,
   writeRepositoryToken,
   writeProfileHostToken,
 } from './accessStore';
+import { figmaLinkPreviewEnabled, figmaPreviewCacheKey, loadFigmaPreview, parseFigmaFrame } from './figmaLink';
 import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 import { listProjectDirectory } from './projectNav';
 import type { CatalogChannels } from './configFormat';
@@ -452,6 +456,7 @@ type IncomingMessage =
       description?: string;
       channelId?: string;
       discordToken?: string;
+      figmaToken?: string;
     }
   | {
       type: 'reviewUpdatePage';
@@ -667,11 +672,39 @@ async function fetchTextLimited(
   }
 }
 
+function sniffImageMime(buffer: Buffer): string | undefined {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer.toString('ascii', 1, 4) === 'PNG') {
+    return 'image/png';
+  }
+  if (
+    buffer.length >= 6 &&
+    (buffer.toString('ascii', 0, 6) === 'GIF87a' || buffer.toString('ascii', 0, 6) === 'GIF89a')
+  ) {
+    return 'image/gif';
+  }
+  if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return undefined;
+}
+
 async function fetchImageDataUrl(
   url: string,
   maxBytes: number,
   timeoutMs: number,
 ): Promise<string | undefined> {
+  const result = await downloadPreviewImage(url, maxBytes, timeoutMs);
+  return 'dataUrl' in result ? result.dataUrl : undefined;
+}
+
+async function downloadPreviewImage(
+  url: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ dataUrl: string } | { tooBig: true } | { failed: true }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -680,19 +713,23 @@ async function fetchImageDataUrl(
       redirect: 'follow',
     });
     if (!response.ok) {
-      return undefined;
+      return { failed: true };
     }
-    const mime = (response.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
-    if (!mime.startsWith('image/')) {
-      return undefined;
-    }
+    const headerMime = (response.headers.get('content-type') || '').split(';')[0].trim();
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength === 0 || buffer.byteLength > maxBytes) {
-      return undefined;
+    if (buffer.byteLength === 0) {
+      return { failed: true };
     }
-    return `data:${mime};base64,${buffer.toString('base64')}`;
+    if (buffer.byteLength > maxBytes) {
+      return { tooBig: true };
+    }
+    const mime = sniffImageMime(buffer) || (headerMime.startsWith('image/') ? headerMime : undefined);
+    if (!mime) {
+      return { failed: true };
+    }
+    return { dataUrl: `data:${mime};base64,${buffer.toString('base64')}` };
   } catch {
-    return undefined;
+    return { failed: true };
   } finally {
     clearTimeout(timer);
   }
@@ -732,12 +769,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastEditorColumn?: vscode.ViewColumn;
   /** Rendered setup docs, one tab per file. */
   private readonly instructionPanels = new Map<string, vscode.WebviewPanel>();
-  /** In-memory OG preview cache keyed by page URL. */
+  /** In-memory link preview cache. Figma keys also include a token stamp. */
   private readonly linkPreviewCache = new Map<
     string,
     { image?: string; description?: string; empty?: true }
   >();
-  private readonly linkPreviewInflight = new Map<string, Promise<void>>();
+  private readonly linkPreviewInflight = new Map<
+    string,
+    Promise<{ image?: string; description?: string; empty?: true } | undefined>
+  >();
   /** Workspace file that last had the editor. Kept when focus moves to the map. */
   private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
@@ -3189,6 +3229,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         url: message.url,
         color: message.color,
       });
+      const nextUrl = typeof message.url === 'string' ? message.url.trim() : '';
+      if (figmaLinkPreviewEnabled && nextUrl && parseFigmaFrame(nextUrl)) {
+        const token = await readFigmaToken(this.hostSecrets, this.store.activeProfileId);
+        if (!token) {
+          const locale = normalizeLocale(this.store.appearance.language);
+          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'figmaTokenMissing')}`);
+        }
+      }
       return;
     }
     if (message.type === 'deleteLink') {
@@ -5075,6 +5123,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     },
   ): Promise<void> {
     const status = await secretsStatus(this.hostSecrets);
+    const figmaToken =
+      opts.kind === 'links'
+        ? (await readFigmaToken(this.hostSecrets, this.store.activeProfileId)) || ''
+        : undefined;
     await webview.postMessage({
       type: 'pageSettingsPanel',
       mode: opts.mode,
@@ -5084,6 +5136,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       description: opts.description || '',
       channelId: this.catalogChannelForPageKind(opts.kind),
       hasDiscord: status.hasDiscord,
+      ...(figmaToken !== undefined ? { figmaToken } : {}),
     });
   }
 
@@ -5146,6 +5199,37 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
+  /** Links page settings share the profile Figma token. An empty edit clears it. */
+  private async savePageFigmaToken(token: string | undefined, allowClear: boolean): Promise<void> {
+    if (typeof token !== 'string') {
+      return;
+    }
+    this.dropFigmaPreviewCache();
+    const trimmed = token.trim();
+    const profileId = this.store.activeProfileId;
+    if (trimmed) {
+      await writeFigmaToken(this.hostSecrets, profileId, trimmed);
+      return;
+    }
+    if (allowClear) {
+      await deleteFigmaToken(this.hostSecrets, profileId);
+    }
+  }
+
+  /** A saved token must not keep a preview that failed under the previous one. */
+  private dropFigmaPreviewCache(): void {
+    for (const key of this.linkPreviewCache.keys()) {
+      if (key.startsWith('figma')) {
+        this.linkPreviewCache.delete(key);
+      }
+    }
+    for (const key of this.linkPreviewInflight.keys()) {
+      if (key.startsWith('figma')) {
+        this.linkPreviewInflight.delete(key);
+      }
+    }
+  }
+
   private async savePageDiscordAndChannel(
     kind: PageKind,
     channelId: string | undefined,
@@ -5170,6 +5254,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       description?: string;
       channelId?: string;
       discordToken?: string;
+      figmaToken?: string;
     },
   ): Promise<void> {
     const name = message.name.trim();
@@ -5189,6 +5274,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    await this.savePageFigmaToken(message.figmaToken, !!message.pageId);
     if (message.pageId) {
       const page = this.store.page(message.pageId);
       if (!page) {
@@ -5763,7 +5849,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     url: string,
     requestId: string,
   ): Promise<void> {
-    const cached = this.linkPreviewCache.get(url);
+    if (!figmaLinkPreviewEnabled && parseFigmaFrame(url)) {
+      await webview.postMessage({
+        type: 'previewLinkResult',
+        requestId,
+        url,
+        empty: true,
+      });
+      return;
+    }
+    const frame = parseFigmaFrame(url);
+    const figmaToken = frame
+      ? await readFigmaToken(this.hostSecrets, this.store.activeProfileId)
+      : undefined;
+    const cacheKey = frame ? figmaPreviewCacheKey(url, figmaToken) : url;
+    const cached = this.linkPreviewCache.get(cacheKey);
     if (cached) {
       await webview.postMessage({
         type: 'previewLinkResult',
@@ -5773,15 +5873,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
-    let inflight = this.linkPreviewInflight.get(url);
+    let inflight = this.linkPreviewInflight.get(cacheKey);
     if (!inflight) {
-      inflight = this.fetchLinkPreview(url).finally(() => {
-        this.linkPreviewInflight.delete(url);
+      inflight = this.fetchLinkPreview(cacheKey, url, frame, figmaToken).finally(() => {
+        this.linkPreviewInflight.delete(cacheKey);
       });
-      this.linkPreviewInflight.set(url, inflight);
+      this.linkPreviewInflight.set(cacheKey, inflight);
     }
-    await inflight;
-    const result = this.linkPreviewCache.get(url) ?? { empty: true as const };
+    const result = (await inflight) ?? this.linkPreviewCache.get(cacheKey) ?? { empty: true as const };
     await webview.postMessage({
       type: 'previewLinkResult',
       requestId,
@@ -5790,17 +5889,62 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
-  private async fetchLinkPreview(url: string): Promise<void> {
+  private async fetchLinkPreview(
+    cacheKey: string,
+    url: string,
+    frame: ReturnType<typeof parseFigmaFrame>,
+    figmaToken: string | undefined,
+  ): Promise<{ image?: string; description?: string; empty?: true } | undefined> {
     try {
+      if (frame) {
+        if (!figmaToken) {
+          const empty = { empty: true as const };
+          this.linkPreviewCache.set(cacheKey, empty);
+          return empty;
+        }
+        const found = await loadFigmaPreview(frame, figmaToken, async (imageUrl) => {
+          const file = await downloadPreviewImage(imageUrl, 2_500_000, 20_000);
+          if ('dataUrl' in file) {
+            return file.dataUrl;
+          }
+          return 'tooBig' in file ? 'too-big' : 'failed';
+        });
+        const locale = normalizeLocale(this.store.appearance.language);
+        if (found.retry) {
+          const description = found.limited
+            ? found.limitQuota
+              ? t(locale, 'figmaPreviewLimitedQuota')
+              : t(locale, 'figmaPreviewLimited', {
+                  minutes: Math.max(1, Math.ceil((found.retryAfterSec ?? 60) / 60)),
+                })
+            : found.detail || t(locale, 'figmaPreviewEmpty');
+          return { description };
+        }
+        const description = found.denied
+          ? t(locale, 'figmaPreviewDenied')
+          : found.detail || t(locale, 'figmaPreviewEmpty');
+        if (found.image) {
+          const hit = { image: found.image };
+          this.linkPreviewCache.set(cacheKey, hit);
+          return hit;
+        }
+        const miss = { description };
+        if (!found.denied) {
+          this.linkPreviewCache.set(cacheKey, miss);
+        }
+        return miss;
+      }
       const parsed = vscode.Uri.parse(url);
       if (parsed.scheme !== 'http' && parsed.scheme !== 'https') {
-        this.linkPreviewCache.set(url, { empty: true });
-        return;
+        const empty = { empty: true as const };
+        this.linkPreviewCache.set(cacheKey, empty);
+        return empty;
       }
       const html = await fetchTextLimited(url, 400_000, 8_000);
       if (!html) {
-        this.linkPreviewCache.set(url, { empty: true });
-        return;
+        const empty = { empty: true as const };
+        this.linkPreviewCache.set(cacheKey, empty);
+        return empty;
       }
       const description =
         metaContent(html, 'og:description') || metaContent(html, 'description') || undefined;
@@ -5817,12 +5961,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         image = await fetchImageDataUrl(imageUrl, 800_000, 8_000);
       }
       if (!image && !description) {
-        this.linkPreviewCache.set(url, { empty: true });
-        return;
+        const empty = { empty: true as const };
+        this.linkPreviewCache.set(cacheKey, empty);
+        return empty;
       }
-      this.linkPreviewCache.set(url, { image, description });
+      const hit = { image, description };
+      this.linkPreviewCache.set(cacheKey, hit);
+      return hit;
     } catch {
-      this.linkPreviewCache.set(url, { empty: true });
+      const empty = { empty: true as const };
+      this.linkPreviewCache.set(cacheKey, empty);
+      return empty;
     }
   }
 

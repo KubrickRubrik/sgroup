@@ -79,7 +79,7 @@
       },
       "open": {
         "bottom": false,
-        "left": true,
+        "left": false,
         "right": true
       }
     }

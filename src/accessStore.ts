@@ -13,6 +13,8 @@ export const ACCESS_FILE = '.syn3/access.json';
 export const SECRET_GITLAB = 'syn3.gitlabToken';
 export const SECRET_GITHUB = 'syn3.githubToken';
 export const SECRET_DISCORD = 'syn3.discordBotToken';
+/** Per-profile Figma personal access token. Never written into shared config. */
+export const SECRET_FIGMA = 'syn3.figmaToken';
 /** Opaque host-token refs written into base profiling.repositoryTokenKey. */
 export const SECRET_REPO_TOKEN_PREFIX = 'syn3.repoToken.';
 
@@ -281,12 +283,58 @@ export async function deleteProfileHostToken(
   await secrets.delete(profileHostSecretKey(provider, profileId));
 }
 
+export function figmaSecretKey(profileId: string): string {
+  return `${SECRET_FIGMA}.${profileId.trim()}`;
+}
+
+/** Optional Figma token of one profile. Used only to render link previews. */
+export async function readFigmaToken(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+): Promise<string | undefined> {
+  const id = profileId.trim();
+  if (!id) {
+    return undefined;
+  }
+  const stored = await getSecret(secrets, figmaSecretKey(id));
+  if (!stored) {
+    return undefined;
+  }
+  const token = stored.trim().replace(/^Bearer\s+/i, '');
+  return token || undefined;
+}
+
+export async function writeFigmaToken(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+  token: string,
+): Promise<void> {
+  const id = profileId.trim();
+  const trimmed = token.trim().replace(/^Bearer\s+/i, '');
+  if (!id || !trimmed) {
+    return;
+  }
+  await secrets.store(figmaSecretKey(id), trimmed);
+}
+
+export async function deleteFigmaToken(
+  secrets: vscode.SecretStorage,
+  profileId: string,
+): Promise<void> {
+  const id = profileId.trim();
+  if (!id) {
+    return;
+  }
+  await secrets.delete(figmaSecretKey(id));
+}
+
 export async function deleteProfileHostTokens(
   secrets: vscode.SecretStorage,
   profileId: string,
 ): Promise<void> {
   await deleteProfileHostToken(secrets, profileId, 'github');
   await deleteProfileHostToken(secrets, profileId, 'gitlab');
+  await deleteFigmaToken(secrets, profileId);
 }
 
 /** Drop Discord + host tokens (legacy keys and every profile scope). */

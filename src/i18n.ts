@@ -49,6 +49,10 @@ const EN = {
   gitNickPlaceholder: 'Nickname',
   gitTokenPlaceholder: 'Token',
   gitTokenClear: 'Clear saved token',
+  labelFigma: 'Figma',
+  figmaTokenPlaceholder: 'Personal access token',
+  noteFigma:
+    'Optional, for this profile. Stays in editor secrets on this machine and is not sent to Discord. With it, a figma.com link preview loads the frame through the Figma API. The token needs file content read access.',
   noteBindings:
     'Nickname is stored in this profile. The token is the same one as in the review page settings: it stays in editor secrets on this machine and is used to create merge requests.',
   sectionPositions: 'Cloud config',
@@ -69,7 +73,7 @@ const EN = {
   channelReviewMustBeDistinct: 'Review must use a separate channel.',
   clearAll: 'Clear all Syn3 data',
   clearAllNote:
-    'Deletes markers, pages, profiles, styles, positions, history, Discord/Git tokens and channel ids. Leaves a fresh empty map.',
+    'Deletes markers, pages, profiles, styles, positions, history, Discord, Git and Figma tokens and channel ids. Leaves a fresh empty map.',
   clearAllConfirm:
     'Clear ALL Syn3 data? Markers, pages, profiles, styles, tokens and channels will be removed. This cannot be undone.',
   clearAllConfirmAction: 'Clear everything',
@@ -386,6 +390,17 @@ const EN = {
   linkComponentFallback: 'Your component',
   linkAddDescription: 'Add description',
   linkFieldUrl: 'Link',
+  figmaTokenMissing: 'Add a Figma token in the page settings',
+  figmaPreviewDenied: 'Figma rejected the token or this file. The token needs File content: Read.',
+  linkPreviewLoading: 'Loading preview',
+  figmaPreviewEmpty: 'Figma did not return an image for this frame.',
+  figmaPreviewLimited: 'Figma is limiting image requests. Try again in about {minutes} min.',
+  figmaPreviewLimitedQuota:
+    'This Figma token has used up its image quota. On the free plan that is only a few renders a month, and hovering again will not reset it. Wait for the quota to renew. A file in a free team keeps that low quota until the file is moved to a paid team.',
+  figmaTokenField: 'Figma token',
+  figmaTokenHelp: 'Where to get a Figma token',
+  figmaTokenHelpBody:
+    'In Figma open the file browser, click your avatar at the top left, then Settings → Security → Personal access tokens → Generate new token.\nTurn on File content: Read. Figma shows the token only once — copy it into this field.',
   linkCreateChild: 'Create child',
   linkDeleteConfirm: 'Delete “{name}”?',
   linkDeleteSubtreeConfirm: 'Delete “{name}” and everything inside it?',
@@ -453,6 +468,10 @@ const RU: Syn3Strings = {
   gitNickPlaceholder: 'Ник',
   gitTokenPlaceholder: 'Токен',
   gitTokenClear: 'Сбросить сохранённый токен',
+  labelFigma: 'Figma',
+  figmaTokenPlaceholder: 'Personal access token',
+  noteFigma:
+    'Необязательно, для этого профиля. Остаётся в секретах редактора на этой машине и не уходит в Discord. С ним превью ссылки figma.com показывает кадр через API Figma. Токену нужен доступ на чтение содержимого файла.',
   noteBindings:
     'Ник хранится в этом профиле. Токен тот же, что в настройках страницы ревью: он остаётся в секретах редактора на этой машине и используется при создании запросов на слияние.',
   sectionPositions: 'Облачный конфиг',
@@ -473,7 +492,7 @@ const RU: Syn3Strings = {
   channelReviewMustBeDistinct: 'Для ревью должен быть отдельный канал.',
   clearAll: 'Очистить все данные Syn3',
   clearAllNote:
-    'Удаляет маркеры, страницы, профили, стили, позиции, историю, токены Discord/Git и id каналов. Остаётся пустая карта.',
+    'Удаляет маркеры, страницы, профили, стили, позиции, историю, токены Discord, Git и Figma и id каналов. Остаётся пустая карта.',
   clearAllConfirm:
     'Очистить ВСЕ данные Syn3? Маркеры, страницы, профили, стили, токены и каналы будут удалены. Это нельзя отменить.',
   clearAllConfirmAction: 'Очистить всё',
@@ -785,6 +804,17 @@ const RU: Syn3Strings = {
   linkComponentFallback: 'Ваш компонент',
   linkAddDescription: 'Добавить описание',
   linkFieldUrl: 'Ссылка',
+  figmaTokenMissing: 'Необходимо добавить токен для Figma в настройках страницы',
+  figmaPreviewDenied: 'Figma отклонила токен или нет доступа к файлу. Нужно право File content: Read.',
+  linkPreviewLoading: 'Превью загружается',
+  figmaPreviewEmpty: 'Figma не отдала картинку этого фрейма.',
+  figmaPreviewLimited: 'Figma временно ограничила запросы. Повторите примерно через {minutes} мин.',
+  figmaPreviewLimitedQuota:
+    'У этого токена Figma закончился лимит на картинки. На бесплатном плане это несколько запросов в месяц, новые наведения его не обновляют. Подождите, пока лимит сбросится. Если файл лежит в бесплатной команде, низкий лимит сохранится, пока файл не перенесут в платную.',
+  figmaTokenField: 'Токен Figma',
+  figmaTokenHelp: 'Где взять токен Figma',
+  figmaTokenHelpBody:
+    'В Figma откройте список файлов, нажмите аватар слева сверху, затем Settings → Security → Personal access tokens → Generate new token.\nВключите доступ File content: Read. Токен показывается один раз — сразу скопируйте его в это поле.',
   linkCreateChild: 'Создать дочерний элемент',
   linkDeleteConfirm: 'Удалить «{name}»?',
   linkDeleteSubtreeConfirm: 'Удалить «{name}» вместе со всем, что внутри?',

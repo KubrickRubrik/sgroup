@@ -2,12 +2,15 @@ import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import {
   clearAllSyn3Secrets,
+  deleteFigmaToken,
   deleteProfileHostToken,
   deleteProfileHostTokens,
   GitHostProvider,
+  readFigmaToken,
   readProfileHostToken,
   secretsStatus,
   storeSecrets,
+  writeFigmaToken,
   writeProfileHostToken,
 } from './accessStore';
 import { isValidChannelId, reviewChannelConflicts } from './discordSetup';
@@ -40,6 +43,7 @@ type IncomingMessage =
       token?: string;
       clearToken?: boolean;
     }
+  | { type: 'setFigmaToken'; token?: string; clearToken?: boolean }
   | {
       type: 'setCatalogChannels';
       channelProfile?: string;
@@ -136,6 +140,10 @@ export class SettingsPanel implements vscode.Disposable {
     }
     if (message.type === 'setGitBinding') {
       await this.onGitBinding(message);
+      return;
+    }
+    if (message.type === 'setFigmaToken') {
+      await this.onFigmaToken(message);
       return;
     }
     if (message.type === 'setCatalogChannels') {
@@ -305,6 +313,16 @@ export class SettingsPanel implements vscode.Disposable {
     await this.postState();
   }
 
+  private async onFigmaToken(message: { token?: string; clearToken?: boolean }): Promise<void> {
+    const profileId = this.store.activeProfileId;
+    if (message.clearToken || !message.token?.trim()) {
+      await deleteFigmaToken(this.secrets, profileId);
+    } else {
+      await writeFigmaToken(this.secrets, profileId, message.token);
+    }
+    await this.postState();
+  }
+
   private async onCatalogChannels(message: {
     channelProfile?: string;
     channelExplorer?: string;
@@ -388,6 +406,7 @@ export class SettingsPanel implements vscode.Disposable {
     const profileId = this.store.activeProfileId;
     const githubToken = (await readProfileHostToken(this.secrets, profileId, 'github')) || '';
     const gitlabToken = (await readProfileHostToken(this.secrets, profileId, 'gitlab')) || '';
+    const figmaToken = (await readFigmaToken(this.secrets, profileId)) || '';
     const channels = this.store.catalogChannels();
     const secrets = await secretsStatus(this.secrets);
     await this.panel.webview.postMessage({
@@ -403,6 +422,7 @@ export class SettingsPanel implements vscode.Disposable {
         githubToken,
         gitlabToken,
       },
+      figmaToken,
       reviewSkillPath: reviewPaths.skillPath,
       reviewDirPath: reviewPaths.dirPath,
       reviewModel: reviewPaths.model,
@@ -798,6 +818,9 @@ export class SettingsPanel implements vscode.Disposable {
     .token-clear:hover {
       background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
     }
+    .figma-token {
+      grid-column: 2 / -1;
+    }
     .review-example {
       background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
       border: none;
@@ -1090,6 +1113,14 @@ export class SettingsPanel implements vscode.Disposable {
           <button type="button" id="gitlabTokenClear" class="token-clear" hidden data-i18n-aria="gitTokenClear">×</button>
         </span>
       </div>
+      <div class="row bind-row">
+        <label for="figmaToken" data-i18n="labelFigma">Figma</label>
+        <span class="token-field figma-token">
+          <input id="figmaToken" type="password" spellcheck="false" autocomplete="new-password" data-i18n-placeholder="figmaTokenPlaceholder">
+          <button type="button" id="figmaTokenClear" class="token-clear" hidden data-i18n-aria="gitTokenClear">×</button>
+        </span>
+      </div>
+      <p class="note" data-i18n="noteFigma"></p>
       <p class="note" data-i18n="noteBindings"></p>
     </section>
     <div class="row">
@@ -1402,6 +1433,8 @@ export class SettingsPanel implements vscode.Disposable {
     const gitlabToken = document.getElementById('gitlabToken');
     const githubTokenClear = document.getElementById('githubTokenClear');
     const gitlabTokenClear = document.getElementById('gitlabTokenClear');
+    const figmaToken = document.getElementById('figmaToken');
+    const figmaTokenClear = document.getElementById('figmaTokenClear');
     let boundProfileId = '';
 
     function tr(key) {
@@ -1537,7 +1570,7 @@ export class SettingsPanel implements vscode.Disposable {
       suppress = false;
     }
 
-    function applyGitBindings(profileId, git) {
+    function applyGitBindings(profileId, git, figma) {
       const switched = profileId !== boundProfileId;
       boundProfileId = profileId || '';
       const bindings = git && typeof git === 'object' ? git : {};
@@ -1546,6 +1579,14 @@ export class SettingsPanel implements vscode.Disposable {
         { provider: 'gitlab', nick: gitlabNick, token: gitlabToken, clear: gitlabTokenClear, nickValue: bindings.gitlabNick, tokenValue: bindings.gitlabToken },
       ];
       suppress = true;
+      const figmaValue = typeof figma === 'string' ? figma : '';
+      if (figmaToken instanceof HTMLInputElement && (switched || document.activeElement !== figmaToken)) {
+        figmaToken.value = figmaValue;
+        figmaToken.placeholder = tr('figmaTokenPlaceholder');
+      }
+      if (figmaTokenClear instanceof HTMLButtonElement) {
+        figmaTokenClear.hidden = !figmaValue;
+      }
       for (const row of rows) {
         if (row.nick instanceof HTMLInputElement && (switched || document.activeElement !== row.nick)) {
           row.nick.value = typeof row.nickValue === 'string' ? row.nickValue : '';
@@ -1764,6 +1805,14 @@ export class SettingsPanel implements vscode.Disposable {
     gitlabTokenClear?.addEventListener('click', () => {
       vscode.postMessage({ type: 'setGitBinding', provider: 'gitlab', clearToken: true });
     });
+    figmaToken?.addEventListener('change', () => {
+      if (suppress || !(figmaToken instanceof HTMLInputElement)) return;
+      const token = figmaToken.value.trim();
+      vscode.postMessage(token ? { type: 'setFigmaToken', token } : { type: 'setFigmaToken', clearToken: true });
+    });
+    figmaTokenClear?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'setFigmaToken', clearToken: true });
+    });
     reviewPromptExample?.addEventListener('click', () => {
       vscode.postMessage({ type: 'openReviewPromptExample' });
     });
@@ -1905,7 +1954,7 @@ export class SettingsPanel implements vscode.Disposable {
           event.data.reviewModel,
           event.data.reviewFixModel,
         );
-        applyGitBindings(event.data.activeProfileId, event.data.gitBindings);
+        applyGitBindings(event.data.activeProfileId, event.data.gitBindings, event.data.figmaToken);
         applyCatalogChannels(
           event.data.catalogChannels,
           event.data.hasDiscord,

@@ -171,6 +171,14 @@
   let linkPreviewPendingId = null;
   /** @type {HTMLElement | null} */
   let linkPreviewEl = null;
+  /** Spinner beside the chip while its preview is still loading. */
+  /** @type {HTMLElement | null} */
+  let linkPreviewLoaderEl = null;
+  /** Request whose chip spinner is showing. An older result must not hide the next one. */
+  /** @type {string | null} */
+  let linkPreviewLoaderRequestId = null;
+  /** @type {number} */
+  let linkPreviewLoaderTimer = 0;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let linkPreviewHideTimer = null;
   /** @type {string | null} */
@@ -179,6 +187,10 @@
   let linkPreviewGen = 0;
   /** Generation captured when the current preview was shown. */
   let linkPreviewShownGen = 0;
+  /** Matches figmaLinkPreviewEnabled in src/figmaLink.ts. Hover must not render frames. */
+  const figmaLinkPreviewEnabled = false;
+  /** Dragging a Figma frame. Mouseleave must not close the card mid-pan. */
+  let linkPreviewPanning = false;
   let clipboardRequestId = 0;
   /** @type {{ ctx: Record<string, unknown>, x: number, y: number, requestId: string } | null} */
   let pendingClipboardMenu = null;
@@ -1088,6 +1100,7 @@
         description: typeof message.description === 'string' ? message.description : '',
         channelId: typeof message.channelId === 'string' ? message.channelId : '',
         hasDiscord: message.hasDiscord === true,
+        figmaToken: typeof message.figmaToken === 'string' ? message.figmaToken : '',
       });
     } else if (message.type === 'pageSettingsError') {
       const panel = document.getElementById('page-settings-panel');
@@ -8132,7 +8145,8 @@
    *   name?: string,
    *   description?: string,
    *   channelId?: string,
-   *   hasDiscord?: boolean
+   *   hasDiscord?: boolean,
+   *   figmaToken?: string
    * }} opts
    */
   function openPageSettingsPanel(opts) {
@@ -8198,6 +8212,43 @@
     });
 
     /** @type {HTMLInputElement | null} */
+    let figmaInput = null;
+    if (selectedKind === 'links') {
+      const figmaLabel = el('label', 'review-mr-field', t('figmaTokenField'));
+      const figmaRow = el('div', 'figma-token-row');
+      const figmaTokenInput = document.createElement('input');
+      figmaTokenInput.className = 'review-mr-title';
+      figmaTokenInput.type = 'password';
+      figmaTokenInput.spellcheck = false;
+      figmaTokenInput.autocomplete = 'new-password';
+      figmaTokenInput.placeholder = t('figmaTokenPlaceholder');
+      figmaTokenInput.value = opts.figmaToken || '';
+      const figmaHelp = el('button', 'figma-token-help', '?');
+      figmaHelp.type = 'button';
+      figmaHelp.title = t('figmaTokenHelp');
+      figmaHelp.setAttribute('aria-label', t('figmaTokenHelp'));
+      figmaHelp.setAttribute('aria-expanded', 'false');
+      const figmaHint = el('div', 'figma-token-hint', t('figmaTokenHelpBody'));
+      figmaHint.hidden = true;
+      figmaHelp.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const open = figmaHint.hidden;
+        figmaHint.hidden = !open;
+        figmaHelp.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      figmaHelp.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.stopPropagation();
+        }
+      });
+      figmaRow.append(figmaTokenInput, figmaHelp);
+      figmaLabel.append(figmaRow);
+      panel.append(figmaLabel, figmaHint);
+      figmaInput = figmaTokenInput;
+    }
+
+    /** @type {HTMLInputElement | null} */
     let discordInput = null;
     if (opts.hasDiscord) {
       panel.append(
@@ -8213,7 +8264,7 @@
 
     /**
      * @param {boolean} report
-     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined } | null}
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined } | null}
      */
     function readPageForm(report) {
       const name = nameInput.value.trim();
@@ -8257,6 +8308,7 @@
         description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
         channelId,
         discordToken: discordInput?.value.trim() || undefined,
+        figmaToken: figmaInput ? figmaInput.value.trim() : undefined,
       };
     }
 
@@ -8304,6 +8356,7 @@
           description: fields.description,
           channelId: fields.channelId,
           discordToken: fields.discordToken,
+          figmaToken: fields.figmaToken,
         });
       };
       submit.addEventListener('click', submitCreate);
@@ -8316,6 +8369,7 @@
         description: clipGroupDescriptionInput(opts.description || '').trim(),
         channelId: (opts.channelId || '').trim(),
         discordToken: '',
+        figmaToken: figmaInput ? figmaInput.value.trim() : '',
       });
       /**
        * @param {boolean} [closeAfter]
@@ -8330,6 +8384,7 @@
           description: fields.description || '',
           channelId: fields.channelId,
           discordToken: fields.discordToken || '',
+          figmaToken: fields.figmaToken || '',
         });
         if (sig !== savedSig) {
           savedSig = sig;
@@ -8340,6 +8395,7 @@
             description: fields.description,
             channelId: fields.channelId,
             discordToken: fields.discordToken,
+            figmaToken: fields.figmaToken,
           });
         }
         if (closeAfter) {
@@ -8351,6 +8407,9 @@
       channelInput.addEventListener('change', () => saveEditing(false));
       if (discordInput) {
         discordInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaInput) {
+        figmaInput.addEventListener('change', () => saveEditing(false));
       }
       bindSettingsCommitKey(panel, () => saveEditing(true));
     }
@@ -9240,15 +9299,30 @@
       focusLinkNameOnOpen = true;
       paintLinksPage();
     });
-    if (link.url && !parseEntityLink(link.url)) {
+    /** @type {HTMLElement | null} */
+    let previewLoader = null;
+    if (link.url && !parseEntityLink(link.url) && (figmaLinkPreviewEnabled || !isFigmaPreviewUrl(link.url))) {
       chip.dataset.previewUrl = link.url;
+      const figmaPreview = isFigmaPreviewUrl(link.url);
+      if (figmaPreview) {
+        previewLoader = el('span', 'link-preview-loader');
+        previewLoader.hidden = true;
+        previewLoader.setAttribute('role', 'status');
+        previewLoader.setAttribute('aria-label', t('linkPreviewLoading'));
+      }
       let previewGen = linkPreviewGen;
       chip.addEventListener('mouseenter', () => {
         previewGen = linkPreviewGen;
         window.clearTimeout(previewTimer);
+        if (previewLoader) {
+          armLinkPreviewLoader(previewLoader);
+        }
         previewTimer = window.setTimeout(() => {
           previewTimer = 0;
           if (previewGen !== linkPreviewGen || !chip.isConnected) {
+            if (previewLoader) {
+              clearLinkPreviewLoader(previewLoader);
+            }
             return;
           }
           showLinkPreview(chip);
@@ -9261,9 +9335,15 @@
           return;
         }
         scheduleHideLinkPreview();
+        if (previewLoader && linkPreviewUrl !== link.url) {
+          clearLinkPreviewLoader(previewLoader);
+        }
       });
     }
     chipWrap.append(chip);
+    if (previewLoader) {
+      chipWrap.append(previewLoader);
+    }
 
     const side = el('div', 'link-side');
     const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
@@ -11309,7 +11389,7 @@
         // Preview open is deferred with the note click: double-click edits
         // at this point, a drag selects text, a single click opens the URL.
       });
-      if (!editing) {
+      if (!editing && (figmaLinkPreviewEnabled || !isFigmaPreviewUrl(node.href))) {
         let previewGen = linkPreviewGen;
         node.addEventListener('mouseenter', () => {
           previewGen = linkPreviewGen;
@@ -14177,7 +14257,7 @@
       linkPreviewHideTimer = null;
     }
     const url = link instanceof HTMLAnchorElement ? link.href : link.dataset.previewUrl || '';
-    if (!url) {
+    if (!url || (!figmaLinkPreviewEnabled && isFigmaPreviewUrl(url))) {
       return;
     }
     linkPreviewUrl = url;
@@ -14187,18 +14267,28 @@
       return;
     }
     const fromChip = !(link instanceof HTMLAnchorElement);
+    const figma = isFigmaPreviewUrl(url);
     const narrow = window.innerWidth < 100;
     linkPreviewEl.classList.toggle('is-narrow', narrow);
     linkPreviewEl.classList.toggle('is-link-chip', fromChip);
+    linkPreviewEl.classList.toggle('is-figma', figma);
+    linkPreviewEl.style.width = figma ? `${Math.round(figmaPreviewWidth())}px` : '';
     const rect = link.getBoundingClientRect();
-    const limit = fromChip ? Math.min(260, window.innerHeight - 16) : 128;
+    const limit = figma
+      ? figmaPreviewHeight()
+      : fromChip
+        ? Math.min(260, window.innerHeight - 16)
+        : 128;
     linkPreviewEl.style.top = Math.max(8, Math.min(window.innerHeight - limit, rect.bottom + 4)) + 'px';
     linkPreviewEl.hidden = false;
     const scroll = /** @type {HTMLElement} */ (linkPreviewEl.querySelector('.note-link-preview-scroll'));
-    scroll.replaceChildren(buildLinkPreviewSkeleton());
+    scroll.replaceChildren(buildLinkPreviewSkeleton(figma));
     updateLinkPreviewScrollbar();
     const requestId = String(++linkPreviewRequest);
     linkPreviewPendingId = requestId;
+    if (linkPreviewLoaderEl) {
+      linkPreviewLoaderRequestId = requestId;
+    }
     vscode.postMessage({ type: 'previewLink', url, requestId });
   }
 
@@ -14243,7 +14333,7 @@
       }
     });
     preview.addEventListener('mouseleave', () => {
-      if (preview.hidden || linkPreviewShownGen !== linkPreviewGen) {
+      if (preview.hidden || linkPreviewShownGen !== linkPreviewGen || linkPreviewPanning) {
         return;
       }
       scheduleHideLinkPreview();
@@ -14252,12 +14342,250 @@
     document.body.append(linkPreviewEl);
   }
 
-  function buildLinkPreviewSkeleton() {
+  /**
+   * @param {HTMLElement} loader
+   */
+  function armLinkPreviewLoader(loader) {
+    if (linkPreviewLoaderEl === loader) {
+      return;
+    }
+    clearLinkPreviewLoader();
+    linkPreviewLoaderRequestId = null;
+    linkPreviewLoaderEl = loader;
+    linkPreviewLoaderTimer = window.setTimeout(() => {
+      linkPreviewLoaderTimer = 0;
+      if (linkPreviewLoaderEl !== loader || !loader.isConnected) {
+        return;
+      }
+      loader.replaceChildren(reviewProgressIcon());
+      loader.hidden = false;
+    }, 180);
+  }
+
+  /** @param {HTMLElement} [only] */
+  function clearLinkPreviewLoader(only) {
+    if (only && linkPreviewLoaderEl && linkPreviewLoaderEl !== only) {
+      return;
+    }
+    if (linkPreviewLoaderTimer) {
+      window.clearTimeout(linkPreviewLoaderTimer);
+      linkPreviewLoaderTimer = 0;
+    }
+    if (linkPreviewLoaderEl) {
+      linkPreviewLoaderEl.hidden = true;
+      linkPreviewLoaderEl.replaceChildren();
+      linkPreviewLoaderEl = null;
+    }
+    linkPreviewLoaderRequestId = null;
+  }
+
+  /** 16:9 card: full webview width, never wider than 600px or taller than the webview. */
+  function figmaPreviewWidth() {
+    const byWidth = Math.min(600, Math.max(120, window.innerWidth - 16));
+    const byHeight = Math.max(120, ((window.innerHeight - 16) * 16) / 9);
+    return Math.min(byWidth, byHeight);
+  }
+
+  function figmaPreviewHeight() {
+    return (figmaPreviewWidth() * 9) / 16;
+  }
+
+  /**
+   * Fit a frame into the 16:9 card.
+   * A wider frame shows whole. A taller frame opens on the top, centered:
+   * the upper half covers the card when that half is wide enough, otherwise
+   * the top band that fills the card width.
+   * @param {number} iw
+   * @param {number} ih
+   * @param {number} width
+   * @param {number} height
+   */
+  function figmaPreviewFit(iw, ih, width, height) {
+    const contain = Math.min(width / iw, height / ih);
+    const topHalf = Math.max(width / iw, height / (ih * 0.5));
+    const tall = ih / iw > height / width;
+    const scale = tall ? topHalf : contain;
+    return clampFigmaPreviewPan(
+      {
+        iw,
+        ih,
+        scale,
+        x: (width - iw * scale) / 2,
+        y: tall ? 0 : (height - ih * scale) / 2,
+        min: contain,
+        max: Math.max(scale, contain * 12, 1),
+      },
+      width,
+      height,
+    );
+  }
+
+  /**
+   * @param {{ iw: number, ih: number, scale: number, x: number, y: number, min: number, max: number }} view
+   * @param {number} width
+   * @param {number} height
+   */
+  function clampFigmaPreviewPan(view, width, height) {
+    const dw = view.iw * view.scale;
+    const dh = view.ih * view.scale;
+    let x = view.x;
+    let y = view.y;
+    if (dw <= width + 0.5) {
+      x = (width - dw) / 2;
+    } else {
+      x = Math.min(0, Math.max(width - dw, x));
+    }
+    if (dh <= height + 0.5) {
+      y = (height - dh) / 2;
+    } else {
+      y = Math.min(0, Math.max(height - dh, y));
+    }
+    return { ...view, x, y };
+  }
+
+  /**
+   * Wheel zooms toward the cursor. A held button pans the frame.
+   * @param {HTMLElement} screen
+   * @param {HTMLImageElement} img
+   */
+  function bindFigmaPreviewScreen(screen, img) {
+    /** @type {{ iw: number, ih: number, scale: number, x: number, y: number, min: number, max: number } | null} */
+    let view = null;
+    const apply = () => {
+      if (!view) {
+        return;
+      }
+      img.style.width = `${view.iw}px`;
+      img.style.height = `${view.ih}px`;
+      img.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+    };
+    const fit = () => {
+      const iw = img.naturalWidth;
+      const ih = img.naturalHeight;
+      const width = screen.clientWidth;
+      const height = screen.clientHeight;
+      if (!iw || !ih || width < 2 || height < 2) {
+        return;
+      }
+      view = figmaPreviewFit(iw, ih, width, height);
+      apply();
+    };
+    const ready = () => {
+      requestAnimationFrame(() => {
+        fit();
+        if (!view) {
+          requestAnimationFrame(fit);
+        }
+      });
+    };
+    img.draggable = false;
+    if (img.complete && img.naturalWidth) {
+      ready();
+    } else {
+      img.addEventListener('load', ready, { once: true });
+    }
+    screen.addEventListener(
+      'wheel',
+      (event) => {
+        if (!view) {
+          return;
+        }
+        event.preventDefault();
+        const width = screen.clientWidth;
+        const height = screen.clientHeight;
+        const rect = screen.getBoundingClientRect();
+        const mx = event.clientX - rect.left;
+        const my = event.clientY - rect.top;
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? height : 1;
+        const next = view.scale * Math.exp(-event.deltaY * unit * 0.0016);
+        const scale = Math.min(view.max, Math.max(view.min, next));
+        const k = scale / view.scale;
+        view = clampFigmaPreviewPan(
+          {
+            ...view,
+            scale,
+            x: mx - (mx - view.x) * k,
+            y: my - (my - view.y) * k,
+          },
+          width,
+          height,
+        );
+        apply();
+      },
+      { passive: false },
+    );
+    screen.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !view || linkPreviewPanning) {
+        return;
+      }
+      event.preventDefault();
+      screen.setPointerCapture(event.pointerId);
+      screen.classList.add('is-panning');
+      linkPreviewPanning = true;
+      if (linkPreviewHideTimer) {
+        clearTimeout(linkPreviewHideTimer);
+        linkPreviewHideTimer = null;
+      }
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const originX = view.x;
+      const originY = view.y;
+      const move = (ev) => {
+        if (!view) {
+          return;
+        }
+        view = clampFigmaPreviewPan(
+          {
+            ...view,
+            x: originX + (ev.clientX - startX),
+            y: originY + (ev.clientY - startY),
+          },
+          screen.clientWidth,
+          screen.clientHeight,
+        );
+        apply();
+      };
+      const up = () => {
+        screen.removeEventListener('pointermove', move);
+        screen.removeEventListener('pointerup', up);
+        screen.removeEventListener('pointercancel', up);
+        screen.classList.remove('is-panning');
+        linkPreviewPanning = false;
+        requestAnimationFrame(() => {
+          const preview = linkPreviewEl;
+          if (!preview || preview.hidden || linkPreviewPanning) {
+            return;
+          }
+          if (!preview.matches(':hover')) {
+            scheduleHideLinkPreview();
+          }
+        });
+      };
+      screen.addEventListener('pointermove', move);
+      screen.addEventListener('pointerup', up);
+      screen.addEventListener('pointercancel', up);
+    });
+  }
+
+  /** @param {string} url */
+  function isFigmaPreviewUrl(url) {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return host === 'figma.com' || host.endsWith('.figma.com');
+    } catch {
+      return false;
+    }
+  }
+
+  /** @param {boolean} [figma] */
+  function buildLinkPreviewSkeleton(figma) {
     const frag = document.createDocumentFragment();
-    frag.append(el('div', 'note-link-preview-skel-image'));
-    const lines = el('div', 'note-link-preview-skel-lines');
-    lines.append(el('div', 'note-link-preview-skel-line'), el('div', 'note-link-preview-skel-line'));
-    frag.append(lines);
+    frag.append(el('div', 'note-link-preview-skel-image' + (figma ? ' is-screen' : '')));
+    if (!figma) {
+      const lines = el('div', 'note-link-preview-skel-lines');
+      lines.append(el('div', 'note-link-preview-skel-line'), el('div', 'note-link-preview-skel-line'));
+      frag.append(lines);
+    }
     return frag;
   }
 
@@ -14265,6 +14593,9 @@
    * @param {{ requestId: string, url: string, image?: string, description?: string, empty?: boolean }} message
    */
   function onPreviewLinkResult(message) {
+    if (linkPreviewLoaderRequestId && message.requestId === linkPreviewLoaderRequestId) {
+      clearLinkPreviewLoader();
+    }
     if (!linkPreviewEl || linkPreviewUrl !== message.url) {
       return;
     }
@@ -14281,7 +14612,15 @@
       const img = /** @type {HTMLImageElement} */ (el('img', 'note-link-preview-image'));
       img.src = message.image;
       img.alt = '';
-      scroll.append(img);
+      if (linkPreviewEl.classList.contains('is-figma')) {
+        img.classList.add('is-screen');
+        const screen = el('div', 'note-link-preview-screen');
+        screen.append(img);
+        scroll.append(screen);
+        bindFigmaPreviewScreen(screen, img);
+      } else {
+        scroll.append(img);
+      }
     }
     if (message.description) {
       scroll.append(el('div', 'note-link-preview-desc', message.description));
@@ -17241,6 +17580,210 @@
     return reason;
   }
 
+  /**
+   * @param {Record<number, number>} v
+   * @param {number} k
+   */
+  function debugDiffAt(v, k) {
+    return Object.prototype.hasOwnProperty.call(v, k) ? v[k] : -1;
+  }
+
+  /**
+   * Myers edit script. `eq` / `del` lines come from `a`, `add` lines from `b`.
+   * @param {string[]} a
+   * @param {string[]} b
+   * @returns {{ op: 'eq' | 'del' | 'add', text: string }[]}
+   */
+  function debugDiffScript(a, b) {
+    const n = a.length;
+    const m = b.length;
+    const max = n + m;
+    /** @type {Record<number, number>} */
+    let frontier = { 1: 0 };
+    /** @type {Record<number, number>[]} */
+    const trace = [];
+    let depth = 0;
+    let found = false;
+    for (let d = 0; d <= max; d += 1) {
+      trace.push({ ...frontier });
+      depth = d;
+      for (let k = -d; k <= d; k += 2) {
+        let x;
+        if (k === -d || (k !== d && debugDiffAt(frontier, k - 1) < debugDiffAt(frontier, k + 1))) {
+          x = debugDiffAt(frontier, k + 1);
+        } else {
+          x = debugDiffAt(frontier, k - 1) + 1;
+        }
+        let y = x - k;
+        while (x < n && y < m && a[x] === b[y]) {
+          x += 1;
+          y += 1;
+        }
+        frontier[k] = x;
+        if (x >= n && y >= m) {
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        break;
+      }
+    }
+    if (!found) {
+      return [];
+    }
+    return debugDiffBacktrack(trace, a, b, depth);
+  }
+
+  /**
+   * @param {Record<number, number>[]} trace
+   * @param {string[]} a
+   * @param {string[]} b
+   * @param {number} depth
+   * @returns {{ op: 'eq' | 'del' | 'add', text: string }[]}
+   */
+  function debugDiffBacktrack(trace, a, b, depth) {
+    let x = a.length;
+    let y = b.length;
+    /** @type {{ op: 'eq' | 'del' | 'add', text: string }[]} */
+    const script = [];
+    for (let d = depth; d >= 0; d -= 1) {
+      const frontier = trace[d];
+      const k = x - y;
+      const prevK =
+        k === -d || (k !== d && debugDiffAt(frontier, k - 1) < debugDiffAt(frontier, k + 1))
+          ? k + 1
+          : k - 1;
+      const prevX = debugDiffAt(frontier, prevK);
+      const prevY = prevX - prevK;
+      while (x > prevX && y > prevY) {
+        x -= 1;
+        y -= 1;
+        script.push({ op: 'eq', text: a[x] });
+      }
+      if (d > 0) {
+        if (x === prevX) {
+          y -= 1;
+          script.push({ op: 'add', text: b[y] });
+        } else {
+          x -= 1;
+          script.push({ op: 'del', text: a[x] });
+        }
+      }
+    }
+    script.reverse();
+    return script;
+  }
+
+  /**
+   * GitLab side-by-side rows. A replaced run is zipped onto the same height:
+   * old text on the left, new text on the right. Leftover deletions and
+   * insertions get an empty cell on the other side.
+   * @param {string} leftText
+   * @param {string} rightText
+   * @returns {{ left: string | null, right: string | null, kind: 'eq' | 'del' | 'add' | 'change' }[]}
+   */
+  function debugSideBySideRows(leftText, rightText) {
+    const a = String(leftText).split('\n');
+    const b = String(rightText).split('\n');
+    const script = debugDiffScript(a, b);
+    /** @type {{ left: string | null, right: string | null, kind: 'eq' | 'del' | 'add' | 'change' }[]} */
+    const rows = [];
+    let i = 0;
+    while (i < script.length) {
+      if (script[i].op === 'eq') {
+        rows.push({ left: script[i].text, right: script[i].text, kind: 'eq' });
+        i += 1;
+        continue;
+      }
+      /** @type {string[]} */
+      const dels = [];
+      /** @type {string[]} */
+      const adds = [];
+      while (i < script.length && script[i].op !== 'eq') {
+        if (script[i].op === 'del') {
+          dels.push(script[i].text);
+        } else {
+          adds.push(script[i].text);
+        }
+        i += 1;
+      }
+      const count = Math.max(dels.length, adds.length);
+      for (let k = 0; k < count; k += 1) {
+        const left = k < dels.length ? dels[k] : null;
+        const right = k < adds.length ? adds[k] : null;
+        let kind = /** @type {'eq' | 'del' | 'add' | 'change'} */ ('add');
+        if (left !== null && right !== null) {
+          kind = 'change';
+        } else if (left !== null) {
+          kind = 'del';
+        }
+        rows.push({ left, right, kind });
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * @param {HTMLElement} columns
+   * @param {{ left?: unknown, right?: unknown }} section
+   */
+  function appendDebugPlainColumns(columns, section) {
+    const leftCol = el('div', 'debug-column');
+    leftCol.append(el('div', 'debug-column-label', t('debugColWas')));
+    const leftPre = document.createElement('pre');
+    leftPre.textContent = JSON.stringify(section.left ?? {}, null, 2);
+    leftCol.append(leftPre);
+    const rightCol = el('div', 'debug-column');
+    rightCol.append(el('div', 'debug-column-label', t('debugColNow')));
+    const rightPre = document.createElement('pre');
+    rightPre.textContent = JSON.stringify(section.right ?? {}, null, 2);
+    rightCol.append(rightPre);
+    columns.append(leftCol, rightCol);
+  }
+
+  /**
+   * @param {string | null} text
+   * @param {string} mark
+   */
+  function debugDiffCell(text, mark) {
+    const cell = el('div', 'debug-diff-cell' + (mark ? ' ' + mark : ''));
+    if (text === null) {
+      cell.classList.add('is-empty');
+      return cell;
+    }
+    cell.textContent = text;
+    return cell;
+  }
+
+  /**
+   * @param {HTMLElement} columns
+   * @param {{ left?: unknown, right?: unknown }} section
+   */
+  function appendDebugDiffColumns(columns, section) {
+    const leftText = JSON.stringify(section.left ?? {}, null, 2);
+    const rightText = JSON.stringify(section.right ?? {}, null, 2);
+    const rows = debugSideBySideRows(leftText, rightText);
+    if (rows.length === 0 && (leftText !== '' || rightText !== '')) {
+      appendDebugPlainColumns(columns, section);
+      return;
+    }
+    columns.classList.add('debug-diff');
+    const scroll = el('div', 'debug-diff-scroll');
+    const head = el('div', 'debug-diff-head');
+    head.append(el('div', 'debug-column-label', t('debugColWas')));
+    head.append(el('div', 'debug-column-label', t('debugColNow')));
+    scroll.append(head);
+    for (const row of rows) {
+      const line = el('div', 'debug-diff-row');
+      const leftMark = row.kind === 'del' || row.kind === 'change' ? 'is-del' : '';
+      const rightMark = row.kind === 'add' || row.kind === 'change' ? 'is-add' : '';
+      line.append(debugDiffCell(row.left, leftMark), debugDiffCell(row.right, rightMark));
+      scroll.append(line);
+    }
+    columns.append(scroll);
+  }
+
   function paintDebugPage() {
     removeLinkPanelBackdrop();
     preservingPageScroll(() => {
@@ -17284,17 +17827,11 @@
           continue;
         }
         const columns = el('div', 'debug-columns');
-        const leftCol = el('div', 'debug-column');
-        leftCol.append(el('div', 'debug-column-label', t('debugColWas')));
-        const leftPre = document.createElement('pre');
-        leftPre.textContent = JSON.stringify(section.left ?? {}, null, 2);
-        leftCol.append(leftPre);
-        const rightCol = el('div', 'debug-column');
-        rightCol.append(el('div', 'debug-column-label', t('debugColNow')));
-        const rightPre = document.createElement('pre');
-        rightPre.textContent = JSON.stringify(section.right ?? {}, null, 2);
-        rightCol.append(rightPre);
-        columns.append(leftCol, rightCol);
+        if (section.reason) {
+          appendDebugPlainColumns(columns, section);
+        } else {
+          appendDebugDiffColumns(columns, section);
+        }
         block.append(columns);
         root.append(block);
       }

@@ -749,6 +749,26 @@ button.toolbar-lock.is-fixed:hover {
   pointer-events: none;
 }
 
+.link-preview-loader {
+  align-items: center;
+  color: var(--link-color, var(--vscode-foreground));
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 16px;
+  justify-content: center;
+  width: 16px;
+}
+
+.link-preview-loader[hidden] {
+  display: none;
+}
+
+.link-preview-loader .review-ico {
+  animation: pager-cloud-spin 0.9s linear infinite;
+  height: 14px;
+  width: 14px;
+}
+
 .link-side {
   align-items: center;
   display: inline-flex;
@@ -2021,15 +2041,79 @@ body.vscode-high-contrast-light .note-input .note-quote {
 }
 
 .note-link-preview.is-link-chip .note-link-preview-image,
-.note-link-preview.is-link-chip.is-narrow .note-link-preview-image,
+.note-link-preview.is-link-chip.is-narrow .note-link-preview-image {
+  height: auto;
+  max-height: 220px;
+  object-fit: contain;
+}
+
 .note-link-preview.is-link-chip .note-link-preview-skel-image,
 .note-link-preview.is-link-chip.is-narrow .note-link-preview-skel-image {
   height: 200px;
 }
 
 .note-link-preview.is-link-chip .note-link-preview-desc {
+  -webkit-line-clamp: 4;
   font-size: 13px;
-  max-height: 48px;
+  max-height: 72px;
+}
+
+.note-link-preview.is-figma,
+.note-link-preview.is-figma.is-link-chip {
+  max-height: calc(100vh - 16px);
+  width: min(600px, calc(100vw - 16px));
+}
+
+.note-link-preview.is-figma .note-link-preview-scroll,
+.note-link-preview.is-figma.is-link-chip .note-link-preview-scroll {
+  max-height: none;
+  overflow: hidden;
+}
+
+.note-link-preview-screen,
+.note-link-preview.is-figma .note-link-preview-skel-image.is-screen,
+.note-link-preview.is-figma.is-link-chip .note-link-preview-skel-image.is-screen,
+.note-link-preview.is-figma.is-narrow .note-link-preview-skel-image.is-screen,
+.note-link-preview.is-figma.is-link-chip.is-narrow .note-link-preview-skel-image.is-screen {
+  aspect-ratio: 16 / 9;
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  height: auto;
+  width: 100%;
+}
+
+.note-link-preview-screen {
+  cursor: grab;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+}
+
+.note-link-preview-screen.is-panning {
+  cursor: grabbing;
+}
+
+.note-link-preview.is-figma .note-link-preview-screen .note-link-preview-image.is-screen,
+.note-link-preview.is-figma.is-link-chip .note-link-preview-screen .note-link-preview-image.is-screen,
+.note-link-preview.is-figma.is-narrow .note-link-preview-screen .note-link-preview-image.is-screen,
+.note-link-preview.is-figma.is-link-chip.is-narrow .note-link-preview-screen .note-link-preview-image.is-screen {
+  height: auto;
+  left: 0;
+  max-height: none;
+  max-width: none;
+  object-fit: fill;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  transform-origin: 0 0;
+  width: auto;
+}
+
+.note-link-preview.is-figma .note-link-preview-desc {
+  -webkit-line-clamp: 12;
+  font-size: 13px;
+  max-height: none;
+  max-width: 100%;
 }
 
 .note-link-preview-skel-lines {
@@ -3526,6 +3610,65 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   word-break: break-word;
 }
 
+.debug-diff-scroll {
+  grid-column: 1 / -1;
+  max-height: 48vh;
+  min-width: 0;
+  overflow: auto;
+}
+
+.debug-diff-head {
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+  column-gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  padding-bottom: 4px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.debug-diff-row {
+  display: grid;
+  column-gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.debug-diff-cell {
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  line-height: 1.35;
+  min-height: 1.35em;
+  min-width: 0;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.debug-diff-row:first-child .debug-diff-cell {
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  padding-top: 8px;
+}
+
+.debug-diff-row:last-child .debug-diff-cell {
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+  padding-bottom: 8px;
+}
+
+/* GitLab dark diff line backgrounds. They stay dark on a light editor theme. */
+.debug-diff-cell.is-del {
+  background: #4f2428;
+  color: #f3f3f3;
+}
+
+.debug-diff-cell.is-add {
+  background: #1f3a29;
+  color: #f3f3f3;
+}
+
 .review-page {
   --link-branch-gap: 18px;
   --link-fold-duration: 320ms;
@@ -4688,6 +4831,46 @@ button.review-neurofix-btn:hover {
 .review-token-hint {
   color: var(--vscode-descriptionForeground);
   font-size: 0.9em;
+}
+
+.figma-token-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.figma-token-row .review-mr-title {
+  min-width: 0;
+}
+
+.figma-token-help {
+  background: transparent;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  height: 28px;
+  line-height: 1;
+  padding: 0;
+  width: 28px;
+}
+
+.figma-token-help:hover,
+.figma-token-help[aria-expanded='true'] {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.figma-token-hint {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  line-height: 1.4;
+  white-space: pre-line;
+}
+
+.figma-token-hint[hidden] {
+  display: none;
 }
 
 .review-panel-error {
