@@ -1,7 +1,8 @@
 // @ts-check
 (function () {
-  // @ts-ignore
-  const vscode = acquireVsCodeApi();
+  // @ts-ignore acquireVsCodeApi is provided by the webview, or stashed by the boot script.
+  const vscode = /** @type {any} */ (window).__syn3Vscode || acquireVsCodeApi();
+  const bootRev = document.body?.dataset.bootRev || '';
   const root = /** @type {HTMLElement} */ (document.getElementById('root'));
   const historyBack = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-back'));
   const historyAccept = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-accept'));
@@ -699,6 +700,12 @@
   }
   /** Local to this webview — not persisted in setState. */
   let problemsPageOpen = false;
+  let debugPageOpen = false;
+  /** @type {{ sections: Array<{ id: string, title: string, reason?: string, left: Record<string, unknown>, right: Record<string, unknown> }> } | null} */
+  let debugDiffSnapshot = null;
+  let debugDiffBusy = false;
+  /** True after a diff fetch started while Send was on. Stops a frozen empty screen from lying. */
+  let debugFetchedForPush = false;
   /** @type {any} */
   let data = null;
   /** @type {Record<string, { canPull?: boolean, canPush?: boolean }>} */
@@ -1208,6 +1215,7 @@
       closeProblemPanel();
       const previousPageId = uiState.activePageId;
       const previousProblems = problemsPageOpen;
+      const previousDebug = debugPageOpen;
       data = message;
       pagesFixed = message.pagesFixed === true;
       pagesFixedSent = message.pagesFixedSent === true;
@@ -1281,16 +1289,23 @@
       renderProjects(projectsList, activeProjectId, projectConfigSync);
       applyToolbarLock();
       applyWorkspaceCloudButtons();
+      if (isDebugPageOpen() && workspaceCloudCanPush() && !debugFetchedForPush && !debugDiffBusy) {
+        requestDebugDiff(true);
+      }
       applyAppearance(message.appearance);
       if (!showProblemsTab()) {
         problemsPageOpen = false;
       }
-      if (previousPageId !== uiState.activePageId || previousProblems !== problemsPageOpen) {
+      if (
+        previousPageId !== uiState.activePageId ||
+        previousProblems !== problemsPageOpen ||
+        previousDebug !== debugPageOpen
+      ) {
         dismissLinkPreview();
       }
       renderPager();
       render();
-      if (typeof message.focusNoteId === 'string' && !isProblemsPageOpen()) {
+      if (typeof message.focusNoteId === 'string' && !isAuxPageOpen()) {
         focusNoteInput(message.focusNoteId);
       }
       noteRefactorEpoch(message.refactorEpoch);
@@ -1352,6 +1367,14 @@
         paintProblemsPage();
       } else {
         applyProblemMarks();
+      }
+    } else if (message.type === 'debugDiff') {
+      debugDiffBusy = false;
+      debugDiffSnapshot = {
+        sections: Array.isArray(message.sections) ? message.sections : [],
+      };
+      if (isDebugPageOpen()) {
+        paintDebugPage();
       }
     } else if (message.type === 'dropAlreadyExists') {
       openDropExistsDialog();
@@ -1525,9 +1548,10 @@
       return;
     }
     const samePage = uiState.activePageId === pageId;
-    const leaveProblems = problemsPageOpen;
+    const leaveAux = problemsPageOpen || debugPageOpen;
     problemsPageOpen = false;
-    if (samePage && !leaveProblems) {
+    debugPageOpen = false;
+    if (samePage && !leaveAux) {
       return;
     }
     closeMapSettingsPanels();
@@ -1554,6 +1578,15 @@
     return problemsPageOpen && showProblemsTab();
   }
 
+  function isDebugPageOpen() {
+    return debugPageOpen;
+  }
+
+  /** Problems or Debug overlay instead of a map page. */
+  function isAuxPageOpen() {
+    return isProblemsPageOpen() || isDebugPageOpen();
+  }
+
   function openProblemsPage() {
     if (!showProblemsTab() || problemsPageOpen) {
       return;
@@ -1561,11 +1594,63 @@
     closeMapSettingsPanels();
     dismissLinkPreview();
     problemsPageOpen = true;
+    debugPageOpen = false;
     closeProblemPanel();
     cancelSlide();
     pendingSlide = 0;
     renderPager();
     render();
+  }
+
+  function openDebugPage() {
+    if (debugPageOpen) {
+      return;
+    }
+    closeMapSettingsPanels();
+    dismissLinkPreview();
+    debugPageOpen = true;
+    problemsPageOpen = false;
+    debugDiffSnapshot = null;
+    closeProblemPanel();
+    cancelSlide();
+    pendingSlide = 0;
+    if (workspaceCloudCanPush()) {
+      debugDiffBusy = true;
+      debugFetchedForPush = true;
+    } else {
+      debugDiffBusy = false;
+      debugFetchedForPush = false;
+      debugDiffSnapshot = { sections: [] };
+    }
+    renderPager();
+    render();
+    if (workspaceCloudCanPush()) {
+      vscode.postMessage({ type: 'debugDiff' });
+    }
+  }
+
+  /**
+   * @param {boolean} force
+   */
+  function requestDebugDiff(force) {
+    if (!workspaceCloudCanPush()) {
+      debugDiffBusy = false;
+      debugFetchedForPush = false;
+      debugDiffSnapshot = { sections: [] };
+      if (isDebugPageOpen()) {
+        paintDebugPage();
+      }
+      return;
+    }
+    debugFetchedForPush = true;
+    if (debugDiffBusy && !force) {
+      return;
+    }
+    debugDiffBusy = true;
+    if (isDebugPageOpen()) {
+      paintDebugPage();
+    }
+    vscode.postMessage({ type: 'debugDiff' });
   }
 
   /** Direction from the current page to `pageId`, using the list as it is now. */
@@ -3910,9 +3995,9 @@
     return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
 
-  /** Create / View need a real map page, not Problems and not an empty workspace. */
+  /** Create / View need a real map page, not Problems/Debug and not an empty workspace. */
   function canUseCreateViewToolbar() {
-    if (isProblemsPageOpen() || pageSkeletonKind() !== '') {
+    if (isAuxPageOpen() || pageSkeletonKind() !== '') {
       return false;
     }
     return !!activePage();
@@ -3934,7 +4019,7 @@
 
   function syncToolbarView() {
     const kind = activePage()?.kind;
-    const hide = !isProblemsPageOpen() && (kind === 'links' || kind === 'review');
+    const hide = !isAuxPageOpen() && (kind === 'links' || kind === 'review');
     if (toolbarViewWrap) {
       toolbarViewWrap.hidden = hide;
     }
@@ -4387,7 +4472,7 @@
 
   /** Body in `data` belongs to the page on screen. Other pages arrive with the next state. */
   function pageContentReady() {
-    if (isProblemsPageOpen()) {
+    if (isAuxPageOpen()) {
       return true;
     }
     const page = activePage();
@@ -4396,7 +4481,7 @@
 
   /** files / notes / links with no cached body. Review keeps the dimmed wait. */
   function pageSkeletonKind() {
-    if (!data || isProblemsPageOpen() || pageContentReady()) {
+    if (!data || isAuxPageOpen() || pageContentReady()) {
       return '';
     }
     const page = activePage();
@@ -4473,7 +4558,10 @@
       if (!(node instanceof HTMLElement)) {
         continue;
       }
-      const current = node.classList.contains('active') && !node.classList.contains('problems-tab');
+      const current =
+        node.classList.contains('active') &&
+        !node.classList.contains('problems-tab') &&
+        !node.classList.contains('debug-tab');
       if (node.dataset.pageId) {
         node.draggable = !locked;
       }
@@ -4570,7 +4658,7 @@
     if (!data) {
       return;
     }
-    if (!activePage() && !isProblemsPageOpen()) {
+    if (!activePage() && !isAuxPageOpen()) {
       paintNoPage();
       syncPageLoadingChrome();
       return;
@@ -6257,7 +6345,7 @@
     dateBar.classList.add('review-stamp-date');
     stamp.prepend(dateBar);
     const chip = el('div', 'review-chip is-review-pill is-skel');
-    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('132px', 40));
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
     const chipWrap = el('div', 'review-chip-wrap');
     chipWrap.append(chip);
     const head = el('div', 'review-mr-head');
@@ -6278,7 +6366,7 @@
       linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), ''),
     );
     const chip = el('div', 'review-chip is-review-pill is-skel');
-    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('132px', 40));
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
     const body = el('div', 'review-body');
     body.append(chip);
     row.append(body);
@@ -9589,6 +9677,11 @@
       paintProblemsPage();
       return;
     }
+    if (isDebugPageOpen()) {
+      closeGroupPanel(false);
+      paintDebugPage();
+      return;
+    }
     const page = activePage();
     if (page?.kind !== 'review' && reviewFileView) {
       reviewFileView = null;
@@ -10117,16 +10210,15 @@
     if (!problemsTab) {
       problemsPageOpen = false;
     }
-    if (list.length === 0 && !problemsTab) {
-      pager.hidden = true;
-      return;
-    }
+    // Debug is always in the strip, even with no Syn3 pages.
     pager.hidden = false;
     const problemsOpen = isProblemsPageOpen();
+    const debugOpen = isDebugPageOpen();
     for (const page of list) {
       const chip = el(
         'button',
-        'pager-chip' + (page.id === uiState.activePageId && !problemsOpen ? ' active' : ''),
+        'pager-chip' +
+          (page.id === uiState.activePageId && !problemsOpen && !debugOpen ? ' active' : ''),
       );
       chip.type = 'button';
       chip.draggable = true;
@@ -10185,8 +10277,21 @@
       });
       pager.append(chip);
     }
+    const debugChip = el(
+      'button',
+      'pager-chip debug-tab' + (debugOpen ? ' active' : ''),
+      t('tabDebug'),
+    );
+    debugChip.type = 'button';
+    debugChip.title = t('tabDebug');
+    debugChip.addEventListener('click', () => openDebugPage());
+    pager.append(debugChip);
     if (problemsTab) {
-      const chip = el('button', 'pager-chip problems-tab' + (problemsOpen ? ' active' : ''), t('tabProblems'));
+      const chip = el(
+        'button',
+        'pager-chip problems-tab' + (problemsOpen ? ' active' : ''),
+        t('tabProblems'),
+      );
       chip.type = 'button';
       chip.title = t('tabProblems');
       chip.addEventListener('click', () => openProblemsPage());
@@ -16606,7 +16711,7 @@
       entityReveal = null;
       return;
     }
-    const switching = uiState.activePageId !== pageId || isProblemsPageOpen();
+    const switching = uiState.activePageId !== pageId || isAuxPageOpen();
     const needsAsk = chain.some((node) => node.locked);
     entityReveal = { pageId, chain, choice: null, alignTop: switching };
     const opened = switching && !needsAsk ? revealCollapsed(pageId, chain) : null;
@@ -16624,7 +16729,7 @@
     if (!job) {
       return;
     }
-    if (uiState.activePageId !== job.pageId || isProblemsPageOpen()) {
+    if (uiState.activePageId !== job.pageId || isAuxPageOpen()) {
       return;
     }
     if (!data || data.contentPageId !== job.pageId) {
@@ -16757,7 +16862,7 @@
       !!flashNodes &&
       Date.now() < flashUntil &&
       uiState.activePageId === entityAlignPageId &&
-      !isProblemsPageOpen()
+      !isAuxPageOpen()
     );
   }
 
@@ -17124,6 +17229,76 @@
     if (isProblemsPageOpen()) {
       paintProblemsPage();
     }
+  }
+
+  function debugReasonText(reason) {
+    if (!reason) {
+      return '';
+    }
+    if (i18nBag[reason]) {
+      return i18nBag[reason];
+    }
+    return reason;
+  }
+
+  function paintDebugPage() {
+    removeLinkPanelBackdrop();
+    preservingPageScroll(() => {
+      foldToken += 1;
+      isFolding = false;
+      setCollapseButton();
+      root.textContent = '';
+      root.className = 'map-page debug-page';
+      root.setAttribute('data-syn3-context', JSON.stringify({ webviewSection: 'debug' }));
+      clearDropHighlights();
+
+      const toolbar = el('div', 'debug-toolbar');
+      const refresh = el('button', '', t('debugRefresh'));
+      refresh.type = 'button';
+      refresh.disabled = debugDiffBusy;
+      refresh.addEventListener('click', () => requestDebugDiff(true));
+      toolbar.append(refresh);
+      if (debugDiffBusy) {
+        toolbar.append(el('span', 'debug-status', t('debugLoading')));
+      }
+      root.append(toolbar);
+
+      if (debugDiffBusy && !debugDiffSnapshot) {
+        return;
+      }
+
+      const sections = debugDiffSnapshot?.sections || [];
+      if (!debugDiffBusy && sections.length === 0) {
+        root.append(el('div', 'empty', t(workspaceCloudCanPush() ? 'debugDiffSame' : 'debugEmpty')));
+        return;
+      }
+
+      for (const section of sections) {
+        const block = el('section', 'debug-section');
+        block.append(el('div', 'debug-section-title', section.title || section.id));
+        if (section.reason) {
+          block.append(el('div', 'debug-section-reason', debugReasonText(section.reason)));
+        }
+        if (section.reason === 'debugDiffSame') {
+          root.append(block);
+          continue;
+        }
+        const columns = el('div', 'debug-columns');
+        const leftCol = el('div', 'debug-column');
+        leftCol.append(el('div', 'debug-column-label', t('debugColWas')));
+        const leftPre = document.createElement('pre');
+        leftPre.textContent = JSON.stringify(section.left ?? {}, null, 2);
+        leftCol.append(leftPre);
+        const rightCol = el('div', 'debug-column');
+        rightCol.append(el('div', 'debug-column-label', t('debugColNow')));
+        const rightPre = document.createElement('pre');
+        rightPre.textContent = JSON.stringify(section.right ?? {}, null, 2);
+        rightCol.append(rightPre);
+        columns.append(leftCol, rightCol);
+        block.append(columns);
+        root.append(block);
+      }
+    });
   }
 
   function paintProblemsPage() {
@@ -18290,12 +18465,13 @@
   );
 
   /**
-   * Pager chips in strip order: Syn3 pages, then Problems when enabled.
-   * @returns {Array<{ kind: 'page', id: string } | { kind: 'problems' }>}
+   * Pager chips in strip order: Syn3 pages, Debug, then Problems when enabled.
+   * @returns {Array<{ kind: 'page', id: string } | { kind: 'debug' } | { kind: 'problems' }>}
    */
   function pagerSlots() {
-    /** @type {Array<{ kind: 'page', id: string } | { kind: 'problems' }>} */
+    /** @type {Array<{ kind: 'page', id: string } | { kind: 'debug' } | { kind: 'problems' }>} */
     const slots = pages().map((page) => ({ kind: 'page', id: page.id }));
+    slots.push({ kind: 'debug' });
     if (showProblemsTab()) {
       slots.push({ kind: 'problems' });
     }
@@ -18304,6 +18480,9 @@
 
   function currentPagerIndex() {
     const slots = pagerSlots();
+    if (isDebugPageOpen()) {
+      return slots.findIndex((slot) => slot.kind === 'debug');
+    }
     if (isProblemsPageOpen()) {
       return slots.findIndex((slot) => slot.kind === 'problems');
     }
@@ -18311,8 +18490,12 @@
     return slots.findIndex((slot) => slot.kind === 'page' && slot.id === pageId);
   }
 
-  /** @param {{ kind: 'page', id: string } | { kind: 'problems' }} slot */
+  /** @param {{ kind: 'page', id: string } | { kind: 'debug' } | { kind: 'problems' }} slot */
   function goToPagerSlot(slot) {
+    if (slot.kind === 'debug') {
+      openDebugPage();
+      return;
+    }
     if (slot.kind === 'problems') {
       openProblemsPage();
       return;
@@ -18363,5 +18546,12 @@
   );
 
   initWorkspaceCloudButtons();
-  vscode.postMessage({ type: 'ready', pageId: uiState.activePageId });
+  // Unstyled buttons mean map.css never applied (service worker 404 on reload).
+  const toolbarProbe = document.querySelector('.history-btn');
+  const toolbarDisplay = toolbarProbe ? getComputedStyle(toolbarProbe).display : '';
+  if (toolbarDisplay !== 'inline-flex') {
+    vscode.postMessage({ type: 'assetsFailed', rev: bootRev });
+  } else {
+    vscode.postMessage({ type: 'ready', pageId: uiState.activePageId, rev: bootRev });
+  }
 })();

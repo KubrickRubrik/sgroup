@@ -802,6 +802,93 @@ export interface EntityChainNode {
   locked: boolean;
 }
 
+/** One Debug tab section: Discord send-slice on the left, local on the right. */
+export interface DebugSendDiffSection {
+  id: string;
+  title: string;
+  /** i18n key or raw message when the left column could not be filled. */
+  reason?: string;
+  left: Record<string, unknown>;
+  right: Record<string, unknown>;
+}
+
+export interface DebugSendDiffResult {
+  sections: DebugSendDiffSection[];
+}
+
+const PAGE_SEND_SLICE_KEYS = [
+  'markers',
+  'items',
+  'added',
+  'aliases',
+  'classes',
+  'classItems',
+  'classAdded',
+  'notes',
+  'links',
+] as const;
+
+/** Top-level keys that differ; nested values are copied whole. */
+function topLevelChanged(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): { left: Record<string, unknown>; right: Record<string, unknown> } | undefined {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  const outLeft: Record<string, unknown> = {};
+  const outRight: Record<string, unknown> = {};
+  let any = false;
+  for (const key of keys) {
+    const hasLeft = Object.prototype.hasOwnProperty.call(left, key);
+    const hasRight = Object.prototype.hasOwnProperty.call(right, key);
+    const leftValue = hasLeft ? left[key] : undefined;
+    const rightValue = hasRight ? right[key] : undefined;
+    if (JSON.stringify(leftValue) === JSON.stringify(rightValue)) {
+      continue;
+    }
+    any = true;
+    if (hasLeft) {
+      outLeft[key] = leftValue;
+    }
+    if (hasRight) {
+      outRight[key] = rightValue;
+    }
+  }
+  return any ? { left: outLeft, right: outRight } : undefined;
+}
+
+function pageSendSliceFromFile(file: PageContentFile): Record<string, unknown> {
+  const slice: Record<string, unknown> = {};
+  for (const key of PAGE_SEND_SLICE_KEYS) {
+    if (file[key] !== undefined) {
+      slice[key] = file[key];
+    }
+  }
+  return slice;
+}
+
+/** Keep a lit Send slice on the debug page even when Discord already matches it. */
+function pushDebugSlice(
+  sections: DebugSendDiffSection[],
+  id: string,
+  title: string,
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown>,
+  reason?: string,
+): void {
+  if (left === undefined) {
+    if (Object.keys(right).length > 0 || reason) {
+      sections.push({ id, title, reason, left: {}, right });
+    }
+    return;
+  }
+  const diff = topLevelChanged(left, right);
+  if (diff) {
+    sections.push({ id, title, left: diff.left, right: diff.right });
+    return;
+  }
+  sections.push({ id, title, reason: 'debugDiffSame', left: {}, right: {} });
+}
+
 export class MarkerStore implements vscode.Disposable {
   private data: MarkersFile = emptyData();
   private profilesData: ProfilesFile = emptyProfiles();
@@ -1058,7 +1145,9 @@ export class MarkerStore implements vscode.Disposable {
 
   projectConfigSync(): ConfigSyncFlags {
     return configSyncFlags({
-      dirty: !this.pageContentLockedOut() && (this.projectDirty || this.baseNeedsFirstPublish()),
+      dirty:
+        !this.pageContentLockedOut() &&
+        (this.projectDirty || this.baseNeedsFirstPublish() || this.projectSliceDrift()),
       cloudNewer: this.relevantBaseCloudNewer,
     });
   }
@@ -1067,7 +1156,7 @@ export class MarkerStore implements vscode.Disposable {
    * Unsent work of the active project or this profile's active-project pointer.
    */
   hasUnsentChanges(): boolean {
-    if (this.profileDirty || this.baseNeedsFirstPublish()) {
+    if (this.profileDirty || this.profileSliceDrift() || this.baseNeedsFirstPublish()) {
       return true;
     }
     if (this.pagesFixed() !== this.pagesFixedSent()) {
@@ -1081,7 +1170,7 @@ export class MarkerStore implements vscode.Disposable {
         return true;
       }
     }
-    return this.projectDirty && this.projectBodyDiffersFromSent();
+    return (this.projectDirty && this.projectBodyDiffersFromSent()) || this.projectSliceDrift();
   }
 
   /** True when shared project fields differ from the last send. */
@@ -1678,7 +1767,7 @@ export class MarkerStore implements vscode.Disposable {
 
   profileConfigSync(): ConfigSyncFlags {
     return configSyncFlags({
-      dirty: !this.pageContentLockedOut() && this.profileDirty,
+      dirty: !this.pageContentLockedOut() && (this.profileDirty || this.profileSliceDrift()),
       cloudNewer: this.relevantBaseCloudNewer,
     });
   }
@@ -1688,7 +1777,11 @@ export class MarkerStore implements vscode.Disposable {
     return configSyncFlags({
       dirty:
         !this.pageContentLockedOut() &&
-        (this.profileDirty || this.projectDirty || this.baseNeedsFirstPublish()),
+        (this.profileDirty ||
+          this.profileSliceDrift() ||
+          this.projectDirty ||
+          this.projectSliceDrift() ||
+          this.baseNeedsFirstPublish()),
       cloudNewer: this.relevantBaseCloudNewer,
     });
   }
@@ -1716,6 +1809,115 @@ export class MarkerStore implements vscode.Disposable {
       result[pageId] = this.configSync(pageId);
     }
     return result;
+  }
+
+  /**
+   * Debug tab: Discord last configs vs the local slices that light Send.
+   * Empty only when Send is off. A lit slice is always a section: changed
+   * fields, or a note when Discord already has the same body.
+   */
+  async debugSendDiff(): Promise<DebugSendDiffResult> {
+    const sections: DebugSendDiffSection[] = [];
+    const needBase = this.projectConfigSync().canPush || this.profileConfigSync().canPush;
+    const dirtyPageIds = this.pages()
+      .filter(([id, page]) => page.kind !== 'review' && this.configSync(id).canPush)
+      .map(([id]) => id);
+    if (!needBase && dirtyPageIds.length === 0) {
+      return { sections };
+    }
+
+    const token = await this.discordToken();
+
+    if (needBase) {
+      const right: Record<string, unknown> = {};
+      if (this.projectConfigSync().canPush) {
+        right.project = this.debugProjectSlice(this.base);
+      }
+      if (this.profileConfigSync().canPush) {
+        right.profile = this.profileSyncSlice();
+      }
+      let left: Record<string, unknown> | undefined;
+      let reason: string | undefined;
+      if (!token) {
+        reason = 'debugDiffNoToken';
+      } else {
+        const channel = this.base.channelId.trim();
+        if (!channel) {
+          reason = 'debugDiffNoChannel';
+        } else {
+          const latest = await findLatestConfigMessage(token, channel, 'BASE', undefined);
+          if (!latest.ok) {
+            reason = latest.message;
+          } else if (!latest.value) {
+            reason = 'debugDiffNotSent';
+          } else {
+            const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
+            if (!downloaded.ok) {
+              reason = downloaded.message;
+            } else {
+              try {
+                const remote = normalizeBaseConfig(JSON.parse(downloaded.value));
+                left = {};
+                if (right.project !== undefined) {
+                  left.project = this.debugProjectSlice(remote);
+                }
+                if (right.profile !== undefined) {
+                  left.profile = this.profileSyncSliceFromBase(remote);
+                }
+              } catch (error) {
+                reason = error instanceof Error ? error.message : String(error);
+              }
+            }
+          }
+        }
+      }
+      pushDebugSlice(sections, 'base', 'BASE', left, right, reason);
+    }
+
+    for (const pageId of dirtyPageIds) {
+      const page = this.data.pages[pageId];
+      if (!page) {
+        continue;
+      }
+      const kind = pageKindToConfigKind(page.kind);
+      if (!kind || kind === 'REVIEW') {
+        continue;
+      }
+      const packed = this.packPageFile(pageId);
+      const right = packed ? pageSendSliceFromFile(packed) : {};
+      let left: Record<string, unknown> | undefined;
+      let reason: string | undefined;
+      if (!token) {
+        reason = 'debugDiffNoToken';
+      } else {
+        const channel = this.resolvePageChannel(pageId, kind);
+        if (!channel) {
+          reason = 'debugDiffNoChannel';
+        } else {
+          const latest = await findLatestConfigMessage(token, channel, kind, pageId);
+          if (!latest.ok) {
+            reason = latest.message;
+          } else if (!latest.value) {
+            reason = 'debugDiffNotSent';
+          } else {
+            const downloaded = await downloadConfigAttachment(token, latest.value.attachmentUrl);
+            if (!downloaded.ok) {
+              reason = downloaded.message;
+            } else {
+              try {
+                const remote = normalizePageConfig(JSON.parse(downloaded.value));
+                left = pageSendSliceFromFile(remote);
+              } catch (error) {
+                reason = error instanceof Error ? error.message : String(error);
+              }
+            }
+          }
+        }
+      }
+      pushDebugSlice(sections, pageId, page.name.trim() || pageId, left, right, reason);
+    }
+
+    return { sections };
   }
 
   /** How many Discord pages are waiting to be created by pull. */
@@ -5375,7 +5577,11 @@ export class MarkerStore implements vscode.Disposable {
 
   private async pushWorkspaceCloudNow(): Promise<{ ok: boolean; message?: string }> {
     const baseDirty =
-      this.profileDirty || this.projectDirty || this.baseNeedsFirstPublish();
+      this.profileDirty ||
+      this.profileSliceDrift() ||
+      this.projectDirty ||
+      this.projectSliceDrift() ||
+      this.baseNeedsFirstPublish();
     const dirtyPageIds = this.pages()
       .map(([id]) => id)
       .filter((id) => this.configSync(id).canPush);
@@ -5847,7 +6053,13 @@ export class MarkerStore implements vscode.Disposable {
     if (this.relevantBaseCloudNewer && !firstPublish) {
       return { ok: false, message: 'cloudPullFirst' };
     }
-    if (!this.profileDirty && !this.projectDirty && !firstPublish) {
+    if (
+      !this.profileDirty &&
+      !this.profileSliceDrift() &&
+      !this.projectDirty &&
+      !this.projectSliceDrift() &&
+      !firstPublish
+    ) {
       return { ok: false, message: 'Nothing to push' };
     }
     if (firstPublish) {
@@ -5972,7 +6184,7 @@ export class MarkerStore implements vscode.Disposable {
       if (localProject.profiles[profileId]) {
         next.profiles[profileId] = { ...localProject.profiles[profileId] };
       }
-      if (this.projectDirty && projectId === activeId) {
+      if ((this.projectDirty || this.projectSliceDrift()) && projectId === activeId) {
         next.version = localProject.version;
         next.name = localProject.name;
         next.channels = { ...localProject.channels };
@@ -6637,10 +6849,10 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /** Shared project fields (not styles, not lock, not per-profile active). */
-  private projectSyncFingerprint(): string {
+  private projectSyncSliceFromBase(base: BaseConfigFile): Record<string, unknown> {
     const projects: Record<string, unknown> = {};
-    for (const id of Object.keys(this.base.projects).sort()) {
-      const project = this.base.projects[id];
+    for (const id of Object.keys(base.projects).sort()) {
+      const project = base.projects[id];
       projects[id] = {
         version: project.version,
         name: project.name,
@@ -6649,26 +6861,69 @@ export class MarkerStore implements vscode.Disposable {
         pages: project.pages,
       };
     }
-    return fingerprint(
-      JSON.stringify({
-        channelId: this.base.channelId.trim(),
-        projects,
-      }),
-    );
+    return {
+      channelId: base.channelId.trim(),
+      projects,
+    };
+  }
+
+  private projectSyncSlice(): Record<string, unknown> {
+    return this.projectSyncSliceFromBase(this.base);
+  }
+
+  /** Project send slice plus lock, which lights Send but is not part of the fingerprint. */
+  private debugProjectSlice(base: BaseConfigFile): Record<string, unknown> {
+    const slice = this.projectSyncSliceFromBase(base);
+    const projects = slice.projects;
+    if (!projects || typeof projects !== 'object' || Array.isArray(projects)) {
+      return slice;
+    }
+    const next: Record<string, unknown> = {};
+    for (const [id, value] of Object.entries(projects)) {
+      const lock = base.projects[id]?.lock;
+      if (lock && value && typeof value === 'object' && !Array.isArray(value)) {
+        next[id] = { ...(value as Record<string, unknown>), lock: { profileId: lock.profileId } };
+      } else {
+        next[id] = value;
+      }
+    }
+    return { ...slice, projects: next };
+  }
+
+  /** Last sent fingerprint is behind the live slice, so Send must stay on. */
+  private projectSliceDrift(): boolean {
+    const saved = this.posLocal.baseClean?.project;
+    return !!saved && saved !== this.projectSyncFingerprint();
+  }
+
+  /** Last sent fingerprint is behind the live slice, so Send must stay on. */
+  private profileSliceDrift(): boolean {
+    const saved = this.posLocal.baseClean?.profile;
+    return !!saved && saved !== this.profileSyncFingerprint();
+  }
+
+  private projectSyncFingerprint(): string {
+    return fingerprint(JSON.stringify(this.projectSyncSlice()));
   }
 
   /** Root profiles + styles/nicks inside each project. */
-  private profileSyncFingerprint(): string {
+  private profileSyncSliceFromBase(base: BaseConfigFile): Record<string, unknown> {
     const projects: Record<string, unknown> = {};
-    for (const id of Object.keys(this.base.projects).sort()) {
-      projects[id] = this.base.projects[id].profiles;
+    for (const id of Object.keys(base.projects).sort()) {
+      projects[id] = base.projects[id].profiles;
     }
-    return fingerprint(
-      JSON.stringify({
-        profiles: this.base.profiles,
-        projectProfiles: projects,
-      }),
-    );
+    return {
+      profiles: base.profiles,
+      projectProfiles: projects,
+    };
+  }
+
+  private profileSyncSlice(): Record<string, unknown> {
+    return this.profileSyncSliceFromBase(this.base);
+  }
+
+  private profileSyncFingerprint(): string {
+    return fingerprint(JSON.stringify(this.profileSyncSlice()));
   }
 
   /**

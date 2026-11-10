@@ -1369,8 +1369,12 @@ button.pager-lock.is-fixed:hover {
   display: none;
 }
 
-.pager-chip.problems-tab {
+.pager-chip.debug-tab {
   margin-left: auto;
+}
+
+.pager-chip.problems-tab {
+  margin-left: 0;
 }
 
 .page-stage {
@@ -3427,6 +3431,101 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   text-align: center;
 }
 
+.debug-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  padding: 12px 16px 48px;
+}
+
+.debug-page > .empty {
+  font-size: 1.15em;
+  padding: 48px 16px 16px;
+  text-align: center;
+}
+
+.debug-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debug-toolbar button {
+  background: var(--vscode-button-secondaryBackground);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 10px;
+}
+
+.debug-toolbar button:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.debug-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.debug-status {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+}
+
+.debug-section {
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.debug-section-title {
+  font-weight: 600;
+}
+
+.debug-section-reason {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+}
+
+.debug-columns {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+  min-width: 0;
+}
+
+.debug-column {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.debug-column-label {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.debug-column pre {
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  border-radius: 4px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  line-height: 1.35;
+  margin: 0;
+  max-height: 48vh;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .review-page {
   --link-branch-gap: 18px;
   --link-fold-duration: 320ms;
@@ -3794,7 +3893,10 @@ button.review-neurofix-btn:hover {
 }
 
 .review-chip.is-review-pill.is-skel {
-  min-width: 168px;
+  flex: 0 0 150px;
+  max-width: 150px;
+  min-width: 150px;
+  width: 150px;
 }
 
 .review-skel-title {

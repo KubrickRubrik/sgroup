@@ -204,7 +204,8 @@ type IncomingToolbarAction =
 type ColumnSide = 'left' | 'right';
 
 type IncomingMessage =
-  | { type: 'ready'; pageId?: string }
+  | { type: 'ready'; pageId?: string; rev?: string }
+  | { type: 'assetsFailed'; rev?: string }
   | { type: 'activePage'; pageId: string }
   | { type: 'mapFocus'; pageId?: string }
   | { type: 'open'; relPath: string }
@@ -365,6 +366,7 @@ type IncomingMessage =
   | { type: 'pageCloud'; action: 'pushAll' }
   | { type: 'pageCloud'; action: 'pullAll' }
   | { type: 'pageCloud'; action: 'check' }
+  | { type: 'debugDiff' }
   | { type: 'workspaceCloud'; action: 'push' | 'pull' }
   | { type: 'setPagesFixed'; fixed: boolean }
   | { type: 'profileOpenSettings'; id?: string }
@@ -707,6 +709,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly surfaceByWebview = new WeakMap<vscode.Webview, MapSurface>();
   /** Script has posted `ready`, so postMessage will be received. */
   private readonly readyWebviews = new WeakSet<vscode.Webview>();
+  private readonly chromeByWebview = new WeakMap<vscode.Webview, 'view' | 'panel'>();
+  /** Document generation. Messages from a replaced document are ignored. */
+  private readonly htmlRevByWebview = new Map<vscode.Webview, string>();
+  private readonly htmlMountedAt = new Map<vscode.Webview, number>();
+  /** How many times css/js were loaded again after a failed boot. */
+  private readonly assetRetries = new Map<vscode.Webview, number>();
+  private readonly assetRetryTimers = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
+  /** Short retry already queued. The 8s watch uses the same timer map without this flag. */
+  private readonly assetRetrySoon = new Set<vscode.Webview>();
+  /** Failed while the view was hidden; load again on the next show. */
+  private readonly assetRetryOnShow = new Set<vscode.Webview>();
+  private static readonly assetRetryLimit = 3;
   /** First state after load should open the page saved for this surface. */
   private readonly needsPageRestore = new WeakSet<vscode.Webview>();
   private readonly subscriptions: vscode.Disposable[];
@@ -887,6 +901,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     this.reviewRefreshTimers.clear();
     this.clearSyncFetchTimers();
+    for (const timer of this.assetRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.assetRetryTimers.clear();
+    this.assetRetrySoon.clear();
+    this.assetRetryOnShow.clear();
     this.subscriptions.forEach((s) => s.dispose());
     for (const panel of this.instructionPanels.values()) {
       panel.dispose();
@@ -1014,6 +1034,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!view.visible) {
         return;
       }
+      this.onSurfaceVisible(webview);
       void this.postState(webview);
       // User selected the Syn3 tab. Switching to Terminal leaves this false.
       if (surface === 'bottom' && this.store.ready && !this.applyingBottom) {
@@ -1025,6 +1046,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
     view.onDidDispose(() => {
       this.clearReviewRefresh(webview);
+      this.clearAssetWatch(webview);
       this.webviews.delete(webview);
       if (this.bottomView === view) {
         this.bottomView = undefined;
@@ -2027,11 +2049,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.attach(panel.webview, 'panel', side);
     panel.onDidChangeViewState(() => {
       if (panel.visible) {
+        this.onSurfaceVisible(panel.webview);
         void this.postState(panel.webview);
       }
     });
     panel.onDidDispose(() => {
       this.clearReviewRefresh(panel.webview);
+      this.clearAssetWatch(panel.webview);
       this.webviews.delete(panel.webview);
       const wasSlot = this.clearPanelSlot(side, panel);
       if (wasSlot && this.closingColumn !== side && this.store.ready) {
@@ -2072,11 +2096,142 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private attach(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): void {
     this.surfaceByWebview.set(webview, surface);
-    this.needsPageRestore.add(webview);
+    this.chromeByWebview.set(webview, chrome);
     webview.options = { enableScripts: true, localResourceRoots: [this.media] };
-    webview.html = this.html(webview, chrome, surface);
-    webview.onDidReceiveMessage((message: IncomingMessage) => this.onMessage(webview, message));
     this.webviews.add(webview);
+    this.mountWebview(webview);
+    webview.onDidReceiveMessage((message: IncomingMessage) => this.onMessage(webview, message));
+  }
+
+  /**
+   * Window reload sometimes 404s css/js: the webview service worker has no parent
+   * client yet and does not retry. The document stays as raw toolbar buttons.
+   */
+  private mountWebview(webview: vscode.Webview): void {
+    const chrome = this.chromeByWebview.get(webview);
+    const surface = this.surfaceByWebview.get(webview);
+    if (!chrome || !surface || !this.webviews.has(webview)) {
+      return;
+    }
+    const rev = Date.now().toString(36);
+    this.htmlRevByWebview.set(webview, rev);
+    this.htmlMountedAt.set(webview, Date.now());
+    this.readyWebviews.delete(webview);
+    this.needsPageRestore.add(webview);
+    webview.html = this.html(webview, chrome, surface, rev);
+    this.armAssetWatch(webview);
+  }
+
+  private isWebviewVisible(webview: vscode.Webview): boolean {
+    if (this.explorerView?.webview === webview) {
+      return this.explorerView.visible;
+    }
+    if (this.bottomView?.webview === webview) {
+      return this.bottomView.visible;
+    }
+    if (this.leftPanel?.webview === webview) {
+      return this.leftPanel.visible;
+    }
+    if (this.rightPanel?.webview === webview) {
+      return this.rightPanel.visible;
+    }
+    return true;
+  }
+
+  private clearAssetTimer(webview: vscode.Webview): void {
+    const timer = this.assetRetryTimers.get(webview);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    this.assetRetryTimers.delete(webview);
+  }
+
+  private clearAssetWatch(webview: vscode.Webview): void {
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    this.assetRetryOnShow.delete(webview);
+    this.assetRetries.delete(webview);
+    this.htmlRevByWebview.delete(webview);
+    this.htmlMountedAt.delete(webview);
+  }
+
+  private noteWebviewReady(webview: vscode.Webview): void {
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    this.assetRetryOnShow.delete(webview);
+    this.assetRetries.delete(webview);
+  }
+
+  private armAssetWatch(webview: vscode.Webview): void {
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    if (!this.isWebviewVisible(webview)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.assetRetryTimers.delete(webview);
+      if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+        return;
+      }
+      this.scheduleAssetRetry(webview);
+    }, 8000);
+    this.assetRetryTimers.set(webview, timer);
+  }
+
+  private scheduleAssetRetry(webview: vscode.Webview): void {
+    if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+      return;
+    }
+    if ((this.assetRetries.get(webview) ?? 0) >= MarkersMapProvider.assetRetryLimit) {
+      return;
+    }
+    if (!this.isWebviewVisible(webview)) {
+      this.clearAssetTimer(webview);
+      this.assetRetrySoon.delete(webview);
+      this.assetRetryOnShow.add(webview);
+      return;
+    }
+    if (this.assetRetrySoon.has(webview)) {
+      return;
+    }
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.add(webview);
+    const timer = setTimeout(() => {
+      this.assetRetryTimers.delete(webview);
+      this.assetRetrySoon.delete(webview);
+      if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+        return;
+      }
+      if (!this.isWebviewVisible(webview)) {
+        this.assetRetryOnShow.add(webview);
+        return;
+      }
+      const tries = (this.assetRetries.get(webview) ?? 0) + 1;
+      this.assetRetries.set(webview, tries);
+      this.mountWebview(webview);
+    }, 300);
+    this.assetRetryTimers.set(webview, timer);
+  }
+
+  private onSurfaceVisible(webview: vscode.Webview): void {
+    if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+      return;
+    }
+    const forced = this.assetRetryOnShow.delete(webview);
+    const mountedAt = this.htmlMountedAt.get(webview) ?? 0;
+    if (!forced && Date.now() - mountedAt < 1500) {
+      if (!this.assetRetryTimers.has(webview)) {
+        this.armAssetWatch(webview);
+      }
+      return;
+    }
+    if ((this.assetRetries.get(webview) ?? 0) >= MarkersMapProvider.assetRetryLimit) {
+      return;
+    }
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    this.assetRetries.set(webview, (this.assetRetries.get(webview) ?? 0) + 1);
+    this.mountWebview(webview);
   }
 
   /** Open/close left, right, and bottom to match the active profile. */
@@ -2273,7 +2428,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.store.setPagesFixed(message.fixed === true);
       return;
     }
+    if (message.type === 'assetsFailed') {
+      if (!message.rev || message.rev !== this.htmlRevByWebview.get(webview)) {
+        return;
+      }
+      this.scheduleAssetRetry(webview);
+      return;
+    }
     if (message.type === 'ready') {
+      if (message.rev !== this.htmlRevByWebview.get(webview)) {
+        return;
+      }
+      this.noteWebviewReady(webview);
       this.readyWebviews.add(webview);
       this.rememberFocus(webview, message.pageId);
       if (!this.store.ready) {
@@ -2470,6 +2636,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       await this.onPageCloud(message.action, message.pageId);
+      return;
+    }
+    if (message.type === 'debugDiff') {
+      const result = await this.store.debugSendDiff();
+      void webview.postMessage({ type: 'debugDiff', sections: result.sections });
       return;
     }
     if (message.type === 'workspaceCloud') {
@@ -5663,16 +5834,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return `<img class="tool-icon tone-light" src="${light}" alt=""${modeAttr}${hiddenAttr}><img class="tool-icon tone-dark" src="${dark}" alt=""${modeAttr}${hiddenAttr}>`;
   }
 
-  private html(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): string {
+  /** Cache-bust dev reloads without dropping asWebviewUri's own query. */
+  private mediaUri(webview: vscode.Webview, rev: string, ...parts: string[]): vscode.Uri {
+    const uri = webview.asWebviewUri(vscode.Uri.joinPath(this.media, ...parts));
+    const query = uri.query ? `${uri.query}&rev=${rev}` : `rev=${rev}`;
+    return uri.with({ query });
+  }
+
+  private html(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface, rev: string): string {
     const nonce = crypto.randomBytes(16).toString('base64');
-    // Bust webview cache when media files change during Extension Development Host.
-    const mediaRev = Date.now().toString(36);
-    const css = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.css')).with({
-      query: mediaRev,
-    });
-    const js = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.js')).with({
-      query: mediaRev,
-    });
+    const css = this.mediaUri(webview, rev, 'map.css');
+    const js = this.mediaUri(webview, rev, 'map.js');
     // Themed copies of assets/bill.svg / box-3-line.svg for fixed type icons.
     const noteIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-light.svg'));
     const noteIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-dark.svg'));
@@ -5688,7 +5860,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${css}">
 </head>
-<body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+<body class="chrome-${chrome}" data-boot-rev="${rev}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="map-chrome">
   <div class="history-bar">
     <div class="toolbar-profile">
@@ -5818,6 +5990,25 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       <div id="review-file-body" class="review-file-body"></div>
     </aside>
   </div>
+  <script nonce="${nonce}">
+    (function () {
+      const vscode = acquireVsCodeApi();
+      window.__syn3Vscode = vscode;
+      const rev = ${JSON.stringify(rev)};
+      let reported = false;
+      function fail() {
+        if (reported) return;
+        reported = true;
+        vscode.postMessage({ type: 'assetsFailed', rev: rev });
+      }
+      const link = document.querySelector('link[rel="stylesheet"]');
+      if (link) link.addEventListener('error', fail);
+      window.addEventListener('error', (event) => {
+        const target = event.target;
+        if (target && target.tagName === 'SCRIPT' && target.src) fail();
+      }, true);
+    })();
+  </script>
   <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;
