@@ -218,6 +218,101 @@ html::-webkit-scrollbar {
   white-space: nowrap;
 }
 
+.syn3-neurofix-list {
+  background: var(--vscode-menu-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: min(420px, calc(100vw - 16px));
+  overflow: auto;
+  padding: 6px 0;
+  position: fixed;
+  z-index: 70;
+}
+
+.syn3-neurofix-list-counts {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 4px 12px 6px;
+}
+
+.syn3-neurofix-list-group {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 12px 2px;
+  text-transform: uppercase;
+}
+
+.syn3-neurofix-list-error {
+  color: var(--vscode-errorForeground, var(--vscode-foreground));
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.syn3-neurofix-list-item {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 4px 0 0;
+  position: relative;
+}
+
+.syn3-neurofix-list-item:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
+.syn3-neurofix-list-item-main {
+  background: transparent;
+  border: 0;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  flex: 1 1 auto;
+  font: inherit;
+  min-width: 0;
+  overflow: hidden;
+  padding: 5px 8px 5px 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.syn3-neurofix-list-open {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  display: none;
+  flex: 0 0 auto;
+  height: 22px;
+  justify-content: center;
+  margin-right: 6px;
+  opacity: 0.85;
+  padding: 0;
+  width: 22px;
+}
+
+.syn3-neurofix-list-item:hover .syn3-neurofix-list-open {
+  display: inline-flex;
+}
+
+.syn3-neurofix-list-open:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 100%, transparent);
+  opacity: 1;
+}
+
+.syn3-neurofix-list-open .review-ico {
+  height: 14px;
+  width: 14px;
+}
+
 .syn3-menu-item:hover {
   background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
 }
@@ -856,6 +951,49 @@ button.toolbar-lock.is-fixed:hover {
 
 .link-node.link-drop-target > .link-body > .link-chip-wrap > .link-chip {
   outline: 1px solid var(--vscode-focusBorder, #4daafc);
+}
+
+.link-node.link-drop-into > .link-body > .link-chip-wrap > .link-chip {
+  outline: 2px dashed var(--vscode-focusBorder, #4daafc);
+  outline-offset: 2px;
+}
+
+.link-drop-slot {
+  background: color-mix(in srgb, var(--vscode-focusBorder, #4daafc) 18%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--vscode-focusBorder, #4daafc) 70%, transparent);
+  border-radius: 12px;
+  box-sizing: border-box;
+  height: 24px;
+  margin: 0;
+  pointer-events: none;
+  position: fixed;
+  z-index: 6;
+}
+
+.link-drop-tail {
+  align-self: flex-start;
+  background: color-mix(in srgb, var(--link-color, var(--vscode-focusBorder, #4daafc)) 28%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--link-color, var(--vscode-focusBorder, #4daafc)) 75%, transparent);
+  border-radius: 12px;
+  box-sizing: border-box;
+  height: 40px;
+  margin-top: 18px;
+  width: 140px;
+}
+
+.link-drop-tail[hidden] {
+  display: none;
+}
+
+.link-drop-tail.is-active {
+  background: color-mix(in srgb, var(--link-color, var(--vscode-focusBorder, #4daafc)) 46%, transparent);
+  border-style: solid;
+}
+
+body.vscode-light .link-drop-slot,
+body.vscode-high-contrast-light .link-drop-slot {
+  background: color-mix(in srgb, var(--vscode-focusBorder, #0078d4) 14%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-focusBorder, #0078d4) 55%, transparent);
 }
 
 .link-panel-backdrop {

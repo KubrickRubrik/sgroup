@@ -1882,11 +1882,13 @@ export class ReviewMapController {
   /**
    * Run the Neurofix agent against the review attachment for the chosen severity scope.
    * Local edits only: no commit, push, Discord status, or Discord message.
+   * Optional itemIndex limits the prompt to one bullet inside H/M/S.
    */
   async runNeuroFix(
     pageId: string,
     messageId: string,
     scope: NeuroFixScope,
+    itemIndex?: number,
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     const paths = this.profilePaths();
     const fail = async (message: string) => {
@@ -1901,20 +1903,43 @@ export class ReviewMapController {
     if (!parsed.ok) {
       return fail(parsed.message);
     }
-    const letters: Array<'H' | 'M' | 'S'> = scope === 'all' ? ['H', 'M', 'S'] : [scope];
     const sections: string[] = [];
-    for (const letter of letters) {
-      const items = parsed.groups[letter];
-      if (!items.length) {
-        continue;
+    if (typeof itemIndex === 'number') {
+      if (scope === 'all') {
+        return fail('Нет замечаний для выбранного scope');
       }
-      sections.push([letter, ...items.map((item) => `- ${item}`)].join('\n'));
+      const item = parsed.groups[scope][itemIndex];
+      if (!item) {
+        return fail('Нет замечаний для выбранного scope');
+      }
+      sections.push([scope, `- ${item}`].join('\n'));
+    } else {
+      const letters: Array<'H' | 'M' | 'S'> = scope === 'all' ? ['H', 'M', 'S'] : [scope];
+      for (const letter of letters) {
+        const items = parsed.groups[letter];
+        if (!items.length) {
+          continue;
+        }
+        sections.push([letter, ...items.map((item) => `- ${item}`)].join('\n'));
+      }
     }
     if (!sections.length) {
       return fail('Нет замечаний для выбранного scope');
     }
     const scopeLabel =
-      scope === 'all' ? 'H, M и S' : scope === 'H' ? 'High' : scope === 'M' ? 'Medium' : 'Simple';
+      typeof itemIndex === 'number'
+        ? scope === 'H'
+          ? `High #${itemIndex + 1}`
+          : scope === 'M'
+            ? `Medium #${itemIndex + 1}`
+            : `Simple #${itemIndex + 1}`
+        : scope === 'all'
+          ? 'H, M и S'
+          : scope === 'H'
+            ? 'High'
+            : scope === 'M'
+              ? 'Medium'
+              : 'Simple';
     const prompt = [
       'Исправь замечания код-ревью в рабочей копии.',
       `Scope: ${scopeLabel}.`,

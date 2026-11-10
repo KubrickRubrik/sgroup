@@ -484,6 +484,7 @@ type IncomingMessage =
       pageId: string;
       messageId: string;
       scope: string;
+      itemIndex?: number;
     }
   | { type: 'listProjectDir'; seq: number; rel?: string }
   | {
@@ -2945,6 +2946,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewNeurofix') {
       const scope = message.scope;
+      const itemIndex =
+        typeof message.itemIndex === 'number' && Number.isInteger(message.itemIndex)
+          ? message.itemIndex
+          : undefined;
+      if (itemIndex !== undefined) {
+        if (scope === 'H' || scope === 'M' || scope === 'S') {
+          await this.review.runNeuroFix(message.pageId, message.messageId, scope, itemIndex);
+        }
+        return;
+      }
       if (scope === 'H' || scope === 'M' || scope === 'S' || scope === 'all') {
         await this.review.runNeuroFix(message.pageId, message.messageId, scope);
       }

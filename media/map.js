@@ -73,7 +73,7 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   /** Create-menu «Создать ревью» uses the same scope/depth flyout as the MR chip. */
   const MENU_CLOSE_MS = 300;
@@ -620,7 +620,8 @@
       ignoreContextLeave = false;
       if (
         menuBoxContains(contextMenu, event.clientX, event.clientY) ||
-        menuBoxContains(reviewDepthMenu, event.clientX, event.clientY)
+        menuBoxContains(reviewDepthMenu, event.clientX, event.clientY) ||
+        menuBoxContains(neuroFixMenu, event.clientX, event.clientY)
       ) {
         clearContextDismissMove();
         return;
@@ -957,6 +958,22 @@
    * } | null}
    */
   let reviewFileView = null;
+  /**
+   * Neurofix bullet picker opened from «Фикс списком».
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   left: number,
+   *   top: number,
+   *   width: number,
+   *   status: 'loading' | 'ready' | 'error',
+   *   error: string,
+   *   entered: boolean,
+   *   pointerInside: boolean,
+   *   el: HTMLElement | null,
+   * } | null}
+   */
+  let neuroFixListPanel = null;
 
   /** Thrown by fetch when the machine is offline. Not an HTTP error from Discord. */
   function isReviewFetchError(text) {
@@ -2183,6 +2200,7 @@
     // Hiding and replaceChildren can synthesize mouseleave; don't re-arm a close.
     ignoreContextLeave = true;
     clearReviewDepthMenu();
+    clearNeuroFixMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
     const chrome = ensureMenuChrome(contextMenu);
@@ -2275,6 +2293,7 @@
    */
   function openContextMenu(ctx, x, y) {
     cancelMenuClose('context');
+    closeNeuroFixListPanel();
     // Always start collapsed; user expands «Вид» / «Создать» / delete explicitly.
     openMenuState = {
       kind: 'context',
@@ -2284,6 +2303,7 @@
       reviewExpanded: false,
       reviewScope: '',
       reviewStatusExpanded: false,
+      neurofixExpanded: false,
       ctx,
       x,
       y,
@@ -2326,10 +2346,109 @@
 
   /** @type {HTMLElement | null} */
   let reviewDepthMenu = null;
+  /** @type {HTMLElement | null} */
+  let neuroFixMenu = null;
 
   function clearReviewDepthMenu() {
     reviewDepthMenu?.remove();
     reviewDepthMenu = null;
+  }
+
+  function clearNeuroFixMenu() {
+    neuroFixMenu?.remove();
+    neuroFixMenu = null;
+  }
+
+  /**
+   * Neurofix row inside the root review chip menu. Click opens the scope flyout.
+   * @param {HTMLElement} scroller
+   * @param {boolean} expanded
+   */
+  function appendNeuroFixRow(scroller, expanded) {
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleNeuroFix';
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = t('neurofix');
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    scroller.append(row);
+  }
+
+  /**
+   * Side flyout for Neurofix scopes on the root review chip.
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H: number, M: number, S: number }} counts
+   */
+  function mountNeuroFixMenu(pageId, messageId, counts) {
+    clearNeuroFixMenu();
+    if (!(contextMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = contextMenu.querySelector('[data-menu-action="toggleNeuroFix"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
+    const items = [
+      { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
+      { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
+      { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
+      {
+        scope: 'all',
+        label: t('neurofixAll'),
+        show: counts.H > 0 || counts.M > 0 || counts.S > 0,
+      },
+    ];
+    for (const item of items) {
+      if (!item.show) {
+        continue;
+      }
+      fly.append(
+        menuActionChoice(item.label, {
+          neuroFix: item.scope,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    const listBtn = menuAction(t('neurofixList'));
+    listBtn.dataset.menuAction = 'neuroFixList';
+    listBtn.dataset.pageId = pageId;
+    listBtn.dataset.messageId = messageId;
+    fly.append(listBtn);
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    neuroFixMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
   }
 
   /**
@@ -2482,6 +2601,15 @@
         String(openMenuState.ctx.reviewMessageId || ''),
       );
     }
+    if (openMenuState.neurofixExpanded && openMenuState.ctx) {
+      const pageId = String(openMenuState.ctx.reviewPageId || '');
+      const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const counts = parsePillSeverityCounts(chip?.pillLabel);
+      if (counts) {
+        mountNeuroFixMenu(pageId, messageId, counts);
+      }
+    }
   }
 
   function renderContextMenu() {
@@ -2495,6 +2623,7 @@
     armContextMenuDismiss();
     cancelMenuClose('context');
     clearReviewDepthMenu();
+    clearNeuroFixMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
     if (section === 'reviewMr') {
@@ -2620,30 +2749,8 @@
         { plain: true },
       );
       const counts = parsePillSeverityCounts(chip?.pillLabel);
-      if (counts) {
-        /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
-        const items = [
-          { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
-          { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
-          { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
-          {
-            scope: 'all',
-            label: t('neurofixAll'),
-            show: counts.H > 0 || counts.M > 0 || counts.S > 0,
-          },
-        ];
-        for (const item of items) {
-          if (!item.show) {
-            continue;
-          }
-          scroller.append(
-            menuActionChoice(item.label, {
-              neuroFix: item.scope,
-              pageId,
-              messageId,
-            }),
-          );
-        }
+      if (counts && (counts.H > 0 || counts.M > 0 || counts.S > 0)) {
+        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded);
       }
       scroller.append(
         menuActionChoice(t('menuChangeColor'), {
@@ -3138,6 +3245,7 @@
         if (!openMenuState.reviewExpanded) {
           openMenuState.reviewScope = '';
         }
+        openMenuState.neurofixExpanded = false;
         rerenderContextMenu();
       } else if (openMenuState?.kind === 'toolbar-create') {
         openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
@@ -3146,6 +3254,32 @@
         }
         rerenderCreateMenu();
       }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleNeuroFix') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.neurofixExpanded = !openMenuState.neurofixExpanded;
+        if (openMenuState.neurofixExpanded) {
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.reviewStatusExpanded = false;
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'neuroFixList') {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const menuRect = contextMenu.getBoundingClientRect();
+      const flyRect = neuroFixMenu?.getBoundingClientRect();
+      const left = Number.isFinite(menuRect.left) ? menuRect.left : 0;
+      const top = Number.isFinite(menuRect.top) ? menuRect.top : 0;
+      const width = flyRect && flyRect.width > menuRect.width ? flyRect.width : menuRect.width;
+      closeContextMenu();
+      openNeuroFixListPanel({ pageId, messageId, left, top, width });
       return;
     }
 
@@ -3163,6 +3297,7 @@
     if (button.dataset.menuAction === 'toggleReviewStatus') {
       if (openMenuState?.kind === 'context') {
         openMenuState.reviewStatusExpanded = !openMenuState.reviewStatusExpanded;
+        openMenuState.neurofixExpanded = false;
         rerenderContextMenu();
       }
       return;
@@ -3173,6 +3308,7 @@
         const scope = button.dataset.reviewScope || '';
         openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
         openMenuState.reviewExpanded = true;
+        openMenuState.neurofixExpanded = false;
         rerenderContextMenu();
       } else if (openMenuState?.kind === 'toolbar-create') {
         const scope = button.dataset.reviewScope || '';
@@ -4922,6 +5058,10 @@
 
   /** @type {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' } | null} */
   let pendingLinkDrop = null;
+  /** @type {{ kind: 'row', row: HTMLElement, edge: 'before' | 'after' | 'into' } | { kind: 'tail', tail: HTMLElement } | null} */
+  let linkCue = null;
+  /** @type {HTMLElement | null} */
+  let linkDropSlotEl = null;
   /** @type {string | null} */
   let openLinkPanelId = null;
   /** Focus the name field once, when the link chip panel is opened. */
@@ -5986,6 +6126,25 @@
     );
     path.setAttribute('fill', 'currentColor');
     svg.append(path);
+    return svg;
+  }
+
+  /** Paths from assets/var-instance-fill.svg — open full review file from a list row. */
+  function reviewVarInstanceIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const paths = [
+      'M11.293 1.39348C11.6835 1.00295 12.3165 1.00295 12.707 1.39348L22.6064 11.2929C22.9969 11.6834 22.9969 12.3165 22.6064 12.707L12.707 22.6064C12.3165 22.9967 11.6834 22.9968 11.293 22.6064L3.68652 14.9999H9.35742C10.0598 15.6197 10.9837 15.9999 12 15.9999C14.209 15.9999 15.9999 14.2089 16 11.9999C16 9.79082 14.2091 7.99998 12 7.99993C10.9836 7.99997 10.0598 8.38012 9.35742 8.99993H3.68652L11.293 1.39348Z',
+      'M12.2051 10.0097C12.9445 10.085 13.5646 10.5636 13.8428 11.2216C13.8933 11.3412 13.9333 11.4665 13.96 11.5966C13.9866 11.7268 14 11.8618 14 11.9999C14 12.5333 13.7895 13.0164 13.4492 13.3749C13.3932 13.4339 13.3353 13.4911 13.2725 13.5429C12.9267 13.8283 12.4834 13.9999 12 13.9999C11.3063 13.9999 10.6964 13.6458 10.3379 13.1093L10.2695 12.9999H1.09961L1.10059 10.9999H10.2695C10.6155 10.4026 11.2601 9.99993 12 9.99993L12.2051 10.0097Z',
+    ];
+    for (const d of paths) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('fill', 'currentColor');
+      svg.append(path);
+    }
     return svg;
   }
 
@@ -7207,16 +7366,36 @@
     }
     reviewFileView = null;
     mountReviewFile();
+    if (neuroFixListPanel && !neuroFixListPanel.pointerInside) {
+      closeNeuroFixListPanel();
+    }
   }
 
   /** @param {{ messageId?: string, ok?: boolean, text?: string, filename?: string, message?: string }} message */
   function onReviewFileResult(message) {
+    if (message.ok && typeof message.text === 'string' && message.messageId) {
+      const filename =
+        message.filename ||
+        (reviewFileView && reviewFileView.messageId === message.messageId
+          ? reviewFileView.filename
+          : '') ||
+        '';
+      reviewFileCache.set(message.messageId, { text: message.text, filename });
+    }
+    if (neuroFixListPanel && neuroFixListPanel.messageId === message.messageId) {
+      if (message.ok && typeof message.text === 'string') {
+        fillNeuroFixListFromText(message.text);
+      } else {
+        neuroFixListPanel.status = 'error';
+        neuroFixListPanel.error = message.message || t('reviewFileDownloadFail');
+        mountNeuroFixListPanel();
+      }
+    }
     if (!reviewFileView || reviewFileView.messageId !== message.messageId) {
       return;
     }
     if (message.ok && typeof message.text === 'string') {
       const filename = message.filename || reviewFileView.filename;
-      reviewFileCache.set(message.messageId, { text: message.text, filename });
       reviewFileView.status = 'ready';
       reviewFileView.text = message.text;
       reviewFileView.filename = filename;
@@ -7356,6 +7535,255 @@
       return undefined;
     }
     return { H: Number(match[1]), M: Number(match[2]), S: Number(match[3]) };
+  }
+
+  /**
+   * Client-side mirror of parseReviewFixGroups for the Neurofix list panel.
+   * @param {string} text
+   * @returns {{
+   *   ok: true,
+   *   counts: { H: number, M: number, S: number },
+   *   groups: { H: string[], M: string[], S: string[] },
+   * } | { ok: false, message: string }}
+   */
+  function parseReviewFixGroupsClient(text) {
+    const lines = String(text || '').split(/\r?\n/);
+    const severityRaw = (lines[2] || '').trim();
+    const sevMatch = severityRaw.match(/^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i);
+    if (!sevMatch) {
+      return { ok: false, message: t('neurofixListParseFail') };
+    }
+    const counts = {
+      H: Number(sevMatch[1]),
+      M: Number(sevMatch[2]),
+      S: Number(sevMatch[4]),
+    };
+    /** @type {{ H: string[], M: string[], S: string[] }} */
+    const groups = { H: [], M: [], S: [] };
+    /** @type {Set<'H' | 'M' | 'S'>} */
+    const seen = new Set();
+    /** @type {'H' | 'M' | 'S' | undefined} */
+    let current;
+    for (const raw of lines.slice(3)) {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const header = /^([HMLS])\s*$/i.exec(trimmed);
+      if (header) {
+        const letter =
+          header[1].toUpperCase() === 'L' ? 'S' : /** @type {'H' | 'M' | 'S'} */ (header[1].toUpperCase());
+        if (seen.has(letter)) {
+          return { ok: false, message: t('neurofixListParseFail') };
+        }
+        seen.add(letter);
+        current = letter;
+        continue;
+      }
+      if (/^-\s+/.test(trimmed)) {
+        if (!current) {
+          return { ok: false, message: t('neurofixListParseFail') };
+        }
+        groups[current].push(trimmed.replace(/^-\s+/, '').trim());
+        continue;
+      }
+    }
+    for (const letter of /** @type {Array<'H' | 'M' | 'S'>} */ (['H', 'M', 'S'])) {
+      const expected = counts[letter];
+      const actual = groups[letter].length;
+      if (expected === 0 && actual === 0) {
+        continue;
+      }
+      if (expected !== actual) {
+        return { ok: false, message: t('neurofixListParseFail') };
+      }
+    }
+    return { ok: true, counts, groups };
+  }
+
+  /**
+   * @param {{ pageId: string, messageId: string, left: number, top: number, width: number }} opts
+   */
+  function openNeuroFixListPanel(opts) {
+    closeNeuroFixListPanel();
+    const cached = reviewFileCache.get(opts.messageId);
+    neuroFixListPanel = {
+      pageId: opts.pageId,
+      messageId: opts.messageId,
+      left: opts.left,
+      top: opts.top,
+      width: Math.max(opts.width || 240, 240),
+      status: cached ? 'ready' : 'loading',
+      error: '',
+      entered: false,
+      pointerInside: false,
+      el: null,
+    };
+    if (cached && typeof cached.text === 'string') {
+      fillNeuroFixListFromText(cached.text);
+      return;
+    }
+    mountNeuroFixListPanel();
+    vscode.postMessage({
+      type: 'reviewOpenFile',
+      pageId: opts.pageId,
+      messageId: opts.messageId,
+    });
+  }
+
+  function closeNeuroFixListPanel() {
+    if (!neuroFixListPanel) {
+      return;
+    }
+    neuroFixListPanel.el?.remove();
+    neuroFixListPanel = null;
+  }
+
+  /** @param {string} text */
+  function fillNeuroFixListFromText(text) {
+    if (!neuroFixListPanel) {
+      return;
+    }
+    const parsed = parseReviewFixGroupsClient(text);
+    if (!parsed.ok) {
+      neuroFixListPanel.status = 'error';
+      neuroFixListPanel.error = parsed.message;
+      mountNeuroFixListPanel();
+      return;
+    }
+    neuroFixListPanel.status = 'ready';
+    neuroFixListPanel.error = '';
+    mountNeuroFixListPanel(parsed);
+  }
+
+  /**
+   * @param {{
+   *   counts: { H: number, M: number, S: number },
+   *   groups: { H: string[], M: string[], S: string[] },
+   * } | undefined} [parsed]
+   */
+  function mountNeuroFixListPanel(parsed) {
+    if (!neuroFixListPanel) {
+      return;
+    }
+    const prev = neuroFixListPanel.el;
+    const entered = neuroFixListPanel.entered;
+    const pointerInside = neuroFixListPanel.pointerInside;
+    prev?.remove();
+    const panel = document.createElement('div');
+    panel.className = 'syn3-menu syn3-neurofix-list';
+    panel.setAttribute('role', 'menu');
+    panel.style.left = neuroFixListPanel.left + 'px';
+    panel.style.top = neuroFixListPanel.top + 'px';
+    panel.style.minWidth = neuroFixListPanel.width + 'px';
+    panel.addEventListener('mouseenter', () => {
+      if (!neuroFixListPanel) {
+        return;
+      }
+      neuroFixListPanel.entered = true;
+      neuroFixListPanel.pointerInside = true;
+    });
+    panel.addEventListener('mouseleave', () => {
+      if (!neuroFixListPanel) {
+        return;
+      }
+      neuroFixListPanel.pointerInside = false;
+      if (!neuroFixListPanel.entered) {
+        return;
+      }
+      const fileOpen =
+        !!reviewFileView && reviewFileView.messageId === neuroFixListPanel.messageId;
+      if (fileOpen) {
+        return;
+      }
+      closeNeuroFixListPanel();
+    });
+
+    if (neuroFixListPanel.status === 'loading') {
+      panel.append(reviewFileSkeleton());
+    } else if (neuroFixListPanel.status === 'error') {
+      panel.append(
+        el('div', 'syn3-neurofix-list-error', neuroFixListPanel.error || t('neurofixListParseFail')),
+      );
+    } else if (parsed) {
+      const counts = parsed.counts;
+      panel.append(
+        el(
+          'div',
+          'syn3-neurofix-list-counts',
+          `H:${counts.H} | M:${counts.M} | S:${counts.S}`,
+        ),
+      );
+      /** @type {Array<{ letter: 'H' | 'M' | 'S', label: string }>} */
+      const groupMeta = [
+        { letter: 'H', label: 'High' },
+        { letter: 'M', label: 'Medium' },
+        { letter: 'S', label: 'Simple' },
+      ];
+      const pageId = neuroFixListPanel.pageId;
+      const messageId = neuroFixListPanel.messageId;
+      for (const group of groupMeta) {
+        const items = parsed.groups[group.letter];
+        if (!items.length) {
+          continue;
+        }
+        panel.append(el('div', 'syn3-neurofix-list-group', group.label));
+        for (let index = 0; index < items.length; index += 1) {
+          const full = items[index];
+          const short =
+            full.length > 80 ? full.slice(0, 80).replace(/\s+\S*$/, '').trimEnd() + '…' : full;
+          const row = document.createElement('div');
+          row.className = 'syn3-neurofix-list-item';
+          row.setAttribute('role', 'menuitem');
+          const main = document.createElement('button');
+          main.type = 'button';
+          main.className = 'syn3-neurofix-list-item-main';
+          main.textContent = `${index + 1}. ${short}`;
+          main.title = full;
+          main.addEventListener('click', (event) => {
+            event.preventDefault();
+            closeNeuroFixListPanel();
+            vscode.postMessage({
+              type: 'reviewNeurofix',
+              pageId,
+              messageId,
+              scope: group.letter,
+              itemIndex: index,
+            });
+          });
+          const openBtn = document.createElement('button');
+          openBtn.type = 'button';
+          openBtn.className = 'syn3-neurofix-list-open';
+          openBtn.title = t('reviewFileTitle');
+          openBtn.setAttribute('aria-label', t('reviewFileTitle'));
+          openBtn.append(reviewVarInstanceIcon());
+          openBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const chip =
+              (reviewState?.messages || []).find((item) => item.id === messageId) ||
+              findReviewReply(messageId) ||
+              { id: messageId };
+            openReviewFileView(pageId, chip);
+          });
+          row.append(main, openBtn);
+          panel.append(row);
+        }
+      }
+    }
+
+    document.body.append(panel);
+    const maxH = Math.max(120, window.innerHeight - neuroFixListPanel.top - 8);
+    panel.style.maxHeight = maxH + 'px';
+    let top = neuroFixListPanel.top;
+    if (top + panel.offsetHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - panel.offsetHeight);
+      panel.style.top = top + 'px';
+      neuroFixListPanel.top = top;
+    }
+    neuroFixListPanel.el = panel;
+    neuroFixListPanel.entered = entered;
+    neuroFixListPanel.pointerInside = pointerInside;
   }
 
   /**
@@ -9140,6 +9568,7 @@
     roots.forEach((link, index) => {
       nextTree.append(renderLinkNode(link, byId, index > 0, roots[index + 1]?.color || ''));
     });
+    nextTree.append(renderLinkTail(roots[roots.length - 1]));
     root.append(nextTree);
     mountLinkPanel(links);
     playFolds(folds);
@@ -9378,6 +9807,7 @@
           link.label || '',
         );
         chip.classList.add('dragging');
+        revealLinkTail(link.id);
       });
       chip.addEventListener('dragend', () => {
         chip.classList.remove('dragging');
@@ -9391,42 +9821,22 @@
         return;
       }
       event.preventDefault();
+      event.stopPropagation();
       if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = event.altKey ? 'copy' : 'move';
+        event.dataTransfer.dropEffect = 'move';
       }
-      row.classList.add('link-drop-target');
+      showLinkRowCue(row, linkDropEdge(event, row));
     });
-    row.addEventListener('dragleave', () => row.classList.remove('link-drop-target'));
     row.addEventListener('drop', (event) => {
-      row.classList.remove('link-drop-target');
       const payload = readPayload(event);
       if (!payload || payload.kind !== 'link' || payload.id === link.id) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      const rect = row.getBoundingClientRect();
-      const edge =
-        event.clientY < rect.top + rect.height / 3
-          ? 'before'
-          : event.clientY > rect.bottom - rect.height / 3
-            ? 'after'
-            : 'into';
-      if (edge === 'into') {
-        const nextDepth = (link.depth || 0) + 1 + (payload.subtreeHeight || 0);
-        if (nextDepth > MAX_DEPTH) {
-          vscode.postMessage({ type: 'nestLink', id: payload.id, parentId: link.id });
-          return;
-        }
-        openLinkDropChoose({ id: payload.id, targetId: link.id, mode: 'nest' });
-        return;
-      }
-      openLinkDropChoose({
-        id: payload.id,
-        targetId: link.id,
-        mode: 'place',
-        position: edge,
-      });
+      const edge = linkDropEdge(event, row);
+      clearLinkDropCue();
+      applyLinkRowDrop(payload, link, edge);
     });
 
     row.addEventListener('contextmenu', (event) => {
@@ -9461,6 +9871,226 @@
     row.append(body);
     return row;
   }
+
+  /**
+   * Top third of the whole branch is before, bottom third is after, middle nests.
+   * @param {DragEvent} event
+   * @param {HTMLElement} row
+   * @returns {'before' | 'after' | 'into'}
+   */
+  function linkDropEdge(event, row) {
+    const rect = row.getBoundingClientRect();
+    if (event.clientY < rect.top + rect.height / 3) {
+      return 'before';
+    }
+    if (event.clientY > rect.bottom - rect.height / 3) {
+      return 'after';
+    }
+    return 'into';
+  }
+
+  /** @param {string} id */
+  function linkRecord(id) {
+    return (data?.links || []).find((item) => item.id === id) || null;
+  }
+
+  /**
+   * Strip under the last root, below its children. Drop here places after that root.
+   * @param {*} lastRoot
+   */
+  function renderLinkTail(lastRoot) {
+    const tail = el('div', 'link-drop-tail');
+    tail.hidden = true;
+    tail.dataset.linkId = lastRoot.id;
+    tail.setAttribute('aria-hidden', 'true');
+    tail.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'link' || payload.id === lastRoot.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      showLinkTailCue(tail);
+    });
+    tail.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'link' || payload.id === lastRoot.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      clearLinkDropCue();
+      finishLinkDrop({
+        id: payload.id,
+        targetId: lastRoot.id,
+        mode: 'place',
+        position: 'after',
+      });
+    });
+    return tail;
+  }
+
+  /** @param {string} dragId */
+  function revealLinkTail(dragId) {
+    const tail = root.querySelector('.link-drop-tail');
+    if (!(tail instanceof HTMLElement)) {
+      return;
+    }
+    const draggingLast = tail.dataset.linkId === dragId;
+    tail.hidden = draggingLast;
+    if (draggingLast) {
+      return;
+    }
+    const nodes = root.querySelectorAll('.links-tree > .link-node.is-layout');
+    const last = nodes[nodes.length - 1];
+    const chip =
+      last instanceof HTMLElement
+        ? last.querySelector(':scope > .link-body > .link-chip-wrap > .link-chip')
+        : null;
+    if (last instanceof HTMLElement) {
+      const color = last.style.getPropertyValue('--link-color');
+      if (color) {
+        tail.style.setProperty('--link-color', color);
+      }
+    }
+    if (chip instanceof HTMLElement) {
+      tail.style.width = Math.max(140, chip.getBoundingClientRect().width) + 'px';
+    }
+  }
+
+  function hideLinkTail() {
+    const tail = root.querySelector('.link-drop-tail');
+    if (!(tail instanceof HTMLElement)) {
+      return;
+    }
+    tail.hidden = true;
+    tail.classList.remove('is-active');
+  }
+
+  function linkSlotEl() {
+    if (!linkDropSlotEl) {
+      const slot = el('div', 'link-drop-slot');
+      slot.setAttribute('aria-hidden', 'true');
+      linkDropSlotEl = slot;
+    }
+    return linkDropSlotEl;
+  }
+
+  function clearLinkDropCue() {
+    hideDropEdge();
+    if (linkDropSlotEl && linkDropSlotEl.isConnected) {
+      linkDropSlotEl.remove();
+    }
+    linkCue = null;
+    root.querySelectorAll('.link-node.link-drop-into').forEach((node) => {
+      node.classList.remove('link-drop-into');
+    });
+    root.querySelectorAll('.link-drop-tail.is-active').forEach((node) => {
+      node.classList.remove('is-active');
+    });
+  }
+
+  /**
+   * @param {HTMLElement} row
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function showLinkRowCue(row, edge) {
+    const same = linkCue && linkCue.kind === 'row' && linkCue.row === row && linkCue.edge === edge;
+    if (!same) {
+      clearLinkDropCue();
+      linkCue = { kind: 'row', row, edge };
+      if (edge === 'into') {
+        row.classList.add('link-drop-into');
+      }
+    }
+    if (edge === 'into') {
+      return;
+    }
+    showDropEdge(row, edge);
+    placeLinkSlot(row, edge);
+  }
+
+  /** @param {HTMLElement} tail */
+  function showLinkTailCue(tail) {
+    if (linkCue && linkCue.kind === 'tail' && linkCue.tail === tail) {
+      return;
+    }
+    clearLinkDropCue();
+    linkCue = { kind: 'tail', tail };
+    tail.classList.add('is-active');
+  }
+
+  /**
+   * @param {HTMLElement} row
+   * @param {'before' | 'after'} edge
+   */
+  function placeLinkSlot(row, edge) {
+    const slot = linkSlotEl();
+    const rect = row.getBoundingClientRect();
+    const height = 24;
+    slot.style.left = rect.left + 'px';
+    slot.style.width = Math.max(rect.width, 0) + 'px';
+    slot.style.top = (edge === 'before' ? rect.top - height : rect.bottom) + 'px';
+    if (!slot.isConnected) {
+      document.body.append(slot);
+    }
+  }
+
+  /**
+   * @param {*} payload
+   * @param {*} link
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function applyLinkRowDrop(payload, link, edge) {
+    if (edge === 'into') {
+      const nextDepth = (link.depth || 0) + 1 + (payload.subtreeHeight || 0);
+      if (nextDepth > MAX_DEPTH) {
+        vscode.postMessage({ type: 'nestLink', id: payload.id, parentId: link.id });
+        return;
+      }
+      finishLinkDrop({ id: payload.id, targetId: link.id, mode: 'nest' });
+      return;
+    }
+    finishLinkDrop({
+      id: payload.id,
+      targetId: link.id,
+      mode: 'place',
+      position: edge,
+    });
+  }
+
+  /**
+   * Same parent reorders immediately. A new parent, or nesting into a chip, asks Move / Copy.
+   * @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending
+   */
+  function finishLinkDrop(pending) {
+    if (pending.mode !== 'nest') {
+      const source = linkRecord(pending.id);
+      const target = linkRecord(pending.targetId);
+      if ((source?.parent || '') === (target?.parent || '')) {
+        commitLinkDrop(pending, false);
+        return;
+      }
+    }
+    openLinkDropChoose(pending);
+  }
+
+  root.addEventListener('dragover', (event) => {
+    if (!dragPayload || dragPayload.kind !== 'link') {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (target.closest('.link-node, .link-drop-tail, .link-drop-slot')) {
+      return;
+    }
+    clearLinkDropCue();
+  });
 
   /** @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending */
   function openLinkDropChoose(pending) {
@@ -16293,6 +16923,7 @@
     clearDropHighlights();
     clearExpandForDrop();
     hideDropHint();
+    hideLinkTail();
   }
 
   /**
@@ -17332,6 +17963,7 @@
 
   function clearDropHighlights() {
     hideDropEdge();
+    clearLinkDropCue();
     clearDropSlot();
     if (dropHighlight) {
       dropHighlight.section.classList.remove('drop-target', 'drop-into', 'drop-blocked', 'drop-edge-target');
