@@ -40,6 +40,37 @@ export function detectProviderFromRepoUrl(repoUrl: string): ReviewHostProvider {
   return 'gitlab';
 }
 
+function repoPathFromUrl(repoUrl: string): string {
+  const raw = repoUrl.trim().replace(/\.git$/i, '').replace(/\/+$/, '');
+  const ssh = /^git@[^:]+:(.+)$/.exec(raw);
+  if (ssh?.[1]) {
+    return ssh[1];
+  }
+  const sshUrl = /^ssh:\/\/[^@]+@[^/]+\/(.+)$/.exec(raw);
+  if (sshUrl?.[1]) {
+    return sshUrl[1];
+  }
+  const https = /^https?:\/\/[^/]+\/(.+)$/i.exec(raw);
+  return https?.[1] ?? '';
+}
+
+function hostLooksRecognized(host: string): boolean {
+  const name = host.replace(/:\d+$/, '');
+  return name === 'localhost' || name.includes('.');
+}
+
+/**
+ * GitHub or GitLab when the link has a real host and a repository path.
+ * Incomplete text stays unrecognized so the form can wait for a full URL.
+ */
+export function recognizedRepoProvider(repoUrl: string): ReviewHostProvider | undefined {
+  const host = hostFromRepoUrl(repoUrl);
+  if (!host || !hostLooksRecognized(host) || !repoPathFromUrl(repoUrl).trim()) {
+    return undefined;
+  }
+  return detectProviderFromRepoUrl(repoUrl);
+}
+
 export function providerMatchesRepo(provider: ReviewHostProvider, repoUrl: string): boolean {
   return detectProviderFromRepoUrl(repoUrl) === provider;
 }

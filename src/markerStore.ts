@@ -278,6 +278,12 @@ export interface Appearance {
   cyclePageScroll: boolean;
   /** Open link-map URLs in Cursor Simple Browser instead of the system browser. */
   openLinksInCursor: boolean;
+  /**
+   * Groups, files, and classes: the title slot shows the alias and the small
+   * line shows the real name. Off keeps the alias above the name.
+   * Missing alias still shows only the name.
+   */
+  aliasTitle: boolean;
   /** Include Error diagnostics on the Problems page. */
   problemsError: boolean;
   /** Include Warning diagnostics on the Problems page. */
@@ -322,6 +328,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   showProblemsTab: true,
   cyclePageScroll: true,
   openLinksInCursor: false,
+  aliasTitle: false,
   problemsError: true,
   problemsWarning: true,
   problemsInfo: true,
@@ -411,6 +418,7 @@ export function normalizeAppearance(raw: unknown): Appearance {
     showProblemsTab: boolOr(source.showProblemsTab, DEFAULT_APPEARANCE.showProblemsTab),
     cyclePageScroll: boolOr(source.cyclePageScroll, DEFAULT_APPEARANCE.cyclePageScroll),
     openLinksInCursor: boolOr(source.openLinksInCursor, DEFAULT_APPEARANCE.openLinksInCursor),
+    aliasTitle: boolOr(source.aliasTitle, DEFAULT_APPEARANCE.aliasTitle),
     ...normalizeProblemsFilters(source),
     language: normalizeLocale(source.language ?? DEFAULT_APPEARANCE.language),
     reviewRefreshSec: snapReviewRefreshSec(
@@ -954,6 +962,8 @@ export class MarkerStore implements vscode.Disposable {
   private lockSent: ProjectLock | undefined | 'unset' = 'unset';
   /** Remote pages found in Discord that are not local yet. Applied on pull. */
   private pendingRemote: Record<string, { file: PageContentFile; stamp: CloudStamp }> = {};
+  /** Projects removed locally. Kept out of pull/push until a base push publishes the deletion. */
+  private omittedProjectIds = new Set<string>();
   /** Shared Discord channel scan; concurrent callers await the same run. */
   private cloudHintFlight: Promise<string[]> | undefined;
   private accessStore?: AccessStore;
@@ -1077,6 +1087,152 @@ export class MarkerStore implements vscode.Disposable {
 
   projectRepo(): ProjectRepo | undefined {
     return packProjectRepo(this.activeProject()?.repo);
+  }
+
+  /** Name and repository of one project. */
+  projectRecord(id: string): { name: string; repo?: ProjectRepo } | undefined {
+    const project = this.base.projects[id];
+    if (!project) {
+      return undefined;
+    }
+    return { name: project.name, repo: packProjectRepo(project.repo) };
+  }
+
+  /** Rename a project. The stored repository URL is left unchanged. */
+  async updateProjectDetails(id: string, name: string): Promise<boolean> {
+    return this.enqueueResult(async () => {
+      const project = this.base.projects[id];
+      const trimmed = name.trim();
+      if (!project || !trimmed) {
+        return false;
+      }
+      if (project.name === trimmed) {
+        return true;
+      }
+      project.name = trimmed;
+      project.version = (project.version || 1) + 1;
+      this.projectDirty = true;
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+      return true;
+    });
+  }
+
+  /**
+   * Drop a project from the local base and delete page files no other project uses.
+   * The id stays omitted until the next successful base push, so a pull cannot restore it.
+   */
+  async deleteProject(id: string): Promise<boolean> {
+    return this.enqueueResult(async () => {
+      const project = this.base.projects[id];
+      if (!project) {
+        return false;
+      }
+      const wasActive = this.activeProjectId() === id;
+      const pageIds = new Set(Object.keys(project.pages));
+      if (wasActive) {
+        for (const pageId of Object.keys(this.data.pages)) {
+          pageIds.add(pageId);
+        }
+      }
+      delete this.base.projects[id];
+      this.omittedProjectIds.add(id);
+      this.syncOmittedProjectsToLocal();
+      let profileChanged = false;
+      for (const profile of Object.values(this.base.profiles)) {
+        if (!profile.activeProjectId || this.base.projects[profile.activeProjectId]) {
+          continue;
+        }
+        const next = Object.keys(this.base.projects)[0];
+        if (next) {
+          profile.activeProjectId = next;
+        } else {
+          delete profile.activeProjectId;
+        }
+        profile.version = (profile.version || 1) + 1;
+        profileChanged = true;
+      }
+      this.projectDirty = true;
+      if (profileChanged) {
+        this.profileDirty = true;
+      }
+      await this.persistBaseOnly();
+      const keep = new Set<string>();
+      for (const entry of Object.values(this.base.projects)) {
+        for (const pageId of Object.keys(entry.pages)) {
+          keep.add(pageId);
+        }
+      }
+      let historyChanged = false;
+      for (const pageId of pageIds) {
+        if (keep.has(pageId)) {
+          continue;
+        }
+        try {
+          await vscode.workspace.fs.delete(this.pageUri(pageId));
+        } catch (error) {
+          if (!isFileNotFound(error)) {
+            console.error('Syn3 delete project page:', pageId, error);
+          }
+        }
+        await this.accessStore?.deletePage(pageId);
+        this.dirtyPages.delete(pageId);
+        delete this.pageCloud[pageId];
+        delete this.pageCloudNewer[pageId];
+        delete this.pendingRemote[pageId];
+        delete this.pagePresent[pageId];
+        if (this.history.pages[pageId]) {
+          dropPageHistory(this.history, pageId);
+          historyChanged = true;
+        }
+      }
+      if (historyChanged && this.historyReady) {
+        await this.persistHistory();
+      }
+      await this.persistPosLocal();
+      if (wasActive) {
+        const replacement = this.activeProjectId();
+        await this.reloadSplitFromDisk(false, replacement);
+        this.retargetSurfacesToActivePages();
+      }
+      this.changeEmitter.fire();
+      return true;
+    });
+  }
+
+  /** Keep the local delete-queue in pos_local so a later pull still drops these projects. */
+  private syncOmittedProjectsToLocal(): void {
+    const ids = [...this.omittedProjectIds].sort();
+    if (ids.length === 0) {
+      delete this.posLocal.omittedProjects;
+    } else {
+      this.posLocal.omittedProjects = ids;
+    }
+  }
+
+  /** Remove projects the user deleted here, and retarget profiles that still point at them. */
+  private dropOmittedProjects(base: BaseConfigFile): boolean {
+    let changed = false;
+    for (const id of this.omittedProjectIds) {
+      if (!base.projects[id]) {
+        continue;
+      }
+      delete base.projects[id];
+      changed = true;
+    }
+    for (const profile of Object.values(base.profiles)) {
+      if (!profile.activeProjectId || base.projects[profile.activeProjectId]) {
+        continue;
+      }
+      const next = Object.keys(base.projects)[0];
+      if (next) {
+        profile.activeProjectId = next;
+      } else {
+        delete profile.activeProjectId;
+      }
+      changed = true;
+    }
+    return changed;
   }
 
   async setProjectRepo(repo: ProjectRepo | undefined): Promise<void> {
@@ -1286,6 +1442,8 @@ export class MarkerStore implements vscode.Disposable {
       }
       const unique = this.allocateProjectId(trimmed);
       const project = this.buildAdminOnlyProject(trimmed);
+      this.omittedProjectIds.delete(unique);
+      this.syncOmittedProjectsToLocal();
       // New projects start with zero pages; content is added later via «создать страницу».
       this.base.projects[unique] = project;
       if (channelId !== undefined) {
@@ -1300,6 +1458,7 @@ export class MarkerStore implements vscode.Disposable {
       this.pendingRemote = {};
       this.projectDirty = true;
       await this.persistSplitConfig();
+      await this.persistPosLocal();
       this.present = this.capture();
       this.baseline = undefined;
       this.pagePresent = this.captureAllPageSnapshots();
@@ -1412,6 +1571,8 @@ export class MarkerStore implements vscode.Disposable {
       this.relevantBaseCloudNewer = false;
       this.rememberPagesFixedSent();
       this.rememberBaseClean();
+      this.omittedProjectIds.delete(unique);
+      this.syncOmittedProjectsToLocal();
       await this.persistBaseOnly();
       await this.persistPosLocal();
       this.present = this.capture();
@@ -6145,6 +6306,8 @@ export class MarkerStore implements vscode.Disposable {
     if (!posted.ok) {
       return { ok: false, message: posted.message || 'Failed to post base.json' };
     }
+    this.omittedProjectIds.clear();
+    this.syncOmittedProjectsToLocal();
     this.profileDirty = false;
     this.projectDirty = false;
     this.baseCloudNewer = false;
@@ -6202,6 +6365,7 @@ export class MarkerStore implements vscode.Disposable {
       }
       merged.projects[projectId] = next;
     }
+    this.dropOmittedProjects(merged);
     return merged;
   }
 
@@ -6307,6 +6471,7 @@ export class MarkerStore implements vscode.Disposable {
       remote.snapshot = computeBaseSnapshot(remote);
     }
     this.base = remote;
+    this.dropOmittedProjects(this.base);
     await this.persistBaseOnly();
     this.dirtyPages.clear();
     if (!skipPages) {
@@ -6336,7 +6501,7 @@ export class MarkerStore implements vscode.Disposable {
       ? { ok: true as const }
       : await this.pullActiveProjectPagesNow();
     this.profileDirty = false;
-    this.projectDirty = false;
+    this.projectDirty = this.omittedProjectIds.size > 0;
     this.dirtyPages.clear();
     this.rememberBaseClean();
     await this.persistPosLocal();
@@ -6515,6 +6680,7 @@ export class MarkerStore implements vscode.Disposable {
     this.posLocal = localExists
       ? await this.readPositionsFile(this.posLocalUri, true)
       : emptyPositions();
+    this.omittedProjectIds = new Set(this.posLocal.omittedProjects ?? []);
     this.posRemote = emptyPositions();
 
     let localDirty = false;
@@ -6643,6 +6809,9 @@ export class MarkerStore implements vscode.Disposable {
         ...(this.posLocal.surfaces ? { surfaces: this.posLocal.surfaces } : {}),
         ...(this.posLocal.pagesFixed ? { pagesFixed: true as const } : {}),
         ...(this.posLocal.pagesFixedSent ? { pagesFixedSent: true as const } : {}),
+        ...(this.posLocal.omittedProjects && this.posLocal.omittedProjects.length > 0
+          ? { omittedProjects: [...this.posLocal.omittedProjects].sort() }
+          : {}),
       };
       for (const id of Object.keys(this.posLocal.profiles).sort()) {
         payload.profiles[id] = packProfileLayout(this.posLocal.profiles[id]);

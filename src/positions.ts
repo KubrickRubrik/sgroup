@@ -93,6 +93,11 @@ export interface PositionsFile {
   pagesFixed?: true;
   /** Lock value last published to Discord. Absent means the sent pages were unlocked. */
   pagesFixedSent?: true;
+  /**
+   * Projects deleted on this machine. Stripped from pulled base snapshots
+   * until a base push publishes the deletion.
+   */
+  omittedProjects?: string[];
 }
 
 function emptyCollapsedLocal(): SurfaceCollapsed {
@@ -537,6 +542,7 @@ export function normalizePositions(
     surfaces?: unknown;
     pagesFixed?: unknown;
     pagesFixedSent?: unknown;
+    omittedProjects?: unknown;
   };
   if (!source.profiles || typeof source.profiles !== 'object' || Array.isArray(source.profiles)) {
     return result;
@@ -575,8 +581,24 @@ export function normalizePositions(
     if (source.pagesFixedSent === true) {
       result.pagesFixedSent = true;
     }
+    const omittedProjects = normalizeIdList(source.omittedProjects);
+    if (omittedProjects) {
+      result.omittedProjects = omittedProjects;
+    }
   }
   return result;
+}
+
+function normalizeIdList(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const ids = [
+    ...new Set(
+      raw.filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+    ),
+  ].sort();
+  return ids.length > 0 ? ids : undefined;
 }
 
 function normalizeCollapsedField(raw: unknown): SurfaceCollapsed {

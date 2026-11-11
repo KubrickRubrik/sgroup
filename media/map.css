@@ -68,15 +68,40 @@ html::-webkit-scrollbar {
   background: var(--vscode-sideBar-background, var(--vscode-editor-background));
   border-bottom: 1px solid var(--vscode-panel-border, transparent);
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin: 0;
   padding: 4px 10px 4px 8px;
 }
 
+/* Grows on the first row so the right section stays at the end while it fits.
+   When the section does not fit, it wraps as one item onto the next row. */
+.toolbar-spacer {
+  flex: 1 1 auto;
+  height: 0;
+  min-width: 0;
+  width: 0;
+}
+
 .toolbar-extra {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 2px;
-  margin-left: auto;
+  max-width: 100%;
+}
+
+.toolbar-extra .menu-from-left.toolbar-view .toolbar-view-menu,
+.toolbar-extra .menu-from-left.toolbar-panels .toolbar-panels-menu,
+.toolbar-extra .menu-from-left.toolbar-more .toolbar-menu,
+.toolbar-extra .menu-from-left.toolbar-format .toolbar-format-menu {
+  left: 0;
+  right: auto;
+}
+
+.toolbar-extra .menu-from-left .toolbar-menu-sub {
+  left: calc(100% - 4px);
+  right: auto;
 }
 
 .toolbar-view {
@@ -1527,12 +1552,20 @@ button.pager-lock.is-fixed:hover {
   display: none;
 }
 
-.pager-chip.debug-tab {
-  margin-left: auto;
+/* Pushes Debug and Problems to the end of the row. The pair wraps together. */
+.pager-spacer {
+  flex: 1 1 auto;
+  height: 0;
+  min-width: 0;
+  width: 0;
 }
 
-.pager-chip.problems-tab {
-  margin-left: 0;
+.pager-aux {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
 }
 
 .page-stage {
@@ -4484,6 +4517,110 @@ button.review-neurofix-btn:hover {
   z-index: 50;
 }
 
+.host-branch-panel {
+  left: auto;
+  max-height: min(70vh, 520px);
+  max-width: 320px;
+  right: 12px;
+  top: 56px;
+  width: min(320px, calc(100vw - 24px));
+}
+
+.host-branch-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.host-branch-title {
+  font-weight: 600;
+}
+
+.host-branch-close {
+  flex: 0 0 auto;
+  line-height: 1;
+  min-width: 28px;
+  padding: 4px 8px;
+}
+
+.host-branch-sub {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.host-branch-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(48vh, 360px);
+  overflow: auto;
+}
+
+.host-branch-row {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.host-branch-row:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+}
+
+.host-branch-row.is-selected {
+  background: var(--vscode-list-activeSelectionBackground, rgba(127, 127, 127, 0.2));
+  border-color: var(--vscode-focusBorder, transparent);
+}
+
+.host-branch-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-branch-row-mark {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 0.8em;
+}
+
+.host-branch-skeleton {
+  animation: host-branch-pulse 1.1s ease-in-out infinite;
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  border-radius: 6px;
+  height: 34px;
+}
+
+@keyframes host-branch-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.host-branch-empty {
+  color: var(--vscode-descriptionForeground);
+  padding: 12px 4px;
+}
+
+.host-branch-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .review-mr-panel.is-busy {
   pointer-events: none;
 }
@@ -4623,6 +4760,81 @@ button.review-neurofix-btn:hover {
   justify-content: flex-end;
 }
 
+.project-edit-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.project-edit-danger {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.project-edit-trash {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--vscode-errorForeground, #f14c4c);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+}
+
+.project-edit-trash[hidden] {
+  display: none;
+}
+
+.project-edit-trash .review-ico {
+  height: 18px;
+  width: 18px;
+}
+
+.project-edit-trash:hover {
+  color: #ff6b6b;
+}
+
+.project-edit-confirm {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.project-edit-confirm[hidden] {
+  display: none;
+}
+
+.project-edit-confirm .review-mr-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.project-edit-confirm .project-edit-delete:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.project-edit-confirm .project-edit-delete:not(:disabled) {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.project-edit-actions > .review-btn.is-primary {
+  margin-left: auto;
+}
+
+.project-edit-actions > .review-btn.is-primary[hidden] {
+  display: none;
+}
+
 .project-create-panel .review-mr-field.has-error .review-mr-title,
 .page-settings-panel .review-mr-field.has-error .review-mr-title {
   border-color: var(--vscode-inputValidation-errorBorder, #f14c4c);
@@ -4637,6 +4849,33 @@ button.review-neurofix-btn:hover {
 .project-create-panel .project-create-submit-wrap .review-btn.is-primary.is-idle:hover,
 .page-settings-panel .review-mr-actions .review-btn.is-primary.is-idle:hover {
   background: var(--vscode-button-background);
+}
+
+.project-repo-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.project-repo-row .review-mr-title {
+  min-width: 0;
+}
+
+.project-repo-row .review-mr-title[readonly] {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.project-repo-host {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.project-repo-host[hidden] {
+  display: none;
 }
 
 .project-create-modes {
@@ -4964,6 +5203,10 @@ button.review-neurofix-btn:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.review-host-token-slot[hidden] {
+  display: none;
 }
 
 .review-token-hint {

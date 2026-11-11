@@ -104,6 +104,8 @@ function buildPrompt(opts: {
   title: string;
   webUrl?: string;
   branch?: string;
+  baseBranch?: string;
+  hostDiff?: string;
 }): string {
   const kindLabel = opts.kind === 'branch' ? 'ревью ветки' : 'ревью изменений';
   const command = reviewDepthCommand(opts.depth);
@@ -123,6 +125,16 @@ function buildPrompt(opts: {
       `Task: ${kindLabel}.`,
       `Review number: ${opts.reviewNumber}`,
       `Branch: ${opts.branch || opts.title}`,
+    );
+  }
+  if (opts.hostDiff) {
+    lines.push(
+      `Base branch: ${opts.baseBranch || ''}`,
+      'Host-diff: the compare below is the whole review scope.',
+      'Do not read the local working tree. Do not run git. Review only this host-diff.',
+      '--- host-diff ---',
+      opts.hostDiff,
+      '--- end host-diff ---',
     );
   }
   lines.push(
@@ -293,6 +305,8 @@ export async function runReviewSkill(opts: {
   title: string;
   webUrl?: string;
   branch?: string;
+  baseBranch?: string;
+  hostDiff?: string;
 }): Promise<ReviewAgentResult> {
   const resolved = await resolveAgentBin();
   if (!resolved) {
@@ -419,7 +433,8 @@ export async function runReviewSkill(opts: {
 export type NeuroFixAgentResult = { ok: true } | { ok: false; message: string };
 
 /**
- * Run `agent --print --mode agent` for Neurofix, or open a terminal with an error.
+ * Run `agent --print` for Neurofix, or open a terminal with an error.
+ * `--print` without `--mode` can write files and run shell. `plan` and `ask` are read-only.
  * Success is exit code 0. No Discord post, no severity parse.
  */
 export async function runNeuroFixSkill(opts: {
@@ -455,8 +470,6 @@ export async function runNeuroFixSkill(opts: {
     '--print',
     '--trust',
     '--force',
-    '--mode',
-    'agent',
     '--output-format',
     'stream-json',
     '--stream-partial-output',
@@ -531,7 +544,9 @@ export async function runNeuroFixSkill(opts: {
       }
       settled = true;
       clearInterval(timer);
-      setTimeout(() => term.dispose(), 1200);
+      if (result.ok) {
+        setTimeout(() => term.dispose(), 1200);
+      }
       resolve(result);
     };
     child.on('error', (error) => {

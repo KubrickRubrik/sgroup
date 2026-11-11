@@ -53,7 +53,7 @@ import {
   writeProfileHostToken,
 } from './accessStore';
 import { figmaLinkPreviewEnabled, figmaPreviewCacheKey, loadFigmaPreview, parseFigmaFrame } from './figmaLink';
-import { isReviewHostProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
+import { isReviewHostProvider, recognizedRepoProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 import { listProjectDirectory } from './projectNav';
 import type { CatalogChannels } from './configFormat';
 
@@ -364,7 +364,8 @@ type IncomingMessage =
       discordToken?: string;
       mode?: 'create' | 'select';
       repoUrl?: string;
-      repoProvider?: 'github' | 'gitlab';
+      githubToken?: string;
+      gitlabToken?: string;
     }
   | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
   | { type: 'pageCloud'; action: 'pushAll' }
@@ -373,6 +374,15 @@ type IncomingMessage =
   | { type: 'debugDiff' }
   | { type: 'workspaceCloud'; action: 'push' | 'pull' }
   | { type: 'setPagesFixed'; fixed: boolean }
+  | { type: 'projectOpenSettings'; id: string }
+  | {
+      type: 'projectSaveSettings';
+      id: string;
+      name: string;
+      githubToken?: string;
+      gitlabToken?: string;
+    }
+  | { type: 'projectDelete'; id: string; name: string }
   | { type: 'profileOpenSettings'; id?: string }
   | {
       type: 'profileSaveSettings';
@@ -430,6 +440,30 @@ type IncomingMessage =
       type: 'reviewStartRoot';
       pageId: string;
       kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'reviewListBranches';
+      pageId: string;
+      page?: number;
+      requestId: string;
+    }
+  | {
+      type: 'reviewResolveParent';
+      pageId: string;
+      branch: string;
+      requestId: string;
+    }
+  | {
+      type: 'reviewPullOther';
+      pageId: string;
+      branch: string;
+    }
+  | {
+      type: 'reviewStartOther';
+      pageId: string;
+      branch: string;
+      baseBranch: string;
       depth?: ReviewDepth;
     }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
@@ -1771,15 +1805,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const status = await secretsStatus(this.hostSecrets);
     const locale = normalizeLocale(this.store.appearance.language);
-    await webview.postMessage({
-      type: 'projectCreatePanel',
-      needChannel: true,
-      hasDiscord: status.hasDiscord,
-      mode: 'create',
-      gate: true,
-      locale,
-      i18n: stringsFor(locale),
-    });
+      await webview.postMessage({
+        type: 'projectCreatePanel',
+        needChannel: true,
+        hasDiscord: status.hasDiscord,
+        mode: 'create',
+        gate: true,
+        profileName: this.store.activeProfileName,
+        locale,
+        i18n: stringsFor(locale),
+      });
   }
 
   private async onDiscordGateSave(
@@ -2659,7 +2694,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.discordToken,
         message.mode,
         message.repoUrl,
-        message.repoProvider,
+        message.githubToken,
+        message.gitlabToken,
       );
       return;
     }
@@ -2686,6 +2722,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'workspaceCloud') {
       await this.onWorkspaceCloud(message.action);
+      return;
+    }
+    if (message.type === 'projectOpenSettings') {
+      await this.postProjectSettings(webview, message.id);
+      return;
+    }
+    if (message.type === 'projectSaveSettings') {
+      await this.saveProjectSettings(webview, message);
+      return;
+    }
+    if (message.type === 'projectDelete') {
+      await this.deleteProjectFromPanel(webview, message);
       return;
     }
     if (message.type === 'profileOpenSettings') {
@@ -2883,6 +2931,67 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         () => this.review.startRootReview(message.pageId, kind, message.depth),
       );
       await this.handleReviewRootFileResult(webview, message.pageId, branch.value, result);
+      return;
+    }
+    if (message.type === 'reviewListBranches') {
+      const result = await this.review.listHostBranches(
+        message.pageId,
+        typeof message.page === 'number' ? message.page : 1,
+      );
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
+      await webview.postMessage({
+        type: 'reviewBranches',
+        requestId: message.requestId,
+        ok: result.kind === 'ok',
+        branches: result.kind === 'ok' ? result.branches : [],
+        nextPage: result.kind === 'ok' ? result.nextPage : undefined,
+        currentBranch: result.kind === 'ok' ? result.currentBranch : '',
+        provider: result.kind === 'ok' ? result.provider : undefined,
+        message: result.kind === 'error' ? result.message : undefined,
+      });
+      return;
+    }
+    if (message.type === 'reviewResolveParent') {
+      const result = await this.review.resolveHostParent(message.pageId, message.branch);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
+      await webview.postMessage({
+        type: 'reviewParent',
+        requestId: message.requestId,
+        ok: result.kind === 'ok',
+        parent: result.kind === 'ok' ? result.parent : undefined,
+        message: result.kind === 'error' ? result.message : undefined,
+      });
+      return;
+    }
+    if (message.type === 'reviewPullOther') {
+      if (this.store.page(message.pageId)?.kind === 'review') {
+        await this.handleReviewPull(webview, message.pageId, message.branch);
+      }
+      return;
+    }
+    if (message.type === 'reviewStartOther') {
+      const branch = String(message.branch || '').trim();
+      const baseBranch = String(message.baseBranch || '').trim();
+      if (!branch || !baseBranch) {
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginRootSkeleton(message.pageId, branch),
+        () => this.review.endRootSkeleton(message.pageId, branch),
+        () =>
+          this.review.startOtherBranchReview(message.pageId, {
+            branch,
+            baseBranch,
+            depth: message.depth,
+          }),
+      );
+      await this.handleReviewRootFileResult(webview, message.pageId, branch, result);
       return;
     }
     if (message.type === 'reviewRetryFile') {
@@ -4415,6 +4524,105 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
+  private async postProjectSettings(webview: vscode.Webview, projectId: string): Promise<void> {
+    const project = this.store.projectRecord(projectId);
+    if (!project) {
+      return;
+    }
+    const profileId = this.store.activeProfileId;
+    const tokenKey = this.store.repositoryTokenKey(profileId);
+    const opaqueToken = tokenKey
+      ? (await readRepositoryToken(this.hostSecrets, tokenKey)) || ''
+      : '';
+    const provider = project.repo?.provider;
+    let githubToken = (await readProfileHostToken(this.hostSecrets, profileId, 'github')) || '';
+    let gitlabToken = (await readProfileHostToken(this.hostSecrets, profileId, 'gitlab')) || '';
+    if (opaqueToken && provider === 'github') {
+      githubToken = opaqueToken;
+    }
+    if (opaqueToken && provider === 'gitlab') {
+      gitlabToken = opaqueToken;
+    }
+    await webview.postMessage({
+      type: 'projectSettingsPanel',
+      id: projectId,
+      name: project.name,
+      repoUrl: project.repo?.repoUrl || '',
+      profileName: this.store.activeProfileName,
+      githubToken,
+      gitlabToken,
+    });
+  }
+
+  private async saveProjectSettings(
+    webview: vscode.Webview,
+    message: {
+      id: string;
+      name: string;
+      githubToken?: string;
+      gitlabToken?: string;
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'projectSettingsError', message: text });
+    };
+    const record = this.store.projectRecord(message.id);
+    if (!record) {
+      await fail(t(locale, 'projectNameEmpty'));
+      return;
+    }
+    const name = message.name.trim();
+    if (!name) {
+      await fail(t(locale, 'projectNameEmpty'));
+      return;
+    }
+    const provider = record.repo?.provider;
+    if (provider) {
+      const hostToken = (provider === 'github' ? message.githubToken : message.gitlabToken)?.trim();
+      if (!hostToken) {
+        await fail(
+          t(locale, provider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab', {
+            name: this.store.activeProfileName,
+          }),
+        );
+        return;
+      }
+      await storeSecrets(this.hostSecrets, {
+        profileId: this.store.activeProfileId,
+        github: provider === 'github' ? hostToken : undefined,
+        gitlab: provider === 'gitlab' ? hostToken : undefined,
+      });
+    }
+    const saved = await this.store.updateProjectDetails(message.id, name);
+    if (!saved) {
+      await fail(t(locale, 'projectNameEmpty'));
+      return;
+    }
+    await webview.postMessage({ type: 'projectSettingsSaved' });
+  }
+
+  private async deleteProjectFromPanel(
+    webview: vscode.Webview,
+    message: { id: string; name: string },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'projectSettingsError', message: text });
+    };
+    const record = this.store.projectRecord(message.id);
+    if (!record || record.name.trim() !== message.name.trim()) {
+      await fail(t(locale, 'projectDeleteMismatch'));
+      return;
+    }
+    const removed = await this.store.deleteProject(message.id);
+    if (!removed) {
+      await fail(t(locale, 'projectDeleteMismatch'));
+      return;
+    }
+    await webview.postMessage({ type: 'projectSettingsSaved' });
+  }
+
   /** Open the in-map profile editor. Omit id to create a profile. */
   async showProfileSettings(profileId?: string): Promise<void> {
     await this.ensureMapWebview();
@@ -4700,7 +4908,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     discordToken?: string,
     mode?: 'create' | 'select',
     repoUrl?: string,
-    repoProvider?: 'github' | 'gitlab',
+    githubToken?: string,
+    gitlabToken?: string,
   ): Promise<void> {
     const locale = normalizeLocale(this.store.appearance.language);
     if (action === 'select') {
@@ -4732,6 +4941,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         hasDiscord: status.hasDiscord,
         mode: mode === 'select' ? 'select' : 'create',
         gate: false,
+        profileName: this.store.activeProfileName,
       });
       return;
     }
@@ -4783,7 +4993,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         }
       }
       const trimmedRepo = (repoUrl || '').trim();
-      if (!trimmedRepo || (repoProvider !== 'github' && repoProvider !== 'gitlab')) {
+      const detectedProvider = recognizedRepoProvider(trimmedRepo);
+      if (!detectedProvider) {
         await webview.postMessage({
           type: 'projectCreateError',
           message: t(locale, 'projectRepositoryRequired'),
@@ -4791,7 +5002,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         });
         return;
       }
-      const repo = { provider: repoProvider, repoUrl: trimmedRepo };
+      const hostToken = (
+        detectedProvider === 'github' ? githubToken : gitlabToken
+      )?.trim();
+      if (!hostToken) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(
+            locale,
+            detectedProvider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab',
+            { name: this.store.activeProfileName },
+          ),
+          canRetry: false,
+        });
+        return;
+      }
+      await storeSecrets(this.hostSecrets, {
+        profileId: this.store.activeProfileId,
+        github: detectedProvider === 'github' ? hostToken : undefined,
+        gitlab: detectedProvider === 'gitlab' ? hostToken : undefined,
+      });
+      const repo = { provider: detectedProvider, repoUrl: trimmedRepo };
       try {
         const result = await this.store.publishNewProject(trimmedName, nextChannel, repo);
         if (!result.ok) {
@@ -5090,7 +5321,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         suggestedProvider: projectRepo?.provider || defaults.suggestedProvider,
         channelId: this.store.catalogChannels().review || '',
         repoUrl: projectRepo?.repoUrl || '',
-        projectRepoLocked: !!projectRepo,
+        projectRepoLocked: !!projectRepo?.repoUrl,
         hasGitlab: defaults.hasGitlab,
         hasGithub: defaults.hasGithub,
         hasDiscord: defaults.hasDiscord,
@@ -5682,13 +5913,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
   }
 
-  private async handleReviewPull(webview: vscode.Webview, pageId: string): Promise<void> {
+  private async handleReviewPull(
+    webview: vscode.Webview,
+    pageId: string,
+    sourceBranch?: string,
+  ): Promise<void> {
     const title = this.review.pullSkeletonTitle();
     const result = await this.withReviewPlaceholder(
       webview,
       () => this.review.beginMrSkeleton(pageId, title, false),
       () => this.review.endMrSkeleton(pageId, title),
-      () => this.review.pullExistingMr(pageId),
+      () => this.review.pullExistingMr(pageId, sourceBranch),
     );
     if (result.kind === 'notice') {
       this.toastReviewNotice(result.provider, result.code);
@@ -6054,6 +6289,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     <button id="toolbar-cloud-pull" class="history-btn toolbar-cloud-btn" type="button" title="Принять" aria-label="Принять" disabled></button>
     <button id="toolbar-cloud-push" class="history-btn toolbar-cloud-btn" type="button" title="Отправить" aria-label="Отправить" disabled></button>
     <span id="toolbar-base-loader" class="toolbar-base-loader pager-cloud-loader" hidden aria-hidden="true"></span>
+    <span class="toolbar-spacer" aria-hidden="true"></span>
     <div class="toolbar-extra">
       <div class="toolbar-format" id="toolbar-format-wrap" hidden>
         <button id="toolbar-format" class="history-btn" type="button" title="Оформление текста" aria-label="Оформление текста" aria-haspopup="menu" aria-expanded="false">

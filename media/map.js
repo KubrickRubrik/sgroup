@@ -73,8 +73,28 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
+  /**
+   * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка».
+   * @type {{
+   *   mode: 'pull' | 'review',
+   *   pageId: string,
+   *   currentBranch: string,
+   *   branches: string[],
+   *   nextPage: number | undefined,
+   *   loading: boolean,
+   *   step: 'branches' | 'bases',
+   *   selectedBranch?: string,
+   *   selectedDepth?: string,
+   *   parentBranch?: string,
+   *   selectedBase?: string,
+   *   requestId?: string,
+   * } | null}
+   */
+  let branchPicker = null;
+  /** @type {HTMLElement | null} */
+  let branchDepthMenu = null;
   /** Create-menu «Создать ревью» uses the same scope/depth flyout as the MR chip. */
   const MENU_CLOSE_MS = 300;
   /** Pointer travel from the click before an unentered context menu dismisses. */
@@ -503,6 +523,14 @@
         closeProjectMenu();
         return;
       }
+      if (action === 'edit') {
+        const id = actionBtn.getAttribute('data-project-id');
+        if (id) {
+          vscode.postMessage({ type: 'projectOpenSettings', id });
+          closeProjectMenu();
+        }
+        return;
+      }
       return;
     }
     const row = target?.closest('[data-project-id]');
@@ -745,6 +773,9 @@
   /** Path from assets/upload-cloud-2-fill.svg */
   const CLOUD_UPLOAD_D =
     'M12 12.5858L16.2426 16.8284L14.8284 18.2426L13 16.415V22H11V16.413L9.17157 18.2426L7.75736 16.8284L12 12.5858ZM12 2C15.5934 2 18.5544 4.70761 18.9541 8.19395C21.2858 8.83154 23 10.9656 23 13.5C23 16.3688 20.8036 18.7246 18.0006 18.9776L18 17C18 13.6863 15.3137 11 12 11C8.7616 11 6.12243 13.5656 6.00414 16.7751L6 17L6.00039 18.9776C3.19696 18.7252 1 16.3692 1 13.5C1 10.9656 2.71424 8.83154 5.04648 8.19411C5.44561 4.70761 8.40661 2 12 2Z';
+  /** Path from assets/delete-bin-2-fill.svg */
+  const PROJECT_DELETE_D =
+    'M7 6V3C7 2.44772 7.44772 2 8 2H16C16.5523 2 17 2.44772 17 3V6H22V8H20V21C20 21.5523 19.5523 22 19 22H5C4.44772 22 4 21.5523 4 21V8H2V6H7ZM13.4142 13.9997L15.182 12.232L13.7678 10.8178L12 12.5855L10.2322 10.8178L8.81802 12.232L10.5858 13.9997L8.81802 15.7675L10.2322 17.1817L12 15.4139L13.7678 17.1817L15.182 15.7675L13.4142 13.9997ZM9 4V6H15V4H9Z';
   /** Path from assets/reload.svg */
   const CLOUD_RELOAD_D =
     'M12 4C14.5905 4 16.8939 5.23053 18.3573 7.14274L16 9.5H22V3.5L19.7814 5.71863C17.9494 3.452 15.1444 2 12 2C6.47715 2 2 6.47715 2 12H4C4 7.58172 7.58172 4 12 4ZM20 12C20 16.4183 16.4183 20 12 20C9.40951 20 7.10605 18.7695 5.64274 16.8573L8 14.5H2V20.5L4.21863 18.2814C6.05062 20.548 8.85557 22 12 22C17.5228 22 22 17.5228 22 12H20Z';
@@ -1089,6 +1120,43 @@
         provider: message.provider === 'github' ? 'github' : 'gitlab',
       };
       openReviewMrPanel();
+    } else if (message.type === 'reviewBranches') {
+      onReviewBranchesMessage({
+        requestId: typeof message.requestId === 'string' ? message.requestId : '',
+        ok: message.ok === true,
+        branches: Array.isArray(message.branches) ? message.branches : [],
+        nextPage: typeof message.nextPage === 'number' ? message.nextPage : undefined,
+        currentBranch: typeof message.currentBranch === 'string' ? message.currentBranch : '',
+        message: typeof message.message === 'string' ? message.message : undefined,
+      });
+    } else if (message.type === 'reviewParent') {
+      onReviewParentMessage({
+        requestId: typeof message.requestId === 'string' ? message.requestId : '',
+        ok: message.ok === true,
+        parent: typeof message.parent === 'string' ? message.parent : undefined,
+        message: typeof message.message === 'string' ? message.message : undefined,
+      });
+    } else if (message.type === 'projectSettingsPanel') {
+      openProjectEditPanel({
+        id: typeof message.id === 'string' ? message.id : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        profileName: typeof message.profileName === 'string' ? message.profileName : '',
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'projectSettingsError') {
+      const panel = document.getElementById('project-edit-panel');
+      if (panel instanceof HTMLElement) {
+        panel.classList.remove('is-busy');
+      }
+      const error = document.querySelector('#project-edit-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'projectSettingsSaved') {
+      closeProjectEditPanel();
     } else if (message.type === 'profileSettingsPanel') {
       openProfileSettingsPanel({
         id: typeof message.id === 'string' ? message.id : '',
@@ -1163,6 +1231,7 @@
         gate: true,
         hasDiscord: message.hasDiscord === true,
         mode: 'create',
+        profileName: typeof message.profileName === 'string' ? message.profileName : '',
       });
     } else if (message.type === 'discordGateClear') {
       closeDiscordGatePanel();
@@ -1217,6 +1286,7 @@
         gate: message.gate === true,
         hasDiscord: message.hasDiscord !== false,
         mode: message.mode === 'select' ? 'select' : 'create',
+        profileName: typeof message.profileName === 'string' ? message.profileName : '',
       });
     } else if (message.type === 'projectCreateDone') {
       setProjectCreateBusy(false);
@@ -2085,6 +2155,7 @@
     openMenuState = {
       kind: 'toolbar-create',
       viewExpanded: false,
+      pullExpanded: false,
       reviewExpanded: false,
       reviewScope: '',
     };
@@ -2120,7 +2191,18 @@
     } else if (activePage()?.kind === 'review') {
       const isGithub = data?.reviewProvider === 'github';
       target.append(menuActionChoice(t(isGithub ? 'createPr' : 'createMr'), { toolbar: 'createMr' }));
-      target.append(menuActionChoice(t(isGithub ? 'pullPr' : 'pullMr'), { toolbar: 'pullMr' }));
+      appendExpandableMenuBlock(
+        target,
+        t(isGithub ? 'pullPr' : 'pullMr'),
+        !!openMenuState?.pullExpanded,
+        'togglePull',
+        (nest) => {
+          nest.append(menuActionChoice(t('pullOwnBranch'), { toolbar: 'pullMr' }));
+          const other = menuAction(t('pullOtherBranch'));
+          other.dataset.menuAction = 'openBranchPanelPull';
+          nest.append(other);
+        },
+      );
       appendExpandableMenuBlock(
         target,
         t('createReview'),
@@ -2129,6 +2211,9 @@
         (nest) => {
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+          const other = menuAction(t('reviewScopeOtherBranch'));
+          other.dataset.menuAction = 'openBranchPanelReview';
+          nest.append(other);
         },
       );
     } else {
@@ -2604,8 +2689,9 @@
     if (openMenuState.neurofixExpanded && openMenuState.ctx) {
       const pageId = String(openMenuState.ctx.reviewPageId || '');
       const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
       const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
-      const counts = parsePillSeverityCounts(chip?.pillLabel);
+      const counts = parsePillSeverityCounts(reply?.pillLabel || chip?.pillLabel);
       if (counts) {
         mountNeuroFixMenu(pageId, messageId, counts);
       }
@@ -2820,6 +2906,10 @@
         },
         { plain: true },
       );
+      const counts = parsePillSeverityCounts(reply?.pillLabel);
+      if (counts && (counts.H > 0 || counts.M > 0 || counts.S > 0)) {
+        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded);
+      }
       scroller.append(
         menuActionChoice(t('menuDelete'), {
           reviewEdit: 'delete',
@@ -2850,10 +2940,12 @@
             show: counts.H > 0 || counts.M > 0 || counts.S > 0,
           },
         ];
+        let any = false;
         for (const item of items) {
           if (!item.show) {
             continue;
           }
+          any = true;
           scroller.append(
             menuActionChoice(item.label, {
               neuroFix: item.scope,
@@ -2861,6 +2953,13 @@
               messageId,
             }),
           );
+        }
+        if (any) {
+          const listBtn = menuAction(t('neurofixList'));
+          listBtn.dataset.menuAction = 'neuroFixList';
+          listBtn.dataset.pageId = pageId;
+          listBtn.dataset.messageId = messageId;
+          scroller.append(listBtn);
         }
       }
       updateMenuScrollbar(contextMenu);
@@ -3120,6 +3219,30 @@
     return items;
   }
 
+  function aliasTitleOn() {
+    return data?.appearance?.aliasTitle === true;
+  }
+
+  /**
+   * Small alias line stays above the title. When aliasTitle is on and an alias
+   * is set, those two strings trade places; the line styles stay put.
+   * No alias: title only.
+   * @param {HTMLElement} wrap
+   * @param {string} titleClass
+   * @param {string} titleText
+   * @param {string | undefined} alias
+   * @returns {HTMLElement}
+   */
+  function appendNameSlots(wrap, titleClass, titleText, alias) {
+    const swap = aliasTitleOn() && !!alias;
+    if (alias) {
+      wrap.append(el('span', 'alias', swap ? titleText : alias));
+    }
+    const titleEl = el('span', titleClass, swap ? alias : titleText);
+    wrap.append(titleEl);
+    return titleEl;
+  }
+
   /** @param {HTMLElement} root */
   function fillViewSections(root) {
     const isMenu = root.classList.contains('syn3-menu');
@@ -3129,7 +3252,7 @@
     const layout = page?.layout || data?.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
 
-    // One framed View block: no dividers between map/group subsections.
+    // Map and group layout stay in one block. Alias is its own row under a rule.
     target.append(menuLabel(t('viewMap')));
     target.append(menuChoice(t('viewCards'), layout === 'chips', { set: 'layout', value: 'chips' }));
     target.append(menuChoice(t('viewList'), layout === 'list', { set: 'layout', value: 'list' }));
@@ -3138,6 +3261,8 @@
     target.append(menuChoice(t('viewCol1'), groupsLayout === '1', { set: 'groups', value: '1' }));
     target.append(menuChoice(t('viewCol2'), groupsLayout === '2', { set: 'groups', value: '2' }));
     target.append(menuChoice(t('viewCol3'), groupsLayout === '3', { set: 'groups', value: '3' }));
+    target.append(menuSeparator());
+    target.append(menuChoice(t('viewAlias'), aliasTitleOn(), { set: 'aliasTitle', value: '1' }));
     if (isMenu) {
       updateMenuScrollbar(root);
     }
@@ -3239,6 +3364,30 @@
       return;
     }
 
+    if (button.dataset.menuAction === 'togglePull') {
+      if (openMenuState?.kind === 'toolbar-create') {
+        openMenuState.pullExpanded = !openMenuState.pullExpanded;
+        if (openMenuState.pullExpanded) {
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+        }
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'openBranchPanelPull') {
+      closeToolbarCreateMenu();
+      openHostBranchPanel('pull');
+      return;
+    }
+
+    if (button.dataset.menuAction === 'openBranchPanelReview') {
+      closeToolbarCreateMenu();
+      openHostBranchPanel('review');
+      return;
+    }
+
     if (button.dataset.menuAction === 'toggleReview') {
       if (openMenuState?.kind === 'context') {
         openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
@@ -3251,6 +3400,9 @@
         openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
         if (!openMenuState.reviewExpanded) {
           openMenuState.reviewScope = '';
+        }
+        if (openMenuState.reviewExpanded) {
+          openMenuState.pullExpanded = false;
         }
         rerenderCreateMenu();
       }
@@ -3578,6 +3730,16 @@
       }
       applyPageChrome();
       postToolbarValue('setGroupsLayout', button.dataset.value);
+      refreshOpenViewHighlights();
+      return;
+    }
+    if (button.dataset.set === 'aliasTitle') {
+      const next = !aliasTitleOn();
+      if (data && typeof data === 'object') {
+        data.appearance = { ...(data.appearance || {}), aliasTitle: next };
+      }
+      vscode.postMessage({ type: 'setAppearance', appearance: { aliasTitle: next } });
+      render();
       refreshOpenViewHighlights();
       return;
     }
@@ -3931,6 +4093,16 @@
       const name = el('span', 'profile-name');
       name.textContent = project.name;
       row.append(name);
+      const actions = el('span', 'profile-actions');
+      const editBtn = el('button', '');
+      editBtn.type = 'button';
+      editBtn.title = t('profileEdit');
+      editBtn.setAttribute('aria-label', t('profileEdit'));
+      editBtn.setAttribute('data-project-action', 'edit');
+      editBtn.setAttribute('data-project-id', project.id);
+      editBtn.textContent = '✎';
+      actions.append(editBtn);
+      row.append(actions);
       toolbarProjectList.append(row);
     }
   }
@@ -4479,6 +4651,14 @@
       !toolbarPanelsMenu.parentElement?.contains(target)
     ) {
       closeToolbarMenus();
+    }
+    if (
+      branchDepthMenu &&
+      target &&
+      !branchDepthMenu.contains(target) &&
+      !(target instanceof Element && target.closest('#host-branch-panel'))
+    ) {
+      clearBranchDepthMenu();
     }
     const inProblem = !!(target && problemPanel.contains(target));
     const onProblemAnchor = !!(
@@ -6539,8 +6719,10 @@
     );
     const chip = el('div', 'review-chip is-review-pill is-skel');
     chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip);
     const body = el('div', 'review-body');
-    body.append(chip);
+    body.append(chipWrap);
     row.append(body);
     return row;
   }
@@ -7809,6 +7991,353 @@
     reviewMrPanel = null;
   }
 
+  function clearBranchDepthMenu() {
+    branchDepthMenu?.remove();
+    branchDepthMenu = null;
+  }
+
+  function closeHostBranchPanel() {
+    clearBranchDepthMenu();
+    removeOverlay('host-branch-panel');
+    branchPicker = null;
+  }
+
+  function newBranchRequestId() {
+    return 'br-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  /** @param {'pull' | 'review'} mode */
+  function openHostBranchPanel(mode) {
+    const pageId = String(activePage()?.id || '');
+    if (!pageId) {
+      return;
+    }
+    closeHostBranchPanel();
+    dismissReviewMrPanel();
+    branchPicker = {
+      mode,
+      pageId,
+      currentBranch: '',
+      branches: [],
+      nextPage: 1,
+      loading: true,
+      step: 'branches',
+    };
+    renderHostBranchPanel();
+    requestHostBranches(1);
+  }
+
+  /** @param {number} page */
+  function requestHostBranches(page) {
+    if (!branchPicker) {
+      return;
+    }
+    const requestId = newBranchRequestId();
+    branchPicker.requestId = requestId;
+    branchPicker.loading = true;
+    renderHostBranchPanel();
+    vscode.postMessage({
+      type: 'reviewListBranches',
+      pageId: branchPicker.pageId,
+      page,
+      requestId,
+    });
+  }
+
+  function requestHostParent(branch) {
+    if (!branchPicker) {
+      return;
+    }
+    const requestId = newBranchRequestId();
+    branchPicker.requestId = requestId;
+    branchPicker.loading = true;
+    branchPicker.step = 'bases';
+    branchPicker.selectedBranch = branch;
+    renderHostBranchPanel();
+    vscode.postMessage({
+      type: 'reviewResolveParent',
+      pageId: branchPicker.pageId,
+      branch,
+      requestId,
+    });
+  }
+
+  /**
+   * @param {string[]} names
+   * @param {string} [hide]
+   */
+  function filterPickerBranches(names, hide) {
+    const seen = new Set();
+    const out = [];
+    for (const name of names) {
+      if (!name || name === hide || seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      out.push(name);
+    }
+    return out;
+  }
+
+  function renderHostBranchPanel() {
+    if (!branchPicker) {
+      return;
+    }
+    clearBranchDepthMenu();
+    removeOverlay('host-branch-panel');
+    const picker = branchPicker;
+    const panel = el('div', 'review-mr-panel host-branch-panel');
+    panel.id = 'host-branch-panel';
+
+    const titleKey =
+      picker.step === 'bases'
+        ? 'branchPanelBaseTitle'
+        : picker.mode === 'pull'
+          ? 'branchPanelPullTitle'
+          : 'branchPanelReviewTitle';
+    const head = el('div', 'host-branch-head');
+    head.append(el('div', 'host-branch-title', t(titleKey)));
+    const closeBtn = el('button', 'review-btn host-branch-close', '×');
+    closeBtn.type = 'button';
+    closeBtn.addEventListener('click', () => closeHostBranchPanel());
+    head.append(closeBtn);
+    panel.append(head);
+
+    if (picker.step === 'bases' && picker.selectedBranch) {
+      panel.append(el('div', 'host-branch-sub', picker.selectedBranch));
+    }
+
+    const list = el('div', 'host-branch-list');
+    list.setAttribute('role', 'listbox');
+
+    const hide =
+      picker.step === 'bases' ? picker.selectedBranch || '' : picker.currentBranch || '';
+    let names = filterPickerBranches(picker.branches, hide);
+    if (picker.step === 'bases' && picker.parentBranch && !names.includes(picker.parentBranch)) {
+      names = [picker.parentBranch, ...names];
+    }
+
+    if (picker.loading && names.length === 0) {
+      for (let i = 0; i < 4; i += 1) {
+        list.append(el('div', 'host-branch-skeleton'));
+      }
+    } else if (!picker.loading && names.length === 0) {
+      list.append(el('div', 'host-branch-empty', t('branchPanelEmpty')));
+    } else {
+      for (const name of names) {
+        const row = el('button', 'host-branch-row');
+        row.type = 'button';
+        row.setAttribute('role', 'option');
+        const label = el('span', 'host-branch-row-label', name);
+        row.append(label);
+        if (picker.step === 'bases' && name === picker.parentBranch) {
+          row.append(el('span', 'host-branch-row-mark', t('branchPanelParentMark')));
+        }
+        if (picker.step === 'bases' && name === picker.selectedBase) {
+          row.classList.add('is-selected');
+          row.setAttribute('aria-selected', 'true');
+        } else if (picker.step === 'branches' && name === picker.selectedBranch) {
+          row.classList.add('is-selected');
+        }
+        row.dataset.branch = name;
+        if (picker.step === 'branches') {
+          row.addEventListener('click', () => {
+            if (picker.mode === 'pull') {
+              const pageId = picker.pageId;
+              closeHostBranchPanel();
+              beginLocalMrSkeleton(pageId, '…', false);
+              vscode.postMessage({ type: 'reviewPullOther', pageId, branch: name });
+              return;
+            }
+            picker.selectedBranch = name;
+            renderHostBranchPanel();
+            const panelNode = document.getElementById('host-branch-panel');
+            let anchor = null;
+            for (const node of panelNode?.querySelectorAll('[data-branch]') || []) {
+              if (node instanceof HTMLElement && node.dataset.branch === name) {
+                anchor = node;
+                break;
+              }
+            }
+            if (anchor instanceof HTMLElement) {
+              mountBranchPanelDepthMenu(anchor, name);
+            }
+          });
+        } else {
+          row.addEventListener('click', () => {
+            picker.selectedBase = name;
+            renderHostBranchPanel();
+          });
+        }
+        list.append(row);
+      }
+      if (picker.loading) {
+        for (let i = 0; i < 2; i += 1) {
+          list.append(el('div', 'host-branch-skeleton'));
+        }
+      }
+    }
+
+    list.addEventListener('scroll', () => {
+      if (!branchPicker || branchPicker.loading || branchPicker.nextPage == null) {
+        return;
+      }
+      if (list.scrollTop + list.clientHeight < list.scrollHeight - 40) {
+        return;
+      }
+      const page = branchPicker.nextPage;
+      branchPicker.nextPage = undefined;
+      requestHostBranches(page);
+    });
+    panel.append(list);
+
+    if (picker.step === 'bases') {
+      const actions = el('div', 'host-branch-actions');
+      const start = el('button', 'review-btn is-primary', t('branchPanelStart'));
+      start.type = 'button';
+      start.disabled = !picker.selectedBase || !picker.selectedDepth || picker.loading;
+      start.addEventListener('click', () => {
+        if (!branchPicker?.selectedBranch || !branchPicker.selectedBase || !branchPicker.selectedDepth) {
+          return;
+        }
+        const pageId = branchPicker.pageId;
+        const branch = branchPicker.selectedBranch;
+        const baseBranch = branchPicker.selectedBase;
+        const depth = branchPicker.selectedDepth;
+        closeHostBranchPanel();
+        beginLocalRootSkeleton(pageId, branch);
+        vscode.postMessage({
+          type: 'reviewStartOther',
+          pageId,
+          branch,
+          baseBranch,
+          depth,
+        });
+      });
+      actions.append(start);
+      panel.append(actions);
+    }
+
+    document.body.append(panel);
+  }
+
+  /**
+   * @param {HTMLElement} anchor
+   * @param {string} branch
+   */
+  function mountBranchPanelDepthMenu(anchor, branch) {
+    clearBranchDepthMenu();
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      const btn = menuAction(t(key));
+      btn.dataset.branchDepth = depth;
+      btn.dataset.branch = branch;
+      fly.append(btn);
+    }
+    fly.addEventListener('click', (event) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const button = target?.closest('button');
+      if (!(button instanceof HTMLButtonElement) || !button.dataset.branchDepth) {
+        return;
+      }
+      event.stopPropagation();
+      if (!branchPicker) {
+        return;
+      }
+      branchPicker.selectedDepth = button.dataset.branchDepth;
+      branchPicker.selectedBranch = button.dataset.branch || branch;
+      clearBranchDepthMenu();
+      requestHostParent(branchPicker.selectedBranch);
+    });
+    document.body.append(fly);
+    branchDepthMenu = fly;
+    const rect = anchor.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = rect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - rect.right;
+    const left = roomRight >= flyWidth + 8 ? rect.right - 6 : Math.max(8, rect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * @param {{
+   *   requestId: string,
+   *   ok: boolean,
+   *   branches?: string[],
+   *   nextPage?: number,
+   *   currentBranch?: string,
+   *   message?: string,
+   * }} message
+   */
+  function onReviewBranchesMessage(message) {
+    if (!branchPicker || branchPicker.requestId !== message.requestId) {
+      return;
+    }
+    if (!message.ok) {
+      closeHostBranchPanel();
+      return;
+    }
+    const incoming = Array.isArray(message.branches) ? message.branches : [];
+    if (typeof message.currentBranch === 'string' && message.currentBranch) {
+      branchPicker.currentBranch = message.currentBranch;
+    }
+    const seen = new Set(branchPicker.branches);
+    for (const name of incoming) {
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        branchPicker.branches.push(name);
+      }
+    }
+    branchPicker.nextPage =
+      typeof message.nextPage === 'number' ? message.nextPage : undefined;
+    branchPicker.loading = false;
+    renderHostBranchPanel();
+  }
+
+  /**
+   * @param {{
+   *   requestId: string,
+   *   ok: boolean,
+   *   parent?: string,
+   *   message?: string,
+   * }} message
+   */
+  function onReviewParentMessage(message) {
+    if (!branchPicker || branchPicker.requestId !== message.requestId) {
+      return;
+    }
+    if (!message.ok || !message.parent) {
+      closeHostBranchPanel();
+      if (message.message) {
+        // Host already surfaces errors for pull; parent resolve uses the same toast path via empty panel close.
+      }
+      return;
+    }
+    branchPicker.parentBranch = message.parent;
+    branchPicker.selectedBase = message.parent;
+    branchPicker.loading = false;
+    branchPicker.step = 'bases';
+    // Load bases from page 1 if the list is empty after hiding the review branch.
+    if (!branchPicker.branches.length) {
+      branchPicker.nextPage = 1;
+      requestHostBranches(1);
+      return;
+    }
+    renderHostBranchPanel();
+  }
+
   function removeOverlay(id) {
     const node = document.getElementById(id);
     if (!node) {
@@ -7934,6 +8463,201 @@
     removeOverlay('project-create-panel');
   }
 
+  function closeProjectEditPanel() {
+    removeOverlay('project-edit-panel');
+  }
+
+  /**
+   * @param {{
+   *   id: string,
+   *   name: string,
+   *   repoUrl: string,
+   *   profileName: string,
+   *   githubToken: string,
+   *   gitlabToken: string
+   * }} opts
+   */
+  function openProjectEditPanel(opts) {
+    closeMapSettingsPanels();
+    const panel = el('div', 'review-mr-panel review-create-page-panel project-create-panel');
+    panel.id = 'project-edit-panel';
+    panel.append(el('div', 'review-mr-people-title', t('projectSettingsTitle')));
+
+    const nameLabel = el('label', 'review-mr-field', t('projectName'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 64;
+    nameInput.value = opts.name;
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+
+    const repoLabel = el('label', 'review-mr-field', t('projectRepoUrl'));
+    const repoRow = el('div', 'project-repo-row');
+    const repoInput = document.createElement('input');
+    repoInput.className = 'review-mr-title';
+    repoInput.type = 'text';
+    repoInput.spellcheck = false;
+    repoInput.readOnly = true;
+    repoInput.value = opts.repoUrl;
+    repoInput.setAttribute('aria-readonly', 'true');
+    const repoHost = el('span', 'project-repo-host');
+    repoHost.hidden = true;
+    repoHost.setAttribute('aria-live', 'polite');
+    repoRow.append(repoInput, repoHost);
+    repoLabel.append(repoRow);
+    panel.append(repoLabel);
+
+    const hostTokenLabel = el('label', 'review-mr-field');
+    hostTokenLabel.hidden = true;
+    const hostTokenCaption = document.createElement('span');
+    const hostTokenInput = document.createElement('input');
+    hostTokenInput.className = 'review-mr-title';
+    hostTokenInput.type = 'password';
+    hostTokenInput.spellcheck = false;
+    hostTokenInput.autocomplete = 'new-password';
+    hostTokenLabel.append(hostTokenCaption, hostTokenInput);
+    panel.append(hostTokenLabel);
+
+    const provider = recognizedRepoProvider(opts.repoUrl);
+    if (provider) {
+      repoHost.hidden = false;
+      repoHost.textContent = provider === 'github' ? t('reviewProviderGithub') : t('reviewProviderGitlab');
+      hostTokenCaption.textContent = t(
+        provider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab',
+      ).replace('{name}', opts.profileName || '');
+      hostTokenInput.value = provider === 'github' ? opts.githubToken : opts.gitlabToken;
+      hostTokenLabel.hidden = false;
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    function mark(label, invalid) {
+      label.classList.toggle('has-error', invalid);
+    }
+
+    nameInput.addEventListener('input', () => {
+      if (nameInput.value.trim()) mark(nameLabel, false);
+    });
+    hostTokenInput.addEventListener('input', () => {
+      if (hostTokenInput.value.trim()) mark(hostTokenLabel, false);
+    });
+
+    const actions = el('div', 'project-edit-actions');
+    const danger = el('div', 'project-edit-danger');
+    const trash = el('button', 'project-edit-trash');
+    trash.type = 'button';
+    trash.title = t('projectDelete');
+    trash.setAttribute('aria-label', t('projectDelete'));
+    trash.append(reviewSvgIcon('project-edit-trash-ico', PROJECT_DELETE_D));
+    const confirmRow = el('div', 'project-edit-confirm');
+    confirmRow.hidden = true;
+    const confirmInput = document.createElement('input');
+    confirmInput.className = 'review-mr-title';
+    confirmInput.type = 'text';
+    confirmInput.spellcheck = false;
+    confirmInput.autocomplete = 'off';
+    confirmInput.placeholder = t('projectDeletePlaceholder');
+    confirmInput.setAttribute('aria-label', t('projectDeletePlaceholder'));
+    const confirmBtn = el('button', 'review-btn project-edit-delete', t('projectDelete'));
+    confirmBtn.type = 'button';
+    confirmBtn.disabled = true;
+    const expectedName = opts.name.trim();
+    const syncDelete = () => {
+      confirmBtn.disabled = confirmInput.value.trim() !== expectedName;
+    };
+    confirmInput.addEventListener('input', syncDelete);
+    const sendDelete = () => {
+      if (panel.classList.contains('is-busy') || confirmBtn.disabled) {
+        return;
+      }
+      error.hidden = true;
+      error.textContent = '';
+      if (confirmInput.value.trim() !== expectedName) {
+        confirmBtn.disabled = true;
+        confirmInput.focus();
+        return;
+      }
+      panel.classList.add('is-busy');
+      vscode.postMessage({
+        type: 'projectDelete',
+        id: opts.id,
+        name: expectedName,
+      });
+    };
+    confirmBtn.addEventListener('click', sendDelete);
+    confirmInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendDelete();
+      }
+    });
+    trash.addEventListener('click', () => {
+      if (panel.classList.contains('is-busy')) {
+        return;
+      }
+      trash.hidden = true;
+      confirmRow.hidden = false;
+      submit.hidden = true;
+      confirmInput.focus();
+    });
+    confirmRow.append(confirmInput, confirmBtn);
+    danger.append(trash, confirmRow);
+
+    const submit = el('button', 'review-btn is-primary', t('profileSettingsSave'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      if (panel.classList.contains('is-busy')) {
+        return;
+      }
+      error.hidden = true;
+      error.textContent = '';
+      mark(nameLabel, false);
+      mark(hostTokenLabel, false);
+      const name = nameInput.value.trim();
+      if (!name) {
+        mark(nameLabel, true);
+        error.textContent = t('projectNameEmpty');
+        error.hidden = false;
+        nameInput.focus();
+        return;
+      }
+      if (provider) {
+        const hostToken = hostTokenInput.value.trim();
+        if (!hostToken) {
+          mark(hostTokenLabel, true);
+          error.textContent = hostTokenCaption.textContent || '';
+          error.hidden = false;
+          hostTokenInput.focus();
+          return;
+        }
+        panel.classList.add('is-busy');
+        vscode.postMessage({
+          type: 'projectSaveSettings',
+          id: opts.id,
+          name,
+          githubToken: provider === 'github' ? hostToken : opts.githubToken,
+          gitlabToken: provider === 'gitlab' ? hostToken : opts.gitlabToken,
+        });
+        return;
+      }
+      panel.classList.add('is-busy');
+      vscode.postMessage({
+        type: 'projectSaveSettings',
+        id: opts.id,
+        name,
+      });
+    });
+    actions.append(danger, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeProjectEditPanel);
+    nameInput.focus();
+    nameInput.select();
+  }
+
   /**
    * Create mode needs a non-empty project name. Select mode does not.
    * @param {HTMLElement} panel
@@ -7983,7 +8707,51 @@
   }
 
   /**
-   * @param {{ needChannel: boolean, gate?: boolean, hasDiscord?: boolean, mode?: 'create' | 'select' }} opts
+   * Host from an https, ssh://, or git@ URL. Mirrors hostFromRepoUrl in reviewHost.ts.
+   * @param {string} repoUrl
+   */
+  function repoHostFromUrl(repoUrl) {
+    const raw = repoUrl.trim().replace(/\.git$/i, '');
+    const ssh = /^git@([^:]+):/.exec(raw);
+    if (ssh) {
+      return ssh[1].toLowerCase();
+    }
+    const sshUrl = /^ssh:\/\/[^@]+@([^/]+)\//.exec(raw);
+    if (sshUrl) {
+      return sshUrl[1].toLowerCase();
+    }
+    const https = /^https?:\/\/([^/]+)/i.exec(raw);
+    return https ? https[1].toLowerCase() : '';
+  }
+
+  /**
+   * GitHub or GitLab once the link has a real host and a repository path.
+   * Mirrors recognizedRepoProvider in reviewHost.ts.
+   * @param {string} repoUrl
+   * @returns {'github' | 'gitlab' | ''}
+   */
+  function recognizedRepoProvider(repoUrl) {
+    const host = repoHostFromUrl(repoUrl);
+    const name = host.replace(/:\d+$/, '');
+    if (!host || (name !== 'localhost' && !name.includes('.'))) {
+      return '';
+    }
+    const raw = repoUrl.trim().replace(/\.git$/i, '').replace(/\/+$/, '');
+    const hasPath =
+      /^git@[^:]+:(.+)$/.test(raw) ||
+      /^ssh:\/\/[^@]+@[^/]+\/(.+)$/.test(raw) ||
+      /^https?:\/\/[^/]+\/(.+)$/i.test(raw);
+    if (!hasPath) {
+      return '';
+    }
+    if (host === 'github.com' || host.endsWith('.github.com') || host.includes('github')) {
+      return 'github';
+    }
+    return 'gitlab';
+  }
+
+  /**
+   * @param {{ needChannel: boolean, gate?: boolean, hasDiscord?: boolean, mode?: 'create' | 'select', profileName?: string }} opts
    */
   function openProjectCreatePanel(opts) {
     if (opts.gate && document.getElementById('project-create-panel')) {
@@ -8026,33 +8794,30 @@
     panel.append(channelLabel);
 
     const repoLabel = el('label', 'review-mr-field', t('projectRepoUrl'));
+    const repoRow = el('div', 'project-repo-row');
     const repoInput = document.createElement('input');
     repoInput.className = 'review-mr-title';
     repoInput.type = 'text';
     repoInput.spellcheck = false;
-    repoInput.placeholder = t('projectRepoOptional');
+    repoInput.placeholder = t('projectRepoPlaceholder');
     repoInput.dataset.projectRepo = '1';
-    repoLabel.append(repoInput);
+    const repoHost = el('span', 'project-repo-host');
+    repoHost.hidden = true;
+    repoHost.setAttribute('aria-live', 'polite');
+    repoRow.append(repoInput, repoHost);
+    repoLabel.append(repoRow);
     panel.append(repoLabel);
-    /** @type {'github' | 'gitlab'} */
-    let repoProvider = 'github';
-    const repoProviderRow = el('div', 'review-provider-choices');
-    const githubBtn = el('button', 'review-btn review-provider-btn is-primary', t('reviewProviderGithub'));
-    githubBtn.type = 'button';
-    const gitlabBtn = el('button', 'review-btn review-provider-btn', t('reviewProviderGitlab'));
-    gitlabBtn.type = 'button';
-    githubBtn.addEventListener('click', () => {
-      repoProvider = 'github';
-      githubBtn.classList.add('is-primary');
-      gitlabBtn.classList.remove('is-primary');
-    });
-    gitlabBtn.addEventListener('click', () => {
-      repoProvider = 'gitlab';
-      gitlabBtn.classList.add('is-primary');
-      githubBtn.classList.remove('is-primary');
-    });
-    repoProviderRow.append(githubBtn, gitlabBtn);
-    panel.append(repoProviderRow);
+
+    const hostTokenLabel = el('label', 'review-mr-field');
+    hostTokenLabel.hidden = true;
+    const hostTokenCaption = document.createElement('span');
+    const hostTokenInput = document.createElement('input');
+    hostTokenInput.className = 'review-mr-title';
+    hostTokenInput.type = 'password';
+    hostTokenInput.spellcheck = false;
+    hostTokenInput.autocomplete = 'new-password';
+    hostTokenLabel.append(hostTokenCaption, hostTokenInput);
+    panel.append(hostTokenLabel);
 
     /** @type {HTMLInputElement | null} */
     let tokenInput = null;
@@ -8114,8 +8879,12 @@
       title.textContent = mode === 'select' ? t('projectSelect') : t('projectModeCreate');
       nameLabel.hidden = mode !== 'create';
       repoLabel.hidden = mode !== 'create';
-      repoProviderRow.hidden = mode !== 'create';
       channelLabel.hidden = !channelRequired();
+      if (mode !== 'create') {
+        hostTokenLabel.hidden = true;
+      } else {
+        syncRepoHost();
+      }
       if (submit.dataset.projectCreateRetry !== '1' || mode !== 'create') {
         delete submit.dataset.projectCreateRetry;
         submit.textContent = mode === 'select' ? t('projectSelect') : t('reviewCreatePageSubmit');
@@ -8142,9 +8911,35 @@
       }
       syncProjectCreateSubmit();
     });
+    function syncRepoHost() {
+      const provider = recognizedRepoProvider(repoInput.value);
+      if (mode !== 'create' || !provider) {
+        repoHost.hidden = true;
+        repoHost.textContent = '';
+        hostTokenLabel.hidden = true;
+        return;
+      }
+      repoHost.hidden = false;
+      repoHost.textContent = provider === 'github' ? t('reviewProviderGithub') : t('reviewProviderGitlab');
+      const tokenKey = provider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab';
+      hostTokenCaption.textContent = t(tokenKey).replace('{name}', opts.profileName || '');
+      hostTokenLabel.hidden = false;
+    }
+
     channelInput.addEventListener('input', () => {
       if (channelInput.value.trim()) {
         markProjectField(channelLabel, false);
+      }
+    });
+    repoInput.addEventListener('input', () => {
+      if (recognizedRepoProvider(repoInput.value)) {
+        markProjectField(repoLabel, false);
+      }
+      syncRepoHost();
+    });
+    hostTokenInput.addEventListener('input', () => {
+      if (hostTokenInput.value.trim()) {
+        markProjectField(hostTokenLabel, false);
       }
     });
 
@@ -8171,6 +8966,8 @@
       error.textContent = '';
       markProjectField(nameLabel, false);
       markProjectField(channelLabel, false);
+      markProjectField(repoLabel, false);
+      markProjectField(hostTokenLabel, false);
       if (tokenInput?.parentElement instanceof HTMLElement) {
         tokenInput.parentElement.classList.remove('has-error');
       }
@@ -8222,10 +9019,23 @@
         }
       }
       const repoUrl = repoInput.value.trim();
-      if (repoUrl && /gitlab/i.test(repoUrl) && !/github\.com/i.test(repoUrl)) {
-        repoProvider = 'gitlab';
-      } else if (repoUrl && /github\.com/i.test(repoUrl)) {
-        repoProvider = 'github';
+      const repoProvider = recognizedRepoProvider(repoUrl);
+      if (!repoProvider) {
+        markProjectField(repoLabel, true);
+        error.textContent = t('projectRepositoryRequired');
+        error.hidden = false;
+        repoInput.focus();
+        return;
+      }
+      const hostToken = hostTokenInput.value.trim();
+      if (!hostToken) {
+        markProjectField(hostTokenLabel, true);
+        error.textContent = t(
+          repoProvider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab',
+        ).replace('{name}', opts.profileName || '');
+        error.hidden = false;
+        hostTokenInput.focus();
+        return;
       }
       setProjectCreateBusy(true);
       vscode.postMessage({
@@ -8234,8 +9044,9 @@
         name,
         channelId: channelId || undefined,
         discordToken: discordToken || undefined,
-        repoUrl: repoUrl || undefined,
-        repoProvider: repoUrl ? repoProvider : undefined,
+        repoUrl,
+        githubToken: repoProvider === 'github' ? hostToken : undefined,
+        gitlabToken: repoProvider === 'gitlab' ? hostToken : undefined,
       });
     });
     submitWrap.append(loader, submit);
@@ -8264,6 +9075,7 @@
     closeReviewMrPanel();
     closeReviewRenamePanel();
     closeProjectCreatePanel();
+    closeProjectEditPanel();
   }
 
   function closeDiscordGatePanel() {
@@ -8931,51 +9743,33 @@
 
     /** @type {'gitlab' | 'github'} */
     let provider = opts.suggestedProvider === 'github' ? 'github' : 'gitlab';
-    const providerBox = el('div', 'review-provider-row');
-    providerBox.append(el('div', 'review-mr-people-title', t('reviewFieldProvider')));
-    const providerChoices = el('div', 'review-provider-choices');
-    /** @type {HTMLButtonElement[]} */
-    const providerButtons = [];
-    for (const value of /** @type {const} */ (['gitlab', 'github'])) {
-      const btn = el(
-        'button',
-        'review-btn review-provider-btn' + (provider === value ? ' is-primary' : ''),
-        t(value === 'github' ? 'reviewProviderGithub' : 'reviewProviderGitlab'),
-      );
-      btn.type = 'button';
-      btn.dataset.provider = value;
-      btn.addEventListener('click', () => {
-        if (hostTokenInput) {
-          if (provider === 'github') opts.githubToken = hostTokenInput.value;
-          else opts.gitlabToken = hostTokenInput.value;
-        }
-        provider = value;
-        for (const other of providerButtons) {
-          other.classList.toggle('is-primary', other.dataset.provider === provider);
-        }
-        renderHostToken();
-        if (editing) {
-          saveEditing();
-        }
-      });
-      providerButtons.push(btn);
-      providerChoices.append(btn);
-    }
-    providerBox.append(providerChoices);
-    panel.append(providerBox);
-
-    const repoInput = fieldRow('reviewFieldRepoUrl', {
-      value: opts.repoUrl || (opts.projectRepoLocked ? '' : opts.origin),
-    });
+    const hostBox = el('div', 'review-provider-row');
+    hostBox.append(el('div', 'review-mr-people-title', t('reviewFieldProvider')));
+    const repoRow = el('div', 'project-repo-row');
+    const repoInput = document.createElement('input');
+    repoInput.className = 'review-mr-title';
+    repoInput.type = 'text';
+    repoInput.spellcheck = false;
+    repoInput.placeholder = t('projectRepoPlaceholder');
+    repoInput.value = opts.repoUrl || (opts.projectRepoLocked ? '' : opts.origin);
     if (opts.projectRepoLocked) {
       repoInput.readOnly = true;
     }
+    const repoHost = el('span', 'project-repo-host');
+    repoHost.hidden = true;
+    repoHost.setAttribute('aria-live', 'polite');
+    repoRow.append(repoInput, repoHost);
+    hostBox.append(repoRow);
+    panel.append(hostBox);
 
     const hostTokenSlot = el('div', 'review-host-token-slot');
+    hostTokenSlot.hidden = true;
     panel.append(hostTokenSlot);
 
     /** @type {HTMLInputElement | null} */
     let hostTokenInput = null;
+    /** @type {'' | 'gitlab' | 'github'} */
+    let renderedHost = '';
 
     function renderHostToken() {
       hostTokenSlot.replaceChildren();
@@ -8990,11 +9784,42 @@
       label.append(input);
       hostTokenSlot.append(label);
       hostTokenInput = input;
+      renderedHost = provider;
       if (editing) {
         input.addEventListener('change', () => saveEditing());
       }
     }
-    renderHostToken();
+
+    function syncReviewRepoHost() {
+      const detected = recognizedRepoProvider(repoInput.value);
+      if (!detected) {
+        if (hostTokenInput) {
+          if (provider === 'github') opts.githubToken = hostTokenInput.value;
+          else opts.gitlabToken = hostTokenInput.value;
+        }
+        repoHost.hidden = true;
+        repoHost.textContent = '';
+        hostTokenSlot.hidden = true;
+        renderedHost = '';
+        return;
+      }
+      if (hostTokenInput && provider !== detected) {
+        if (provider === 'github') opts.githubToken = hostTokenInput.value;
+        else opts.gitlabToken = hostTokenInput.value;
+      }
+      provider = detected;
+      repoHost.hidden = false;
+      repoHost.textContent = t(detected === 'github' ? 'reviewProviderGithub' : 'reviewProviderGitlab');
+      hostTokenSlot.hidden = false;
+      if (renderedHost !== detected) {
+        renderHostToken();
+      }
+    }
+
+    repoInput.addEventListener('input', () => {
+      syncReviewRepoHost();
+    });
+    syncReviewRepoHost();
 
     /** @type {HTMLInputElement | null} */
     let discordInput = null;
@@ -9272,8 +10097,13 @@
       if (!/^\d{5,}$/.test(channelId)) {
         return fail('reviewFieldChannelId', channelInput);
       }
-      if (!repoUrl) {
-        return fail('projectRepoRequired', repoInput);
+      const detected = recognizedRepoProvider(repoUrl);
+      if (!detected) {
+        return fail('projectRepositoryRequired', repoInput);
+      }
+      provider = detected;
+      if (hostTokenSlot.hidden) {
+        syncReviewRepoHost();
       }
       const hostLabelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
       if (!(hostTokenInput?.value || '').trim()) {
@@ -9392,6 +10222,7 @@
 
   function openReviewMrPanel() {
     dismissReviewMrPanel();
+    closeHostBranchPanel();
     closeProfileSettingsPanel();
     if (!reviewMrPanel) {
       return;
@@ -9820,6 +10651,15 @@
       if (!payload || payload.kind !== 'link' || payload.id === link.id) {
         return;
       }
+      // A parent cannot land on its own subtree: the slot would nest it inside itself.
+      if (isLinkDescendant(payload.id, link.id)) {
+        event.stopPropagation();
+        clearLinkDropCue();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'none';
+        }
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (event.dataTransfer) {
@@ -9829,7 +10669,12 @@
     });
     row.addEventListener('drop', (event) => {
       const payload = readPayload(event);
-      if (!payload || payload.kind !== 'link' || payload.id === link.id) {
+      if (
+        !payload ||
+        payload.kind !== 'link' ||
+        payload.id === link.id ||
+        isLinkDescendant(payload.id, link.id)
+      ) {
         return;
       }
       event.preventDefault();
@@ -9892,6 +10737,27 @@
   /** @param {string} id */
   function linkRecord(id) {
     return (data?.links || []).find((item) => item.id === id) || null;
+  }
+
+  /**
+   * True when `nodeId` is inside the subtree rooted at `ancestorId`.
+   * @param {string} ancestorId
+   * @param {string} nodeId
+   */
+  function isLinkDescendant(ancestorId, nodeId) {
+    const seen = new Set();
+    let current = linkRecord(nodeId);
+    while (current?.parent) {
+      if (current.parent === ancestorId) {
+        return true;
+      }
+      if (seen.has(current.parent)) {
+        return false;
+      }
+      seen.add(current.parent);
+      current = linkRecord(current.parent);
+    }
+    return false;
   }
 
   /**
@@ -10987,6 +11853,9 @@
       });
       pager.append(chip);
     }
+    const spacer = el('span', 'pager-spacer');
+    spacer.setAttribute('aria-hidden', 'true');
+    const aux = el('div', 'pager-aux');
     const debugChip = el(
       'button',
       'pager-chip debug-tab' + (debugOpen ? ' active' : ''),
@@ -10995,7 +11864,7 @@
     debugChip.type = 'button';
     debugChip.title = t('tabDebug');
     debugChip.addEventListener('click', () => openDebugPage());
-    pager.append(debugChip);
+    aux.append(debugChip);
     if (problemsTab) {
       const chip = el(
         'button',
@@ -11005,8 +11874,9 @@
       chip.type = 'button';
       chip.title = t('tabProblems');
       chip.addEventListener('click', () => openProblemsPage());
-      pager.append(chip);
+      aux.append(chip);
     }
+    pager.append(spacer, aux);
   }
 
   function renderGroup(group, byId) {
@@ -11097,11 +11967,7 @@
       }),
     );
     const labelWrap = el('span', 'group-text' + (group.alias ? ' has-alias' : ''));
-    if (group.alias) {
-      labelWrap.append(el('span', 'alias', group.alias));
-    }
-    const labelEl = el('span', 'label', group.label);
-    labelWrap.append(labelEl);
+    const labelEl = appendNameSlots(labelWrap, 'label', group.label, group.alias);
     header.append(labelWrap);
     header.append(lockButton(group));
     header.append(
@@ -16297,10 +17163,7 @@
     const layout = activePage()?.layout || data.layout || 'chips';
     const name = layout === 'chips' && !item.isDir ? stripExtension(item.name) : item.name;
     const textWrap = el('span', 'item-text');
-    if (item.alias) {
-      textWrap.append(el('span', 'alias', item.alias));
-    }
-    textWrap.append(el('span', 'name', name));
+    appendNameSlots(textWrap, 'name', name, item.alias);
     node.append(item.isDir ? folderIcon() : fileIcon(item.name), textWrap);
     if (layout === 'list' && item.dir) {
       node.append(el('span', 'path', item.dir));
@@ -16321,10 +17184,7 @@
     const node = el('div', classes.join(' '));
     node.draggable = !locked;
     const textWrap = el('span', 'item-text');
-    if (cls.alias) {
-      textWrap.append(el('span', 'alias', cls.alias));
-    }
-    textWrap.append(el('span', 'name', cls.name));
+    appendNameSlots(textWrap, 'name', cls.name, cls.alias);
     node.append(classIcon(), textWrap, el('span', 'path', cls.fileName));
     bindClass(node, cls, groupId);
     return node;
@@ -19587,6 +20447,47 @@
     releaseScrollTrack(gen);
   }
 
+  /**
+   * The right-hand section stays on the first row while it fits.
+   * Flex layout drops the whole section to the next row when it does not.
+   * Menus of buttons on the left half of that row open inward.
+   */
+  function layoutToolbarExtra() {
+    const bar = document.querySelector('.history-bar');
+    const extra = bar?.querySelector(':scope > .toolbar-extra');
+    if (!(bar instanceof HTMLElement) || !(extra instanceof HTMLElement)) {
+      return;
+    }
+    const legacy = bar.querySelector(':scope > .toolbar-extra-row');
+    if (legacy instanceof HTMLElement) {
+      while (legacy.firstElementChild) {
+        extra.appendChild(legacy.firstElementChild);
+      }
+      legacy.remove();
+    }
+    const anchor = [...bar.children].find(
+      (node) =>
+        node instanceof HTMLElement &&
+        node !== extra &&
+        !node.classList.contains('toolbar-spacer') &&
+        !node.hidden &&
+        node.getBoundingClientRect().width > 0,
+    );
+    const wrapped = anchor instanceof HTMLElement && extra.offsetTop > anchor.offsetTop + 1;
+    const mid = bar.getBoundingClientRect().left + bar.clientWidth / 2;
+    for (const node of extra.children) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      if (!wrapped || node.hidden) {
+        node.classList.remove('menu-from-left');
+        continue;
+      }
+      const rect = node.getBoundingClientRect();
+      node.classList.toggle('menu-from-left', rect.width > 0 && rect.left + rect.width / 2 < mid);
+    }
+  }
+
   function updateScrollbar() {
     const doc = document.documentElement;
     const scrollHeight = doc.scrollHeight;
@@ -19613,9 +20514,21 @@
     },
     { passive: true },
   );
-  window.addEventListener('resize', updateScrollbar);
-  new ResizeObserver(updateScrollbar).observe(document.body);
-  updateScrollbar();
+  function onViewportResize() {
+    updateScrollbar();
+    layoutToolbarExtra();
+  }
+  window.addEventListener('resize', onViewportResize);
+  new ResizeObserver(onViewportResize).observe(document.body);
+  const toolbarBar = document.querySelector('.history-bar');
+  if (toolbarBar instanceof HTMLElement) {
+    new MutationObserver(layoutToolbarExtra).observe(toolbarBar, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['hidden'],
+    });
+  }
+  onViewportResize();
 
   // HTML5 DnD blocks native wheel scrolling in the webview; scroll the map by hand.
   window.addEventListener(

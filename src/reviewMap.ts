@@ -53,8 +53,25 @@ import {
   ensureBranchPushed,
   ensureCommittedBeforeMr,
 } from './gitOps';
-import { closeMergeRequest, createMergeRequest, findOpenMrByBranch, updateMergeRequest } from './gitlabApi';
-import { closePullRequest, createPullRequest, findOpenPrByBranch, updatePullRequest } from './githubApi';
+import {
+  closeMergeRequest,
+  compareGitlabBranches,
+  createMergeRequest,
+  findGitlabParentBranch,
+  findOpenMrByBranch,
+  listGitlabBranches,
+  updateMergeRequest,
+  type HostCompare,
+} from './gitlabApi';
+import {
+  closePullRequest,
+  compareGithubBranches,
+  createPullRequest,
+  findGithubParentBranch,
+  findOpenPrByBranch,
+  listGithubBranches,
+  updatePullRequest,
+} from './githubApi';
 import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { normalizeHex } from './palette';
 import {
@@ -1244,16 +1261,19 @@ export class ReviewMapController {
   }
 
   /**
-   * «Подтянуть» on a review page: post the open MR/PR of the current branch,
-   * or report that the channel already has it. Does not scroll to an existing chip.
+   * «Подтянуть» on a review page: post the open MR/PR of the given branch
+   * (or the current checkout when omitted), or report that the channel already has it.
    */
-  async pullExistingMr(pageId: string): Promise<
+  async pullExistingMr(
+    pageId: string,
+    sourceBranch?: string,
+  ): Promise<
     | { kind: 'state'; state: ReviewPageState; notice: 'added'; provider: ReviewHostProvider }
     | { kind: 'notice'; code: 'noOpen' | 'alreadyInChannel'; provider: ReviewHostProvider }
     | { kind: 'discordFail'; mr: ReviewMr; message: string }
     | { kind: 'error'; message: string }
   > {
-    const looked = await this.lookupOpenMr(pageId);
+    const looked = await this.lookupOpenMr(pageId, sourceBranch);
     if (looked.kind === 'error') {
       return looked;
     }
@@ -1284,8 +1304,11 @@ export class ReviewMapController {
     };
   }
 
-  /** Open MR/PR of the checked-out branch for this review page's origin. */
-  private async lookupOpenMr(pageId: string): Promise<
+  /** Open MR/PR for a branch on this review page's origin. */
+  private async lookupOpenMr(
+    pageId: string,
+    sourceBranch?: string,
+  ): Promise<
     | { kind: 'ready'; access: ReviewPageAccess; branch: string; mr: ReviewMr | undefined }
     | { kind: 'error'; message: string }
   > {
@@ -1298,15 +1321,103 @@ export class ReviewMapController {
       const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
       return { kind: 'error', message: `${label} token is missing` };
     }
-    const branch = await currentBranch(this.cwd());
-    if (!branch.ok) {
-      return { kind: 'error', message: branch.message };
+    let branchName = sourceBranch?.trim() || '';
+    if (!branchName) {
+      const branch = await currentBranch(this.cwd());
+      if (!branch.ok) {
+        return { kind: 'error', message: branch.message };
+      }
+      branchName = branch.value;
     }
-    const existing = await this.findOpenByBranch(access, host, branch.value);
+    const existing = await this.findOpenByBranch(access, host, branchName);
     if (!existing.ok) {
       return { kind: 'error', message: existing.message };
     }
-    return { kind: 'ready', access, branch: branch.value, mr: existing.value };
+    return { kind: 'ready', access, branch: branchName, mr: existing.value };
+  }
+
+  /** One page of host branches for the branch picker panel. */
+  async listHostBranches(
+    pageId: string,
+    page = 1,
+  ): Promise<
+    | {
+        kind: 'ok';
+        branches: string[];
+        nextPage: number | undefined;
+        currentBranch: string;
+        provider: ReviewHostProvider;
+      }
+    | { kind: 'error'; message: string }
+  > {
+    const access = await this.getAccess(pageId);
+    if (!access) {
+      return { kind: 'error', message: 'Review page access is not configured' };
+    }
+    const host = await this.hostToken(access.provider);
+    if (!host) {
+      const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
+      return { kind: 'error', message: `${label} token is missing` };
+    }
+    const listed =
+      access.provider === 'github'
+        ? await listGithubBranches(access.repoUrl, host, page)
+        : await listGitlabBranches(access.repoUrl, host, page);
+    if (!listed.ok) {
+      return { kind: 'error', message: listed.message };
+    }
+    const current = await currentBranch(this.cwd());
+    return {
+      kind: 'ok',
+      branches: listed.value.branches,
+      nextPage: listed.value.nextPage,
+      currentBranch: current.ok ? current.value : '',
+      provider: access.provider,
+    };
+  }
+
+  /** Nearest parent branch tip on the host, falling back to the default branch. */
+  async resolveHostParent(
+    pageId: string,
+    branch: string,
+  ): Promise<{ kind: 'ok'; parent: string } | { kind: 'error'; message: string }> {
+    const access = await this.getAccess(pageId);
+    if (!access) {
+      return { kind: 'error', message: 'Review page access is not configured' };
+    }
+    const host = await this.hostToken(access.provider);
+    if (!host) {
+      const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
+      return { kind: 'error', message: `${label} token is missing` };
+    }
+    const found =
+      access.provider === 'github'
+        ? await findGithubParentBranch(access.repoUrl, host, branch)
+        : await findGitlabParentBranch(access.repoUrl, host, branch);
+    if (!found.ok) {
+      return { kind: 'error', message: found.message };
+    }
+    return { kind: 'ok', parent: found.value };
+  }
+
+  private async compareHostBranches(
+    access: ReviewPageAccess,
+    token: string,
+    base: string,
+    head: string,
+  ): Promise<{ ok: true; value: HostCompare } | { ok: false; message: string }> {
+    return access.provider === 'github'
+      ? compareGithubBranches(access.repoUrl, token, base, head)
+      : compareGitlabBranches(access.repoUrl, token, base, head);
+  }
+
+  private formatHostDiff(compare: HostCompare): string {
+    const parts = [
+      `Compare: ${compare.base}...${compare.head}`,
+      compare.commitLog ? `Commits:\n${compare.commitLog}` : 'Commits: (none)',
+      compare.diffText ? `Diff:\n${compare.diffText}` : 'Diff: (empty)',
+    ];
+    return parts.join('\n\n');
   }
 
   private async routeExistingMr(
@@ -1993,30 +2104,18 @@ export class ReviewMapController {
       if (!chipBranch) {
         return { kind: 'error', message: 'Root review has no branch' };
       }
-      const branch = await currentBranch(this.cwd());
-      if (!branch.ok) {
-        return {
-          kind: 'error',
-          message: 'Detached HEAD — cannot start review',
-        };
-      }
-      if (branch.value !== chipBranch) {
-        return {
-          kind: 'error',
-          message: `Current branch «${branch.value}» does not match «${chipBranch}»`,
-        };
-      }
+      return this.startHostBranchReview(pageId, {
+        branch: chipBranch,
+        kind,
+        depth: parseReviewDepth(depth),
+        parentMessage: parent,
+      });
     }
 
-    const parsed = isMr ? parseMrChip(parent.content) : {};
-    const pendingKey = isMr
-      ? parsed.webUrl
-      : pendingBranchKey(parseReviewBranch(parent.content) || '');
-    if (isMr && !parsed.webUrl) {
-      return { kind: 'error', message: 'MR chip has no web_url' };
-    }
+    const parsed = parseMrChip(parent.content);
+    const pendingKey = parsed.webUrl;
     if (!pendingKey) {
-      return { kind: 'error', message: 'Review chip has no key' };
+      return { kind: 'error', message: 'MR chip has no web_url' };
     }
 
     const existing = await this.pending.read();
@@ -2049,10 +2148,8 @@ export class ReviewMapController {
         }
       }
     }
-    // Root review is #1 on the channel; the first thread reply is #2.
-    const reviewNumber = isRoot ? reviewCount + 2 : reviewCount + 1;
-    const chipBranch = parseReviewBranch(parent.content) || '';
-    const title = isMr ? parsed.title || 'MR' : chipBranch;
+    const reviewNumber = reviewCount + 1;
+    const title = parsed.title || 'MR';
     const dirAbs = path.isAbsolute(paths.dirPath)
       ? paths.dirPath
       : path.join(this.cwd(), paths.dirPath);
@@ -2068,20 +2165,17 @@ export class ReviewMapController {
       depth: parseReviewDepth(depth),
       reviewNumber,
       title,
-      webUrl: isMr ? parsed.webUrl : undefined,
-      branch: isRoot ? chipBranch : undefined,
+      webUrl: parsed.webUrl,
     });
     if (!agent.ok) {
       return { kind: 'error', message: agent.message };
     }
 
-    const mrLine = isMr
-      ? (() => {
-          const m = (parsed.webUrl || '').match(/\/(?:merge_requests|pull)\/(\d+)/);
-          const mrIid = m ? m[1] : '';
-          return [mrIid, title, parsed.webUrl].filter(Boolean).join(' ');
-        })()
-      : `Ветка: ${chipBranch}`;
+    const mrLine = (() => {
+      const m = (parsed.webUrl || '').match(/\/(?:merge_requests|pull)\/(\d+)/);
+      const mrIid = m ? m[1] : '';
+      return [mrIid, title, parsed.webUrl].filter(Boolean).join(' ');
+    })();
     try {
       const filePath = await writeReviewFile({
         dirPath: dirAbs,
@@ -2094,6 +2188,219 @@ export class ReviewMapController {
       const sent = await this.sendPendingReview(pageId, parent, filePath);
       if (sent.kind === 'state') {
         agent.report('Сообщение опубликовано в треде.', true);
+      } else {
+        agent.report(sent.message, false);
+      }
+      return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
+  }
+
+  /**
+   * Review another host branch without switching the checkout.
+   * Uses host compare against the chosen base. Posts into the open MR/PR thread
+   * when one exists (creating the Discord chip first if needed), otherwise a root chip.
+   */
+  async startOtherBranchReview(
+    pageId: string,
+    opts: {
+      branch: string;
+      baseBranch: string;
+      depth?: ReviewDepth;
+    },
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    return this.startHostBranchReview(pageId, {
+      branch: opts.branch,
+      baseBranch: opts.baseBranch,
+      kind: 'branch',
+      depth: parseReviewDepth(opts.depth),
+    });
+  }
+
+  private async startHostBranchReview(
+    pageId: string,
+    opts: {
+      branch: string;
+      baseBranch?: string;
+      kind: ReviewKind;
+      depth: ReviewDepth;
+      parentMessage?: DiscordMessage;
+    },
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const branchName = opts.branch.trim();
+    if (!branchName) {
+      return { kind: 'error', message: 'Branch name is empty' };
+    }
+    const access = await this.getAccess(pageId);
+    const host = access ? await this.hostToken(access.provider) : undefined;
+    if (!access || !host) {
+      return {
+        kind: 'error',
+        message: `Missing access or ${access?.provider === 'github' ? 'GitHub' : 'GitLab'} token`,
+      };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { kind: 'error', message: 'Discord bot token is missing' };
+    }
+
+    let threadParent = opts.parentMessage;
+    let mr: ReviewMr | undefined;
+
+    // Fresh other-branch start: attach to open MR/PR when present.
+    if (!threadParent) {
+      const open = await this.findOpenByBranch(access, host, branchName);
+      if (!open.ok) {
+        return { kind: 'error', message: open.message };
+      }
+      mr = open.value;
+      if (mr) {
+        const found = await findMrMessage(token, access.channelId, mr.web_url);
+        if (!found.ok) {
+          return { kind: 'error', message: found.message };
+        }
+        if (found.value) {
+          threadParent = found.value;
+          await this.appendPostedMessage(pageId, access.channelId, found.value);
+        } else {
+          const posted = await this.postMrToDiscord(access, mr);
+          if (!posted.ok) {
+            return { kind: 'error', message: posted.message };
+          }
+          await this.appendPostedMessage(pageId, access.channelId, posted.message);
+          threadParent = posted.message;
+        }
+      }
+    }
+
+    let baseBranch = opts.baseBranch?.trim() || '';
+    if (!baseBranch) {
+      const parent = await this.resolveHostParent(pageId, branchName);
+      if (parent.kind === 'error') {
+        return parent;
+      }
+      baseBranch = parent.parent;
+    }
+
+    const compared = await this.compareHostBranches(access, host, baseBranch, branchName);
+    if (!compared.ok) {
+      return { kind: 'error', message: compared.message };
+    }
+    const hostDiff = this.formatHostDiff(compared.value);
+
+    const paths = this.profilePaths();
+    if (!paths.skillPath) {
+      return { kind: 'error', message: 'Review skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+
+    const isMrParent = !!(threadParent && isMrMessage(threadParent.content));
+    const isRootParent = !!(threadParent && isReviewMessage(threadParent.content));
+    const pendingKey = isMrParent
+      ? parseMrChip(threadParent!.content).webUrl || pendingBranchKey(branchName)
+      : pendingBranchKey(branchName);
+
+    const existing = await this.pending.read();
+    if (existing && existing.webUrl === pendingKey) {
+      if (threadParent && (isMrParent || isRootParent)) {
+        return this.sendPendingReview(pageId, threadParent, existing.fsPath);
+      }
+      return this.sendPendingRootReview(pageId, branchName, existing.fsPath);
+    }
+    if (existing) {
+      await deleteReviewFile(existing.fsPath);
+      await this.pending.clear();
+    }
+
+    let reviewNumber = 1;
+    if (threadParent && (isMrParent || isRootParent)) {
+      const threadId = threadParent.thread?.id;
+      let reviewCount = 0;
+      if (threadId) {
+        const win = this.windows.get(pageId);
+        const entry = win?.threads.get(threadId);
+        if (entry) {
+          reviewCount = entry.replies.filter((r) => isReviewMessage(r.content)).length;
+        } else {
+          const listed = await listThreadMessages(token, threadId, { limit: 100 });
+          if (listed.ok) {
+            reviewCount = listed.value.filter((r) => isReviewMessage(r.content)).length;
+          }
+        }
+      }
+      // Root review is #1 on the channel; the first thread reply is #2.
+      reviewNumber = isRootParent ? reviewCount + 2 : reviewCount + 1;
+    }
+
+    const dirAbs = path.isAbsolute(paths.dirPath)
+      ? paths.dirPath
+      : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.skillPath)
+      ? paths.skillPath
+      : path.join(this.cwd(), paths.skillPath);
+    const title = isMrParent
+      ? parseMrChip(threadParent!.content).title || mr?.title || branchName
+      : branchName;
+
+    const agent = await runReviewSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind: opts.kind,
+      depth: opts.depth,
+      reviewNumber,
+      title,
+      webUrl: isMrParent ? parseMrChip(threadParent!.content).webUrl : undefined,
+      branch: branchName,
+      baseBranch,
+      hostDiff,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    const mrLine = isMrParent
+      ? (() => {
+          const webUrl = parseMrChip(threadParent!.content).webUrl || '';
+          const m = webUrl.match(/\/(?:merge_requests|pull)\/(\d+)/);
+          const mrIid = m ? m[1] : '';
+          return [mrIid, title, webUrl].filter(Boolean).join(' ');
+        })()
+      : `Ветка: ${branchName}`;
+
+    try {
+      const filePath = await writeReviewFile({
+        dirPath: dirAbs,
+        reviewNumber,
+        mrLine,
+        severity: agent.severity,
+        body: agent.body,
+      });
+      await this.pending.write(pendingKey, opts.kind, filePath);
+      const sent =
+        threadParent && (isMrParent || isRootParent)
+          ? await this.sendPendingReview(pageId, threadParent, filePath)
+          : await this.sendPendingRootReview(pageId, branchName, filePath);
+      if (sent.kind === 'state') {
+        agent.report(
+          threadParent && (isMrParent || isRootParent)
+            ? 'Сообщение опубликовано в треде.'
+            : 'Сообщение опубликовано в канале.',
+          true,
+        );
       } else {
         agent.report(sent.message, false);
       }

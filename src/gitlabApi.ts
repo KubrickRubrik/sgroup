@@ -19,6 +19,11 @@ function encodePath(projectPath: string): string {
   return encodeURIComponent(projectPath);
 }
 
+export type GitlabPage<T> = {
+  items: T;
+  nextPage: number | undefined;
+};
+
 async function gitlabFetch(
   host: string,
   token: string,
@@ -26,6 +31,20 @@ async function gitlabFetch(
   route: string,
   body?: unknown,
 ): Promise<GitlabResult<unknown>> {
+  const result = await gitlabFetchRaw(host, token, method, route, body);
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, value: result.value.body };
+}
+
+async function gitlabFetchRaw(
+  host: string,
+  token: string,
+  method: string,
+  route: string,
+  body?: unknown,
+): Promise<GitlabResult<{ body: unknown; nextPage: number | undefined }>> {
   try {
     const response = await fetch(`https://${host}/api/v4${route}`, {
       method,
@@ -53,7 +72,9 @@ async function gitlabFetch(
           : `HTTP ${response.status}`;
       return { ok: false, message: msg };
     }
-    return { ok: true, value: json };
+    const nextRaw = response.headers.get('x-next-page');
+    const nextPage = nextRaw && /^\d+$/.test(nextRaw) ? Number(nextRaw) : undefined;
+    return { ok: true, value: { body: json, nextPage } };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
@@ -258,4 +279,189 @@ export async function closeMergeRequest(
     return result;
   }
   return { ok: true, value: undefined };
+}
+
+export type HostBranchPage = {
+  branches: string[];
+  nextPage: number | undefined;
+};
+
+export type HostCompare = {
+  base: string;
+  head: string;
+  commitLog: string;
+  diffText: string;
+};
+
+/** One page of repository branches from the host. */
+export async function listGitlabBranches(
+  repoUrl: string,
+  token: string,
+  page = 1,
+  perPage = 30,
+): Promise<GitlabResult<HostBranchPage>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const route =
+    `/projects/${encodePath(loc.projectPath)}/repository/branches` +
+    `?page=${page}&per_page=${perPage}`;
+  const result = await gitlabFetchRaw(loc.host, token, 'GET', route);
+  if (!result.ok) {
+    return result;
+  }
+  const branches = Array.isArray(result.value.body)
+    ? result.value.body
+        .map((item) =>
+          item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string'
+            ? (item as { name: string }).name
+            : '',
+        )
+        .filter(Boolean)
+    : [];
+  return { ok: true, value: { branches, nextPage: result.value.nextPage } };
+}
+
+export async function gitlabDefaultBranch(
+  repoUrl: string,
+  token: string,
+): Promise<GitlabResult<string>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const result = await gitlabFetch(
+    loc.host,
+    token,
+    'GET',
+    `/projects/${encodePath(loc.projectPath)}`,
+  );
+  if (!result.ok) {
+    return result;
+  }
+  const name =
+    result.value &&
+    typeof result.value === 'object' &&
+    typeof (result.value as { default_branch?: unknown }).default_branch === 'string'
+      ? (result.value as { default_branch: string }).default_branch
+      : '';
+  if (!name) {
+    return { ok: false, message: 'GitLab project has no default branch' };
+  }
+  return { ok: true, value: name };
+}
+
+/**
+ * Nearest other branch tip on the ancestry of `branch`, walking newest commits first.
+ * Falls back to the project default branch.
+ */
+export async function findGitlabParentBranch(
+  repoUrl: string,
+  token: string,
+  branch: string,
+): Promise<GitlabResult<string>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const commits = await gitlabFetch(
+    loc.host,
+    token,
+    'GET',
+    `/projects/${encodePath(loc.projectPath)}/repository/commits` +
+      `?ref_name=${encodeURIComponent(branch)}&per_page=100`,
+  );
+  if (!commits.ok) {
+    return commits;
+  }
+  const shas = Array.isArray(commits.value)
+    ? commits.value
+        .map((item) =>
+          item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string'
+            ? (item as { id: string }).id
+            : '',
+        )
+        .filter(Boolean)
+    : [];
+  for (const sha of shas) {
+    const refs = await gitlabFetch(
+      loc.host,
+      token,
+      'GET',
+      `/projects/${encodePath(loc.projectPath)}/repository/commits/${encodeURIComponent(sha)}/refs?type=branch`,
+    );
+    if (!refs.ok || !Array.isArray(refs.value)) {
+      continue;
+    }
+    for (const item of refs.value) {
+      const name =
+        item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string'
+          ? (item as { name: string }).name
+          : '';
+      if (name && name !== branch) {
+        return { ok: true, value: name };
+      }
+    }
+  }
+  return gitlabDefaultBranch(repoUrl, token);
+}
+
+export async function compareGitlabBranches(
+  repoUrl: string,
+  token: string,
+  base: string,
+  head: string,
+): Promise<GitlabResult<HostCompare>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const route =
+    `/projects/${encodePath(loc.projectPath)}/repository/compare` +
+    `?from=${encodeURIComponent(base)}&to=${encodeURIComponent(head)}`;
+  const result = await gitlabFetch(loc.host, token, 'GET', route);
+  if (!result.ok) {
+    return result;
+  }
+  const raw = result.value && typeof result.value === 'object' ? (result.value as Record<string, unknown>) : {};
+  const commitLog = Array.isArray(raw.commits)
+    ? raw.commits
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return '';
+          }
+          const c = item as { short_id?: unknown; title?: unknown };
+          const id = typeof c.short_id === 'string' ? c.short_id : '';
+          const title = typeof c.title === 'string' ? c.title : '';
+          return id || title ? `${id} ${title}`.trim() : '';
+        })
+        .filter(Boolean)
+        .join('\n')
+    : '';
+  const diffText = Array.isArray(raw.diffs)
+    ? raw.diffs
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return '';
+          }
+          const d = item as {
+            old_path?: unknown;
+            new_path?: unknown;
+            diff?: unknown;
+          };
+          const path =
+            (typeof d.new_path === 'string' && d.new_path) ||
+            (typeof d.old_path === 'string' && d.old_path) ||
+            '';
+          const diff = typeof d.diff === 'string' ? d.diff : '';
+          return path ? `--- ${path}\n${diff}` : diff;
+        })
+        .filter(Boolean)
+        .join('\n\n')
+    : '';
+  return {
+    ok: true,
+    value: { base, head, commitLog, diffText },
+  };
 }

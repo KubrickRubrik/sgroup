@@ -17,12 +17,43 @@ function ownerRepo(webBase: string): { owner: string; repo: string } | undefined
   return { owner: m[1], repo: m[2] };
 }
 
+export type GithubPage<T> = {
+  items: T;
+  nextPage: number | undefined;
+};
+
+function nextPageFromLink(link: string | null): number | undefined {
+  if (!link) {
+    return undefined;
+  }
+  for (const part of link.split(',')) {
+    const m = /<[^>]*[?&]page=(\d+)[^>]*>;\s*rel="next"/i.exec(part.trim());
+    if (m) {
+      return Number(m[1]);
+    }
+  }
+  return undefined;
+}
+
 async function githubFetch(
   token: string,
   method: string,
   route: string,
   body?: unknown,
 ): Promise<GithubResult<unknown>> {
+  const result = await githubFetchRaw(token, method, route, body);
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, value: result.value.body };
+}
+
+async function githubFetchRaw(
+  token: string,
+  method: string,
+  route: string,
+  body?: unknown,
+): Promise<GithubResult<{ body: unknown; nextPage: number | undefined }>> {
   try {
     const response = await fetch(`https://api.github.com${route}`, {
       method,
@@ -58,7 +89,10 @@ async function githubFetch(
           : '';
       return { ok: false, message: errors ? `${msg}: ${errors}` : msg };
     }
-    return { ok: true, value: json };
+    return {
+      ok: true,
+      value: { body: json, nextPage: nextPageFromLink(response.headers.get('link')) },
+    };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
@@ -305,4 +339,186 @@ export async function closePullRequest(
     return result;
   }
   return { ok: true, value: undefined };
+}
+
+export type HostBranchPage = {
+  branches: string[];
+  nextPage: number | undefined;
+};
+
+export type HostCompare = {
+  base: string;
+  head: string;
+  commitLog: string;
+  diffText: string;
+};
+
+/** One page of repository branches from the host. */
+export async function listGithubBranches(
+  repoUrl: string,
+  token: string,
+  page = 1,
+  perPage = 30,
+): Promise<GithubResult<HostBranchPage>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const route =
+    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/branches` +
+    `?page=${page}&per_page=${perPage}`;
+  const result = await githubFetchRaw(token, 'GET', route);
+  if (!result.ok) {
+    return result;
+  }
+  const branches = Array.isArray(result.value.body)
+    ? result.value.body
+        .map((item) =>
+          item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string'
+            ? (item as { name: string }).name
+            : '',
+        )
+        .filter(Boolean)
+    : [];
+  return { ok: true, value: { branches, nextPage: result.value.nextPage } };
+}
+
+export async function githubDefaultBranch(
+  repoUrl: string,
+  token: string,
+): Promise<GithubResult<string>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const result = await githubFetch(
+    token,
+    'GET',
+    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}`,
+  );
+  if (!result.ok) {
+    return result;
+  }
+  const name =
+    result.value &&
+    typeof result.value === 'object' &&
+    typeof (result.value as { default_branch?: unknown }).default_branch === 'string'
+      ? (result.value as { default_branch: string }).default_branch
+      : '';
+  if (!name) {
+    return { ok: false, message: 'GitHub repository has no default branch' };
+  }
+  return { ok: true, value: name };
+}
+
+/**
+ * Nearest other branch tip on the ancestry of `branch`, walking newest commits first.
+ * Falls back to the repository default branch.
+ */
+export async function findGithubParentBranch(
+  repoUrl: string,
+  token: string,
+  branch: string,
+): Promise<GithubResult<string>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const commits = await githubFetch(
+    token,
+    'GET',
+    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/commits` +
+      `?sha=${encodeURIComponent(branch)}&per_page=100`,
+  );
+  if (!commits.ok) {
+    return commits;
+  }
+  const shas = Array.isArray(commits.value)
+    ? commits.value
+        .map((item) =>
+          item && typeof item === 'object' && typeof (item as { sha?: unknown }).sha === 'string'
+            ? (item as { sha: string }).sha
+            : '',
+        )
+        .filter(Boolean)
+    : [];
+  for (const sha of shas) {
+    const refs = await githubFetch(
+      token,
+      'GET',
+      `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/commits/${encodeURIComponent(sha)}/branches-where-head`,
+    );
+    if (!refs.ok || !Array.isArray(refs.value)) {
+      continue;
+    }
+    for (const item of refs.value) {
+      const name =
+        item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string'
+          ? (item as { name: string }).name
+          : '';
+      if (name && name !== branch) {
+        return { ok: true, value: name };
+      }
+    }
+  }
+  return githubDefaultBranch(repoUrl, token);
+}
+
+export async function compareGithubBranches(
+  repoUrl: string,
+  token: string,
+  base: string,
+  head: string,
+): Promise<GithubResult<HostCompare>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const route =
+    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/compare/` +
+    `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+  const result = await githubFetch(token, 'GET', route);
+  if (!result.ok) {
+    return result;
+  }
+  const raw = result.value && typeof result.value === 'object' ? (result.value as Record<string, unknown>) : {};
+  const commitLog = Array.isArray(raw.commits)
+    ? raw.commits
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return '';
+          }
+          const c = item as { sha?: unknown; commit?: { message?: unknown } };
+          const id = typeof c.sha === 'string' ? c.sha.slice(0, 7) : '';
+          const message =
+            c.commit && typeof c.commit === 'object' && typeof c.commit.message === 'string'
+              ? c.commit.message.split('\n')[0] || ''
+              : '';
+          return id || message ? `${id} ${message}`.trim() : '';
+        })
+        .filter(Boolean)
+        .join('\n')
+    : '';
+  const diffText = Array.isArray(raw.files)
+    ? raw.files
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return '';
+          }
+          const f = item as { filename?: unknown; patch?: unknown; status?: unknown };
+          const path = typeof f.filename === 'string' ? f.filename : '';
+          const patch = typeof f.patch === 'string' ? f.patch : '';
+          const status = typeof f.status === 'string' ? f.status : '';
+          if (!path) {
+            return '';
+          }
+          return `--- ${path}${status ? ` (${status})` : ''}\n${patch}`;
+        })
+        .filter(Boolean)
+        .join('\n\n')
+    : '';
+  return {
+    ok: true,
+    value: { base, head, commitLog, diffText },
+  };
 }
