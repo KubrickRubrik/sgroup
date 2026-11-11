@@ -2,7 +2,7 @@
   "name": "syn3",
   "displayName": "Syn3",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "10.2.9",
+  "version": "16.4.1",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -21,6 +21,7 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished",
+    "onCommand:syn3.start",
     "onWebviewPanel:syn3MapPanel"
   ],
   "contributes": {
@@ -51,11 +52,17 @@
           "name": "Syn3",
           "contextualTitle": "Explorer",
           "visibility": "visible",
+          "when": "syn3.started",
           "icon": "media/map-icon.svg"
         }
       ]
     },
     "commands": [
+      {
+        "command": "syn3.start",
+        "title": "start",
+        "category": "Syn3"
+      },
       {
         "command": "syn3.assign",
         "title": "Mark…",
@@ -399,21 +406,24 @@
       "explorer/context": [
         {
           "command": "syn3.assign",
+          "when": "syn3.started",
           "group": "2_syn3@1"
         },
         {
           "command": "syn3.markClassManual",
-          "when": "!explorerResourceIsFolder",
+          "when": "syn3.started && !explorerResourceIsFolder",
           "group": "2_syn3@2"
         },
         {
           "command": "syn3.unassignFromExplorer",
+          "when": "syn3.started",
           "group": "2_syn3@3"
         }
       ],
       "editor/context": [
         {
           "command": "syn3.markClass",
+          "when": "syn3.started",
           "group": "0_syn3@1"
         }
       ],
@@ -525,6 +535,66 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "syn3.start",
+          "when": "!syn3.started"
+        },
+        {
+          "command": "syn3.assign",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.markClass",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.createMarker",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.openConfig",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.openSettings",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.refresh",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.historyBack",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.historyForward",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.openMap",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.map.toggleLayout",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.map.move",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.map.toggleColumn",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.map.toggleRight",
+          "when": "syn3.started"
+        },
+        {
+          "command": "syn3.map.openBottom",
+          "when": "syn3.started"
+        },
         {
           "command": "syn3.unassign",
           "when": "false"
@@ -688,7 +758,7 @@
         "command": "syn3.copyFromEditor",
         "key": "ctrl+c",
         "mac": "cmd+c",
-        "when": "editorTextFocus && !editorReadonly"
+        "when": "syn3.started && editorTextFocus && !editorReadonly"
       }
     ],
     "configuration": {

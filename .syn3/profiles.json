@@ -7,11 +7,16 @@
       "sProfileIds": []
     },
     {
-      "id": "profile-профиль-1",
-      "name": "Профиль один",
+      "id": "profile-мой-профиль",
+      "name": "Мой профиль",
       "sProfileIds": [
         "006048e5b595917b50ffc76109a305faf4dabcbc279c90cabc75664736adfde8"
-      ]
+      ],
+      "reviewSkillPath": ".cursor/review/SKILL.md",
+      "reviewDirPath": ".syn3/review",
+      "reviewModel": "grok-4.7-high-fast",
+      "reviewFixModel": "grok-4.7-high-fast",
+      "githubNick": "KubrickRubrik"
     }
   ]
 }
