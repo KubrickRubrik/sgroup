@@ -4549,6 +4549,10 @@ button.review-neurofix-btn:hover {
   font-size: 0.9em;
 }
 
+.host-branch-search {
+  width: 100%;
+}
+
 .host-branch-list {
   display: flex;
   flex: 1 1 auto;

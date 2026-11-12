@@ -90,9 +90,15 @@
    *   parentBranch?: string,
    *   selectedBase?: string,
    *   requestId?: string,
+   *   query?: string,
+   *   activeQuery?: string,
+   *   pendingSearchFocus?: boolean,
    * } | null}
    */
   let branchPicker = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let branchSearchTimer = null;
+  const BRANCH_SEARCH_MS = 3000;
   /** @type {HTMLElement | null} */
   let branchDepthMenu = null;
   /** Create-menu «Создать ревью» uses the same scope/depth flyout as the MR chip. */
@@ -7996,8 +8002,16 @@
     branchDepthMenu = null;
   }
 
+  function clearBranchSearchTimer() {
+    if (branchSearchTimer != null) {
+      clearTimeout(branchSearchTimer);
+      branchSearchTimer = null;
+    }
+  }
+
   function closeHostBranchPanel() {
     clearBranchDepthMenu();
+    clearBranchSearchTimer();
     removeOverlay('host-branch-panel');
     branchPicker = null;
   }
@@ -8022,8 +8036,10 @@
       nextPage: 1,
       loading: true,
       step: 'branches',
+      query: '',
+      activeQuery: '',
+      pendingSearchFocus: true,
     };
-    renderHostBranchPanel();
     requestHostBranches(1);
   }
 
@@ -8066,6 +8082,45 @@
    * @param {string[]} names
    * @param {string} [hide]
    */
+  /**
+   * Commit the typed name: Enter, or 3s after the last character.
+   * Shorter than 3 characters does not search.
+   */
+  function commitBranchSearch() {
+    if (!branchPicker) {
+      return;
+    }
+    clearBranchSearchTimer();
+    const query = (branchPicker.query || '').trim();
+    if (query.length < 3) {
+      return;
+    }
+    branchPicker.activeQuery = query;
+    if (branchPicker.nextPage != null && !branchPicker.loading) {
+      pumpBranchSearch();
+      return;
+    }
+    renderHostBranchPanel();
+  }
+
+  /** Keep loading later pages while a search is active so matches below the input can appear. */
+  function pumpBranchSearch() {
+    if (!branchPicker?.activeQuery || branchPicker.loading || branchPicker.nextPage == null) {
+      return;
+    }
+    const page = branchPicker.nextPage;
+    branchPicker.nextPage = undefined;
+    requestHostBranches(page);
+  }
+
+  /**
+   * @param {string} name
+   * @param {string} query
+   */
+  function branchNameMatches(name, query) {
+    return name.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  }
+
   function filterPickerBranches(names, hide) {
     const seen = new Set();
     const out = [];
@@ -8084,6 +8139,11 @@
       return;
     }
     clearBranchDepthMenu();
+    const previousList = document.querySelector('#host-branch-panel .host-branch-list');
+    const previousScroll = previousList instanceof HTMLElement ? previousList.scrollTop : 0;
+    const previousSearch = document.querySelector('#host-branch-panel .host-branch-search');
+    const searchFocused = previousSearch instanceof HTMLInputElement && document.activeElement === previousSearch;
+    const searchCaret = searchFocused ? previousSearch.selectionStart : null;
     removeOverlay('host-branch-panel');
     const picker = branchPicker;
     const panel = el('div', 'review-mr-panel host-branch-panel');
@@ -8103,6 +8163,39 @@
     head.append(closeBtn);
     panel.append(head);
 
+    const search = document.createElement('input');
+    search.className = 'review-mr-title host-branch-search';
+    search.type = 'text';
+    search.spellcheck = false;
+    search.autocomplete = 'off';
+    search.placeholder = t('branchPanelSearch');
+    search.setAttribute('aria-label', t('branchPanelSearch'));
+    search.value = picker.query || '';
+    search.addEventListener('input', () => {
+      if (!branchPicker) {
+        return;
+      }
+      branchPicker.query = search.value;
+      clearBranchSearchTimer();
+      const typed = search.value.trim();
+      if (typed.length < 3) {
+        if (branchPicker.activeQuery) {
+          branchPicker.activeQuery = '';
+          renderHostBranchPanel();
+        }
+        return;
+      }
+      branchSearchTimer = setTimeout(() => commitBranchSearch(), BRANCH_SEARCH_MS);
+    });
+    search.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      commitBranchSearch();
+    });
+    panel.append(search);
+
     if (picker.step === 'bases' && picker.selectedBranch) {
       panel.append(el('div', 'host-branch-sub', picker.selectedBranch));
     }
@@ -8113,6 +8206,10 @@
     const hide =
       picker.step === 'bases' ? picker.selectedBranch || '' : picker.currentBranch || '';
     let names = filterPickerBranches(picker.branches, hide);
+    const activeQuery = (picker.activeQuery || '').trim();
+    if (activeQuery.length >= 3) {
+      names = names.filter((name) => branchNameMatches(name, activeQuery));
+    }
     if (picker.step === 'bases' && picker.parentBranch && !names.includes(picker.parentBranch)) {
       names = [picker.parentBranch, ...names];
     }
@@ -8122,7 +8219,9 @@
         list.append(el('div', 'host-branch-skeleton'));
       }
     } else if (!picker.loading && names.length === 0) {
-      list.append(el('div', 'host-branch-empty', t('branchPanelEmpty')));
+      list.append(
+        el('div', 'host-branch-empty', t(activeQuery ? 'branchPanelNoMatch' : 'branchPanelEmpty')),
+      );
     } else {
       for (const name of names) {
         const row = el('button', 'host-branch-row');
@@ -8219,6 +8318,16 @@
     }
 
     document.body.append(panel);
+    if (previousScroll > 0) {
+      list.scrollTop = previousScroll;
+    }
+    if (picker.pendingSearchFocus || searchFocused) {
+      picker.pendingSearchFocus = false;
+      search.focus();
+      if (searchFocused && typeof searchCaret === 'number') {
+        search.setSelectionRange(searchCaret, searchCaret);
+      }
+    }
   }
 
   /**
@@ -8304,6 +8413,9 @@
       typeof message.nextPage === 'number' ? message.nextPage : undefined;
     branchPicker.loading = false;
     renderHostBranchPanel();
+    if (branchPicker?.activeQuery) {
+      pumpBranchSearch();
+    }
   }
 
   /**
@@ -8336,6 +8448,9 @@
       return;
     }
     renderHostBranchPanel();
+    if (branchPicker?.activeQuery) {
+      pumpBranchSearch();
+    }
   }
 
   function removeOverlay(id) {

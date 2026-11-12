@@ -353,7 +353,87 @@ export type HostCompare = {
   diffText: string;
 };
 
-/** One page of repository branches from the host. */
+const GITHUB_BRANCHES_QUERY = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+  repository(owner:$owner,name:$name){
+    refs(refPrefix:"refs/heads/",first:$first,after:$after,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){
+      nodes{ name }
+      pageInfo{ hasNextPage endCursor }
+    }
+  }
+}`;
+
+/** Last GraphQL cursor per repo so page N+1 stays in newest-first order. */
+const githubBranchCursor = new Map<string, { page: number; endCursor: string | undefined }>();
+
+function readGithubBranchPage(value: unknown):
+  | { ok: true; names: string[]; hasNextPage: boolean; endCursor: string | undefined }
+  | { ok: false; message: string } {
+  const failed = graphqlError(value);
+  const data =
+    value && typeof value === 'object' ? (value as { data?: unknown }).data : undefined;
+  const repository =
+    data && typeof data === 'object'
+      ? (data as { repository?: unknown }).repository
+      : undefined;
+  const refs =
+    repository && typeof repository === 'object'
+      ? (repository as { refs?: unknown }).refs
+      : undefined;
+  if (!refs || typeof refs !== 'object') {
+    return { ok: false, message: failed || 'Invalid GitHub branch response' };
+  }
+  const nodes = (refs as { nodes?: unknown }).nodes;
+  const pageInfo = (refs as { pageInfo?: unknown }).pageInfo;
+  const names = Array.isArray(nodes)
+    ? nodes
+        .map((node) =>
+          node && typeof node === 'object' && typeof (node as { name?: unknown }).name === 'string'
+            ? (node as { name: string }).name
+            : '',
+        )
+        .filter(Boolean)
+    : [];
+  const info =
+    pageInfo && typeof pageInfo === 'object'
+      ? (pageInfo as { hasNextPage?: unknown; endCursor?: unknown })
+      : {};
+  const endCursor = typeof info.endCursor === 'string' && info.endCursor ? info.endCursor : undefined;
+  const hasNextPage = info.hasNextPage === true && Boolean(endCursor);
+  if (failed && names.length === 0) {
+    return { ok: false, message: failed };
+  }
+  return { ok: true, names, hasNextPage, endCursor };
+}
+
+async function fetchGithubBranchPage(
+  token: string,
+  owner: string,
+  repo: string,
+  perPage: number,
+  after: string | undefined,
+): Promise<
+  GithubResult<{ names: string[]; hasNextPage: boolean; endCursor: string | undefined }>
+> {
+  const result = await githubFetch(token, 'POST', '/graphql', {
+    query: GITHUB_BRANCHES_QUERY,
+    variables: { owner, name: repo, first: perPage, after: after ?? null },
+  });
+  if (!result.ok) {
+    return result;
+  }
+  const page = readGithubBranchPage(result.value);
+  if (!page.ok) {
+    return page;
+  }
+  return { ok: true, value: page };
+}
+
+/**
+ * One page of repository branches, newest commit first.
+ * REST lists branches alphabetically and omits dates, so this uses GraphQL
+ * `TAG_COMMIT_DATE`. Cursors are remembered so the existing page numbers
+ * keep scrolling in that order.
+ */
 export async function listGithubBranches(
   repoUrl: string,
   token: string,
@@ -364,23 +444,45 @@ export async function listGithubBranches(
   if (!loc) {
     return { ok: false, message: 'Invalid GitHub repository URL' };
   }
-  const route =
-    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/branches` +
-    `?page=${page}&per_page=${perPage}`;
-  const result = await githubFetchRaw(token, 'GET', route);
-  if (!result.ok) {
-    return result;
+  const first = Math.min(100, Math.max(1, perPage));
+  const key = `${loc.owner}/${loc.repo}`.toLowerCase();
+  let after: string | undefined;
+  if (page > 1) {
+    const cached = githubBranchCursor.get(key);
+    if (cached && cached.page === page - 1) {
+      if (!cached.endCursor) {
+        return { ok: true, value: { branches: [], nextPage: undefined } };
+      }
+      after = cached.endCursor;
+    } else {
+      for (let i = 1; i < page; i += 1) {
+        const skipped = await fetchGithubBranchPage(token, loc.owner, loc.repo, first, after);
+        if (!skipped.ok) {
+          return skipped;
+        }
+        if (!skipped.value.hasNextPage || !skipped.value.endCursor) {
+          githubBranchCursor.set(key, { page: i, endCursor: undefined });
+          return { ok: true, value: { branches: [], nextPage: undefined } };
+        }
+        after = skipped.value.endCursor;
+      }
+    }
   }
-  const branches = Array.isArray(result.value.body)
-    ? result.value.body
-        .map((item) =>
-          item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string'
-            ? (item as { name: string }).name
-            : '',
-        )
-        .filter(Boolean)
-    : [];
-  return { ok: true, value: { branches, nextPage: result.value.nextPage } };
+  const listed = await fetchGithubBranchPage(token, loc.owner, loc.repo, first, after);
+  if (!listed.ok) {
+    return listed;
+  }
+  githubBranchCursor.set(key, {
+    page,
+    endCursor: listed.value.hasNextPage ? listed.value.endCursor : undefined,
+  });
+  return {
+    ok: true,
+    value: {
+      branches: listed.value.names,
+      nextPage: listed.value.hasNextPage ? page + 1 : undefined,
+    },
+  };
 }
 
 export async function githubDefaultBranch(

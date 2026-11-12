@@ -293,7 +293,7 @@ export type HostCompare = {
   diffText: string;
 };
 
-/** One page of repository branches from the host. */
+/** One page of repository branches, newest commit first (`updated_desc`). */
 export async function listGitlabBranches(
   repoUrl: string,
   token: string,
@@ -306,7 +306,7 @@ export async function listGitlabBranches(
   }
   const route =
     `/projects/${encodePath(loc.projectPath)}/repository/branches` +
-    `?page=${page}&per_page=${perPage}`;
+    `?page=${page}&per_page=${perPage}&sort=updated_desc`;
   const result = await gitlabFetchRaw(loc.host, token, 'GET', route);
   if (!result.ok) {
     return result;
