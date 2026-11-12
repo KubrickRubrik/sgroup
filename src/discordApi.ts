@@ -895,7 +895,7 @@ export function formatReviewDiscordBody(opts: {
   return lines.join('\n');
 }
 
-/** `Ветка:` on a root R_SYN3 channel message. */
+/** Branch name from a `Ветка:` line. A markdown link keeps only its text. */
 export function parseReviewBranch(content: string): string | undefined {
   const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const line = lines.find((l) => /^Ветка\s*:/i.test(l));
@@ -903,7 +903,15 @@ export function parseReviewBranch(content: string): string | undefined {
     return undefined;
   }
   const value = line.replace(/^Ветка\s*:/i, '').trim();
-  return value || undefined;
+  if (!value || value === '—') {
+    return undefined;
+  }
+  const linked = /^\[([^\]]+)\]\([^)]+\)$/.exec(value);
+  const name = (linked ? linked[1] : value).trim();
+  if (!name || name === '—') {
+    return undefined;
+  }
+  return name;
 }
 
 /** `color:` on an R_SYN3 message (root review). */

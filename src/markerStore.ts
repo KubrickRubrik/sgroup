@@ -207,6 +207,10 @@ export interface StyleProfile {
   reviewModel?: string;
   /** Optional Cursor Agent `--model` for Neurofix. Empty → CLI default. */
   reviewFixModel?: string;
+  /** Print model reasoning in the review/neurofix terminal. */
+  reviewPrintThinking?: boolean;
+  /** When false, hide tool-call lines. Absent means show them. */
+  reviewPrintTools?: boolean;
   /** GitHub login for this profile. The token is not stored here. */
   githubNick?: string;
   /** GitLab username for this profile. The token is not stored here. */
@@ -1657,8 +1661,15 @@ export class MarkerStore implements vscode.Disposable {
     }));
   }
 
-  /** Review skill / dir / models of the active profile. */
-  activeReviewPaths(): { skillPath: string; dirPath: string; model: string; fixModel: string } {
+  /** Review skill / dir / models and terminal print flags of the active profile. */
+  activeReviewPaths(): {
+    skillPath: string;
+    dirPath: string;
+    model: string;
+    fixModel: string;
+    printThinking: boolean;
+    printTools: boolean;
+  } {
     const profile =
       this.profilesData.profiles.find((p) => p.id === this.activeId) ??
       this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
@@ -1667,6 +1678,8 @@ export class MarkerStore implements vscode.Disposable {
       dirPath: (profile?.reviewDirPath ?? '').trim(),
       model: (profile?.reviewModel ?? '').trim().toLowerCase(),
       fixModel: (profile?.reviewFixModel ?? '').trim().toLowerCase(),
+      printThinking: profile?.reviewPrintThinking === true,
+      printTools: profile?.reviewPrintTools !== false,
     };
   }
 
@@ -1675,6 +1688,8 @@ export class MarkerStore implements vscode.Disposable {
     reviewDirPath?: string;
     reviewModel?: string;
     reviewFixModel?: string;
+    reviewPrintThinking?: boolean;
+    reviewPrintTools?: boolean;
   }): Promise<void> {
     await this.enqueue(async () => {
       const id = this.ensureActiveProfileId();
@@ -1693,6 +1708,20 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (partial.reviewFixModel !== undefined) {
         profile.reviewFixModel = partial.reviewFixModel.trim().toLowerCase();
+      }
+      if (partial.reviewPrintThinking !== undefined) {
+        if (partial.reviewPrintThinking) {
+          profile.reviewPrintThinking = true;
+        } else {
+          delete profile.reviewPrintThinking;
+        }
+      }
+      if (partial.reviewPrintTools !== undefined) {
+        if (partial.reviewPrintTools) {
+          delete profile.reviewPrintTools;
+        } else {
+          profile.reviewPrintTools = false;
+        }
       }
       // profiles.json is a cache. The map reads these fields back from the
       // active project's profiling in base.json after any catalog reload.
@@ -6616,6 +6645,8 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.reviewDirPath ? { reviewDirPath: p.reviewDirPath } : {}),
           ...(p.reviewModel ? { reviewModel: p.reviewModel } : {}),
           ...(p.reviewFixModel ? { reviewFixModel: p.reviewFixModel } : {}),
+          ...(p.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
+          ...(p.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
           ...(p.githubNick ? { githubNick: p.githubNick } : {}),
           ...(p.gitlabNick ? { gitlabNick: p.gitlabNick } : {}),
         })),
@@ -9109,6 +9140,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewDirPath?: unknown;
         reviewModel?: unknown;
         reviewFixModel?: unknown;
+        reviewPrintThinking?: unknown;
+        reviewPrintTools?: unknown;
         githubNick?: unknown;
         gitlabNick?: unknown;
       };
@@ -9125,6 +9158,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         typeof item.reviewModel === 'string' ? item.reviewModel.trim() : undefined;
       const reviewFixModel =
         typeof item.reviewFixModel === 'string' ? item.reviewFixModel.trim() : undefined;
+      const reviewPrintThinking = item.reviewPrintThinking === true ? true : undefined;
+      const reviewPrintTools = item.reviewPrintTools === false ? false : undefined;
       const githubNick = normalizeGitNick(item.githubNick);
       const gitlabNick = normalizeGitNick(item.gitlabNick);
       if (id === GENERAL_PROFILE_ID) {
@@ -9137,6 +9172,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewDirPath ? { reviewDirPath } : {}),
           ...(reviewModel ? { reviewModel } : {}),
           ...(reviewFixModel ? { reviewFixModel } : {}),
+          ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
+          ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
           ...(githubNick ? { githubNick } : {}),
           ...(gitlabNick ? { gitlabNick } : {}),
         };
@@ -9159,6 +9196,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewDirPath ? { reviewDirPath } : {}),
         ...(reviewModel ? { reviewModel } : {}),
         ...(reviewFixModel ? { reviewFixModel } : {}),
+        ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
+        ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
         ...(githubNick ? { githubNick } : {}),
         ...(gitlabNick ? { gitlabNick } : {}),
       });

@@ -33,6 +33,8 @@ type IncomingMessage =
       reviewDirPath?: string;
       reviewModel?: string;
       reviewFixModel?: string;
+      reviewPrintThinking?: boolean;
+      reviewPrintTools?: boolean;
     }
   | { type: 'openReviewPromptExample' }
   | { type: 'listProjectDir'; seq: number; rel?: string }
@@ -135,6 +137,8 @@ export class SettingsPanel implements vscode.Disposable {
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
         reviewFixModel: message.reviewFixModel,
+        reviewPrintThinking: message.reviewPrintThinking,
+        reviewPrintTools: message.reviewPrintTools,
       });
       return;
     }
@@ -427,6 +431,8 @@ export class SettingsPanel implements vscode.Disposable {
       reviewDirPath: reviewPaths.dirPath,
       reviewModel: reviewPaths.model,
       reviewFixModel: reviewPaths.fixModel,
+      reviewPrintThinking: reviewPaths.printThinking,
+      reviewPrintTools: reviewPaths.printTools,
       positionSync: this.store.positionSync(),
       catalogChannels: {
         profile: channels.profile || '',
@@ -1337,6 +1343,14 @@ export class SettingsPanel implements vscode.Disposable {
         <label for="reviewFixModel" data-i18n="labelReviewFixModel">Fix agent model</label>
         <input id="reviewFixModel" type="text" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="e.g. sonnet-4-thinking">
       </div>
+      <div class="row">
+        <label for="reviewPrintThinking" data-i18n="labelReviewPrintThinking">Print reasoning</label>
+        <input id="reviewPrintThinking" type="checkbox">
+      </div>
+      <div class="row">
+        <label for="reviewPrintTools" data-i18n="labelReviewPrintTools">Tool calls</label>
+        <input id="reviewPrintTools" type="checkbox">
+      </div>
       <button type="button" id="review-prompt-example" class="review-example" data-i18n="reviewPromptExample">Required review prompt example</button>
       <p class="note" data-i18n="noteReviewPaths"></p>
     </section>
@@ -1411,6 +1425,8 @@ export class SettingsPanel implements vscode.Disposable {
     const reviewDirPath = document.getElementById('reviewDirPath');
     const reviewModel = document.getElementById('reviewModel');
     const reviewFixModel = document.getElementById('reviewFixModel');
+    const reviewPrintThinking = document.getElementById('reviewPrintThinking');
+    const reviewPrintTools = document.getElementById('reviewPrintTools');
     const reviewPromptExample = document.getElementById('review-prompt-example');
     const browseReviewSkill = document.getElementById('browse-review-skill');
     const browseReviewDir = document.getElementById('browse-review-dir');
@@ -1561,12 +1577,14 @@ export class SettingsPanel implements vscode.Disposable {
       suppress = false;
     }
 
-    function applyReviewPaths(skill, dir, model, fixModel) {
+    function applyReviewPaths(skill, dir, model, fixModel, printThinking, printTools) {
       suppress = true;
       if (reviewSkillPath instanceof HTMLInputElement) reviewSkillPath.value = skill || '';
       if (reviewDirPath instanceof HTMLInputElement) reviewDirPath.value = dir || '';
       if (reviewModel instanceof HTMLInputElement) reviewModel.value = (model || '').toLowerCase();
       if (reviewFixModel instanceof HTMLInputElement) reviewFixModel.value = (fixModel || '').toLowerCase();
+      if (reviewPrintThinking instanceof HTMLInputElement) reviewPrintThinking.checked = printThinking === true;
+      if (reviewPrintTools instanceof HTMLInputElement) reviewPrintTools.checked = printTools !== false;
       suppress = false;
     }
 
@@ -1626,6 +1644,8 @@ export class SettingsPanel implements vscode.Disposable {
         reviewDirPath: reviewDirPath instanceof HTMLInputElement ? reviewDirPath.value : '',
         reviewModel: reviewModel instanceof HTMLInputElement ? reviewModel.value.toLowerCase() : '',
         reviewFixModel: reviewFixModel instanceof HTMLInputElement ? reviewFixModel.value.toLowerCase() : '',
+        reviewPrintThinking: reviewPrintThinking instanceof HTMLInputElement && reviewPrintThinking.checked,
+        reviewPrintTools: !(reviewPrintTools instanceof HTMLInputElement) || reviewPrintTools.checked,
       });
     }
 
@@ -1781,7 +1801,7 @@ export class SettingsPanel implements vscode.Disposable {
       vscode.postMessage({ type: 'clearAllData' });
     });
 
-    for (const input of [reviewSkillPath, reviewDirPath, reviewModel, reviewFixModel]) {
+    for (const input of [reviewSkillPath, reviewDirPath, reviewModel, reviewFixModel, reviewPrintThinking, reviewPrintTools]) {
       input?.addEventListener('change', () => emitReviewPaths());
     }
     function lowerModelInput(input) {
@@ -1953,6 +1973,8 @@ export class SettingsPanel implements vscode.Disposable {
           event.data.reviewDirPath,
           event.data.reviewModel,
           event.data.reviewFixModel,
+          event.data.reviewPrintThinking,
+          event.data.reviewPrintTools,
         );
         applyGitBindings(event.data.activeProfileId, event.data.gitBindings, event.data.figmaToken);
         applyCatalogChannels(

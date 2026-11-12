@@ -140,6 +140,8 @@ export interface ReviewChip {
   filename?: string;
   /** `lock: true` on the parent Discord message. Missing line stays open. */
   locked?: boolean;
+  /** Branch this channel message was made on, from `Ветка:`. */
+  branch?: string;
   threadId?: string;
   hasThread?: boolean;
   replies: ReviewThreadMsg[];
@@ -173,6 +175,8 @@ export interface ReviewPageState {
   pendingReviewId?: string;
   /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
   skeletonSeq?: number;
+  /** Branch checked out in this window. Empty when git has no branch name. */
+  checkout?: string;
 }
 
 function toChip(
@@ -205,6 +209,7 @@ function toChip(
     hasFile: !!file,
     filename: file?.filename,
     locked: parseDiscordLock(msg.content),
+    branch: parseReviewBranch(msg.content),
     threadId: msg.thread?.id,
     hasThread: !!msg.thread?.id || !!msg.hasThread,
     replies,
@@ -412,6 +417,8 @@ export type ReviewProfilePaths = {
   dirPath: string;
   model: string;
   fixModel: string;
+  printThinking: boolean;
+  printTools: boolean;
 };
 
 export type NeuroFixScope = 'H' | 'M' | 'S' | 'all';
@@ -461,6 +468,8 @@ export class ReviewMapController {
       dirPath: '',
       model: '',
       fixModel: '',
+      printThinking: false,
+      printTools: true,
       profileId: 'general',
       profileName: '',
       githubNick: '',
@@ -479,6 +488,8 @@ export class ReviewMapController {
       dirPath: ctx.dirPath,
       model: ctx.model,
       fixModel: ctx.fixModel,
+      printThinking: ctx.printThinking === true,
+      printTools: ctx.printTools !== false,
     };
   }
 
@@ -2066,6 +2077,8 @@ export class ReviewMapController {
       cwd: this.cwd(),
       model: paths.fixModel,
       prompt,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
     });
     return agent.ok ? { ok: true } : { ok: false, message: agent.message };
   }
@@ -2104,12 +2117,34 @@ export class ReviewMapController {
       if (!chipBranch) {
         return { kind: 'error', message: 'Root review has no branch' };
       }
+      const checkout = await currentBranch(this.cwd());
+      const same =
+        checkout.ok &&
+        chipBranch.toLocaleLowerCase() === checkout.value.trim().toLocaleLowerCase();
       return this.startHostBranchReview(pageId, {
         branch: chipBranch,
-        kind,
+        kind: same ? kind : 'branch',
         depth: parseReviewDepth(depth),
         parentMessage: parent,
       });
+    }
+
+    const mrBranch = parseReviewBranch(parent.content)?.trim() || '';
+    if (mrBranch) {
+      const checkout = await currentBranch(this.cwd());
+      const same =
+        checkout.ok &&
+        mrBranch.toLocaleLowerCase() === checkout.value.trim().toLocaleLowerCase();
+      // Working copy is another branch: review the MR branch on the host.
+      // Local unpushed changes belong to the checkout, not to this MR.
+      if (!same) {
+        return this.startHostBranchReview(pageId, {
+          branch: mrBranch,
+          kind: 'branch',
+          depth: parseReviewDepth(depth),
+          parentMessage: parent,
+        });
+      }
     }
 
     const parsed = parseMrChip(parent.content);
@@ -2166,6 +2201,8 @@ export class ReviewMapController {
       reviewNumber,
       title,
       webUrl: parsed.webUrl,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
     });
     if (!agent.ok) {
       return { kind: 'error', message: agent.message };
@@ -2367,6 +2404,8 @@ export class ReviewMapController {
       branch: branchName,
       baseBranch,
       hostDiff,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
     });
     if (!agent.ok) {
       return { kind: 'error', message: agent.message };
@@ -2479,6 +2518,8 @@ export class ReviewMapController {
       reviewNumber,
       title: branchName,
       branch: branchName,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
     });
     if (!agent.ok) {
       return { kind: 'error', message: agent.message };

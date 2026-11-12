@@ -409,6 +409,8 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(typeof source.reviewFixModel === 'string' && source.reviewFixModel.trim()
       ? { reviewFixModel: source.reviewFixModel.trim().toLowerCase() }
       : {}),
+    ...(source.reviewPrintThinking === true ? { reviewPrintThinking: true } : {}),
+    ...(source.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
   };
 }
 
@@ -1063,6 +1065,8 @@ export function packProfileEntry(opts: {
     ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
     ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
     ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
+    ...(opts.profile.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
+    ...(opts.profile.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
   };
 }
 
@@ -1100,6 +1104,8 @@ export function unpackProfilesFromBase(
       ...(data?.reviewDirPath ? { reviewDirPath: data.reviewDirPath } : {}),
       ...(data?.reviewModel ? { reviewModel: data.reviewModel } : {}),
       ...(data?.reviewFixModel ? { reviewFixModel: data.reviewFixModel } : {}),
+      ...(data?.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
+      ...(data?.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
       ...(data?.githubNick ? { githubNick: data.githubNick } : {}),
       ...(data?.gitlabNick ? { gitlabNick: data.gitlabNick } : {}),
       ...(data?.repositoryTokenKey ? { repositoryTokenKey: data.repositoryTokenKey } : {}),
@@ -1316,6 +1322,8 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
     ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
     ...(entry.reviewModel ? { reviewModel: entry.reviewModel } : {}),
     ...(entry.reviewFixModel ? { reviewFixModel: entry.reviewFixModel } : {}),
+    ...(entry.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
+    ...(entry.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
   };
 }
 

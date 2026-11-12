@@ -152,7 +152,21 @@ type AgentStream = {
   resultText: string;
   finalFlush: string;
   sawDelta: boolean;
+  /** A reasoning block is open in the terminal, so the next event starts on a new line. */
+  thinkingOpen: boolean;
 };
+
+type TerminalPrint = {
+  thinking: boolean;
+  tools: boolean;
+};
+
+function terminalPrint(opts: { printThinking?: boolean; printTools?: boolean }): TerminalPrint {
+  return {
+    thinking: opts.printThinking === true,
+    tools: opts.printTools !== false,
+  };
+}
 
 function assistantText(message: unknown): string {
   if (!message || typeof message !== 'object') {
@@ -191,20 +205,38 @@ function toolLabel(toolCall: Record<string, unknown>): string {
   return short ? `${name}: ${short}` : name;
 }
 
-function takeStreamLines(state: AgentStream, chunk: string, emit: (text: string) => void): void {
+function takeStreamLines(
+  state: AgentStream,
+  chunk: string,
+  emit: (text: string) => void,
+  print: TerminalPrint,
+): void {
   state.buf += chunk;
   let nl = state.buf.indexOf('\n');
   while (nl >= 0) {
     const line = state.buf.slice(0, nl).replace(/\r$/, '');
     state.buf = state.buf.slice(nl + 1);
     if (line.trim()) {
-      emitStreamLine(state, line, emit);
+      emitStreamLine(state, line, emit, print);
     }
     nl = state.buf.indexOf('\n');
   }
 }
 
-function emitStreamLine(state: AgentStream, line: string, emit: (text: string) => void): void {
+function closeThinking(state: AgentStream, emit: (text: string) => void): void {
+  if (!state.thinkingOpen) {
+    return;
+  }
+  state.thinkingOpen = false;
+  emit('\r\n');
+}
+
+function emitStreamLine(
+  state: AgentStream,
+  line: string,
+  emit: (text: string) => void,
+  print: TerminalPrint,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -219,20 +251,42 @@ function emitStreamLine(state: AgentStream, line: string, emit: (text: string) =
     return;
   }
   if (event.type === 'system' && event.subtype === 'init') {
+    closeThinking(state, emit);
     const model = typeof event.model === 'string' ? event.model : '';
     emit(model ? `модель: ${model}\r\n` : 'сессия начата\r\n');
     return;
   }
-  if (
-    event.type === 'tool_call' &&
-    event.subtype === 'started' &&
-    event.tool_call &&
-    typeof event.tool_call === 'object'
-  ) {
-    emit(`→ ${toolLabel(event.tool_call as Record<string, unknown>)}\r\n`);
+  if (event.type === 'thinking') {
+    if (!print.thinking) {
+      return;
+    }
+    const text = typeof event.text === 'string' ? event.text : '';
+    if (event.subtype === 'delta' && text) {
+      if (!state.thinkingOpen) {
+        state.thinkingOpen = true;
+        emit('\r\nразмышление: ');
+      }
+      emit(text.replace(/\n/g, '\r\n'));
+    } else if (event.subtype === 'completed') {
+      closeThinking(state, emit);
+    }
+    return;
+  }
+  if (event.type === 'tool_call' && event.tool_call && typeof event.tool_call === 'object') {
+    if (!print.tools) {
+      return;
+    }
+    closeThinking(state, emit);
+    const label = toolLabel(event.tool_call as Record<string, unknown>);
+    if (event.subtype === 'started') {
+      emit(`→ ${label}\r\n`);
+    } else if (event.subtype === 'completed') {
+      emit(`← ${label}\r\n`);
+    }
     return;
   }
   if (event.type === 'assistant') {
+    closeThinking(state, emit);
     const hasTs = event.timestamp_ms != null;
     const hasModel = event.model_call_id != null;
     const text = assistantText(event.message);
@@ -252,6 +306,7 @@ function emitStreamLine(state: AgentStream, line: string, emit: (text: string) =
     return;
   }
   if (event.type === 'result') {
+    closeThinking(state, emit);
     if (typeof event.result === 'string') {
       state.resultText = event.result;
     }
@@ -307,6 +362,10 @@ export async function runReviewSkill(opts: {
   branch?: string;
   baseBranch?: string;
   hostDiff?: string;
+  /** Print `thinking` deltas. Off by default; reasoning is not part of the saved review. */
+  printThinking?: boolean;
+  /** Print tool start and finish. On unless the profile stores false. */
+  printTools?: boolean;
 }): Promise<ReviewAgentResult> {
   const resolved = await resolveAgentBin();
   if (!resolved) {
@@ -330,6 +389,7 @@ export async function runReviewSkill(opts: {
     args.push('--model', opts.model.trim());
   }
   args.push(prompt);
+  const print = terminalPrint(opts);
 
   const writeEmitter = new vscode.EventEmitter<string>();
   let closed = false;
@@ -359,6 +419,7 @@ export async function runReviewSkill(opts: {
       resultText: '',
       finalFlush: '',
       sawDelta: false,
+      thinkingOpen: false,
     };
     let stderr = '';
     let settled = false;
@@ -381,7 +442,7 @@ export async function runReviewSkill(opts: {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout?.on('data', (chunk: Buffer) => {
-      takeStreamLines(stream, chunk.toString('utf8'), emit);
+      takeStreamLines(stream, chunk.toString('utf8'), emit, print);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
@@ -408,7 +469,7 @@ export async function runReviewSkill(opts: {
     });
     child.on('close', (code) => {
       if (stream.buf.trim()) {
-        emitStreamLine(stream, stream.buf, emit);
+        emitStreamLine(stream, stream.buf, emit, print);
       }
       emit(`\r\n[exit ${code ?? '?'}]\r\n`);
       const parsed = reviewBody(pickAnswer(stream));
@@ -442,6 +503,8 @@ export async function runNeuroFixSkill(opts: {
   model?: string;
   prompt: string;
   failMessage?: string;
+  printThinking?: boolean;
+  printTools?: boolean;
 }): Promise<NeuroFixAgentResult> {
   if (opts.failMessage) {
     const writeEmitter = new vscode.EventEmitter<string>();
@@ -480,6 +543,7 @@ export async function runNeuroFixSkill(opts: {
     args.push('--model', opts.model.trim());
   }
   args.push(opts.prompt);
+  const print = terminalPrint(opts);
 
   const writeEmitter = new vscode.EventEmitter<string>();
   let closed = false;
@@ -509,6 +573,7 @@ export async function runNeuroFixSkill(opts: {
       resultText: '',
       finalFlush: '',
       sawDelta: false,
+      thinkingOpen: false,
     };
     let stderr = '';
     let settled = false;
@@ -531,7 +596,7 @@ export async function runNeuroFixSkill(opts: {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout?.on('data', (chunk: Buffer) => {
-      takeStreamLines(stream, chunk.toString('utf8'), emit);
+      takeStreamLines(stream, chunk.toString('utf8'), emit, print);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
@@ -555,7 +620,7 @@ export async function runNeuroFixSkill(opts: {
     });
     child.on('close', (code) => {
       if (stream.buf.trim()) {
-        emitStreamLine(stream, stream.buf, emit);
+        emitStreamLine(stream, stream.buf, emit, print);
       }
       emit(`\r\n[exit ${code ?? '?'}]\r\n`);
       if (code === 0) {

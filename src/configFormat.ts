@@ -130,6 +130,10 @@ export interface ProjectProfileEntry {
   reviewDirPath?: string;
   reviewModel?: string;
   reviewFixModel?: string;
+  /** Print model reasoning in the agent terminal. Absent means off. */
+  reviewPrintThinking?: boolean;
+  /** Print tool calls in the agent terminal. Absent means on; false hides them. */
+  reviewPrintTools?: boolean;
 }
 
 /** One project inside the base snapshot (memory keeps Records by id). */

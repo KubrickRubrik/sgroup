@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { CodeLanguageService, CodeStamp } from './codeLanguage';
 import { DirtyPathWatcher } from './gitDirty';
+import { currentBranch } from './gitOps';
 import {
   Appearance,
   ColumnsMode,
@@ -512,6 +513,8 @@ type IncomingMessage =
       reviewDirPath?: string;
       reviewModel?: string;
       reviewFixModel?: string;
+      reviewPrintThinking?: boolean;
+      reviewPrintTools?: boolean;
     }
   | {
       type: 'reviewNeurofix';
@@ -770,6 +773,26 @@ async function downloadPreviewImage(
   }
 }
 
+interface CheckoutGitExtension {
+  getAPI(version: 1): CheckoutGitAPI;
+}
+
+interface CheckoutGitAPI {
+  state: 'uninitialized' | 'initialized';
+  onDidChangeState: vscode.Event<'uninitialized' | 'initialized'>;
+  repositories: CheckoutGitRepo[];
+  onDidOpenRepository: vscode.Event<CheckoutGitRepo>;
+  onDidCloseRepository: vscode.Event<CheckoutGitRepo>;
+}
+
+interface CheckoutGitRepo {
+  rootUri: vscode.Uri;
+  state: {
+    HEAD?: { name?: string };
+    onDidChange: vscode.Event<void>;
+  };
+}
+
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
   static readonly viewId = 'syn3Map';
   static readonly bottomViewId = 'syn3MapBottom';
@@ -871,6 +894,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private pendingDiscordMr?: { pageId: string; mr: ReviewMr };
   /** Per-webview interval for review page Discord poll. */
   private readonly reviewRefreshTimers = new Map<vscode.Webview, ReturnType<typeof setInterval>>();
+  /** Last checkout name pushed to review stamps. Empty means no branch name. */
+  private checkoutName = '';
+  /** Bumps when the IDE checkout changes, so a slower git read cannot overwrite it. */
+  private checkoutGen = 0;
+  /** First git HEAD sample only fills the cache. Later changes refresh the stamps. */
+  private checkoutSeeded = false;
+  private readonly checkoutDisposables: vscode.Disposable[] = [];
+  private readonly checkoutRepoDisposables = new Map<string, vscode.Disposable>();
   /** Workspace-wide auto-fetch for project lock and content checks. */
   private projectFetchTimer: ReturnType<typeof setInterval> | undefined;
   private filesFetchTimer: ReturnType<typeof setInterval> | undefined;
@@ -951,6 +982,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         this.postTabs();
       }),
     ];
+    void this.watchCheckout();
   }
 
   /** Cmd/Ctrl+C while a text editor is focused. */
@@ -983,6 +1015,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.assetRetrySoon.clear();
     this.assetRetryOnShow.clear();
     this.subscriptions.forEach((s) => s.dispose());
+    this.checkoutDisposables.forEach((item) => item.dispose());
+    this.checkoutDisposables.length = 0;
+    for (const item of this.checkoutRepoDisposables.values()) {
+      item.dispose();
+    }
+    this.checkoutRepoDisposables.clear();
     for (const panel of this.instructionPanels.values()) {
       panel.dispose();
     }
@@ -3050,6 +3088,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
         reviewFixModel: message.reviewFixModel,
+        reviewPrintThinking: message.reviewPrintThinking,
+        reviewPrintTools: message.reviewPrintTools,
       });
       return;
     }
@@ -5707,6 +5747,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       reviewDirPath: paths.dirPath,
       reviewModel: paths.model,
       reviewFixModel: paths.fixModel,
+      reviewPrintThinking: paths.printThinking,
+      reviewPrintTools: paths.printTools,
     });
   }
 
@@ -5790,8 +5832,112 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  private async pushReviewState(webview: vscode.Webview, state: ReviewPageState): Promise<void> {
-    await webview.postMessage({ type: 'reviewState', review: state });
+  private async pushReviewState(
+    webview: vscode.Webview,
+    state: ReviewPageState,
+    checkout?: string,
+  ): Promise<void> {
+    if (checkout !== undefined) {
+      this.checkoutName = checkout;
+    } else {
+      const gen = this.checkoutGen;
+      const branch = await currentBranch(this.store.root.fsPath);
+      if (this.checkoutGen === gen) {
+        this.checkoutName = branch.ok ? branch.value : '';
+      }
+    }
+    await webview.postMessage({
+      type: 'reviewState',
+      review: { ...state, checkout: this.checkoutName },
+    });
+  }
+
+  /** Refresh review stamps when the IDE checkout changes. */
+  private async watchCheckout(): Promise<void> {
+    const extension = vscode.extensions.getExtension<CheckoutGitExtension>('vscode.git');
+    if (!extension) {
+      return;
+    }
+    let api: CheckoutGitAPI;
+    try {
+      const exports = extension.isActive ? extension.exports : await extension.activate();
+      api = exports.getAPI(1);
+    } catch {
+      return;
+    }
+    const bind = () => {
+      if (api.state !== 'initialized') {
+        return;
+      }
+      const seen = new Set<string>();
+      for (const repo of api.repositories) {
+        if (!this.checkoutRepoMatches(repo.rootUri)) {
+          continue;
+        }
+        const key = repo.rootUri.toString();
+        seen.add(key);
+        if (this.checkoutRepoDisposables.has(key)) {
+          continue;
+        }
+        this.checkoutRepoDisposables.set(
+          key,
+          repo.state.onDidChange(() => {
+            this.noteCheckoutHead(repo.state.HEAD?.name || '');
+          }),
+        );
+        this.noteCheckoutHead(repo.state.HEAD?.name || '');
+      }
+      for (const [key, item] of this.checkoutRepoDisposables) {
+        if (seen.has(key)) {
+          continue;
+        }
+        item.dispose();
+        this.checkoutRepoDisposables.delete(key);
+      }
+    };
+    if (api.state === 'initialized') {
+      bind();
+    }
+    this.checkoutDisposables.push(
+      api.onDidChangeState(() => bind()),
+      api.onDidOpenRepository(() => bind()),
+      api.onDidCloseRepository(() => bind()),
+    );
+  }
+
+  private checkoutRepoMatches(rootUri: vscode.Uri): boolean {
+    const repo = path.resolve(rootUri.fsPath);
+    const project = path.resolve(this.store.root.fsPath);
+    return project === repo || project.startsWith(repo + path.sep);
+  }
+
+  private noteCheckoutHead(name: string): void {
+    const next = name.trim();
+    if (next === this.checkoutName) {
+      this.checkoutSeeded = true;
+      return;
+    }
+    if (!this.checkoutSeeded) {
+      this.checkoutSeeded = true;
+      this.checkoutName = next;
+      return;
+    }
+    this.checkoutGen += 1;
+    this.checkoutName = next;
+    void this.pushCheckoutToOpenReviews();
+  }
+
+  private async pushCheckoutToOpenReviews(): Promise<void> {
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      const pageId = this.pageIdFor(webview);
+      if (this.store.page(pageId)?.kind !== 'review') {
+        continue;
+      }
+      await this.pushReviewState(webview, this.review.snapshot(pageId), this.checkoutName);
+    }
   }
 
   /**

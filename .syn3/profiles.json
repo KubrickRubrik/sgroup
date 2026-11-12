@@ -16,6 +16,7 @@
       "reviewDirPath": ".syn3/review",
       "reviewModel": "grok-4.7-high-fast",
       "reviewFixModel": "grok-4.7-high-fast",
+      "reviewPrintThinking": true,
       "githubNick": "KubrickRubrik"
     }
   ]

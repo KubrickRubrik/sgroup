@@ -927,11 +927,13 @@
    *     }>,
    *     repliesHasMore: boolean,
    *     repliesLoaded?: boolean,
-   *     contentMissing?: boolean
+   *     contentMissing?: boolean,
+   *     branch?: string
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
    *   focusMessageId?: string,
+   *   checkout?: string,
    *   pendingMr?: { title: string, draft?: boolean },
    *   pendingRoot?: { branch: string },
    *   pendingReviewId?: string,
@@ -1053,6 +1055,7 @@
       loadingEdge: undefined,
       error: '',
       skeletonSeq: incoming.skeletonSeq,
+      checkout: typeof incoming.checkout === 'string' ? incoming.checkout : kept.checkout,
       pendingMr: incoming.pendingMr || kept.pendingMr,
       pendingRoot: incoming.pendingRoot || kept.pendingRoot,
       pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
@@ -1264,6 +1267,8 @@
         reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
         reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
         reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
+        reviewPrintThinking: message.reviewPrintThinking === true,
+        reviewPrintTools: message.reviewPrintTools !== false,
       });
     } else if (message.type === 'pageCloudBusy') {
       pageCloudBusy = message.busy === true;
@@ -2555,6 +2560,7 @@
     row.dataset.reviewScope = scope;
     row.setAttribute('aria-haspopup', 'menu');
     row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    row.title = label;
     const title = document.createElement('span');
     title.className = 'syn3-menu-item-label';
     title.textContent = label;
@@ -2729,6 +2735,12 @@
         !!openMenuState.reviewExpanded,
         'toggleReview',
         (nest) => {
+          const mrBranch = reviewBranchLabel(chip?.branch);
+          // Pulled MR of another branch: review that branch, not the checkout.
+          if (mrBranch && !reviewBranchMatchesCheckout(mrBranch)) {
+            appendReviewScopeRow(nest, 'branch', mrBranch);
+            return;
+          }
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
         },
@@ -2810,6 +2822,11 @@
         !!openMenuState.reviewExpanded,
         'toggleReview',
         (nest) => {
+          const rootBranch = reviewBranchLabel(chip?.branch);
+          if (rootBranch && !reviewBranchMatchesCheckout(rootBranch)) {
+            appendReviewScopeRow(nest, 'branch', rootBranch);
+            return;
+          }
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
         },
@@ -6274,6 +6291,16 @@
     );
   }
 
+  /** True when the chip branch is the branch checked out in this window. */
+  function reviewBranchMatchesCheckout(branch) {
+    const name = reviewBranchLabel(branch);
+    const current = String(reviewState?.checkout || '').trim();
+    if (!name || !current) {
+      return false;
+    }
+    return name.toLocaleLowerCase() === current.toLocaleLowerCase();
+  }
+
   /** Branch label from a root review. A full markdown link keeps only its text. */
   function reviewBranchLabel(raw) {
     const value = String(raw || '').trim();
@@ -6282,7 +6309,34 @@
   }
 
   /**
-   * Date, and for a root review the branch to its right.
+   * Temporary: also show the branch when it is the current checkout.
+   * Set to false to hide a name that matches checkout again.
+   */
+  const SHOW_CHECKOUT_BRANCH = true;
+
+  /**
+   * Branch name for the stamp. Hidden when it matches the current checkout,
+   * unless SHOW_CHECKOUT_BRANCH is on.
+   * @param {string | undefined} branch
+   * @param {string | undefined} checkout
+   */
+  function stampBranchLabel(branch, checkout) {
+    const name = reviewBranchLabel(branch);
+    if (!name) {
+      return '';
+    }
+    if (SHOW_CHECKOUT_BRANCH) {
+      return name;
+    }
+    const current = String(checkout || '').trim();
+    if (current && name.toLocaleLowerCase() === current.toLocaleLowerCase()) {
+      return '';
+    }
+    return name;
+  }
+
+  /**
+   * Date, and the branch name to its right.
    * @param {string} dateText
    * @param {string} [branchText]
    */
@@ -6698,7 +6752,7 @@
     row.append(
       linkElbow(reviewElbowMid({ leadingGap, hasStamp: true, contentHalf: 20 }), ''),
     );
-    const stamp = renderReviewStamp('', pending.branch || '…');
+    const stamp = renderReviewStamp('', stampBranchLabel(pending.branch, reviewState?.checkout));
     const dateBar = reviewSkeletonBar('72px', 0);
     dateBar.classList.add('review-stamp-date');
     stamp.prepend(dateBar);
@@ -7012,6 +7066,7 @@
       state.canLoadOlder ? '1' : '0',
       state.canLoadNewer ? '1' : '0',
       state.focusMessageId || '',
+      state.checkout || '',
       [...reviewTitleExpanded].sort().join(','),
       [...reviewPlainExpanded].sort().join(','),
       activePendingReviewId(pageId),
@@ -7036,6 +7091,7 @@
         msg.reviewStatus || '',
         msg.locked ? 'L' : '',
         msg.timestamp || '',
+        msg.branch || '',
         msg.hasThread ? 't' : '',
         msg.repliesHasMore ? 'm' : '',
         msg.contentMissing ? 'x' : '',
@@ -7082,6 +7138,7 @@
     return content
       .split(/\r?\n/)
       .filter((line) => !/^lock:\s*(true|false)\s*$/i.test(line.trim()))
+      .filter((line) => !/^Ветка\s*:/i.test(line.trim()))
       .join('\n')
       .trim();
   }
@@ -7166,7 +7223,7 @@
     const collapsed = canFold && reviewCollapsed.has(msg.id);
     const plainOpen = !msg.isMr && !msg.isReviewRoot && reviewPlainExpanded.has(msg.id);
     const stampDate = formatReviewStamp(msg.timestamp);
-    const stampBranch = msg.isReviewRoot ? reviewBranchLabel(msg.title) : '';
+    const stampBranch = stampBranchLabel(msg.branch, reviewState?.checkout);
     const hasStamp = !!(stampDate || stampBranch);
     const row = el(
       'div',
@@ -9793,7 +9850,9 @@
    *   reviewSkillPath?: string,
    *   reviewDirPath?: string,
    *   reviewModel?: string,
-   *   reviewFixModel?: string
+   *   reviewFixModel?: string,
+   *   reviewPrintThinking?: boolean,
+   *   reviewPrintTools?: boolean
    * }} opts
    */
   function openReviewCreatePagePanel(opts) {
@@ -9953,6 +10012,10 @@
     let modelInput = null;
     /** @type {HTMLInputElement | null} */
     let fixModelInput = null;
+    /** @type {HTMLInputElement | null} */
+    let printThinkingInput = null;
+    /** @type {HTMLInputElement | null} */
+    let printToolsInput = null;
     /** Flushes skill, directory, and model fields. Set when the review page is being edited. */
     let flushReviewAgentFields = () => {};
     if (editing) {
@@ -10009,6 +10072,23 @@
         'model',
       );
 
+      /**
+       * @param {string} labelKey
+       * @param {boolean} checked
+       */
+      function reviewAgentFlag(labelKey, checked) {
+        const label = el('label', 'review-terminal-flag');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        label.append(input, el('span', 'review-terminal-flag-text', t(labelKey)));
+        panel.append(label);
+        return input;
+      }
+
+      printThinkingInput = reviewAgentFlag('labelReviewPrintThinking', opts.reviewPrintThinking === true);
+      printToolsInput = reviewAgentFlag('labelReviewPrintTools', opts.reviewPrintTools !== false);
+
       function saveReviewPaths() {
         if (!(skillInput instanceof HTMLInputElement) || !(dirInput instanceof HTMLInputElement)) {
           return;
@@ -10018,11 +10098,16 @@
         const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
         const reviewFixModel =
           fixModelInput instanceof HTMLInputElement ? fixModelInput.value.trim().toLowerCase() : '';
+        const reviewPrintThinking =
+          printThinkingInput instanceof HTMLInputElement && printThinkingInput.checked;
+        const reviewPrintTools = !(printToolsInput instanceof HTMLInputElement) || printToolsInput.checked;
         if (
           reviewSkillPath === (opts.reviewSkillPath || '') &&
           reviewDirPath === (opts.reviewDirPath || '') &&
           reviewModel === (opts.reviewModel || '').toLowerCase() &&
-          reviewFixModel === (opts.reviewFixModel || '').toLowerCase()
+          reviewFixModel === (opts.reviewFixModel || '').toLowerCase() &&
+          reviewPrintThinking === (opts.reviewPrintThinking === true) &&
+          reviewPrintTools === (opts.reviewPrintTools !== false)
         ) {
           return;
         }
@@ -10030,17 +10115,21 @@
         opts.reviewDirPath = reviewDirPath;
         opts.reviewModel = reviewModel;
         opts.reviewFixModel = reviewFixModel;
+        opts.reviewPrintThinking = reviewPrintThinking;
+        opts.reviewPrintTools = reviewPrintTools;
         vscode.postMessage({
           type: 'setReviewPaths',
           reviewSkillPath,
           reviewDirPath,
           reviewModel,
           reviewFixModel,
+          reviewPrintThinking,
+          reviewPrintTools,
         });
       }
 
       flushReviewAgentFields = saveReviewPaths;
-      for (const input of [skillInput, dirInput, modelInput, fixModelInput]) {
+      for (const input of [skillInput, dirInput, modelInput, fixModelInput, printThinkingInput, printToolsInput]) {
         input.addEventListener('change', () => saveReviewPaths());
       }
 
