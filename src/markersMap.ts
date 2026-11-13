@@ -23,7 +23,7 @@ import {
   snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
-import { instructionPageHtml, instructionTitle } from './instructionPreview';
+import { instructionPageHtml, instructionTitle, markdownToHtml } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
@@ -401,6 +401,7 @@ type IncomingMessage =
   | { type: 'reviewLoadThread'; pageId: string; messageId: string }
   | { type: 'reviewExpandPlain'; pageId: string; messageId: string }
   | { type: 'reviewOpenPromptExample' }
+  | { type: 'reviewSkillFile'; which: 'review' | 'explain'; action: 'open' | 'copy' | 'save' }
   | { type: 'reviewClearFocus'; pageId: string }
   | {
       type: 'reviewCreateMr';
@@ -467,6 +468,28 @@ type IncomingMessage =
       baseBranch: string;
       depth?: ReviewDepth;
     }
+  | {
+      type: 'explainStart';
+      pageId: string;
+      messageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'explainStartRoot';
+      pageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'explainStartOther';
+      pageId: string;
+      branch: string;
+      baseBranch: string;
+      depth?: ReviewDepth;
+      parentMessageId?: string;
+    }
+  | { type: 'explainRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFileTab'; pageId: string; messageId: string }
@@ -510,6 +533,8 @@ type IncomingMessage =
   | {
       type: 'setReviewPaths';
       reviewSkillPath?: string;
+      reviewFixSkillPath?: string;
+      explainSkillPath?: string;
       reviewDirPath?: string;
       reviewModel?: string;
       reviewFixModel?: string;
@@ -2819,12 +2844,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewOpenPromptExample') {
-      const doc = vscode.Uri.joinPath(this.extensionUri, 'docs', 'review-prompt-template.md');
-      try {
-        await vscode.window.showTextDocument(doc, { preview: true });
-      } catch {
-        await vscode.window.showErrorMessage('Could not open review prompt template');
-      }
+      await this.openInstruction('review-prompt-template.md');
+      return;
+    }
+    if (message.type === 'reviewSkillFile') {
+      await this.onReviewSkillFile(webview, message.which, message.action);
       return;
     }
     if (message.type === 'reviewClearFocus') {
@@ -2936,7 +2960,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!kind) {
         return;
       }
-      const result = await this.withReviewPlaceholder(
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
         webview,
         () => this.review.beginReviewSkeleton(message.pageId, message.messageId),
         () => this.review.endReviewSkeleton(message.pageId, message.messageId),
@@ -2956,13 +2984,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!kind) {
         return;
       }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
       this.review.bindReviewChannel(this.store.catalogChannels().review || '');
       const branch = await this.review.peekCurrentBranch();
       if (!branch.ok) {
         void vscode.window.showErrorMessage(`Syn3: ${branch.message}`);
         return;
       }
-      const result = await this.withReviewPlaceholder(
+      const result = await this.withReviewAgentPlaceholder(
         webview,
         () => this.review.beginRootSkeleton(message.pageId, branch.value),
         () => this.review.endRootSkeleton(message.pageId, branch.value),
@@ -3017,8 +3049,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!branch || !baseBranch) {
         return;
       }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
       this.review.bindReviewChannel(this.store.catalogChannels().review || '');
-      const result = await this.withReviewPlaceholder(
+      const result = await this.withReviewAgentPlaceholder(
         webview,
         () => this.review.beginRootSkeleton(message.pageId, branch),
         () => this.review.endRootSkeleton(message.pageId, branch),
@@ -3032,8 +3068,111 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.handleReviewRootFileResult(webview, message.pageId, branch, result);
       return;
     }
+    if (message.type === 'explainStart') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginExplainSkeleton(message.pageId, message.messageId),
+        () => this.review.endExplainSkeleton(message.pageId, message.messageId),
+        () =>
+          this.review.startOrSendExplain(
+            message.pageId,
+            message.messageId,
+            kind,
+            message.depth,
+          ),
+      );
+      await this.handleExplainFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'explainStartRoot') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const branch = await this.review.peekCurrentBranch();
+      if (!branch.ok) {
+        void vscode.window.showErrorMessage(`Syn3: ${branch.message}`);
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginExplainRootSkeleton(message.pageId, branch.value),
+        () => this.review.endExplainRootSkeleton(message.pageId, branch.value),
+        () => this.review.startRootExplain(message.pageId, kind, message.depth),
+      );
+      await this.handleExplainRootFileResult(webview, message.pageId, branch.value, result);
+      return;
+    }
+    if (message.type === 'explainStartOther') {
+      const branch = String(message.branch || '').trim();
+      const baseBranch = String(message.baseBranch || '').trim();
+      if (!branch || !baseBranch) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const parentMessageId = String(message.parentMessageId || '').trim();
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () =>
+          parentMessageId
+            ? this.review.beginExplainSkeleton(message.pageId, parentMessageId)
+            : this.review.beginExplainRootSkeleton(message.pageId, branch),
+        () =>
+          parentMessageId
+            ? this.review.endExplainSkeleton(message.pageId, parentMessageId)
+            : this.review.endExplainRootSkeleton(message.pageId, branch),
+        () =>
+          this.review.startOtherBranchExplain(message.pageId, {
+            branch,
+            baseBranch,
+            depth: message.depth,
+            parentMessageId: parentMessageId || undefined,
+          }),
+      );
+      if (parentMessageId) {
+        await this.handleExplainFileResult(webview, message.pageId, parentMessageId, result);
+      } else {
+        await this.handleExplainRootFileResult(webview, message.pageId, branch, result);
+      }
+      return;
+    }
+    if (message.type === 'explainRetryFile') {
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginExplainSkeleton(message.pageId, message.messageId),
+        () => this.review.endExplainSkeleton(message.pageId, message.messageId),
+        () => this.review.retryExplainFile(message.pageId, message.messageId),
+      );
+      await this.handleExplainFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
     if (message.type === 'reviewRetryFile') {
-      const result = await this.withReviewPlaceholder(
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
         webview,
         () => this.review.beginReviewSkeleton(message.pageId, message.messageId),
         () => this.review.endReviewSkeleton(message.pageId, message.messageId),
@@ -3051,6 +3190,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ok: result.ok,
         filename: result.ok ? result.filename : undefined,
         text: result.ok ? result.text : undefined,
+        html: result.ok ? markdownToHtml(result.text) : undefined,
         message: result.ok ? undefined : result.message,
       });
       return;
@@ -3085,6 +3225,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'setReviewPaths') {
       await this.store.setActiveReviewPaths({
         reviewSkillPath: message.reviewSkillPath,
+        reviewFixSkillPath: message.reviewFixSkillPath,
+        explainSkillPath: message.explainSkillPath,
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
         reviewFixModel: message.reviewFixModel,
@@ -3771,7 +3913,65 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  /** Opens the setup doc as a rendered page in an editor tab, outside the map column. */
+  private skillDocName(which: 'review' | 'explain'): { file: string; saveAs: string } {
+    return which === 'explain'
+      ? { file: 'explain-skill.md', saveAs: 'explain-skill.md' }
+      : { file: 'review-prompt-template.md', saveAs: 'review-prompt-template.md' };
+  }
+
+  private async readSkillDoc(which: 'review' | 'explain'): Promise<string | undefined> {
+    const { file } = this.skillDocName(which);
+    const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', file);
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      const locale = normalizeLocale(this.store.appearance.language);
+      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
+      return undefined;
+    }
+  }
+
+  private async onReviewSkillFile(
+    webview: vscode.Webview,
+    which: 'review' | 'explain',
+    action: 'open' | 'copy' | 'save',
+  ): Promise<void> {
+    if (which !== 'review' && which !== 'explain') {
+      return;
+    }
+    if (action === 'open') {
+      await this.openInstruction(this.skillDocName(which).file);
+      return;
+    }
+    const text = await this.readSkillDoc(which);
+    if (text === undefined) {
+      return;
+    }
+    if (action === 'copy') {
+      await vscode.env.clipboard.writeText(text);
+      await webview.postMessage({ type: 'reviewSkillCopied' });
+      return;
+    }
+    if (action !== 'save') {
+      return;
+    }
+    const { saveAs } = this.skillDocName(which);
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const defaultUri = folder ? vscode.Uri.joinPath(folder, saveAs) : vscode.Uri.file(saveAs);
+    const locale = normalizeLocale(this.store.appearance.language);
+    const target = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { Markdown: ['md'] },
+      saveLabel: t(locale, 'reviewSkillDownload'),
+    });
+    if (!target) {
+      return;
+    }
+    await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
+  }
+
+  /** Opens a docs markdown file as a rendered page in an editor tab, outside the map column. */
   private async openInstruction(fileName: string): Promise<void> {
     const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
     const column = this.instructionColumn();
@@ -5649,7 +5849,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail('page name is required');
       return;
     }
-    const provider = isReviewHostProvider(message.provider) ? message.provider : undefined;
+    const storedRepo = this.store.projectRepo();
+    const provider = storedRepo?.provider || (isReviewHostProvider(message.provider) ? message.provider : undefined);
     if (!provider) {
       await fail('choose GitLab or GitHub');
       return;
@@ -5659,7 +5860,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail(defaults.error);
       return;
     }
-    const repoUrl = (message.repoUrl || '').trim() || this.store.projectRepo()?.repoUrl || '';
+    const repoUrl = storedRepo?.repoUrl || (message.repoUrl || '').trim();
     if (!repoUrl) {
       await fail(t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired'));
       return;
@@ -5728,6 +5929,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const access = await this.review.getAccess(pageId);
     const projectRepo = this.store.projectRepo();
+    const lockedRepo = projectRepo?.repoUrl || access?.repoUrl || '';
     const paths = this.store.activeReviewPaths();
     await webview.postMessage({
       type: 'reviewPageSettingsPanel',
@@ -5735,7 +5937,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       name: page.name,
       description: page.description || '',
       origin: defaults.origin,
-      repoUrl: projectRepo?.repoUrl || access?.repoUrl || defaults.origin,
+      repoUrl: lockedRepo || defaults.origin,
+      projectRepoLocked: !!lockedRepo,
       suggestedProvider: projectRepo?.provider || access?.provider || defaults.suggestedProvider,
       channelId: access?.channelId || this.store.catalogChannels().review || '',
       hasGitlab: defaults.hasGitlab,
@@ -5744,6 +5947,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       githubToken: defaults.githubToken,
       gitlabToken: defaults.gitlabToken,
       reviewSkillPath: paths.skillPath,
+      reviewFixSkillPath: paths.fixSkillPath,
+      explainSkillPath: paths.explainSkillPath,
       reviewDirPath: paths.dirPath,
       reviewModel: paths.model,
       reviewFixModel: paths.fixModel,
@@ -5775,20 +5980,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       void vscode.window.showErrorMessage('Syn3: page name is required');
       return;
     }
-    const provider = isReviewHostProvider(message.provider) ? message.provider : undefined;
-    if (!provider) {
-      void vscode.window.showErrorMessage('Syn3: choose GitLab or GitHub');
-      return;
-    }
     const defaults = await this.review.createPageDefaults();
     if ('error' in defaults) {
       void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
       return;
     }
+    const storedRepo = this.store.projectRepo();
+    const previous = await this.review.getAccess(message.pageId);
+    const provider =
+      storedRepo?.provider ||
+      (previous?.repoUrl ? previous.provider : undefined) ||
+      (isReviewHostProvider(message.provider) ? message.provider : undefined);
+    if (!provider) {
+      void vscode.window.showErrorMessage('Syn3: choose GitLab or GitHub');
+      return;
+    }
+    const repoUrl = storedRepo?.repoUrl || previous?.repoUrl || (message.repoUrl || '').trim();
     const accessError = this.review.validateCreateAccess({
       provider,
       channelId: message.channelId,
-      repoUrl: message.repoUrl,
+      repoUrl,
       origin: defaults.origin,
     });
     if (accessError) {
@@ -5805,10 +6016,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       void vscode.window.showErrorMessage(`Syn3: ${secrets.message}`);
       return;
     }
-    const previous = await this.review.getAccess(message.pageId);
     await this.store.setPageMeta(message.pageId, name, message.description);
     const channelId = message.channelId.trim();
-    const repoUrl = (message.repoUrl || '').trim() || this.store.projectRepo()?.repoUrl || '';
     if (!repoUrl) {
       void vscode.window.showErrorMessage(
         `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired')}`,
@@ -6023,6 +6232,96 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return result;
   }
 
+  /** Like withReviewPlaceholder, but holds the review/explain agent busy lock. */
+  private async withReviewAgentPlaceholder<T extends { kind: string; state?: ReviewPageState }>(
+    webview: vscode.Webview,
+    begin: () => ReviewPageState,
+    end: () => ReviewPageState,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    this.review.beginAgentBusy();
+    try {
+      return await this.withReviewPlaceholder(webview, begin, end, run);
+    } finally {
+      this.review.endAgentBusy();
+    }
+  }
+
+  private async handleExplainFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    messageId: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          return;
+        }
+        const retry = await this.withReviewAgentPlaceholder(
+          webview,
+          () => this.review.beginExplainSkeleton(pageId, messageId),
+          () => this.review.endExplainSkeleton(pageId, messageId),
+          () => this.review.retryExplainFile(pageId, messageId),
+        );
+        await this.handleExplainFileResult(webview, pageId, messageId, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
+  }
+
+  private async handleExplainRootFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    branch: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          return;
+        }
+        this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+        const retry = await this.withReviewAgentPlaceholder(
+          webview,
+          () => this.review.beginExplainRootSkeleton(pageId, branch),
+          () => this.review.endExplainRootSkeleton(pageId, branch),
+          () => this.review.retryRootExplainFile(pageId),
+        );
+        await this.handleExplainRootFileResult(webview, pageId, branch, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
+  }
+
   /** Push a skeleton edge, run the fetch, then push the settled window. */
   private async runReviewChannelLoad(
     webview: vscode.Webview,
@@ -6165,7 +6464,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         t(locale, 'reviewRetry'),
       );
       if (choice === t(locale, 'reviewRetry')) {
-        const retry = await this.withReviewPlaceholder(
+        if (this.review.isAgentBusy()) {
+          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          return;
+        }
+        const retry = await this.withReviewAgentPlaceholder(
           webview,
           () => this.review.beginReviewSkeleton(pageId, messageId),
           () => this.review.endReviewSkeleton(pageId, messageId),
@@ -6198,8 +6501,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         t(locale, 'reviewRetry'),
       );
       if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          return;
+        }
         this.review.bindReviewChannel(this.store.catalogChannels().review || '');
-        const retry = await this.withReviewPlaceholder(
+        const retry = await this.withReviewAgentPlaceholder(
           webview,
           () => this.review.beginRootSkeleton(pageId, branch),
           () => this.review.endRootSkeleton(pageId, branch),
@@ -6530,6 +6837,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         <button id="review-file-close" class="history-btn" type="button" aria-label="Закрыть">×</button>
       </div>
       <div id="review-file-body" class="review-file-body"></div>
+    </aside>
+    <aside id="explain-file" class="review-file explain-file" hidden>
+      <div class="review-file-head">
+        <span id="explain-file-title" class="review-file-title"></span>
+        <button id="explain-file-close" class="history-btn" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <div id="explain-file-body" class="review-file-body explain-file-body"></div>
     </aside>
   </div>
   <script nonce="${nonce}">

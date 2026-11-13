@@ -72,8 +72,8 @@ const DEFAULT_APPEARANCE_LOCAL: Appearance = {
   problemsWarning: true,
   problemsInfo: true,
   language: 'ru',
-  reviewRefreshSec: 60,
-  projectFetchSec: 60,
+  reviewRefreshSec: 30,
+  projectFetchSec: 15,
   filesFetchSec: 60,
   notesFetchSec: 60,
   linksFetchSec: 60,
@@ -102,9 +102,9 @@ function normalizePageKindLocal(value: unknown): PageKind | undefined {
 }
 
 function snapFetchSecLocal(value: number): number {
-  const min = 30;
+  const min = 15;
   const max = 3600;
-  const step = 10;
+  const step = 5;
   if (!Number.isFinite(value)) {
     return 60;
   }
@@ -399,6 +399,12 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(pageLayouts ? { pageLayouts } : {}),
     ...(typeof source.reviewSkillPath === 'string' && source.reviewSkillPath.trim()
       ? { reviewSkillPath: source.reviewSkillPath.trim() }
+      : {}),
+    ...(typeof source.reviewFixSkillPath === 'string' && source.reviewFixSkillPath.trim()
+      ? { reviewFixSkillPath: source.reviewFixSkillPath.trim() }
+      : {}),
+    ...(typeof source.explainSkillPath === 'string' && source.explainSkillPath.trim()
+      ? { explainSkillPath: source.explainSkillPath.trim() }
       : {}),
     ...(typeof source.reviewDirPath === 'string' && source.reviewDirPath.trim()
       ? { reviewDirPath: source.reviewDirPath.trim() }
@@ -1062,6 +1068,8 @@ export function packProfileEntry(opts: {
     open: opts.style.open,
     ...(pageLayouts ? { pageLayouts } : {}),
     ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
+    ...(opts.profile.reviewFixSkillPath ? { reviewFixSkillPath: opts.profile.reviewFixSkillPath } : {}),
+    ...(opts.profile.explainSkillPath ? { explainSkillPath: opts.profile.explainSkillPath } : {}),
     ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
     ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
     ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
@@ -1101,6 +1109,8 @@ export function unpackProfilesFromBase(
       name: id === GENERAL_PROFILE_ID ? GENERAL_PROFILE_NAME : root.name,
       sProfileIds: [...root.sProfileIds],
       ...(data?.reviewSkillPath ? { reviewSkillPath: data.reviewSkillPath } : {}),
+      ...(data?.reviewFixSkillPath ? { reviewFixSkillPath: data.reviewFixSkillPath } : {}),
+      ...(data?.explainSkillPath ? { explainSkillPath: data.explainSkillPath } : {}),
       ...(data?.reviewDirPath ? { reviewDirPath: data.reviewDirPath } : {}),
       ...(data?.reviewModel ? { reviewModel: data.reviewModel } : {}),
       ...(data?.reviewFixModel ? { reviewFixModel: data.reviewFixModel } : {}),
@@ -1319,6 +1329,8 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
       ? { pageLayouts: entry.pageLayouts }
       : {}),
     ...(entry.reviewSkillPath ? { reviewSkillPath: entry.reviewSkillPath } : {}),
+    ...(entry.reviewFixSkillPath ? { reviewFixSkillPath: entry.reviewFixSkillPath } : {}),
+    ...(entry.explainSkillPath ? { explainSkillPath: entry.explainSkillPath } : {}),
     ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
     ...(entry.reviewModel ? { reviewModel: entry.reviewModel } : {}),
     ...(entry.reviewFixModel ? { reviewFixModel: entry.reviewFixModel } : {}),

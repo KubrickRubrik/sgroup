@@ -201,6 +201,10 @@ export interface StyleProfile {
   sProfileIds: string[];
   /** Absolute or workspace-relative path to the review skill. */
   reviewSkillPath?: string;
+  /** Absolute or workspace-relative path to the Neurofix skill. */
+  reviewFixSkillPath?: string;
+  /** Absolute or workspace-relative path to the «Что делаем?» skill. */
+  explainSkillPath?: string;
   /** Absolute or workspace-relative directory for temporary review files. */
   reviewDirPath?: string;
   /** Optional Cursor Agent `--model` value. Empty → CLI default. */
@@ -226,6 +230,8 @@ export interface StyleProfileInfo {
   /** How many machines are bound to this profile (`sProfileIds.length`). */
   boundCount: number;
   reviewSkillPath: string;
+  reviewFixSkillPath: string;
+  explainSkillPath: string;
   reviewDirPath: string;
   reviewModel: string;
   reviewFixModel: string;
@@ -296,7 +302,7 @@ export interface Appearance {
   problemsInfo: boolean;
   /** Syn3 UI language for menus and settings of this profile. */
   language: Syn3Locale;
-  /** Auto-refresh interval for review pages (MR messages), seconds (30–3600). */
+  /** Auto-refresh interval for review pages (MR messages), seconds (15–3600). */
   reviewRefreshSec: number;
   /** Auto-fetch interval for the project lock from the base channel. */
   projectFetchSec: number;
@@ -337,8 +343,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
   problemsWarning: true,
   problemsInfo: true,
   language: 'ru',
-  reviewRefreshSec: 60,
-  projectFetchSec: 60,
+  reviewRefreshSec: 30,
+  projectFetchSec: 15,
   filesFetchSec: 60,
   notesFetchSec: 60,
   linksFetchSec: 60,
@@ -353,9 +359,9 @@ const MULTIPLIER_STEP = 0.1;
 const SATURATION_STEP = 5;
 const GRADIENT_STEP = 1;
 const OPEN_FILE_DURATION_STEP = 0.1;
-const REVIEW_REFRESH_MIN = 30;
+const REVIEW_REFRESH_MIN = 15;
 const REVIEW_REFRESH_MAX = 3600;
-const REVIEW_REFRESH_STEP = 10;
+const REVIEW_REFRESH_STEP = 5;
 
 export function snapFontScale(value: number): number {
   return snap(value, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP);
@@ -493,7 +499,7 @@ export function normalizeIcons(icons?: unknown, legacyIcon?: unknown): string[] 
 
 export interface MarkerDef {
   label: string;
-  /** Theme color id (`syn3.red`, `charts.red`) or `#rrggbb`. */
+  /** Theme color id (`syn3.red`, `charts.red`), `#rrggbb`, or `#rrggbbaa`. */
   color?: string;
   /** Optional badge emoji (up to {@link MAX_BADGE_ICONS}) shown right of the type icon. */
   icons?: string[];
@@ -581,7 +587,7 @@ export interface NoteDef {
   parentNote?: string;
   text: string;
   order: number;
-  /** Theme color id (`syn3.slate`, …) or `#rrggbb`. Absent → inherit from parent/group. */
+  /** Theme color id (`syn3.slate`, …), `#rrggbb`, or `#rrggbbaa`. Absent → inherit from parent/group. */
   color?: string;
   /** Optional badge emoji (up to {@link MAX_BADGE_ICONS}) shown right of the type icon. */
   icons?: string[];
@@ -616,7 +622,7 @@ export interface LinkDef {
   parent?: string;
   /** Page id for top-level layouts only. */
   page?: string;
-  /** Theme color id or `#rrggbb`. Only meaningful on roots. */
+  /** Theme color id, `#rrggbb`, or `#rrggbbaa`. Only meaningful on roots. */
   color?: string;
   order: number;
   /** When true, map edits to this node are blocked. Absent means open. */
@@ -1655,6 +1661,8 @@ export class MarkerStore implements vscode.Disposable {
       name: p.name,
       boundCount: p.sProfileIds.length,
       reviewSkillPath: p.reviewSkillPath ?? '',
+      reviewFixSkillPath: p.reviewFixSkillPath ?? '',
+      explainSkillPath: p.explainSkillPath ?? '',
       reviewDirPath: p.reviewDirPath ?? '',
       reviewModel: p.reviewModel ?? '',
       reviewFixModel: p.reviewFixModel ?? '',
@@ -1664,6 +1672,8 @@ export class MarkerStore implements vscode.Disposable {
   /** Review skill / dir / models and terminal print flags of the active profile. */
   activeReviewPaths(): {
     skillPath: string;
+    fixSkillPath: string;
+    explainSkillPath: string;
     dirPath: string;
     model: string;
     fixModel: string;
@@ -1675,6 +1685,8 @@ export class MarkerStore implements vscode.Disposable {
       this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
     return {
       skillPath: (profile?.reviewSkillPath ?? '').trim(),
+      fixSkillPath: (profile?.reviewFixSkillPath ?? '').trim(),
+      explainSkillPath: (profile?.explainSkillPath ?? '').trim(),
       dirPath: (profile?.reviewDirPath ?? '').trim(),
       model: (profile?.reviewModel ?? '').trim().toLowerCase(),
       fixModel: (profile?.reviewFixModel ?? '').trim().toLowerCase(),
@@ -1685,6 +1697,8 @@ export class MarkerStore implements vscode.Disposable {
 
   async setActiveReviewPaths(partial: {
     reviewSkillPath?: string;
+    reviewFixSkillPath?: string;
+    explainSkillPath?: string;
     reviewDirPath?: string;
     reviewModel?: string;
     reviewFixModel?: string;
@@ -1699,6 +1713,12 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (partial.reviewSkillPath !== undefined) {
         profile.reviewSkillPath = partial.reviewSkillPath.trim();
+      }
+      if (partial.reviewFixSkillPath !== undefined) {
+        profile.reviewFixSkillPath = partial.reviewFixSkillPath.trim();
+      }
+      if (partial.explainSkillPath !== undefined) {
+        profile.explainSkillPath = partial.explainSkillPath.trim();
       }
       if (partial.reviewDirPath !== undefined) {
         profile.reviewDirPath = partial.reviewDirPath.trim();
@@ -6642,6 +6662,8 @@ export class MarkerStore implements vscode.Disposable {
           name: p.name,
           sProfileIds: [...p.sProfileIds],
           ...(p.reviewSkillPath ? { reviewSkillPath: p.reviewSkillPath } : {}),
+          ...(p.reviewFixSkillPath ? { reviewFixSkillPath: p.reviewFixSkillPath } : {}),
+          ...(p.explainSkillPath ? { explainSkillPath: p.explainSkillPath } : {}),
           ...(p.reviewDirPath ? { reviewDirPath: p.reviewDirPath } : {}),
           ...(p.reviewModel ? { reviewModel: p.reviewModel } : {}),
           ...(p.reviewFixModel ? { reviewFixModel: p.reviewFixModel } : {}),
@@ -9137,6 +9159,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         name?: unknown;
         sProfileIds?: unknown;
         reviewSkillPath?: unknown;
+        reviewFixSkillPath?: unknown;
+        explainSkillPath?: unknown;
         reviewDirPath?: unknown;
         reviewModel?: unknown;
         reviewFixModel?: unknown;
@@ -9152,6 +9176,10 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
       const sProfileIds = normalizeSProfileIds(item.sProfileIds);
       const reviewSkillPath =
         typeof item.reviewSkillPath === 'string' ? item.reviewSkillPath.trim() : undefined;
+      const reviewFixSkillPath =
+        typeof item.reviewFixSkillPath === 'string' ? item.reviewFixSkillPath.trim() : undefined;
+      const explainSkillPath =
+        typeof item.explainSkillPath === 'string' ? item.explainSkillPath.trim() : undefined;
       const reviewDirPath =
         typeof item.reviewDirPath === 'string' ? item.reviewDirPath.trim() : undefined;
       const reviewModel =
@@ -9169,6 +9197,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           name: GENERAL_PROFILE_NAME,
           sProfileIds: generalIds,
           ...(reviewSkillPath ? { reviewSkillPath } : {}),
+          ...(reviewFixSkillPath ? { reviewFixSkillPath } : {}),
+          ...(explainSkillPath ? { explainSkillPath } : {}),
           ...(reviewDirPath ? { reviewDirPath } : {}),
           ...(reviewModel ? { reviewModel } : {}),
           ...(reviewFixModel ? { reviewFixModel } : {}),
@@ -9193,6 +9223,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         name,
         sProfileIds,
         ...(reviewSkillPath ? { reviewSkillPath } : {}),
+        ...(reviewFixSkillPath ? { reviewFixSkillPath } : {}),
+        ...(explainSkillPath ? { explainSkillPath } : {}),
         ...(reviewDirPath ? { reviewDirPath } : {}),
         ...(reviewModel ? { reviewModel } : {}),
         ...(reviewFixModel ? { reviewFixModel } : {}),

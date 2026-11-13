@@ -16,17 +16,22 @@ import {
   DiscordMessage,
   editChannelMessage,
   ensureThread,
+  EXPLAIN_DEFAULT_COLOR,
+  EXPLAIN_TITLE,
   findMrMessage,
+  formatExplainDiscordBody,
   formatMrDiscordBody,
   formatReviewDiscordBody,
   getChannelMessage,
   isConfigMessage,
   isDiscordSystemNotice,
+  isExplainMessage,
   isMrMessage,
   isReviewMessage,
   listChannelMessages,
   listThreadMessages,
   parseDiscordLock,
+  parseExplainMessagePill,
   parseMrChip,
   parseReviewAttachment,
   parseReviewBranch,
@@ -46,6 +51,7 @@ import {
   sortMessagesAsc,
   THREAD_STARTER_MESSAGE,
 } from './discordApi';
+import { ExplainPendingStore } from './explainPending';
 import {
   collectMrTargetBranches,
   currentBranch,
@@ -83,8 +89,10 @@ import {
 import {
   deleteReviewFile,
   parseReviewFixGroups,
+  runExplainSkill,
   runNeuroFixSkill,
   runReviewSkill,
+  writeExplainFile,
   writeReviewFile,
 } from './reviewAgent';
 import {
@@ -105,12 +113,18 @@ export interface ReviewThreadMsg {
   author?: string;
   timestamp: string;
   isReview: boolean;
+  /** Thread reply W_SYN3 («Что делаем?»). */
+  isExplain?: boolean;
   /** True when attachment parsed to a review pill with H/M/S. */
   isPill?: boolean;
   /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | S:5`. */
   pillLabel?: string;
   /** Empty when Discord `status` is `-` or missing. */
   status?: ReviewChipStatus;
+  /** Chip color from `color:` on an explain reply. */
+  color?: string;
+  /** Branch from `Ветка:` on an explain reply. */
+  branch?: string;
   /** Discord attachment on this message. The CDN url stays on the host. */
   hasFile?: boolean;
   filename?: string;
@@ -125,6 +139,8 @@ export interface ReviewChip {
   isMr: boolean;
   /** Channel-root R_SYN3 (no MR). */
   isReviewRoot?: boolean;
+  /** Channel-root W_SYN3 («Что делаем?»). */
+  isExplainRoot?: boolean;
   webUrl?: string;
   title?: string;
   draft?: boolean;
@@ -173,6 +189,10 @@ export interface ReviewPageState {
   pendingRoot?: { branch: string };
   /** Parent message whose thread shows a review pill until Discord posts it. */
   pendingReviewId?: string;
+  /** Placeholder root explain while the agent and Discord post are in flight. */
+  pendingExplainRoot?: { branch: string };
+  /** Parent message whose thread shows an explain pill until Discord posts it. */
+  pendingExplainId?: string;
   /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
   skeletonSeq?: number;
   /** Branch checked out in this window. Empty when git has no branch name. */
@@ -187,8 +207,9 @@ function toChip(
 ): ReviewChip {
   const isMr = isMrMessage(msg.content);
   const isReviewRoot = !isMr && isReviewMessage(msg.content);
+  const isExplainRoot = !isMr && !isReviewRoot && isExplainMessage(msg.content);
   const parsed = isMr ? parseMrChip(msg.content) : {};
-  const file = isReviewRoot ? reviewAttachment(msg) : undefined;
+  const file = isReviewRoot || isExplainRoot ? reviewAttachment(msg) : undefined;
   return {
     id: msg.id,
     content: msg.content,
@@ -196,14 +217,24 @@ function toChip(
     timestamp: msg.timestamp,
     isMr,
     isReviewRoot,
+    isExplainRoot,
     webUrl: parsed.webUrl,
-    title: isMr ? parsed.title : isReviewRoot ? parseReviewBranch(msg.content) : undefined,
+    title: isMr
+      ? parsed.title
+      : isReviewRoot || isExplainRoot
+        ? parseReviewBranch(msg.content)
+        : undefined,
     draft: parsed.draft,
     color:
       parsed.color ||
-      (isReviewRoot ? parseReviewColor(msg.content) : undefined) ||
+      (isReviewRoot || isExplainRoot ? parseReviewColor(msg.content) : undefined) ||
+      (isExplainRoot ? EXPLAIN_DEFAULT_COLOR : undefined) ||
       (isMr ? LINK_PALETTE_DEFAULT : undefined),
-    pillLabel: isReviewRoot ? parseReviewMessagePill(msg.content) : undefined,
+    pillLabel: isReviewRoot
+      ? parseReviewMessagePill(msg.content)
+      : isExplainRoot
+        ? parseExplainMessagePill(msg.content)
+        : undefined,
     status: isMr ? (parsed.status === 'closed' ? 'closed' : 'open') : undefined,
     reviewStatus: isReviewRoot ? parseReviewStatus(msg.content) : undefined,
     hasFile: !!file,
@@ -226,13 +257,17 @@ function reviewAttachment(msg: DiscordMessage): { filename: string; url: string 
 
 function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
   const file = reviewAttachment(msg);
+  const explain = isExplainMessage(msg.content);
   return {
     id: msg.id,
     content: msg.content,
     author: msg.author,
     timestamp: msg.timestamp,
     isReview: isReviewMessage(msg.content),
+    isExplain: explain,
     status: isReviewMessage(msg.content) ? parseReviewStatus(msg.content) : undefined,
+    color: explain ? parseReviewColor(msg.content) || EXPLAIN_DEFAULT_COLOR : undefined,
+    branch: explain ? parseReviewBranch(msg.content) : undefined,
     hasFile: !!file,
     filename: file?.filename,
     contentMissing: msg.contentMissing,
@@ -414,6 +449,10 @@ function windowAroundMessage(
 
 export type ReviewProfilePaths = {
   skillPath: string;
+  /** Path to the Neurofix skill. Empty → fix runs without a skill file. */
+  fixSkillPath: string;
+  /** Path to the «Что делаем?» skill. Empty → explain will not start. */
+  explainSkillPath: string;
   dirPath: string;
   model: string;
   fixModel: string;
@@ -434,6 +473,9 @@ export type ReviewProfileContext = ReviewProfilePaths & {
 export class ReviewMapController {
   private readonly access: AccessStore;
   private readonly pending: ReviewPendingStore;
+  private readonly explainPending: ExplainPendingStore;
+  /** True while a review or explain agent run holds a skeleton. */
+  private agentBusy = false;
   /** In-memory channel window per page. */
   private readonly windows = new Map<string, ReviewWindow>();
   private readonly loading = new Set<string>();
@@ -446,10 +488,17 @@ export class ReviewMapController {
   private readonly rootSkeleton = new Map<string, { branch: string }>();
   /** Review pill placeholder: page id → parent Discord message id. */
   private readonly reviewSkeleton = new Map<string, string>();
+  /** Root explain placeholder for a page. */
+  private readonly explainRootSkeleton = new Map<string, { branch: string }>();
+  /** Explain pill placeholder: page id → parent Discord message id. */
+  private readonly explainSkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
   private readonly skeletonSeq = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
-  private readonly replyMeta = new Map<string, { isPill: boolean; pillLabel?: string }>();
+  private readonly replyMeta = new Map<
+    string,
+    { isPill: boolean; pillLabel?: string; isExplain?: boolean; color?: string; branch?: string }
+  >();
   /**
    * Channel last used to list a page when access.json has no channel.
    * A project switch pins the new review channel here before access is rewritten.
@@ -465,6 +514,8 @@ export class ReviewMapController {
     private readonly secrets: vscode.SecretStorage,
     private readonly profileContext: () => ReviewProfileContext = () => ({
       skillPath: '',
+      fixSkillPath: '',
+      explainSkillPath: '',
       dirPath: '',
       model: '',
       fixModel: '',
@@ -479,18 +530,34 @@ export class ReviewMapController {
   ) {
     this.access = new AccessStore(root);
     this.pending = new ReviewPendingStore(root);
+    this.explainPending = new ExplainPendingStore(root);
   }
 
   private profilePaths(): ReviewProfilePaths {
     const ctx = this.profileContext();
     return {
       skillPath: ctx.skillPath,
+      fixSkillPath: ctx.fixSkillPath,
+      explainSkillPath: ctx.explainSkillPath,
       dirPath: ctx.dirPath,
       model: ctx.model,
       fixModel: ctx.fixModel,
       printThinking: ctx.printThinking === true,
       printTools: ctx.printTools !== false,
     };
+  }
+
+  /** True while review or explain agent skeleton is held. MR create ignores this. */
+  isAgentBusy(): boolean {
+    return this.agentBusy;
+  }
+
+  beginAgentBusy(): void {
+    this.agentBusy = true;
+  }
+
+  endAgentBusy(): void {
+    this.agentBusy = false;
   }
 
   accessStore(): AccessStore {
@@ -606,6 +673,37 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
+  /** Show an explain pill in this parent's thread until the Discord reply arrives. */
+  beginExplainSkeleton(pageId: string, messageId: string): ReviewPageState {
+    this.explainSkeleton.set(pageId, messageId);
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  endExplainSkeleton(pageId: string, messageId: string): ReviewPageState {
+    if (messageId && this.explainSkeleton.get(pageId) === messageId) {
+      this.explainSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
+  /** Show a root explain placeholder before the agent and the Discord post. */
+  beginExplainRootSkeleton(pageId: string, branch: string): ReviewPageState {
+    this.explainRootSkeleton.set(pageId, { branch: this.rootSkeletonBranch(branch) });
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  endExplainRootSkeleton(pageId: string, branch: string): ReviewPageState {
+    const current = this.explainRootSkeleton.get(pageId);
+    if (current && current.branch === this.rootSkeletonBranch(branch)) {
+      this.explainRootSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
   private mrSkeletonTitle(title: string): string {
     return title.trim() || 'MR';
   }
@@ -625,11 +723,21 @@ export class ReviewMapController {
 
   private skeletonFields(
     pageId: string,
-  ): Pick<ReviewPageState, 'pendingMr' | 'pendingRoot' | 'pendingReviewId' | 'skeletonSeq'> {
+  ): Pick<
+    ReviewPageState,
+    | 'pendingMr'
+    | 'pendingRoot'
+    | 'pendingReviewId'
+    | 'pendingExplainRoot'
+    | 'pendingExplainId'
+    | 'skeletonSeq'
+  > {
     return {
       pendingMr: this.mrSkeleton.get(pageId),
       pendingRoot: this.rootSkeleton.get(pageId),
       pendingReviewId: this.reviewSkeleton.get(pageId),
+      pendingExplainRoot: this.explainRootSkeleton.get(pageId),
+      pendingExplainId: this.explainSkeleton.get(pageId),
       skeletonSeq: this.skeletonSeq.get(pageId) ?? 0,
     };
   }
@@ -654,6 +762,8 @@ export class ReviewMapController {
     this.loadEdge.clear();
     this.mrSkeleton.clear();
     this.reviewSkeleton.clear();
+    this.explainRootSkeleton.clear();
+    this.explainSkeleton.clear();
   }
 
   /** Remember the project review channel so posts work without an access.json page row. */
@@ -706,7 +816,14 @@ export class ReviewMapController {
         if (!meta) {
           return base;
         }
-        return { ...base, isPill: meta.isPill, pillLabel: meta.pillLabel };
+        return {
+          ...base,
+          isPill: meta.isPill,
+          pillLabel: meta.pillLabel,
+          isExplain: meta.isExplain || base.isExplain,
+          color: meta.color || base.color,
+          branch: meta.branch || base.branch,
+        };
       });
       const loaded = !!thread;
       const hasMore = threadHasMore(m, thread);
@@ -825,6 +942,17 @@ export class ReviewMapController {
   private async enrichReplies(_token: string, replies: DiscordMessage[]): Promise<void> {
     for (const msg of replies) {
       if (this.replyMeta.has(msg.id)) {
+        continue;
+      }
+      const explainPill = parseExplainMessagePill(msg.content);
+      if (explainPill) {
+        this.replyMeta.set(msg.id, {
+          isPill: true,
+          pillLabel: explainPill,
+          isExplain: true,
+          color: parseReviewColor(msg.content) || EXPLAIN_DEFAULT_COLOR,
+          branch: parseReviewBranch(msg.content),
+        });
         continue;
       }
       const pillLabel = parseReviewMessagePill(msg.content);
@@ -1556,7 +1684,7 @@ export class ReviewMapController {
   /**
    * Rename or toggle draft on the host MR/PR, or recolor the Discord chip.
    * Color stays in the Discord body and does not touch the host MR/PR.
-   * Root reviews accept color-only patches.
+   * Root reviews and explain chips accept color-only patches.
    */
   async updateMrChip(
     pageId: string,
@@ -1566,15 +1694,26 @@ export class ReviewMapController {
     const win = this.windows.get(pageId);
     const access = await this.getAccess(pageId);
     const discord = await this.discordToken();
-    const parent = win?.messages.find((item) => item.id === messageId);
-    if (!win || !access || !discord || !parent) {
+    if (!win || !discord) {
+      return { kind: 'error', message: 'MR message not found on the map' };
+    }
+    // Explain reply in a thread: color-only.
+    if (patch.color !== undefined && patch.title === undefined && patch.draft === undefined) {
+      const located = this.findReviewMessage(win, messageId);
+      if (located?.kind === 'thread' && isExplainMessage(located.found.content)) {
+        return this.recolorExplainMessage(pageId, win, located.channelId, discord, located.found, patch.color);
+      }
+    }
+    const parent = win.messages.find((item) => item.id === messageId);
+    if (!access || !parent) {
       return { kind: 'error', message: 'MR message not found on the map' };
     }
     const isRootReview = isReviewMessage(parent.content);
-    if (!isMrMessage(parent.content) && !isRootReview) {
-      return { kind: 'error', message: 'Select an MR_SYN3 or R_SYN3 chip' };
+    const isExplainRoot = isExplainMessage(parent.content);
+    if (!isMrMessage(parent.content) && !isRootReview && !isExplainRoot) {
+      return { kind: 'error', message: 'Select an MR_SYN3, R_SYN3 or W_SYN3 chip' };
     }
-    if (isRootReview && (patch.title !== undefined || patch.draft !== undefined)) {
+    if ((isRootReview || isExplainRoot) && (patch.title !== undefined || patch.draft !== undefined)) {
       return { kind: 'error', message: 'Root review has no rename or draft' };
     }
     if (parseDiscordLock(parent.content)) {
@@ -1673,6 +1812,55 @@ export class ReviewMapController {
           : parent.attachments,
       };
     }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /** Rewrite `color:` on a W_SYN3 thread reply. */
+  private async recolorExplainMessage(
+    pageId: string,
+    win: ReviewWindow,
+    threadId: string,
+    discord: string,
+    message: DiscordMessage,
+    rawColor: string,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const color = normalizeHex(rawColor);
+    if (!color) {
+      return { kind: 'error', message: 'Color is not a hex value' };
+    }
+    const current = parseReviewColor(message.content) || EXPLAIN_DEFAULT_COLOR;
+    if (current.toLowerCase() === color) {
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    const edited = await editChannelMessage(
+      discord,
+      threadId,
+      message.id,
+      replaceMrDiscordColor(message.content, color),
+    );
+    if (!edited.ok) {
+      return { kind: 'error', message: edited.message };
+    }
+    const bucket = win.threads.get(threadId);
+    if (bucket) {
+      const idx = bucket.replies.findIndex((item) => item.id === message.id);
+      if (idx >= 0) {
+        const prev = bucket.replies[idx];
+        bucket.replies[idx] = {
+          ...edited.value,
+          attachments: edited.value.attachments?.length
+            ? edited.value.attachments
+            : prev.attachments,
+        };
+      }
+    }
+    this.replyMeta.set(message.id, {
+      isPill: true,
+      pillLabel: EXPLAIN_TITLE,
+      isExplain: true,
+      color,
+      branch: parseReviewBranch(edited.value.content) || parseReviewBranch(message.content),
+    });
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
@@ -2073,9 +2261,16 @@ export class ReviewMapController {
       '',
       sections.join('\n\n'),
     ].join('\n');
+    const skillRaw = paths.fixSkillPath.trim();
+    const skillAbs = skillRaw
+      ? path.isAbsolute(skillRaw)
+        ? skillRaw
+        : path.join(this.cwd(), skillRaw)
+      : '';
     const agent = await runNeuroFixSkill({
       cwd: this.cwd(),
       model: paths.fixModel,
+      skillPath: skillAbs,
       prompt,
       printThinking: paths.printThinking,
       printTools: paths.printTools,
@@ -2697,6 +2892,542 @@ export class ReviewMapController {
       return { kind: 'fileFail', message: posted.message };
     }
     await this.pending.clear();
+    await deleteReviewFile(filePath);
+    await this.appendPostedMessage(pageId, channelId, posted.value);
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Start «Что делаем?» under an MR or root-review chip.
+   * Posts into that parent's thread.
+   */
+  async startOrSendExplain(
+    pageId: string,
+    messageId: string,
+    kind: ReviewKind,
+    depth?: ReviewDepth,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const win = this.windows.get(pageId);
+    const access = await this.getAccess(pageId);
+    const token = await this.discordToken();
+    if (!win || !access || !token) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
+    const parent = win.messages.find((m) => m.id === messageId);
+    if (!parent) {
+      return { kind: 'error', message: 'Select an MR_SYN3 or R_SYN3 chip' };
+    }
+    const isMr = isMrMessage(parent.content);
+    const isRoot = isReviewMessage(parent.content);
+    if (!isMr && !isRoot) {
+      return { kind: 'error', message: 'Select an MR_SYN3 or R_SYN3 chip' };
+    }
+    if (isMr && parseMrChip(parent.content).status === 'closed') {
+      return { kind: 'error', message: 'MR is closed' };
+    }
+
+    if (isRoot) {
+      const chipBranch = parseReviewBranch(parent.content);
+      if (!chipBranch) {
+        return { kind: 'error', message: 'Root review has no branch' };
+      }
+      const checkout = await currentBranch(this.cwd());
+      const same =
+        checkout.ok &&
+        chipBranch.toLocaleLowerCase() === checkout.value.trim().toLocaleLowerCase();
+      return this.startHostBranchExplain(pageId, {
+        branch: chipBranch,
+        kind: same ? kind : 'branch',
+        depth: parseReviewDepth(depth),
+        parentMessage: parent,
+      });
+    }
+
+    const mrBranch = parseReviewBranch(parent.content)?.trim() || '';
+    if (mrBranch) {
+      const checkout = await currentBranch(this.cwd());
+      const same =
+        checkout.ok &&
+        mrBranch.toLocaleLowerCase() === checkout.value.trim().toLocaleLowerCase();
+      if (!same) {
+        return this.startHostBranchExplain(pageId, {
+          branch: mrBranch,
+          kind: 'branch',
+          depth: parseReviewDepth(depth),
+          parentMessage: parent,
+        });
+      }
+    }
+
+    const parsed = parseMrChip(parent.content);
+    const pendingKey = parsed.webUrl;
+    if (!pendingKey) {
+      return { kind: 'error', message: 'MR chip has no web_url' };
+    }
+
+    const existing = await this.explainPending.read();
+    if (existing && existing.webUrl === pendingKey) {
+      return this.sendPendingExplain(pageId, parent, existing.fsPath, existing.branch);
+    }
+    if (existing) {
+      await deleteReviewFile(existing.fsPath);
+      await this.explainPending.clear();
+    }
+
+    const paths = this.profilePaths();
+    if (!paths.explainSkillPath) {
+      return { kind: 'error', message: 'Explain skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+
+    const checkout = await currentBranch(this.cwd());
+    const branch = mrBranch || (checkout.ok ? checkout.value : '');
+    if (!branch) {
+      return { kind: 'error', message: 'Detached HEAD — cannot start explain' };
+    }
+
+    const dirAbs = path.isAbsolute(paths.dirPath)
+      ? paths.dirPath
+      : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.explainSkillPath)
+      ? paths.explainSkillPath
+      : path.join(this.cwd(), paths.explainSkillPath);
+    const title = parsed.title || 'MR';
+
+    const agent = await runExplainSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind,
+      depth: parseReviewDepth(depth),
+      title,
+      webUrl: parsed.webUrl,
+      branch,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    try {
+      const filePath = await writeExplainFile({
+        dirPath: dirAbs,
+        branch,
+        body: agent.body,
+      });
+      await this.explainPending.write(pendingKey, kind, filePath, branch);
+      const sent = await this.sendPendingExplain(pageId, parent, filePath, branch);
+      if (sent.kind === 'state') {
+        agent.report('Сообщение опубликовано в треде.', true);
+      } else {
+        agent.report(sent.message, false);
+      }
+      return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
+  }
+
+  /** Root «Что делаем?» on the current checkout (Create menu). */
+  async startRootExplain(
+    pageId: string,
+    kind: ReviewKind,
+    depth?: ReviewDepth,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    if (!pageId) {
+      return { kind: 'error', message: 'Review page is not selected' };
+    }
+    const channelId = await this.listingChannel(pageId);
+    if (!channelId) {
+      return { kind: 'error', message: 'Review Discord channel is not set' };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { kind: 'error', message: 'Discord bot token is missing' };
+    }
+    const branch = await currentBranch(this.cwd());
+    if (!branch.ok) {
+      return { kind: 'error', message: 'Detached HEAD — cannot start explain' };
+    }
+    const branchName = branch.value;
+    const pendingKey = pendingBranchKey(branchName);
+
+    const existing = await this.explainPending.read();
+    if (existing && existing.webUrl === pendingKey) {
+      return this.sendPendingRootExplain(pageId, branchName, existing.fsPath);
+    }
+    if (existing) {
+      await deleteReviewFile(existing.fsPath);
+      await this.explainPending.clear();
+    }
+
+    const paths = this.profilePaths();
+    if (!paths.explainSkillPath) {
+      return { kind: 'error', message: 'Explain skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+
+    const dirAbs = path.isAbsolute(paths.dirPath)
+      ? paths.dirPath
+      : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.explainSkillPath)
+      ? paths.explainSkillPath
+      : path.join(this.cwd(), paths.explainSkillPath);
+
+    const agent = await runExplainSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind,
+      depth: parseReviewDepth(depth),
+      title: branchName,
+      branch: branchName,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    try {
+      const filePath = await writeExplainFile({
+        dirPath: dirAbs,
+        branch: branchName,
+        body: agent.body,
+      });
+      await this.explainPending.write(pendingKey, kind, filePath, branchName);
+      const sent = await this.sendPendingRootExplain(pageId, branchName, filePath);
+      if (sent.kind === 'state') {
+        agent.report('Сообщение опубликовано в канале.', true);
+      } else {
+        agent.report(sent.message, false);
+      }
+      return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
+  }
+
+  /** Explain another host branch without switching the checkout. */
+  async startOtherBranchExplain(
+    pageId: string,
+    opts: {
+      branch: string;
+      baseBranch: string;
+      depth?: ReviewDepth;
+      parentMessageId?: string;
+    },
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const win = this.windows.get(pageId);
+    const parent = opts.parentMessageId
+      ? win?.messages.find((m) => m.id === opts.parentMessageId)
+      : undefined;
+    return this.startHostBranchExplain(pageId, {
+      branch: opts.branch,
+      baseBranch: opts.baseBranch,
+      kind: 'branch',
+      depth: parseReviewDepth(opts.depth),
+      parentMessage: parent,
+    });
+  }
+
+  private async startHostBranchExplain(
+    pageId: string,
+    opts: {
+      branch: string;
+      baseBranch?: string;
+      kind: ReviewKind;
+      depth: ReviewDepth;
+      parentMessage?: DiscordMessage;
+    },
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const branchName = opts.branch.trim();
+    if (!branchName) {
+      return { kind: 'error', message: 'Branch name is empty' };
+    }
+    const access = await this.getAccess(pageId);
+    const host = access ? await this.hostToken(access.provider) : undefined;
+    if (!access || !host) {
+      return {
+        kind: 'error',
+        message: `Missing access or ${access?.provider === 'github' ? 'GitHub' : 'GitLab'} token`,
+      };
+    }
+    const token = await this.discordToken();
+    if (!token) {
+      return { kind: 'error', message: 'Discord bot token is missing' };
+    }
+
+    let threadParent = opts.parentMessage;
+    let mr: ReviewMr | undefined;
+
+    if (!threadParent) {
+      const open = await this.findOpenByBranch(access, host, branchName);
+      if (!open.ok) {
+        return { kind: 'error', message: open.message };
+      }
+      mr = open.value;
+      if (mr) {
+        const found = await findMrMessage(token, access.channelId, mr.web_url);
+        if (!found.ok) {
+          return { kind: 'error', message: found.message };
+        }
+        if (found.value) {
+          threadParent = found.value;
+          await this.appendPostedMessage(pageId, access.channelId, found.value);
+        } else {
+          const posted = await this.postMrToDiscord(access, mr);
+          if (!posted.ok) {
+            return { kind: 'error', message: posted.message };
+          }
+          await this.appendPostedMessage(pageId, access.channelId, posted.message);
+          threadParent = posted.message;
+        }
+      }
+    }
+
+    let baseBranch = opts.baseBranch?.trim() || '';
+    if (!baseBranch) {
+      const parent = await this.resolveHostParent(pageId, branchName);
+      if (parent.kind === 'error') {
+        return parent;
+      }
+      baseBranch = parent.parent;
+    }
+
+    const compared = await this.compareHostBranches(access, host, baseBranch, branchName);
+    if (!compared.ok) {
+      return { kind: 'error', message: compared.message };
+    }
+    const hostDiff = this.formatHostDiff(compared.value);
+
+    const paths = this.profilePaths();
+    if (!paths.explainSkillPath) {
+      return { kind: 'error', message: 'Explain skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+
+    const isMrParent = !!(threadParent && isMrMessage(threadParent.content));
+    const isRootParent = !!(threadParent && isReviewMessage(threadParent.content));
+    const pendingKey = isMrParent
+      ? parseMrChip(threadParent!.content).webUrl || pendingBranchKey(branchName)
+      : pendingBranchKey(branchName);
+
+    const existing = await this.explainPending.read();
+    if (existing && existing.webUrl === pendingKey) {
+      if (threadParent && (isMrParent || isRootParent)) {
+        return this.sendPendingExplain(pageId, threadParent, existing.fsPath, existing.branch);
+      }
+      return this.sendPendingRootExplain(pageId, branchName, existing.fsPath);
+    }
+    if (existing) {
+      await deleteReviewFile(existing.fsPath);
+      await this.explainPending.clear();
+    }
+
+    const dirAbs = path.isAbsolute(paths.dirPath)
+      ? paths.dirPath
+      : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.explainSkillPath)
+      ? paths.explainSkillPath
+      : path.join(this.cwd(), paths.explainSkillPath);
+    const title = isMrParent
+      ? parseMrChip(threadParent!.content).title || mr?.title || branchName
+      : branchName;
+
+    const agent = await runExplainSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind: opts.kind,
+      depth: opts.depth,
+      title,
+      webUrl: isMrParent ? parseMrChip(threadParent!.content).webUrl : undefined,
+      branch: branchName,
+      baseBranch,
+      hostDiff,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    try {
+      const filePath = await writeExplainFile({
+        dirPath: dirAbs,
+        branch: branchName,
+        body: agent.body,
+      });
+      await this.explainPending.write(pendingKey, opts.kind, filePath, branchName);
+      const sent =
+        threadParent && (isMrParent || isRootParent)
+          ? await this.sendPendingExplain(pageId, threadParent, filePath, branchName)
+          : await this.sendPendingRootExplain(pageId, branchName, filePath);
+      if (sent.kind === 'state') {
+        agent.report(
+          threadParent && (isMrParent || isRootParent)
+            ? 'Сообщение опубликовано в треде.'
+            : 'Сообщение опубликовано в канале.',
+          true,
+        );
+      } else {
+        agent.report(sent.message, false);
+      }
+      return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
+  }
+
+  async retryExplainFile(pageId: string, messageId: string): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const win = this.windows.get(pageId);
+    const pending = await this.explainPending.read();
+    if (!win || !pending) {
+      return { kind: 'error', message: 'No pending explain file' };
+    }
+    if (isPendingBranchKey(pending.webUrl) && !messageId) {
+      const branch = pending.webUrl.slice('branch:'.length).trim();
+      return this.sendPendingRootExplain(pageId, branch, pending.fsPath);
+    }
+    const parent = win.messages.find((m) => m.id === messageId);
+    if (!parent) {
+      return { kind: 'error', message: 'Explain parent not found on the map' };
+    }
+    return this.sendPendingExplain(pageId, parent, pending.fsPath, pending.branch);
+  }
+
+  async retryRootExplainFile(pageId: string): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    return this.retryExplainFile(pageId, '');
+  }
+
+  private async sendPendingExplain(
+    pageId: string,
+    parent: DiscordMessage,
+    filePath: string,
+    branch: string,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const access = await this.getAccess(pageId);
+    const token = await this.discordToken();
+    if (!access || !token) {
+      return { kind: 'error', message: 'Missing Discord access' };
+    }
+    const thread = await ensureThread(token, access.channelId, parent, 'reviews');
+    if (!thread.ok) {
+      return { kind: 'fileFail', message: thread.message };
+    }
+    parent.thread = { id: thread.value.id, messageCount: thread.value.messageCount };
+    const paths = this.profilePaths();
+    const content = formatExplainDiscordBody({
+      model: paths.model,
+      skillPath: paths.explainSkillPath,
+      branch,
+      color: EXPLAIN_DEFAULT_COLOR,
+    });
+    const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
+    if (!posted.ok) {
+      return { kind: 'fileFail', message: posted.message };
+    }
+    const postedCount =
+      typeof thread.value.messageCount === 'number' ? thread.value.messageCount + 1 : undefined;
+    parent.thread = { id: thread.value.id, messageCount: postedCount };
+    await this.explainPending.clear();
+    await deleteReviewFile(filePath);
+    const win = this.windows.get(pageId);
+    if (win) {
+      const idx = win.messages.findIndex((m) => m.id === parent.id);
+      if (idx >= 0) {
+        win.messages[idx] = {
+          ...win.messages[idx],
+          thread: { id: thread.value.id, messageCount: postedCount },
+          hasThread: true,
+        };
+      }
+      const listed = await listThreadMessages(token, thread.value.id, {
+        limit: THREAD_INITIAL + THREAD_PROBE,
+      });
+      let replies = listed.ok ? sortMessagesAsc(listed.value) : [];
+      if (!replies.some((item) => item.id === posted.value.id)) {
+        replies = [...replies, posted.value];
+      }
+      const page = takeThreadPage(replies, THREAD_INITIAL, postedCount, []);
+      win.threads.set(thread.value.id, {
+        replies: page.toAdd,
+        messageCount: page.messageCount,
+        exhausted: page.exhausted,
+      });
+      await this.enrichReplies(token, page.toAdd);
+    }
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  private async sendPendingRootExplain(
+    pageId: string,
+    branch: string,
+    filePath: string,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const channelId = await this.listingChannel(pageId);
+    const token = await this.discordToken();
+    if (!channelId || !token) {
+      return { kind: 'error', message: 'Missing Discord access' };
+    }
+    const paths = this.profilePaths();
+    const content = formatExplainDiscordBody({
+      model: paths.model,
+      skillPath: paths.explainSkillPath,
+      branch,
+      color: EXPLAIN_DEFAULT_COLOR,
+    });
+    const posted = await postMessageWithFile(token, channelId, content, filePath);
+    if (!posted.ok) {
+      return { kind: 'fileFail', message: posted.message };
+    }
+    await this.explainPending.clear();
     await deleteReviewFile(filePath);
     await this.appendPostedMessage(pageId, channelId, posted.value);
     return { kind: 'state', state: this.snapshot(pageId) };

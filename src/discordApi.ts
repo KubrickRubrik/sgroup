@@ -7,6 +7,12 @@ export const MR_PREFIX = 'MR_SYN3';
 export const DMR_PREFIX = 'DMR_SYN3';
 /** Review message prefix in Discord threads: `R_SYN3: Ревью N | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
+/** Explain («Что делаем?») message prefix: `W_SYN3: Что делаем?`. */
+export const EXPLAIN_PREFIX = 'W_SYN3';
+/** Chip and file title for an explain message. */
+export const EXPLAIN_TITLE = 'Что делаем?';
+/** Default chip color for explain messages (Violet). */
+export const EXPLAIN_DEFAULT_COLOR = '#8e4ec6';
 export {
   PROFILE_CONFIG_PREFIX,
   EXPLORER_CONFIG_PREFIX,
@@ -36,6 +42,7 @@ export function normalizeSeverityMatch(match: RegExpMatchArray): string {
 
 const MR_HEAD_RE = /^\(?((?:MR_SYN3|DMR_SYN3))\)?:\s*(.*)$/;
 const REVIEW_HEAD_RE = /^\(?R_SYN3\)?:\s*(.*)$/;
+const EXPLAIN_HEAD_RE = /^\(?W_SYN3\)?:\s*(.*)$/;
 const MD_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/;
 /** Discord message flag: do not unfurl links into embed previews. */
 const SUPPRESS_EMBEDS = 1 << 2;
@@ -315,6 +322,11 @@ export function isReviewMessage(content: string): boolean {
   return REVIEW_HEAD_RE.test(head);
 }
 
+export function isExplainMessage(content: string): boolean {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return EXPLAIN_HEAD_RE.test(head);
+}
+
 /** First severity line `H:n | M:n | S:n` in free text (agent stdout or file body). Legacy L → S. */
 export function findSeverityLine(text: string): string | undefined {
   for (const raw of text.split(/\r?\n/)) {
@@ -527,7 +539,7 @@ export function replaceDiscordMetaLine(content: string, key: string, value: stri
   return lines.join('\n');
 }
 
-/** Set or append the `color: #rrggbb` line. Other lines stay as they are. */
+/** Set or append the `color: #rrggbb` / `#rrggbbaa` line. Other lines stay as they are. */
 export function replaceMrDiscordColor(content: string, color: string): string {
   return replaceDiscordMetaLine(content, 'color', color);
 }
@@ -893,6 +905,45 @@ export function formatReviewDiscordBody(opts: {
     lines.push('lock: false');
   }
   return lines.join('\n');
+}
+
+/**
+ * Discord message for an explain («Что делаем?») file attachment.
+ *
+ * Channel root or thread reply:
+ * W_SYN3: Что делаем?
+ * Ветка: name
+ * Модель: …
+ * Скилл: …
+ * color: #hex
+ */
+export function formatExplainDiscordBody(opts: {
+  model: string;
+  skillPath: string;
+  branch: string;
+  color?: string;
+}): string {
+  const model = opts.model.trim() || '—';
+  const skill = opts.skillPath.trim() || '—';
+  const branch = opts.branch.trim() || '—';
+  const color = (opts.color?.trim() || EXPLAIN_DEFAULT_COLOR).trim();
+  return [
+    `${EXPLAIN_PREFIX}: ${EXPLAIN_TITLE}`,
+    `Ветка: ${branch}`,
+    `Модель: ${model}`,
+    `Скилл: ${skill}`,
+    `color: ${color}`,
+  ].join('\n');
+}
+
+/** Chip label from a W_SYN3 Discord message. */
+export function parseExplainMessagePill(content: string): string | undefined {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  const match = EXPLAIN_HEAD_RE.exec(head);
+  if (!match) {
+    return undefined;
+  }
+  return EXPLAIN_TITLE;
 }
 
 /** Branch name from a `Ветка:` line. A markdown link keeps only its text. */

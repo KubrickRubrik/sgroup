@@ -30,6 +30,8 @@ type IncomingMessage =
   | {
       type: 'setReviewPaths';
       reviewSkillPath?: string;
+      reviewFixSkillPath?: string;
+      explainSkillPath?: string;
       reviewDirPath?: string;
       reviewModel?: string;
       reviewFixModel?: string;
@@ -134,6 +136,8 @@ export class SettingsPanel implements vscode.Disposable {
     if (message.type === 'setReviewPaths') {
       await this.store.setActiveReviewPaths({
         reviewSkillPath: message.reviewSkillPath,
+        reviewFixSkillPath: message.reviewFixSkillPath,
+        explainSkillPath: message.explainSkillPath,
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
         reviewFixModel: message.reviewFixModel,
@@ -428,6 +432,8 @@ export class SettingsPanel implements vscode.Disposable {
       },
       figmaToken,
       reviewSkillPath: reviewPaths.skillPath,
+      reviewFixSkillPath: reviewPaths.fixSkillPath,
+      explainSkillPath: reviewPaths.explainSkillPath,
       reviewDirPath: reviewPaths.dirPath,
       reviewModel: reviewPaths.model,
       reviewFixModel: reviewPaths.fixModel,
@@ -1159,26 +1165,26 @@ export class SettingsPanel implements vscode.Disposable {
     <section>
       <h2 data-i18n="sectionSyncFetch">Auto fetch</h2>
       <div class="row">
-        <label for="projectFetchSec" data-i18n="labelProjectFetchSec">Project lock interval</label>
-        <input id="projectFetchSec" type="range" min="30" max="3600" step="10">
+        <label for="projectFetchSec" data-i18n="labelProjectFetchSec">Channel config interval</label>
+        <input id="projectFetchSec" type="range" min="15" max="3600" step="5">
         <span class="value" data-for="projectFetchSec"></span>
       </div>
       <p class="note" data-i18n="noteProjectFetch"></p>
       <div class="row">
         <label for="filesFetchSec" data-i18n="labelFilesFetchSec">Explorer content check</label>
-        <input id="filesFetchSec" type="range" min="30" max="3600" step="10">
+        <input id="filesFetchSec" type="range" min="15" max="3600" step="5">
         <span class="value" data-for="filesFetchSec"></span>
       </div>
       <p class="note" data-i18n="noteFilesFetch"></p>
       <div class="row">
         <label for="notesFetchSec" data-i18n="labelNotesFetchSec">Notes content check</label>
-        <input id="notesFetchSec" type="range" min="30" max="3600" step="10">
+        <input id="notesFetchSec" type="range" min="15" max="3600" step="5">
         <span class="value" data-for="notesFetchSec"></span>
       </div>
       <p class="note" data-i18n="noteNotesFetch"></p>
       <div class="row">
         <label for="linksFetchSec" data-i18n="labelLinksFetchSec">Links content check</label>
-        <input id="linksFetchSec" type="range" min="30" max="3600" step="10">
+        <input id="linksFetchSec" type="range" min="15" max="3600" step="5">
         <span class="value" data-for="linksFetchSec"></span>
       </div>
       <p class="note" data-i18n="noteLinksFetch"></p>
@@ -1188,7 +1194,7 @@ export class SettingsPanel implements vscode.Disposable {
       <h2 data-i18n="sectionReview">Review</h2>
       <div class="row">
         <label for="reviewRefreshSec" data-i18n="labelReviewRefreshSec">Review MR interval</label>
-        <input id="reviewRefreshSec" type="range" min="30" max="3600" step="10">
+        <input id="reviewRefreshSec" type="range" min="15" max="3600" step="5">
         <span class="value" data-for="reviewRefreshSec"></span>
       </div>
       <p class="note" data-i18n="noteReviewRefresh"></p>
@@ -1329,6 +1335,20 @@ export class SettingsPanel implements vscode.Disposable {
         </span>
       </div>
       <div class="row text-row">
+        <label for="reviewFixSkillPath" data-i18n="labelReviewFixSkillPath">Fix skill path</label>
+        <span class="path-field">
+          <input id="reviewFixSkillPath" type="text" spellcheck="false">
+          <button type="button" id="browse-review-fix-skill" class="path-browse" data-i18n-aria="browseProject" data-i18n-title="browseProject">…</button>
+        </span>
+      </div>
+      <div class="row text-row">
+        <label for="explainSkillPath" data-i18n="labelExplainSkillPath">«What are we doing?» skill path</label>
+        <span class="path-field">
+          <input id="explainSkillPath" type="text" spellcheck="false">
+          <button type="button" id="browse-explain-skill" class="path-browse" data-i18n-aria="browseProject" data-i18n-title="browseProject">…</button>
+        </span>
+      </div>
+      <div class="row text-row">
         <label for="reviewDirPath" data-i18n="labelReviewDirPath">Review files directory</label>
         <span class="path-field">
           <input id="reviewDirPath" type="text" spellcheck="false">
@@ -1336,7 +1356,7 @@ export class SettingsPanel implements vscode.Disposable {
         </span>
       </div>
       <div class="row text-row">
-        <label for="reviewModel" data-i18n="labelReviewModel">Review agent model</label>
+        <label for="reviewModel" data-i18n="labelReviewModel">Review agent model for what is being done</label>
         <input id="reviewModel" type="text" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="e.g. sonnet-4-thinking">
       </div>
       <div class="row text-row">
@@ -1422,6 +1442,8 @@ export class SettingsPanel implements vscode.Disposable {
     const discordTokenRow = document.getElementById('discord-token-row');
     const discordTokenSaved = document.getElementById('discord-token-saved');
     const reviewSkillPath = document.getElementById('reviewSkillPath');
+    const reviewFixSkillPath = document.getElementById('reviewFixSkillPath');
+    const explainSkillPath = document.getElementById('explainSkillPath');
     const reviewDirPath = document.getElementById('reviewDirPath');
     const reviewModel = document.getElementById('reviewModel');
     const reviewFixModel = document.getElementById('reviewFixModel');
@@ -1429,6 +1451,8 @@ export class SettingsPanel implements vscode.Disposable {
     const reviewPrintTools = document.getElementById('reviewPrintTools');
     const reviewPromptExample = document.getElementById('review-prompt-example');
     const browseReviewSkill = document.getElementById('browse-review-skill');
+    const browseReviewFixSkill = document.getElementById('browse-review-fix-skill');
+    const browseExplainSkill = document.getElementById('browse-explain-skill');
     const browseReviewDir = document.getElementById('browse-review-dir');
     const pathNav = document.getElementById('path-nav');
     const pathNavTitle = document.getElementById('path-nav-title');
@@ -1438,6 +1462,18 @@ export class SettingsPanel implements vscode.Disposable {
     const pathNavList = document.getElementById('path-nav-list');
     const pathNavPickDir = document.getElementById('path-nav-pick-dir');
     let browseTarget = 'skill';
+    function reviewPathInput(target) {
+      if (target === 'dir') return reviewDirPath;
+      if (target === 'explain') return explainSkillPath;
+      if (target === 'fix') return reviewFixSkillPath;
+      return reviewSkillPath;
+    }
+    function reviewPathTitle(target) {
+      if (target === 'dir') return tr('labelReviewDirPath');
+      if (target === 'explain') return tr('labelExplainSkillPath');
+      if (target === 'fix') return tr('labelReviewFixSkillPath');
+      return tr('labelReviewSkillPath');
+    }
     let browseSeq = 0;
     let navRel = '';
     /** @type {{ relDir: string, entries: Array<{ name: string, relPath: string, isDir: boolean }>, error?: string } | null} */
@@ -1550,7 +1586,7 @@ export class SettingsPanel implements vscode.Disposable {
         settingsHint.append(document.createTextNode(parts[1] || ''));
       }
       if (pathNav && !pathNav.hidden && pathNavTitle) {
-        pathNavTitle.textContent = browseTarget === 'dir' ? tr('labelReviewDirPath') : tr('labelReviewSkillPath');
+        pathNavTitle.textContent = reviewPathTitle(browseTarget);
       }
       if (navPayload && pathNav && !pathNav.hidden) renderPathNav(navPayload);
     }
@@ -1577,9 +1613,11 @@ export class SettingsPanel implements vscode.Disposable {
       suppress = false;
     }
 
-    function applyReviewPaths(skill, dir, model, fixModel, printThinking, printTools) {
+    function applyReviewPaths(skill, fixSkill, explainSkill, dir, model, fixModel, printThinking, printTools) {
       suppress = true;
       if (reviewSkillPath instanceof HTMLInputElement) reviewSkillPath.value = skill || '';
+      if (reviewFixSkillPath instanceof HTMLInputElement) reviewFixSkillPath.value = fixSkill || '';
+      if (explainSkillPath instanceof HTMLInputElement) explainSkillPath.value = explainSkill || '';
       if (reviewDirPath instanceof HTMLInputElement) reviewDirPath.value = dir || '';
       if (reviewModel instanceof HTMLInputElement) reviewModel.value = (model || '').toLowerCase();
       if (reviewFixModel instanceof HTMLInputElement) reviewFixModel.value = (fixModel || '').toLowerCase();
@@ -1641,6 +1679,8 @@ export class SettingsPanel implements vscode.Disposable {
       vscode.postMessage({
         type: 'setReviewPaths',
         reviewSkillPath: reviewSkillPath instanceof HTMLInputElement ? reviewSkillPath.value : '',
+        reviewFixSkillPath: reviewFixSkillPath instanceof HTMLInputElement ? reviewFixSkillPath.value : '',
+        explainSkillPath: explainSkillPath instanceof HTMLInputElement ? explainSkillPath.value : '',
         reviewDirPath: reviewDirPath instanceof HTMLInputElement ? reviewDirPath.value : '',
         reviewModel: reviewModel instanceof HTMLInputElement ? reviewModel.value.toLowerCase() : '',
         reviewFixModel: reviewFixModel instanceof HTMLInputElement ? reviewFixModel.value.toLowerCase() : '',
@@ -1801,7 +1841,16 @@ export class SettingsPanel implements vscode.Disposable {
       vscode.postMessage({ type: 'clearAllData' });
     });
 
-    for (const input of [reviewSkillPath, reviewDirPath, reviewModel, reviewFixModel, reviewPrintThinking, reviewPrintTools]) {
+    for (const input of [
+      reviewSkillPath,
+      reviewFixSkillPath,
+      explainSkillPath,
+      reviewDirPath,
+      reviewModel,
+      reviewFixModel,
+      reviewPrintThinking,
+      reviewPrintTools,
+    ]) {
       input?.addEventListener('change', () => emitReviewPaths());
     }
     function lowerModelInput(input) {
@@ -1848,7 +1897,7 @@ export class SettingsPanel implements vscode.Disposable {
     }
 
     function choosePath(rel) {
-      const input = browseTarget === 'dir' ? reviewDirPath : reviewSkillPath;
+      const input = reviewPathInput(browseTarget);
       if (!(input instanceof HTMLInputElement)) return;
       input.value = rel || '.';
       closePathNav();
@@ -1856,11 +1905,9 @@ export class SettingsPanel implements vscode.Disposable {
     }
 
     function openPathNav(target) {
-      browseTarget = target === 'dir' ? 'dir' : 'skill';
-      if (pathNavTitle) {
-        pathNavTitle.textContent = browseTarget === 'dir' ? tr('labelReviewDirPath') : tr('labelReviewSkillPath');
-      }
-      const input = browseTarget === 'dir' ? reviewDirPath : reviewSkillPath;
+      browseTarget = target === 'dir' || target === 'explain' || target === 'fix' ? target : 'skill';
+      if (pathNavTitle) pathNavTitle.textContent = reviewPathTitle(browseTarget);
+      const input = reviewPathInput(browseTarget);
       const current = input instanceof HTMLInputElement ? input.value : '';
       if (pathNav) pathNav.hidden = false;
       focusNav = true;
@@ -1947,6 +1994,8 @@ export class SettingsPanel implements vscode.Disposable {
     }
 
     browseReviewSkill?.addEventListener('click', () => openPathNav('skill'));
+    browseReviewFixSkill?.addEventListener('click', () => openPathNav('fix'));
+    browseExplainSkill?.addEventListener('click', () => openPathNav('explain'));
     browseReviewDir?.addEventListener('click', () => openPathNav('dir'));
     pathNavUp?.addEventListener('click', () => requestDir(navRel.includes('/') ? navRel.slice(0, navRel.lastIndexOf('/')) : ''));
     pathNavClose?.addEventListener('click', () => closePathNav());
@@ -1970,6 +2019,8 @@ export class SettingsPanel implements vscode.Disposable {
         apply(event.data.appearance);
         applyReviewPaths(
           event.data.reviewSkillPath,
+          event.data.reviewFixSkillPath,
+          event.data.explainSkillPath,
           event.data.reviewDirPath,
           event.data.reviewModel,
           event.data.reviewFixModel,

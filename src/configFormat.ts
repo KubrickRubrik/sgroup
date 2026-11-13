@@ -127,6 +127,10 @@ export interface ProjectProfileEntry {
   /** Layout prefs keyed by page id. */
   pageLayouts?: Record<string, PageLayoutPrefs>;
   reviewSkillPath?: string;
+  /** Absolute or workspace-relative path to the Neurofix skill. */
+  reviewFixSkillPath?: string;
+  /** Absolute or workspace-relative path to the «Что делаем?» skill. */
+  explainSkillPath?: string;
   reviewDirPath?: string;
   reviewModel?: string;
   reviewFixModel?: string;

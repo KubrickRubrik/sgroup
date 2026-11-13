@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { findSeverityLine, REVIEW_SEVERITY_RE } from './discordApi';
+import { EXPLAIN_TITLE, findSeverityLine, REVIEW_SEVERITY_RE } from './discordApi';
 import { ReviewDepth, ReviewKind, reviewDepthCommand } from './reviewPending';
 
 export type ReviewFixGroups = {
@@ -501,6 +501,8 @@ export type NeuroFixAgentResult = { ok: true } | { ok: false; message: string };
 export async function runNeuroFixSkill(opts: {
   cwd: string;
   model?: string;
+  /** Absolute path to the fix skill. Empty → the prompt is sent as-is. */
+  skillPath?: string;
   prompt: string;
   failMessage?: string;
   printThinking?: boolean;
@@ -542,7 +544,9 @@ export async function runNeuroFixSkill(opts: {
   if (opts.model && opts.model.trim()) {
     args.push('--model', opts.model.trim());
   }
-  args.push(opts.prompt);
+  const skillPath = opts.skillPath?.trim() || '';
+  const prompt = skillPath ? `Follow the skill at: ${skillPath}\n${opts.prompt}` : opts.prompt;
+  args.push(prompt);
   const print = terminalPrint(opts);
 
   const writeEmitter = new vscode.EventEmitter<string>();
@@ -553,7 +557,7 @@ export async function runNeuroFixSkill(opts: {
     onDidWrite: writeEmitter.event,
     open: () => {
       writeEmitter.fire(
-        `$ ${resolved.bin} ${args.filter((a) => a !== opts.prompt).join(' ')} «prompt»\r\n\r\n`,
+        `$ ${resolved.bin} ${args.filter((a) => a !== prompt).join(' ')} «prompt»\r\n\r\n`,
       );
       writeEmitter.fire('нейрофикс запущен, шаги появятся ниже\r\n');
     },
@@ -655,6 +659,206 @@ export async function writeReviewFile(opts: {
     opts.body,
     '',
   ].join('\n');
+  await fs.writeFile(fsPath, text, 'utf8');
+  return fsPath;
+}
+
+export type ExplainAgentResult =
+  | {
+      ok: true;
+      body: string;
+      report: (line: string, close: boolean) => void;
+    }
+  | { ok: false; message: string };
+
+function buildExplainPrompt(opts: {
+  skillPath: string;
+  kind: ReviewKind;
+  depth: ReviewDepth;
+  title: string;
+  webUrl?: string;
+  branch?: string;
+  baseBranch?: string;
+  hostDiff?: string;
+}): string {
+  const kindLabel = opts.kind === 'branch' ? `${EXPLAIN_TITLE} ветки` : `${EXPLAIN_TITLE} изменений`;
+  const command = reviewDepthCommand(opts.depth);
+  const lines = [`Follow the skill at: ${opts.skillPath}`, command];
+  if (opts.webUrl) {
+    lines.push(
+      `Task: ${kindLabel} for merge request.`,
+      `MR title: ${opts.title}`,
+      `MR URL: ${opts.webUrl}`,
+    );
+  } else {
+    lines.push(`Task: ${kindLabel}.`, `Branch: ${opts.branch || opts.title}`);
+  }
+  if (opts.hostDiff) {
+    lines.push(
+      `Base branch: ${opts.baseBranch || ''}`,
+      'Host-diff: the compare below is the whole scope.',
+      'Do not read the local working tree. Do not run git. Analyze only this host-diff.',
+      '--- host-diff ---',
+      opts.hostDiff,
+      '--- end host-diff ---',
+    );
+  }
+  lines.push(
+    'Answer in ask mode.',
+    'Write the full explanation as markdown.',
+    'Do not require or emit an H:N | M:N | S:N severity line.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Run the explain («Что делаем?») skill. Whole answer becomes the file body.
+ * No H/M/S line required.
+ */
+export async function runExplainSkill(opts: {
+  cwd: string;
+  skillPath: string;
+  model?: string;
+  kind: ReviewKind;
+  depth: ReviewDepth;
+  title: string;
+  webUrl?: string;
+  branch?: string;
+  baseBranch?: string;
+  hostDiff?: string;
+  printThinking?: boolean;
+  printTools?: boolean;
+}): Promise<ExplainAgentResult> {
+  const resolved = await resolveAgentBin();
+  if (!resolved) {
+    return { ok: false, message: 'Cursor Agent CLI not found (agent / cursor agent)' };
+  }
+  const prompt = buildExplainPrompt(opts);
+  const args = [
+    ...resolved.prefix,
+    '--print',
+    '--trust',
+    '--force',
+    '--mode',
+    'ask',
+    '--output-format',
+    'stream-json',
+    '--stream-partial-output',
+    '--workspace',
+    opts.cwd,
+  ];
+  if (opts.model && opts.model.trim()) {
+    args.push('--model', opts.model.trim());
+  }
+  args.push(prompt);
+  const print = terminalPrint(opts);
+
+  const writeEmitter = new vscode.EventEmitter<string>();
+  let closed = false;
+  let child: ChildProcess | undefined;
+  const started = Date.now();
+  const pty: vscode.Pseudoterminal = {
+    onDidWrite: writeEmitter.event,
+    open: () => {
+      writeEmitter.fire(
+        `$ ${resolved.bin} ${args.filter((a) => a !== prompt).join(' ')} «prompt»\r\n\r\n`,
+      );
+      writeEmitter.fire('агент запущен, шаги появятся ниже\r\n');
+    },
+    close: () => {
+      closed = true;
+      child?.kill();
+    },
+  };
+  const term = vscode.window.createTerminal({ name: `Syn3 ${EXPLAIN_TITLE}`, pty });
+  term.show(true);
+
+  return new Promise((resolve) => {
+    const stream: AgentStream = {
+      buf: '',
+      deltas: '',
+      plain: '',
+      resultText: '',
+      finalFlush: '',
+      sawDelta: false,
+      thinkingOpen: false,
+    };
+    let stderr = '';
+    let settled = false;
+    let lastEmit = Date.now();
+    const emit = (text: string) => {
+      lastEmit = Date.now();
+      if (!closed) {
+        writeEmitter.fire(text);
+      }
+    };
+    const timer = setInterval(() => {
+      if (closed || Date.now() - lastEmit < 20_000) {
+        return;
+      }
+      emit(`… ждём модель, ${Math.round((Date.now() - started) / 1000)} с\r\n`);
+    }, 5_000);
+    child = spawn(resolved.bin, args, {
+      cwd: opts.cwd,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      takeStreamLines(stream, chunk.toString('utf8'), emit, print);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      emit(text.replace(/\n/g, '\r\n'));
+    });
+    const report = (line: string, closeTerminal: boolean) => {
+      emit(`\r\n${line}\r\n`);
+      if (closeTerminal) {
+        setTimeout(() => term.dispose(), 1200);
+      }
+    };
+    const finish = (result: ExplainAgentResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(timer);
+      resolve(result);
+    };
+    child.on('error', (error) => {
+      emit(`\r\n${error.message}\r\n`);
+      finish({ ok: false, message: error.message });
+    });
+    child.on('close', (code) => {
+      if (stream.buf.trim()) {
+        emitStreamLine(stream, stream.buf, emit, print);
+      }
+      emit(`\r\n[exit ${code ?? '?'}]\r\n`);
+      const body = pickAnswer(stream).trim();
+      if (body) {
+        emit('вывод собран, публикую\r\n');
+        finish({ ok: true, body, report });
+        return;
+      }
+      const message =
+        closed
+          ? 'Explain agent cancelled'
+          : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
+      emit(`\r\n${message}\r\n`);
+      finish({ ok: false, message });
+    });
+  });
+}
+
+export async function writeExplainFile(opts: {
+  dirPath: string;
+  branch: string;
+  body: string;
+}): Promise<string> {
+  await fs.mkdir(opts.dirPath, { recursive: true });
+  const name = `explain-${Date.now()}.md`;
+  const fsPath = path.join(opts.dirPath, name);
+  const text = [EXPLAIN_TITLE, `Ветка: ${opts.branch}`, '', opts.body, ''].join('\n');
   await fs.writeFile(fsPath, text, 'utf8');
   return fsPath;
 }

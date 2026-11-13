@@ -37,6 +37,10 @@
   const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
   const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
   const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
+  const explainFilePane = /** @type {HTMLElement | null} */ (document.getElementById('explain-file'));
+  const explainFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-title'));
+  const explainFileBody = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-body'));
+  const explainFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-close'));
   const toolbarExplorer = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-explorer'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
@@ -73,13 +77,14 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   /**
-   * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка».
+   * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка» / «Что делаем? → другая ветка».
    * @type {{
-   *   mode: 'pull' | 'review',
+   *   mode: 'pull' | 'review' | 'explain',
    *   pageId: string,
+   *   parentMessageId?: string,
    *   currentBranch: string,
    *   branches: string[],
    *   nextPage: number | undefined,
@@ -218,6 +223,8 @@
   /** Dragging a Figma frame. Mouseleave must not close the card mid-pan. */
   let linkPreviewPanning = false;
   let clipboardRequestId = 0;
+  /** Hides «данные скилла скопированы» after a skill copy in review settings. */
+  let reviewSkillCopiedTimer = 0;
   /** @type {{ ctx: Record<string, unknown>, x: number, y: number, requestId: string } | null} */
   let pendingClipboardMenu = null;
   /** Last language-bearing clipboard stamp from the host. */
@@ -398,6 +405,9 @@
   });
   reviewFileClose?.addEventListener('click', () => {
     closeReviewFileView();
+  });
+  explainFileClose?.addEventListener('click', () => {
+    closeExplainFileView();
   });
   toolbarExplorer?.addEventListener('click', () => {
     cancelMenuClose();
@@ -918,9 +928,12 @@
    *       author?: string,
    *       timestamp: string,
    *       isReview: boolean,
+   *       isExplain?: boolean,
    *       isPill?: boolean,
    *       pillLabel?: string,
    *       status?: 'inProgress' | 'done',
+   *       color?: string,
+   *       branch?: string,
    *       hasFile?: boolean,
    *       filename?: string,
    *       contentMissing?: boolean
@@ -928,7 +941,8 @@
    *     repliesHasMore: boolean,
    *     repliesLoaded?: boolean,
    *     contentMissing?: boolean,
-   *     branch?: string
+   *     branch?: string,
+   *     isExplainRoot?: boolean
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
@@ -937,6 +951,8 @@
    *   pendingMr?: { title: string, draft?: boolean },
    *   pendingRoot?: { branch: string },
    *   pendingReviewId?: string,
+   *   pendingExplainRoot?: { branch: string },
+   *   pendingExplainId?: string,
    *   skeletonSeq?: number
    * }} ReviewState
    */
@@ -963,6 +979,16 @@
    * @type {{ pageId: string, branch: string } | null}
    */
   let localPendingRoot = null;
+  /**
+   * Explain pill drawn in a thread before the Discord reply is in the snapshot.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingExplain = null;
+  /**
+   * Root explain chip drawn before the host snapshot.
+   * @type {{ pageId: string, branch: string } | null}
+   */
+  let localPendingExplainRoot = null;
   /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
   const reviewSkeletonSeq = new Map();
   /** Last placeholder scrolled into view, so later paints do not jump. */
@@ -1059,12 +1085,24 @@
       pendingMr: incoming.pendingMr || kept.pendingMr,
       pendingRoot: incoming.pendingRoot || kept.pendingRoot,
       pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
+      pendingExplainRoot: incoming.pendingExplainRoot || kept.pendingExplainRoot,
+      pendingExplainId: incoming.pendingExplainId || kept.pendingExplainId,
     };
   }
 
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'reviewFile') {
+    if (message.type === 'reviewSkillCopied') {
+      const note = document.getElementById('review-skill-copied');
+      if (note) {
+        note.textContent = t('reviewSkillCopied');
+        note.hidden = false;
+        window.clearTimeout(reviewSkillCopiedTimer);
+        reviewSkillCopiedTimer = window.setTimeout(() => {
+          note.hidden = true;
+        }, 2200);
+      }
+    } else if (message.type === 'reviewFile') {
       onReviewFileResult(message);
     } else if (message.type === 'reviewState') {
       const incoming = keepLoadedReview(message.review || null);
@@ -1098,8 +1136,21 @@
             localPendingRoot = null;
           }
         }
+        if (localPendingExplain && localPendingExplain.pageId === reviewState.pageId) {
+          if (reviewState.pendingExplainId === localPendingExplain.messageId) {
+            localPendingExplain = null;
+          }
+        }
+        if (localPendingExplainRoot && localPendingExplainRoot.pageId === reviewState.pageId) {
+          if (reviewState.pendingExplainRoot) {
+            localPendingExplainRoot = null;
+          }
+        }
         if (reviewState.pendingReviewId) {
           reviewCollapsed.delete(reviewState.pendingReviewId);
+        }
+        if (reviewState.pendingExplainId) {
+          reviewCollapsed.delete(reviewState.pendingExplainId);
         }
         reviewAutoLoad.delete(reviewState.pageId);
         if (reviewState.error || reviewState.loadingEdge === 'initial') {
@@ -1257,6 +1308,7 @@
         channelId: typeof message.channelId === 'string' ? message.channelId : '',
         origin: typeof message.origin === 'string' ? message.origin : '',
         repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        projectRepoLocked: message.projectRepoLocked === true,
         suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
         hasGitlab: message.hasGitlab === true,
         hasGithub: message.hasGithub === true,
@@ -1264,6 +1316,8 @@
         githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
         gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
         reviewSkillPath: typeof message.reviewSkillPath === 'string' ? message.reviewSkillPath : '',
+        reviewFixSkillPath: typeof message.reviewFixSkillPath === 'string' ? message.reviewFixSkillPath : '',
+        explainSkillPath: typeof message.explainSkillPath === 'string' ? message.explainSkillPath : '',
         reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
         reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
         reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
@@ -2169,6 +2223,8 @@
       pullExpanded: false,
       reviewExpanded: false,
       reviewScope: '',
+      explainExpanded: false,
+      explainScope: '',
     };
     fillCreateMenu(toolbarCreateMenu);
     positionToolbarMenu(toolbarCreateMenu, toolbarCreateWrap);
@@ -2184,6 +2240,14 @@
     if (openMenuState.reviewExpanded && openMenuState.reviewScope) {
       mountReviewDepthMenu(
         openMenuState.reviewScope,
+        String(activePage()?.id || ''),
+        '',
+        true,
+      );
+    }
+    if (openMenuState.explainExpanded && openMenuState.explainScope) {
+      mountExplainDepthMenu(
+        openMenuState.explainScope,
         String(activePage()?.id || ''),
         '',
         true,
@@ -2213,6 +2277,7 @@
           other.dataset.menuAction = 'openBranchPanelPull';
           nest.append(other);
         },
+        { plain: true },
       );
       appendExpandableMenuBlock(
         target,
@@ -2226,6 +2291,21 @@
           other.dataset.menuAction = 'openBranchPanelReview';
           nest.append(other);
         },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        target,
+        t('createExplain'),
+        !!openMenuState?.explainExpanded,
+        'toggleExplain',
+        (nest) => {
+          appendExplainScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendExplainScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+          const other = menuAction(t('reviewScopeOtherBranch'));
+          other.dataset.menuAction = 'openBranchPanelExplain';
+          nest.append(other);
+        },
+        { plain: true },
       );
     } else {
       target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
@@ -2238,7 +2318,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, explain?: string, explainDepth?: string, explainRoot?: boolean, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -2259,6 +2339,15 @@
     }
     if (attrs.reviewRoot) {
       button.dataset.reviewRoot = '1';
+    }
+    if (attrs.explain) {
+      button.dataset.explain = attrs.explain;
+    }
+    if (attrs.explainDepth) {
+      button.dataset.explainDepth = attrs.explainDepth;
+    }
+    if (attrs.explainRoot) {
+      button.dataset.explainRoot = '1';
     }
     if (attrs.reviewEdit) {
       button.dataset.reviewEdit = attrs.reviewEdit;
@@ -2398,6 +2487,8 @@
       deleteExpanded: false,
       reviewExpanded: false,
       reviewScope: '',
+      explainExpanded: false,
+      explainScope: '',
       reviewStatusExpanded: false,
       neurofixExpanded: false,
       ctx,
@@ -2573,6 +2664,31 @@
   }
 
   /**
+   * Scope row inside «Что делаем?». Click opens the depth submenu.
+   * @param {HTMLElement} nest
+   * @param {'branch' | 'changes'} scope
+   * @param {string} label
+   */
+  function appendExplainScopeRow(nest, scope, label) {
+    const expanded = openMenuState?.explainScope === scope;
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleExplainScope';
+    row.dataset.explainScope = scope;
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    row.title = label;
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    nest.append(row);
+  }
+
+  /**
    * @param {string} messageId
    */
   function findReviewReply(messageId) {
@@ -2676,6 +2792,73 @@
     fly.style.left = left + 'px';
   }
 
+  /**
+   * Depth flyout for «Что делаем?».
+   * @param {'branch' | 'changes'} scope
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {boolean} [asRoot]
+   */
+  function mountExplainDepthMenu(scope, pageId, messageId, asRoot) {
+    clearReviewDepthMenu();
+    const hostMenu =
+      openMenuState?.kind === 'toolbar-create' ? toolbarCreateMenu : contextMenu;
+    if (!(hostMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = hostMenu.querySelector('[data-explain-scope="' + scope + '"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const closeKind = openMenuState?.kind === 'toolbar-create' ? 'toolbar-create' : 'context';
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      fly.append(
+        menuActionChoice(t(key), {
+          explain: scope,
+          explainDepth: depth,
+          explainRoot: !!asRoot,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose(closeKind);
+    });
+    fly.addEventListener('mouseleave', () => {
+      if (closeKind === 'toolbar-create') {
+        scheduleMenuClose('toolbar-create', () => closeToolbarCreateMenu());
+      } else {
+        scheduleMenuClose('context', () => closeContextMenu());
+      }
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, closeKind === 'toolbar-create' ? 'toolbar-create' : 'context');
+    });
+    document.body.append(fly);
+    reviewDepthMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = hostMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
   function rerenderContextMenu() {
     if (!openMenuState || openMenuState.kind !== 'context') {
       return;
@@ -2696,6 +2879,15 @@
         openMenuState.reviewScope,
         String(openMenuState.ctx.reviewPageId || ''),
         String(openMenuState.ctx.reviewMessageId || ''),
+      );
+    }
+    if (openMenuState.explainExpanded && openMenuState.explainScope && openMenuState.ctx) {
+      const asRoot = String(openMenuState.ctx.webviewSection || '') === 'reviewExplain';
+      mountExplainDepthMenu(
+        openMenuState.explainScope,
+        String(openMenuState.ctx.reviewPageId || ''),
+        String(openMenuState.ctx.reviewMessageId || ''),
+        asRoot,
       );
     }
     if (openMenuState.neurofixExpanded && openMenuState.ctx) {
@@ -2743,6 +2935,22 @@
           }
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        scroller,
+        t('explainMenu'),
+        !!openMenuState.explainExpanded,
+        'toggleExplain',
+        (nest) => {
+          const mrBranch = reviewBranchLabel(chip?.branch);
+          if (mrBranch && !reviewBranchMatchesCheckout(mrBranch)) {
+            appendExplainScopeRow(nest, 'branch', mrBranch);
+            return;
+          }
+          appendExplainScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendExplainScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
         },
         { plain: true },
       );
@@ -2801,7 +3009,9 @@
           if (
             reviewStays &&
             (button.dataset.menuAction === 'toggleReview' ||
-              button.dataset.menuAction === 'toggleReviewScope')
+              button.dataset.menuAction === 'toggleReviewScope' ||
+              button.dataset.menuAction === 'toggleExplain' ||
+              button.dataset.menuAction === 'toggleExplainScope')
           ) {
             return;
           }
@@ -2829,6 +3039,22 @@
           }
           appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
           appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        scroller,
+        t('explainMenu'),
+        !!openMenuState.explainExpanded,
+        'toggleExplain',
+        (nest) => {
+          const rootBranch = reviewBranchLabel(chip?.branch);
+          if (rootBranch && !reviewBranchMatchesCheckout(rootBranch)) {
+            appendExplainScopeRow(nest, 'branch', rootBranch);
+            return;
+          }
+          appendExplainScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendExplainScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
         },
         { plain: true },
       );
@@ -2889,13 +3115,38 @@
           }
           if (
             button.dataset.menuAction === 'toggleReview' ||
-            button.dataset.menuAction === 'toggleReviewScope'
+            button.dataset.menuAction === 'toggleReviewScope' ||
+            button.dataset.menuAction === 'toggleExplain' ||
+            button.dataset.menuAction === 'toggleExplainScope'
           ) {
             return;
           }
           button.disabled = true;
         });
       }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewExplain') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const chip =
+        (reviewState?.messages || []).find((item) => item.id === messageId) ||
+        findReviewReply(messageId);
+      scroller.append(
+        menuActionChoice(t('menuChangeColor'), {
+          reviewEdit: 'color',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
       updateMenuScrollbar(contextMenu);
       return;
     }
@@ -3387,12 +3638,43 @@
       return;
     }
 
+    if (button.dataset.explain) {
+      const pageId = button.dataset.pageId || activePage()?.id || '';
+      const messageId = button.dataset.messageId || '';
+      const kind = button.dataset.explain;
+      const depth = button.dataset.explainDepth || 'medium';
+      const asRoot = button.dataset.explainRoot === '1' || !messageId;
+      closeContextMenu();
+      closeToolbarCreateMenu();
+      if (asRoot) {
+        beginLocalExplainRootSkeleton(pageId, t('explainMenu'));
+        vscode.postMessage({
+          type: 'explainStartRoot',
+          pageId,
+          kind,
+          depth,
+        });
+      } else {
+        beginLocalExplainSkeleton(pageId, messageId);
+        vscode.postMessage({
+          type: 'explainStart',
+          pageId,
+          messageId,
+          kind,
+          depth,
+        });
+      }
+      return;
+    }
+
     if (button.dataset.menuAction === 'togglePull') {
       if (openMenuState?.kind === 'toolbar-create') {
         openMenuState.pullExpanded = !openMenuState.pullExpanded;
         if (openMenuState.pullExpanded) {
           openMenuState.reviewExpanded = false;
           openMenuState.reviewScope = '';
+          openMenuState.explainExpanded = false;
+          openMenuState.explainScope = '';
         }
         rerenderCreateMenu();
       }
@@ -3411,11 +3693,21 @@
       return;
     }
 
+    if (button.dataset.menuAction === 'openBranchPanelExplain') {
+      closeToolbarCreateMenu();
+      openHostBranchPanel('explain');
+      return;
+    }
+
     if (button.dataset.menuAction === 'toggleReview') {
       if (openMenuState?.kind === 'context') {
         openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
         if (!openMenuState.reviewExpanded) {
           openMenuState.reviewScope = '';
+        }
+        if (openMenuState.reviewExpanded) {
+          openMenuState.explainExpanded = false;
+          openMenuState.explainScope = '';
         }
         openMenuState.neurofixExpanded = false;
         rerenderContextMenu();
@@ -3426,6 +3718,35 @@
         }
         if (openMenuState.reviewExpanded) {
           openMenuState.pullExpanded = false;
+          openMenuState.explainExpanded = false;
+          openMenuState.explainScope = '';
+        }
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleExplain') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.explainExpanded = !openMenuState.explainExpanded;
+        if (!openMenuState.explainExpanded) {
+          openMenuState.explainScope = '';
+        }
+        if (openMenuState.explainExpanded) {
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+        }
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        openMenuState.explainExpanded = !openMenuState.explainExpanded;
+        if (!openMenuState.explainExpanded) {
+          openMenuState.explainScope = '';
+        }
+        if (openMenuState.explainExpanded) {
+          openMenuState.pullExpanded = false;
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
         }
         rerenderCreateMenu();
       }
@@ -3483,12 +3804,36 @@
         const scope = button.dataset.reviewScope || '';
         openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
         openMenuState.reviewExpanded = true;
+        openMenuState.explainExpanded = false;
+        openMenuState.explainScope = '';
         openMenuState.neurofixExpanded = false;
         rerenderContextMenu();
       } else if (openMenuState?.kind === 'toolbar-create') {
         const scope = button.dataset.reviewScope || '';
         openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
         openMenuState.reviewExpanded = true;
+        openMenuState.explainExpanded = false;
+        openMenuState.explainScope = '';
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleExplainScope') {
+      if (openMenuState?.kind === 'context') {
+        const scope = button.dataset.explainScope || '';
+        openMenuState.explainScope = openMenuState.explainScope === scope ? '' : scope;
+        openMenuState.explainExpanded = true;
+        openMenuState.reviewExpanded = false;
+        openMenuState.reviewScope = '';
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        const scope = button.dataset.explainScope || '';
+        openMenuState.explainScope = openMenuState.explainScope === scope ? '' : scope;
+        openMenuState.explainExpanded = true;
+        openMenuState.reviewExpanded = false;
+        openMenuState.reviewScope = '';
         rerenderCreateMenu();
       }
       return;
@@ -3510,7 +3855,8 @@
       const pageId = button.dataset.pageId || '';
       const messageId = button.dataset.messageId || '';
       const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
-      const chip = parent;
+      const replyChip = parent ? undefined : findReviewReply(messageId);
+      const chip = parent || replyChip;
       if (button.dataset.reviewEdit === 'lock') {
         if (parent) {
           vscode.postMessage({
@@ -3529,8 +3875,8 @@
         openReviewRenamePanel({
           pageId,
           messageId,
-          title: chip?.title || '',
-          isPr: typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl),
+          title: parent?.title || '',
+          isPr: typeof parent?.webUrl === 'string' && /\/pull\/\d+/.test(parent.webUrl),
         });
       } else if (button.dataset.reviewEdit === 'color') {
         openColorsPanel({
@@ -4310,10 +4656,16 @@
       return false;
     }
     const pageId = activePage()?.id || '';
-    if ((msg.isMr || msg.isReviewRoot) && activePendingReviewId(pageId) === msg.id) {
+    if (
+      (msg.isMr || msg.isReviewRoot) &&
+      (activePendingReviewId(pageId) === msg.id || activePendingExplainId(pageId) === msg.id)
+    ) {
       return true;
     }
     if (msg.isMr || msg.isReviewRoot) {
+      return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    }
+    if (msg.isExplainRoot) {
       return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
     }
     return !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
@@ -5315,12 +5667,16 @@
    *   id?: string,
    *   pageId?: string,
    *   currentHex: string,
+   *   rgb: string,
+   *   alpha: number,
    *   allowNone: boolean,
    *   noneDisabled?: boolean,
    *   locked?: boolean,
    * } | null}
    */
   let openColorPanel = null;
+  /** Alpha percent (0–100) to bake into the system color picker result. */
+  let pendingPickerAlpha = 100;
 
   function pageLinks() {
     const pageId = activePage()?.id;
@@ -5418,6 +5774,12 @@
         event.preventDefault();
         event.stopPropagation();
         closeReviewFileView();
+        return;
+      }
+      if (explainFileView && event.key === 'Escape' && !openColorPanel) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeExplainFileView();
         return;
       }
       if (openColorPanel && event.key === 'Escape') {
@@ -5579,11 +5941,15 @@
    */
   function openColorsPanel(opts) {
     const currentHex = (opts.currentHex || '').toLowerCase();
+    const stored = currentHex.startsWith('#') ? currentHex : '';
+    const parsed = splitHexAlpha(stored);
     openColorPanel = {
       kind: opts.kind,
       id: opts.id,
       pageId: opts.pageId,
-      currentHex: currentHex.startsWith('#') ? currentHex : currentHex ? currentHex : '',
+      currentHex: parsed ? hexWithAlpha(parsed.rgb, parsed.alpha) : stored || (currentHex ? currentHex : ''),
+      rgb: parsed?.rgb || '',
+      alpha: parsed?.alpha ?? 100,
       allowNone: opts.allowNone !== false,
       noneDisabled: !!opts.noneDisabled,
       locked: !!opts.locked,
@@ -5591,16 +5957,24 @@
     mountColorPanel();
   }
 
-  /** @param {string | null | undefined} value */
-  function applyColorPanelChoice(value) {
+  /**
+   * @param {string | null | undefined} value
+   * @param {boolean} [closePanel]
+   */
+  function applyColorPanelChoice(value, closePanel = true) {
     const target = openColorPanel;
     if (!target || target.locked) {
       return;
     }
+    const finish = () => {
+      if (closePanel) {
+        closeColorPanel();
+      }
+    };
     if (target.kind === 'group-draft' && openGroupPanel?.mode === 'create') {
       openGroupPanel.colorTouched = true;
       openGroupPanel.color = value;
-      closeColorPanel();
+      finish();
       mountGroupPanel();
       return;
     }
@@ -5608,16 +5982,16 @@
       if (value) {
         applyTextColor(value);
       }
-      closeColorPanel();
+      finish();
       return;
     }
     if (target.kind === 'link' && target.id) {
       if (!value) {
-        closeColorPanel();
+        finish();
         return;
       }
       vscode.postMessage({ type: 'updateLink', linkId: target.id, color: value });
-      closeColorPanel();
+      finish();
       return;
     }
     if (target.kind === 'marker' && target.id) {
@@ -5626,7 +6000,7 @@
           ? { type: 'setColor', markerId: target.id, color: value }
           : { type: 'setColor', markerId: target.id, clear: true },
       );
-      closeColorPanel();
+      finish();
       return;
     }
     if (target.kind === 'note' && target.id) {
@@ -5635,7 +6009,7 @@
           ? { type: 'setColor', noteId: target.id, color: value }
           : { type: 'setColor', noteId: target.id, clear: true },
       );
-      closeColorPanel();
+      finish();
       return;
     }
     if (target.kind === 'review' && target.id && target.pageId && value) {
@@ -5645,10 +6019,10 @@
         messageId: target.id,
         color: value,
       });
-      closeColorPanel();
+      finish();
       return;
     }
-    closeColorPanel();
+    finish();
   }
 
   function openSystemColorPickerForPanel() {
@@ -5661,7 +6035,8 @@
       colorInput.style.left = rect.left + 'px';
       colorInput.style.top = rect.bottom + 'px';
     }
-    colorInput.value = target.currentHex || '#8b8d98';
+    pendingPickerAlpha = target.alpha;
+    colorInput.value = /^#[0-9a-f]{6}$/.test(target.rgb) ? target.rgb : '#8b8d98';
     if (target.kind === 'text') {
       colorTarget = { kind: 'text' };
     } else if (target.kind === 'group-draft') {
@@ -5687,6 +6062,89 @@
       }
     }
     colorInput.click();
+  }
+
+  /**
+   * @param {string | null | undefined} value
+   * @returns {{ rgb: string, alpha: number } | null}
+   */
+  function splitHexAlpha(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    const match = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(raw);
+    if (!match) {
+      return null;
+    }
+    let digits = match[1];
+    if (digits.length <= 4) {
+      digits = [...digits].map((ch) => ch + ch).join('');
+    }
+    const rgb = '#' + digits.slice(0, 6);
+    const alpha =
+      digits.length === 8 ? Math.round((parseInt(digits.slice(6), 16) / 255) * 100) : 100;
+    return { rgb, alpha };
+  }
+
+  /**
+   * Opaque `#rrggbb`, or `#rrggbbaa` when alpha is below 100.
+   * @param {string} rgb
+   * @param {number} alphaPercent
+   */
+  function hexWithAlpha(rgb, alphaPercent) {
+    const parsed = splitHexAlpha(rgb);
+    const base = parsed ? parsed.rgb : '';
+    if (!base) {
+      return String(rgb || '');
+    }
+    const alpha = Math.max(0, Math.min(100, Math.round(Number(alphaPercent) || 0)));
+    if (alpha >= 100) {
+      return base;
+    }
+    const byte = Math.round((alpha / 100) * 255);
+    return base + byte.toString(16).padStart(2, '0');
+  }
+
+  /**
+   * @param {string} hex
+   * @param {number} alphaPercent
+   */
+  function pickerHex(hex, alphaPercent) {
+    const parsed = splitHexAlpha(hex);
+    return hexWithAlpha(parsed ? parsed.rgb : hex, alphaPercent);
+  }
+
+  /** @param {any[]} columns */
+  function paletteBands(columns) {
+    /** @type {Map<number, any[]>} */
+    const bands = new Map();
+    for (const column of columns) {
+      const row = column && Number.isInteger(column.row) ? column.row : 0;
+      const list = bands.get(row);
+      if (list) {
+        list.push(column);
+      } else {
+        bands.set(row, [column]);
+      }
+    }
+    return [...bands.keys()].sort((a, b) => a - b).map((row) => bands.get(row) || []);
+  }
+
+  /**
+   * @param {HTMLElement} panel
+   * @param {{ rgb: string, alpha: number }} target
+   */
+  function paintColorAlpha(panel, target) {
+    const color = target.rgb || '#8b8d98';
+    panel.querySelectorAll('.link-color-swatch').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const hex = node.dataset.hex || color;
+      node.style.setProperty('--swatch', hexWithAlpha(hex, target.alpha));
+    });
+    const range = panel.querySelector('.color-panel-alpha-range');
+    if (range instanceof HTMLElement) {
+      range.style.setProperty('--alpha-color', color);
+    }
   }
 
   function mountColorPanel() {
@@ -5725,34 +6183,76 @@
       panel.append(noneBtn);
     }
 
-    const sets = el('div', 'link-color-sets');
+    const palettes = el('div', 'color-panel-palettes');
     const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
-    const current = target.currentHex;
-    for (const column of columns) {
-      const set = el('div', 'link-color-set');
-      const name = el('span', 'link-color-set-name');
-      name.textContent = column.label || '';
-      set.append(name);
-      const tones = Array.isArray(column.tones) ? column.tones : [];
-      for (const tone of tones) {
-        const hex = String(tone).toLowerCase();
-        const swatch = el('button', 'link-color-swatch');
-        swatch.type = 'button';
-        swatch.disabled = !!target.locked;
-        swatch.style.background = hex;
-        swatch.dataset.hex = hex;
-        swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
-        swatch.setAttribute('aria-pressed', hex === current ? 'true' : 'false');
-        swatch.addEventListener('click', () => {
-          if (!target.locked) {
-            applyColorPanelChoice(hex);
-          }
-        });
-        set.append(swatch);
+    for (const band of paletteBands(columns)) {
+      const inline = band.some((column) => column && column.row === 1);
+      const sets = el('div', 'link-color-sets' + (inline ? ' is-inline' : ''));
+      for (const column of band) {
+        const set = el('div', 'link-color-set' + (inline ? ' is-inline' : ''));
+        const name = el('span', 'link-color-set-name');
+        name.textContent = column.label || '';
+        set.append(name);
+        const tonesWrap = el('div', 'link-color-tones');
+        const tones = Array.isArray(column.tones) ? column.tones : [];
+        for (const tone of tones) {
+          const hex = String(tone).toLowerCase();
+          const swatch = el('button', 'link-color-swatch');
+          swatch.type = 'button';
+          swatch.disabled = !!target.locked;
+          swatch.dataset.hex = hex;
+          swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
+          swatch.setAttribute('aria-pressed', hex === target.rgb ? 'true' : 'false');
+          swatch.addEventListener('click', () => {
+            if (target.locked) {
+              return;
+            }
+            target.rgb = hex;
+            const next = hexWithAlpha(hex, target.alpha);
+            target.currentHex = next;
+            applyColorPanelChoice(next);
+          });
+          tonesWrap.append(swatch);
+        }
+        set.append(tonesWrap);
+        sets.append(set);
       }
-      sets.append(set);
+      palettes.append(sets);
     }
-    panel.append(sets);
+    panel.append(palettes);
+
+    const alpha = el('label', 'color-panel-alpha');
+    const alphaHead = el('span', 'color-panel-alpha-head');
+    alphaHead.append(el('span', 'color-panel-alpha-label', t('colorOpacity')));
+    const alphaValue = el('span', 'color-panel-alpha-value', target.alpha + '%');
+    alphaHead.append(alphaValue);
+    const alphaInput = /** @type {HTMLInputElement} */ (el('input', 'color-panel-alpha-range'));
+    alphaInput.type = 'range';
+    alphaInput.min = '0';
+    alphaInput.max = '100';
+    alphaInput.step = '1';
+    alphaInput.value = String(target.alpha);
+    alphaInput.disabled = !!target.locked;
+    alphaInput.setAttribute('aria-label', t('colorOpacity'));
+    alphaInput.addEventListener('input', () => {
+      target.alpha = Number(alphaInput.value);
+      alphaValue.textContent = target.alpha + '%';
+      paintColorAlpha(panel, target);
+    });
+    alphaInput.addEventListener('change', () => {
+      if (target.locked || !target.rgb) {
+        return;
+      }
+      const next = hexWithAlpha(target.rgb, target.alpha);
+      if (next === target.currentHex) {
+        return;
+      }
+      target.currentHex = next;
+      applyColorPanelChoice(next, false);
+    });
+    alpha.append(alphaHead, alphaInput);
+    panel.append(alpha);
+    paintColorAlpha(panel, target);
 
     const custom = el('button', 'color-panel-custom');
     custom.type = 'button';
@@ -6060,7 +6560,7 @@
     well.type = 'button';
     well.disabled = locked && state.mode === 'edit';
     if (color) {
-      well.style.background = color;
+      well.style.setProperty('--swatch', color);
     }
     well.setAttribute('aria-label', t('changeColor'));
     well.addEventListener('click', () => {
@@ -6642,6 +7142,33 @@
     return null;
   }
 
+  /** @param {string} pageId */
+  function activePendingExplainId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingExplainId) {
+      return reviewState.pendingExplainId;
+    }
+    if (localPendingExplain && localPendingExplain.pageId === pageId) {
+      return localPendingExplain.messageId;
+    }
+    return '';
+  }
+
+  /** @param {string} pageId */
+  function activePendingExplainRoot(pageId) {
+    if (
+      reviewState &&
+      reviewState.pageId === pageId &&
+      reviewState.pendingExplainRoot &&
+      reviewState.pendingExplainRoot.branch
+    ) {
+      return reviewState.pendingExplainRoot;
+    }
+    if (localPendingExplainRoot && localPendingExplainRoot.pageId === pageId) {
+      return localPendingExplainRoot;
+    }
+    return null;
+  }
+
   /**
    * @param {string} pageId
    * @param {string} title
@@ -6688,6 +7215,35 @@
       pageId,
       branch: branch || '…',
     };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function beginLocalExplainSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingExplain = { pageId, messageId };
+    reviewCollapsed.delete(messageId);
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} branch
+   */
+  function beginLocalExplainRootSkeleton(pageId, branch) {
+    if (!pageId) {
+      return;
+    }
+    localPendingExplainRoot = { pageId, branch: branch || '…' };
     if (activePage()?.id === pageId) {
       paintReviewPage();
     }
@@ -6768,20 +7324,34 @@
     return row;
   }
 
-  /** @param {string} color */
-  function renderReviewReplySkeleton(color) {
+  /**
+   * @param {string} color
+   * @param {{ withStamp?: boolean, branch?: string }} [opts]
+   */
+  function renderReviewReplySkeleton(color, opts) {
+    const withStamp = !!opts?.withStamp;
     const row = el('div', 'review-reply-node has-gap is-skel');
     row.dataset.reviewSkel = 'review';
     row.style.setProperty('--link-color', color || '#8e4ec6');
     row.setAttribute('aria-busy', 'true');
     row.append(
-      linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), ''),
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: withStamp, contentHalf: 17 }),
+        '',
+      ),
     );
+    const body = el('div', 'review-body');
+    if (withStamp) {
+      const stamp = renderReviewStamp('', stampBranchLabel(opts?.branch, reviewState?.checkout));
+      const dateBar = reviewSkeletonBar('72px', 0);
+      dateBar.classList.add('review-stamp-date');
+      stamp.prepend(dateBar);
+      body.append(stamp);
+    }
     const chip = el('div', 'review-chip is-review-pill is-skel');
     chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
     const chipWrap = el('div', 'review-chip-wrap');
     chipWrap.append(chip);
-    const body = el('div', 'review-body');
     body.append(chipWrap);
     row.append(body);
     return row;
@@ -6865,11 +7435,21 @@
       return;
     }
     const rootMsg = (reviewState?.messages || []).find((item) => item.id === messageId);
-    if (rootMsg && (rootMsg.isReviewRoot || rootMsg.hasFile)) {
+    if (rootMsg && (rootMsg.isReviewRoot || rootMsg.isExplainRoot || rootMsg.hasFile)) {
       return;
     }
     reviewFileView = null;
     mountReviewFile();
+    if (explainFileView && explainFileView.messageId === messageId) {
+      if (rootMsg && (rootMsg.isExplainRoot || rootMsg.hasFile)) {
+        return;
+      }
+      if (findReviewReply(messageId)?.isExplain) {
+        return;
+      }
+      explainFileView = null;
+      mountExplainFile();
+    }
   }
 
   function paintReviewPage() {
@@ -6886,9 +7466,14 @@
     if (pendingReviewId) {
       reviewCollapsed.delete(pendingReviewId);
     }
+    const pendingExplainId = activePendingExplainId(pageId);
+    if (pendingExplainId) {
+      reviewCollapsed.delete(pendingExplainId);
+    }
     const pendingMr = activePendingMr(pageId);
     const pendingRoot = activePendingRoot(pageId);
-    if (!pendingMr && !pendingRoot && !pendingReviewId) {
+    const pendingExplainRoot = activePendingExplainRoot(pageId);
+    if (!pendingMr && !pendingRoot && !pendingReviewId && !pendingExplainRoot && !pendingExplainId) {
       reviewSkelShown = '';
     }
     setCollapseButton();
@@ -6912,7 +7497,7 @@
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page review-page';
     clearDropHighlights();
-    if (edge || pendingMr || pendingRoot || pendingReviewId) {
+    if (edge || pendingMr || pendingRoot || pendingReviewId || pendingExplainRoot || pendingExplainId) {
       root.setAttribute('aria-busy', 'true');
     } else {
       root.removeAttribute('aria-busy');
@@ -6949,7 +7534,7 @@
       return;
     }
     if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
-      if (!pendingMr && !pendingRoot) {
+      if (!pendingMr && !pendingRoot && !pendingExplainRoot) {
         root.append(el('div', 'empty', t('reviewEmpty')));
         return;
       }
@@ -6960,6 +7545,10 @@
         noteReviewSkeletonScroll('mr');
       } else if (pendingRoot) {
         tree.append(renderReviewRootSkeleton(pendingRoot, false));
+        root.append(tree);
+        noteReviewSkeletonScroll('root');
+      } else if (pendingExplainRoot) {
+        tree.append(renderReviewRootSkeleton(pendingExplainRoot, false));
         root.append(tree);
         noteReviewSkeletonScroll('root');
       }
@@ -7001,8 +7590,9 @@
     messages.forEach((msg, index) => {
       const next = messages[index + 1];
       const nextColor = next
-        ? next.color || (next.isMr || next.isReviewRoot ? '#8e4ec6' : '#6e6e6e')
-        : pendingMr || pendingRoot
+        ? next.color ||
+          (next.isMr || next.isReviewRoot || next.isExplainRoot ? '#8e4ec6' : '#6e6e6e')
+        : pendingMr || pendingRoot || pendingExplainRoot
           ? '#8e4ec6'
           : '';
       tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
@@ -7011,6 +7601,8 @@
       tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
     } else if (pendingRoot) {
       tree.append(renderReviewRootSkeleton(pendingRoot, messages.length > 0));
+    } else if (pendingExplainRoot) {
+      tree.append(renderReviewRootSkeleton(pendingExplainRoot, messages.length > 0));
     }
     root.append(tree);
     if (edge === 'newer') {
@@ -7040,8 +7632,14 @@
       if (skel instanceof HTMLElement) {
         skel.scrollIntoView({ block: 'nearest' });
       }
-    } else if (pendingReviewId || pendingMr || pendingRoot) {
-      noteReviewSkeletonScroll(pendingReviewId ? 'review' : pendingMr ? 'mr' : 'root');
+    } else if (pendingReviewId || pendingExplainId || pendingMr || pendingRoot || pendingExplainRoot) {
+      noteReviewSkeletonScroll(
+        pendingReviewId || pendingExplainId
+          ? 'review'
+          : pendingMr
+            ? 'mr'
+            : 'root',
+      );
     }
     syncReviewFileMark();
   }
@@ -7070,6 +7668,7 @@
       [...reviewTitleExpanded].sort().join(','),
       [...reviewPlainExpanded].sort().join(','),
       activePendingReviewId(pageId),
+      activePendingExplainId(pageId),
       (() => {
         const pending = activePendingMr(pageId);
         return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
@@ -7078,11 +7677,16 @@
         const pending = activePendingRoot(pageId);
         return pending ? 'r:' + (pending.branch || '') : '';
       })(),
+      (() => {
+        const pending = activePendingExplainRoot(pageId);
+        return pending ? 'e:' + (pending.branch || '') : '';
+      })(),
     ];
     for (const msg of state.messages || []) {
       chunks.push(
         msg.id,
         msg.isReviewRoot ? 'R' : '',
+        msg.isExplainRoot ? 'W' : '',
         msg.color || '',
         msg.title || '',
         msg.pillLabel || '',
@@ -7175,7 +7779,11 @@
   }
 
   function syncReviewFileMark() {
-    const openId = reviewFileView && activePage()?.kind === 'review' ? reviewFileView.messageId : '';
+    const reviewOpen =
+      reviewFileView && activePage()?.kind === 'review' ? reviewFileView.messageId : '';
+    const explainOpen =
+      explainFileView && activePage()?.kind === 'review' ? explainFileView.messageId : '';
+    const openId = reviewOpen || explainOpen;
     root.querySelectorAll('[data-review-reply-id]').forEach((node) => {
       if (!(node instanceof HTMLElement)) {
         return;
@@ -7183,6 +7791,12 @@
       node.classList.toggle('is-file-open', !!openId && node.dataset.reviewReplyId === openId);
     });
     root.querySelectorAll('.review-node.is-review-root[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewId === openId);
+    });
+    root.querySelectorAll('.review-node.is-explain-root[data-review-id]').forEach((node) => {
       if (!(node instanceof HTMLElement)) {
         return;
       }
@@ -7213,22 +7827,32 @@
    * @param {string} nextColor
    */
   function renderReviewNode(msg, pageId, leadingGap, nextColor) {
-    const color = msg.color || (msg.isMr || msg.isReviewRoot ? '#8e4ec6' : '#6e6e6e');
+    const color =
+      msg.color || (msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? '#8e4ec6' : '#6e6e6e');
     const showReviewSkeleton =
-      !!(msg.isMr || msg.isReviewRoot) && activePendingReviewId(pageId) === msg.id;
+      !!(msg.isMr || msg.isReviewRoot) &&
+      (activePendingReviewId(pageId) === msg.id || activePendingExplainId(pageId) === msg.id);
     const canFold = reviewMessageCanFold(msg);
     const mrCanFold = !!msg.isMr && canFold;
     const rootCanFold = !!msg.isReviewRoot && canFold;
-    const plainCanFold = !msg.isMr && !msg.isReviewRoot && canFold;
+    const explainCanFold = !!msg.isExplainRoot && canFold;
+    const plainCanFold = !msg.isMr && !msg.isReviewRoot && !msg.isExplainRoot && canFold;
     const collapsed = canFold && reviewCollapsed.has(msg.id);
-    const plainOpen = !msg.isMr && !msg.isReviewRoot && reviewPlainExpanded.has(msg.id);
+    const plainOpen =
+      !msg.isMr && !msg.isReviewRoot && !msg.isExplainRoot && reviewPlainExpanded.has(msg.id);
     const stampDate = formatReviewStamp(msg.timestamp);
     const stampBranch = stampBranchLabel(msg.branch, reviewState?.checkout);
     const hasStamp = !!(stampDate || stampBranch);
     const row = el(
       'div',
       'review-node' +
-        (msg.isMr ? ' is-mr' : msg.isReviewRoot ? ' is-review-root' : ' is-plain') +
+        (msg.isMr
+          ? ' is-mr'
+          : msg.isReviewRoot
+            ? ' is-review-root'
+            : msg.isExplainRoot
+              ? ' is-explain-root'
+              : ' is-plain') +
         (leadingGap ? ' has-gap' : '') +
         (collapsed ? ' is-collapsed' : '') +
         (plainOpen ? ' is-plain-open' : ''),
@@ -7240,7 +7864,7 @@
         reviewElbowMid({
           leadingGap,
           hasStamp,
-          contentHalf: msg.isMr || msg.isReviewRoot ? 20 : 12,
+          contentHalf: msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? 20 : 12,
         }),
         nextColor,
       ),
@@ -7254,6 +7878,12 @@
           event.preventDefault();
           event.stopPropagation();
           openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
+        });
+      } else if (msg.isExplainRoot) {
+        stamp.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openExplainContextMenu(event.clientX, event.clientY, pageId, msg.id);
         });
       }
       body.append(stamp);
@@ -7397,6 +8027,41 @@
       if (canFold) {
         body.append(renderReviewThread(msg, pageId, true, showReviewSkeleton));
       }
+    } else if (msg.isExplainRoot) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-review-pill is-explain-pill');
+      chip.type = 'button';
+      chip.append(el('span', 'review-chip-label', msg.pillLabel || t('explainFileTitle')));
+      if (explainCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainFileView(pageId, msg);
+      });
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(chip);
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap);
+      body.append(head);
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, true, false));
+      }
     } else {
       const raw = reviewDisplayText(msg.content);
       const missing = msg.contentMissing === true || !raw;
@@ -7468,6 +8133,8 @@
     const clip = el('div', 'review-children-clip');
     const slide = el('div', 'review-children-slide');
     const color = msg.color || '#8e4ec6';
+    const pendingExplain = activePendingExplainId(pageId) === msg.id;
+    const showSkeleton = !!withReviewSkeleton || pendingExplain;
     if (msg.repliesHasMore) {
       const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
       more.type = 'button';
@@ -7484,13 +8151,18 @@
     const replies = msg.replies || [];
     for (let index = 0; index < replies.length; index += 1) {
       const next = replies[index + 1];
-      const hasNext = !!next || !!withReviewSkeleton;
+      const hasNext = !!next || showSkeleton;
       slide.append(
         renderReviewReply(replies[index], color, allowPills, true, hasNext ? color : '', pageId),
       );
     }
-    if (withReviewSkeleton) {
-      slide.append(renderReviewReplySkeleton(color));
+    if (showSkeleton) {
+      slide.append(
+        renderReviewReplySkeleton(color, {
+          withStamp: pendingExplain,
+          branch: msg.branch || reviewState?.checkout || '',
+        }),
+      );
     }
     clip.append(slide);
     children.append(clip);
@@ -7506,28 +8178,57 @@
    * @param {string} [pageId]
    */
   function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId) {
-    const stamp = formatReviewStamp(reply.timestamp);
+    const isExplain = !!reply.isExplain;
+    const stampDate = formatReviewStamp(reply.timestamp);
+    const stampBranch = isExplain
+      ? stampBranchLabel(reply.branch, reviewState?.checkout)
+      : '';
+    const hasStamp = !!(stampDate || stampBranch);
     const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
-    const row = el('div', 'review-reply-node' + (leadingGap ? ' has-gap' : ''));
+    const replyColor = isExplain ? reply.color || '#8e4ec6' : color;
+    const row = el(
+      'div',
+      'review-reply-node' + (isExplain ? ' is-explain' : '') + (leadingGap ? ' has-gap' : ''),
+    );
     row.dataset.reviewReplyId = reply.id;
-    row.style.setProperty('--link-color', color);
+    row.style.setProperty('--link-color', replyColor);
     row.append(
       linkElbow(
         reviewElbowMid({
           leadingGap,
-          hasStamp: !!stamp,
-          contentHalf: isPill ? 17 : 12,
+          hasStamp,
+          contentHalf: isPill || isExplain ? 17 : 12,
         }),
         nextColor,
       ),
     );
     const body = el('div', 'review-body');
-    if (stamp) {
-      body.append(el('div', 'review-stamp', stamp));
+    if (hasStamp) {
+      body.append(
+        stampBranch
+          ? renderReviewStamp(stampDate, stampBranch)
+          : el('div', 'review-stamp', stampDate),
+      );
     }
     const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
     const replyMissing = reply.contentMissing === true || !replyText;
-    if (isPill) {
+    if (isExplain && isPill) {
+      const wrap = el('div', 'review-chip-wrap');
+      const chip = el('div', 'review-chip is-review-pill is-explain-pill');
+      chip.append(el('span', 'review-chip-label', reply.pillLabel || t('explainFileTitle')));
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      chip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainFileView(pageId || '', reply);
+      });
+      wrap.append(chip);
+      body.append(wrap);
+    } else if (isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill');
       chip.append(reviewStatusIcon(reply.status));
@@ -7584,6 +8285,7 @@
     if (!pageId) {
       return;
     }
+    closeExplainFileView();
     if (reviewFileView && reviewFileView.pageId === pageId && reviewFileView.messageId === reply.id) {
       closeReviewFileView();
       return;
@@ -7616,7 +8318,97 @@
     }
   }
 
-  /** @param {{ messageId?: string, ok?: boolean, text?: string, filename?: string, message?: string }} message */
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   title: string,
+   *   filename: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   text: string,
+   *   html: string,
+   *   error: string
+   * } | null}
+   */
+  let explainFileView = null;
+
+  /**
+   * @param {string} pageId
+   * @param {{ id: string, pillLabel?: string, filename?: string, hasFile?: boolean }} chip
+   */
+  function openExplainFileView(pageId, chip) {
+    if (!pageId) {
+      return;
+    }
+    closeReviewFileView();
+    if (explainFileView && explainFileView.pageId === pageId && explainFileView.messageId === chip.id) {
+      closeExplainFileView();
+      return;
+    }
+    const cached = reviewFileCache.get(chip.id);
+    explainFileView = {
+      pageId,
+      messageId: chip.id,
+      title: chip.pillLabel || t('explainFileTitle'),
+      filename: (cached && cached.filename) || chip.filename || '',
+      status: cached ? 'ready' : chip.hasFile === false ? 'error' : 'loading',
+      text: cached ? cached.text : '',
+      html: cached && cached.html ? cached.html : '',
+      error: chip.hasFile === false ? t('reviewFileMissing') : '',
+    };
+    mountExplainFile();
+    if (!cached && chip.hasFile !== false) {
+      vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId: chip.id });
+    }
+  }
+
+  function closeExplainFileView() {
+    if (!explainFileView) {
+      mountExplainFile();
+      return;
+    }
+    explainFileView = null;
+    mountExplainFile();
+  }
+
+  function mountExplainFile() {
+    if (!explainFilePane || !explainFileBody || !explainFileTitle) {
+      return;
+    }
+    const view = explainFileView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      explainFilePane.hidden = true;
+      syncReviewFileMark();
+      return;
+    }
+    explainFilePane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      explainFilePane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    explainFileTitle.textContent = view.title || t('explainFileTitle');
+    explainFileTitle.title = view.filename || '';
+    if (explainFileClose) {
+      explainFileClose.title = t('reviewFileClose');
+      explainFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    explainFileBody.replaceChildren();
+    if (view.status === 'loading') {
+      explainFileBody.append(reviewFileSkeleton());
+    } else if (view.status === 'error') {
+      explainFileBody.append(
+        el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')),
+      );
+    } else {
+      const md = el('div', 'explain-md');
+      md.innerHTML = view.html || '';
+      explainFileBody.append(md);
+    }
+    syncReviewFileMark();
+  }
+
+  /** @param {{ messageId?: string, ok?: boolean, text?: string, html?: string, filename?: string, message?: string }} message */
   function onReviewFileResult(message) {
     if (message.ok && typeof message.text === 'string' && message.messageId) {
       const filename =
@@ -7624,8 +8416,29 @@
         (reviewFileView && reviewFileView.messageId === message.messageId
           ? reviewFileView.filename
           : '') ||
+        (explainFileView && explainFileView.messageId === message.messageId
+          ? explainFileView.filename
+          : '') ||
         '';
-      reviewFileCache.set(message.messageId, { text: message.text, filename });
+      reviewFileCache.set(message.messageId, {
+        text: message.text,
+        filename,
+        html: typeof message.html === 'string' ? message.html : '',
+      });
+    }
+    if (explainFileView && explainFileView.messageId === message.messageId) {
+      if (message.ok && typeof message.text === 'string') {
+        explainFileView.status = 'ready';
+        explainFileView.text = message.text;
+        explainFileView.html =
+          typeof message.html === 'string' ? message.html : explainFileView.html;
+        explainFileView.filename = message.filename || explainFileView.filename;
+        explainFileView.error = '';
+      } else {
+        explainFileView.status = 'error';
+        explainFileView.error = message.message || t('reviewFileDownloadFail');
+      }
+      mountExplainFile();
     }
     if (neuroFixListPanel && neuroFixListPanel.messageId === message.messageId) {
       if (message.ok && typeof message.text === 'string') {
@@ -7733,6 +8546,14 @@
   function openReviewRootContextMenu(x, y, pageId, messageId) {
     openContextMenu(
       { webviewSection: 'reviewRoot', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  function openExplainContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewExplain', reviewPageId: pageId, reviewMessageId: messageId },
       x,
       y,
     );
@@ -8077,8 +8898,11 @@
     return 'br-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
-  /** @param {'pull' | 'review'} mode */
-  function openHostBranchPanel(mode) {
+  /**
+   * @param {'pull' | 'review' | 'explain'} mode
+   * @param {{ parentMessageId?: string }} [opts]
+   */
+  function openHostBranchPanel(mode, opts) {
     const pageId = String(activePage()?.id || '');
     if (!pageId) {
       return;
@@ -8088,6 +8912,7 @@
     branchPicker = {
       mode,
       pageId,
+      parentMessageId: opts?.parentMessageId || '',
       currentBranch: '',
       branches: [],
       nextPage: 1,
@@ -8211,7 +9036,9 @@
         ? 'branchPanelBaseTitle'
         : picker.mode === 'pull'
           ? 'branchPanelPullTitle'
-          : 'branchPanelReviewTitle';
+          : picker.mode === 'explain'
+            ? 'branchPanelExplainTitle'
+            : 'branchPanelReviewTitle';
     const head = el('div', 'host-branch-head');
     head.append(el('div', 'host-branch-title', t(titleKey)));
     const closeBtn = el('button', 'review-btn host-branch-close', '×');
@@ -8349,7 +9176,12 @@
 
     if (picker.step === 'bases') {
       const actions = el('div', 'host-branch-actions');
-      const start = el('button', 'review-btn is-primary', t('branchPanelStart'));
+      const explainMode = picker.mode === 'explain';
+      const start = el(
+        'button',
+        'review-btn is-primary',
+        t(explainMode ? 'branchPanelStartExplain' : 'branchPanelStart'),
+      );
       start.type = 'button';
       start.disabled = !picker.selectedBase || !picker.selectedDepth || picker.loading;
       start.addEventListener('click', () => {
@@ -8360,7 +9192,24 @@
         const branch = branchPicker.selectedBranch;
         const baseBranch = branchPicker.selectedBase;
         const depth = branchPicker.selectedDepth;
+        const parentMessageId = branchPicker.parentMessageId || '';
         closeHostBranchPanel();
+        if (explainMode) {
+          if (parentMessageId) {
+            beginLocalExplainSkeleton(pageId, parentMessageId);
+          } else {
+            beginLocalExplainRootSkeleton(pageId, branch);
+          }
+          vscode.postMessage({
+            type: 'explainStartOther',
+            pageId,
+            branch,
+            baseBranch,
+            depth,
+            parentMessageId: parentMessageId || undefined,
+          });
+          return;
+        }
         beginLocalRootSkeleton(pageId, branch);
         vscode.postMessage({
           type: 'reviewStartOther',
@@ -9848,6 +10697,8 @@
    *   githubToken?: string,
    *   gitlabToken?: string,
    *   reviewSkillPath?: string,
+   *   reviewFixSkillPath?: string,
+   *   explainSkillPath?: string,
    *   reviewDirPath?: string,
    *   reviewModel?: string,
    *   reviewFixModel?: string,
@@ -9928,6 +10779,7 @@
     repoInput.value = opts.repoUrl || (opts.projectRepoLocked ? '' : opts.origin);
     if (opts.projectRepoLocked) {
       repoInput.readOnly = true;
+      repoInput.setAttribute('aria-readonly', 'true');
     }
     const repoHost = el('span', 'project-repo-host');
     repoHost.hidden = true;
@@ -10007,6 +10859,10 @@
     /** @type {HTMLInputElement | null} */
     let skillInput = null;
     /** @type {HTMLInputElement | null} */
+    let fixSkillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let explainSkillInput = null;
+    /** @type {HTMLInputElement | null} */
     let dirInput = null;
     /** @type {HTMLInputElement | null} */
     let modelInput = null;
@@ -10022,7 +10878,7 @@
       /**
        * @param {string} labelKey
        * @param {string} value
-       * @param {'skill' | 'dir' | 'model'} kind
+       * @param {'skill' | 'fix' | 'explain' | 'dir' | 'model'} kind
        */
       function reviewAgentField(labelKey, value, kind) {
         const label = el('label', 'review-mr-field', t(labelKey));
@@ -10064,6 +10920,12 @@
       }
 
       skillInput = reviewAgentField('labelReviewSkillPath', opts.reviewSkillPath || '', 'skill');
+      fixSkillInput = reviewAgentField('labelReviewFixSkillPath', opts.reviewFixSkillPath || '', 'fix');
+      explainSkillInput = reviewAgentField(
+        'labelExplainSkillPath',
+        opts.explainSkillPath || '',
+        'explain',
+      );
       dirInput = reviewAgentField('labelReviewDirPath', opts.reviewDirPath || '', 'dir');
       modelInput = reviewAgentField('labelReviewModel', (opts.reviewModel || '').toLowerCase(), 'model');
       fixModelInput = reviewAgentField(
@@ -10094,6 +10956,10 @@
           return;
         }
         const reviewSkillPath = skillInput.value.trim();
+        const reviewFixSkillPath =
+          fixSkillInput instanceof HTMLInputElement ? fixSkillInput.value.trim() : '';
+        const explainSkillPath =
+          explainSkillInput instanceof HTMLInputElement ? explainSkillInput.value.trim() : '';
         const reviewDirPath = dirInput.value.trim();
         const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
         const reviewFixModel =
@@ -10103,6 +10969,8 @@
         const reviewPrintTools = !(printToolsInput instanceof HTMLInputElement) || printToolsInput.checked;
         if (
           reviewSkillPath === (opts.reviewSkillPath || '') &&
+          reviewFixSkillPath === (opts.reviewFixSkillPath || '') &&
+          explainSkillPath === (opts.explainSkillPath || '') &&
           reviewDirPath === (opts.reviewDirPath || '') &&
           reviewModel === (opts.reviewModel || '').toLowerCase() &&
           reviewFixModel === (opts.reviewFixModel || '').toLowerCase() &&
@@ -10112,6 +10980,8 @@
           return;
         }
         opts.reviewSkillPath = reviewSkillPath;
+        opts.reviewFixSkillPath = reviewFixSkillPath;
+        opts.explainSkillPath = explainSkillPath;
         opts.reviewDirPath = reviewDirPath;
         opts.reviewModel = reviewModel;
         opts.reviewFixModel = reviewFixModel;
@@ -10120,6 +10990,8 @@
         vscode.postMessage({
           type: 'setReviewPaths',
           reviewSkillPath,
+          reviewFixSkillPath,
+          explainSkillPath,
           reviewDirPath,
           reviewModel,
           reviewFixModel,
@@ -10129,7 +11001,7 @@
       }
 
       flushReviewAgentFields = saveReviewPaths;
-      for (const input of [skillInput, dirInput, modelInput, fixModelInput, printThinkingInput, printToolsInput]) {
+      for (const input of [skillInput, fixSkillInput, explainSkillInput, dirInput, modelInput, fixModelInput, printThinkingInput, printToolsInput]) {
         input.addEventListener('change', () => saveReviewPaths());
       }
 
@@ -10232,12 +11104,20 @@
       }
 
       /**
-       * @param {'skill' | 'dir'} kind
+       * @param {'skill' | 'fix' | 'explain' | 'dir'} kind
        * @param {HTMLInputElement} input
        */
       function openReviewPathNav(kind, input) {
         navTarget = input;
-        pathTitle.textContent = t(kind === 'dir' ? 'labelReviewDirPath' : 'labelReviewSkillPath');
+        pathTitle.textContent = t(
+          kind === 'dir'
+            ? 'labelReviewDirPath'
+            : kind === 'explain'
+              ? 'labelExplainSkillPath'
+              : kind === 'fix'
+                ? 'labelReviewFixSkillPath'
+                : 'labelReviewSkillPath',
+        );
         pathNav.hidden = false;
         requestReviewDir(input.value);
         pathList.focus();
@@ -10361,6 +11241,64 @@
       return true;
     }
 
+    const reviewSkillIconPath = {
+      download:
+        'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z',
+      copy:
+        'M6.99979 7V3C6.99979 2.44772 7.4475 2 7.99979 2H20.9998C21.5521 2 21.9998 2.44772 21.9998 3V16C21.9998 16.5523 21.5521 17 20.9998 17H17V20.9925C17 21.5489 16.551 22 15.9925 22H3.00728C2.45086 22 2 21.5511 2 20.9925L2.00276 8.00748C2.00288 7.45107 2.4518 7 3.01025 7H6.99979ZM8.99979 7H15.9927C16.549 7 17 7.44892 17 8.00748V15H19.9998V4H8.99979V7ZM4.00255 9L4.00021 20H15V9H4.00255Z',
+    };
+
+    /**
+     * @param {'download' | 'copy'} kind
+     * @param {string} label
+     * @param {() => void} onClick
+     */
+    function reviewSkillIconButton(kind, label, onClick) {
+      const button = el('button', 'review-skill-icon');
+      button.type = 'button';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('fill', 'currentColor');
+      path.setAttribute('d', reviewSkillIconPath[kind]);
+      svg.append(path);
+      button.append(svg);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
+      return button;
+    }
+
+    /**
+     * Skill sample: the label opens the doc, the icons save or copy it.
+     * @param {'review' | 'explain'} which
+     * @param {string} label
+     */
+    function reviewSkillCard(which, label) {
+      const card = el('div', 'review-doc-card');
+      const open = el('button', 'review-doc-open', label);
+      open.type = 'button';
+      open.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewSkillFile', which, action: 'open' });
+      });
+      const icons = el('div', 'review-skill-icons');
+      icons.append(
+        reviewSkillIconButton('download', t('reviewSkillDownload'), () => {
+          vscode.postMessage({ type: 'reviewSkillFile', which, action: 'save' });
+        }),
+        reviewSkillIconButton('copy', t('reviewSkillCopy'), () => {
+          vscode.postMessage({ type: 'reviewSkillFile', which, action: 'copy' });
+        }),
+      );
+      card.append(open, icons);
+      return card;
+    }
+
     if (editing) {
       const initial = readReviewPageForm(false);
       savedSig = initial ? JSON.stringify(initial) : '';
@@ -10368,18 +11306,47 @@
         input?.addEventListener('change', () => saveEditing());
       }
       const docs = el('div', 'review-settings-docs');
-      const howTo = el('button', 'review-btn', t('reviewHowToConnect'));
+      const howTo = el('button', 'review-doc-card', t('reviewHowToConnect'));
       howTo.type = 'button';
       howTo.addEventListener('click', () => {
         vscode.postMessage({ type: 'reviewOpenSetupDoc' });
       });
-      const promptEx = el('button', 'review-btn', t('reviewPromptExample'));
-      promptEx.type = 'button';
-      promptEx.addEventListener('click', () => {
-        vscode.postMessage({ type: 'reviewOpenPromptExample' });
-      });
-      docs.append(howTo, promptEx);
+      docs.append(
+        howTo,
+        reviewSkillCard('review', t('reviewPromptExampleShort')),
+        reviewSkillCard('explain', t('explainMenu')),
+      );
       panel.append(docs);
+      const whyWrap = el('div', 'review-skill-why-wrap');
+      const whyLink = el('button', 'review-skill-why-link');
+      whyLink.type = 'button';
+      whyLink.setAttribute('aria-expanded', 'false');
+      const whyChev = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      whyChev.setAttribute('viewBox', '0 0 16 16');
+      whyChev.setAttribute('class', 'review-skill-why-chev');
+      whyChev.setAttribute('aria-hidden', 'true');
+      const whyChevPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      whyChevPath.setAttribute('d', 'M6 4l4 4-4 4');
+      whyChevPath.setAttribute('fill', 'none');
+      whyChevPath.setAttribute('stroke', 'currentColor');
+      whyChevPath.setAttribute('stroke-width', '1.5');
+      whyChevPath.setAttribute('stroke-linecap', 'round');
+      whyChevPath.setAttribute('stroke-linejoin', 'round');
+      whyChev.append(whyChevPath);
+      whyLink.append(whyChev, document.createTextNode(t('reviewSkillsWhy')));
+      const whyBody = el('p', 'review-skill-why', t('reviewSkillsWhyBody'));
+      whyBody.hidden = true;
+      whyLink.addEventListener('click', () => {
+        const open = whyBody.hidden;
+        whyBody.hidden = !open;
+        whyLink.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      const copied = el('p', 'review-skill-copied');
+      copied.id = 'review-skill-copied';
+      copied.hidden = true;
+      copied.setAttribute('aria-live', 'polite');
+      whyWrap.append(whyLink, whyBody, copied);
+      panel.append(whyWrap);
     } else {
       const actions = el('div', 'review-mr-actions');
       const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
@@ -11359,12 +12326,12 @@
       const colorCaption = el('span', 'link-color-caption');
       colorCaption.textContent = t('changeColor');
       const raw = String(link.colorId || link.color || '');
-      const match = raw.match(/#([0-9a-f]{6})/i);
-      const currentHex = match ? '#' + match[1].toLowerCase() : '#3658d3';
+      const parsed = splitHexAlpha(raw);
+      const currentHex = parsed ? hexWithAlpha(parsed.rgb, parsed.alpha) : '#3658d3';
       const well = el('button', 'link-color-well');
       well.type = 'button';
       well.disabled = locked;
-      well.style.background = currentHex;
+      well.style.setProperty('--swatch', currentHex);
       well.setAttribute('aria-label', t('changeColor'));
       well.addEventListener('click', () => {
         if (locked) {
@@ -12955,13 +13922,9 @@
     const colorAttr = tag === 'FONT' ? elNode.getAttribute('color') : null;
     const color = elNode.dataset.color || colorAttr || elNode.style?.color;
     if (color) {
-      const hex = color.startsWith('#')
-        ? color.length === 4
-          ? '#' + color[1] + color[1] + color[2] + color[2] + color[3] + color[3]
-          : color.slice(0, 7)
-        : toHex(color);
+      const hex = normalizeHex(color);
       if (hex) {
-        marks.color = hex.toLowerCase();
+        marks.color = hex;
       }
     }
     /** @type {NoteRun[]} */
@@ -14531,14 +15494,11 @@
     if (!color || typeof color !== 'string') {
       return null;
     }
-    const c = color.trim().toLowerCase();
-    if (/^#[0-9a-f]{6}$/.test(c)) {
-      return c;
+    const parsed = splitHexAlpha(color);
+    if (parsed) {
+      return hexWithAlpha(parsed.rgb, parsed.alpha);
     }
-    if (/^#[0-9a-f]{3}$/.test(c)) {
-      return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
-    }
-    const hex = toHex(c);
+    const hex = toHex(color);
     return hex ? hex.toLowerCase() : null;
   }
 
@@ -20179,30 +21139,35 @@
     if (colorTarget?.kind === 'text' || colorTarget?.kind === 'link' || colorTarget?.kind === 'group-draft') {
       return;
     }
-    colorTarget?.section?.style.setProperty('--group-color', colorInput.value);
+    colorTarget?.section?.style.setProperty(
+      '--group-color',
+      pickerHex(colorInput.value, pendingPickerAlpha),
+    );
   });
   colorInput.addEventListener('change', () => {
+    const picked = pickerHex(colorInput.value, pendingPickerAlpha);
+    pendingPickerAlpha = 100;
     if (colorTarget) {
       if (colorTarget.kind === 'text') {
-        applyTextColor(colorInput.value);
+        applyTextColor(picked);
         liveTextColorSpans = null;
       } else if (colorTarget.kind === 'group-draft' && openGroupPanel?.mode === 'create') {
         openGroupPanel.colorTouched = true;
-        openGroupPanel.color = colorInput.value;
+        openGroupPanel.color = picked;
         mountGroupPanel();
       } else if (colorTarget.kind === 'link' && colorTarget.id) {
-        vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: colorInput.value });
+        vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: picked });
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
-        vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
+        vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: picked });
       } else if (colorTarget.kind === 'review' && colorTarget.id && colorTarget.pageId) {
         vscode.postMessage({
           type: 'reviewUpdateMr',
           pageId: colorTarget.pageId,
           messageId: colorTarget.id,
-          color: colorInput.value,
+          color: picked,
         });
       } else if (colorTarget.id) {
-        vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: colorInput.value });
+        vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: picked });
       }
     }
     colorTarget = null;
@@ -20243,6 +21208,7 @@
    * @param {'marker' | 'note'} [kind]
    */
   function openColorPicker(id, bar, section, kind = 'marker') {
+    pendingPickerAlpha = 100;
     const rect = bar.getBoundingClientRect();
     colorInput.style.left = rect.left + 'px';
     colorInput.style.top = rect.bottom + 'px';
