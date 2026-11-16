@@ -1,4 +1,7 @@
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
+import { createReadStream } from 'fs';
+import * as path from 'path';
 import { promisify } from 'util';
 
 const exec = promisify(execFile);
@@ -22,6 +25,24 @@ async function git(cwd: string, args: string[]): Promise<GitResult<string>> {
   }
 }
 
+/** Stdout as git wrote it. `status -z` starts with a space for an unstaged file; trim would eat that space and the path. */
+async function gitRaw(cwd: string, args: string[]): Promise<GitResult<string>> {
+  try {
+    const { stdout } = await exec('git', args, {
+      cwd,
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env },
+    });
+    return { ok: true, value: stdout };
+  } catch (error) {
+    const err = error as { stderr?: string; message?: string };
+    return {
+      ok: false,
+      message: (err.stderr || err.message || String(error)).trim() || 'git failed',
+    };
+  }
+}
+
 export async function currentBranch(cwd: string): Promise<GitResult<string>> {
   const result = await git(cwd, ['branch', '--show-current']);
   if (!result.ok) {
@@ -36,6 +57,76 @@ export async function currentBranch(cwd: string): Promise<GitResult<string>> {
 export async function hasUncommittedChanges(cwd: string): Promise<boolean> {
   const result = await git(cwd, ['status', '--porcelain']);
   return result.ok && result.value.length > 0;
+}
+
+/**
+ * Hash of dirty and untracked worktree files.
+ * The same tree, including an already dirty file, hashes the same until bytes are added, edited, or removed.
+ */
+export async function worktreeFingerprint(cwd: string): Promise<GitResult<string>> {
+  const status = await gitRaw(cwd, ['status', '--porcelain=v1', '-z', '-uall']);
+  if (!status.ok) {
+    return status;
+  }
+  const paths = [...new Set(porcelainPaths(status.value))].sort((a, b) => a.localeCompare(b));
+  const hash = createHash('sha256');
+  for (const rel of paths) {
+    hash.update(rel);
+    hash.update('\0');
+    hash.update(await hashWorktreeFile(path.join(cwd, rel)));
+    hash.update('\0');
+  }
+  return { ok: true, value: hash.digest('hex') };
+}
+
+/** Paths from `git status --porcelain=v1 -z`. Rename and copy records carry the new path in the next field. */
+function porcelainPaths(raw: string): string[] {
+  if (!raw) {
+    return [];
+  }
+  const parts = raw.split('\0');
+  const paths: string[] = [];
+  for (let i = 0; i < parts.length; i += 1) {
+    const entry = parts[i];
+    if (!entry) {
+      continue;
+    }
+    const xy = entry.slice(0, 2);
+    const listed = entry.slice(3);
+    if ((xy[0] === 'R' || xy[0] === 'C') && i + 1 < parts.length) {
+      const dest = parts[i + 1];
+      i += 1;
+      if (listed) {
+        paths.push(listed);
+      }
+      if (dest) {
+        paths.push(dest);
+      }
+      continue;
+    }
+    if (listed) {
+      paths.push(listed);
+    }
+  }
+  return paths;
+}
+
+function hashWorktreeFile(full: string): Promise<string> {
+  return new Promise((resolve) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(full);
+    let settled = false;
+    const done = (value: string) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    };
+    stream.on('error', () => done('missing'));
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => done(hash.digest('hex')));
+  });
 }
 
 /**

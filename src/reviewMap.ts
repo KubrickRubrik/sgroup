@@ -64,6 +64,7 @@ import {
   detectParentBranch,
   ensureBranchPushed,
   ensureCommittedBeforeMr,
+  worktreeFingerprint,
 } from './gitOps';
 import {
   closeMergeRequest,
@@ -94,6 +95,8 @@ import {
 } from './reviewHost';
 import {
   deleteReviewFile,
+  hasNeuroFixSuccessMarker,
+  NEUROFIX_OK_LINE,
   parseReviewFixGroups,
   reviewFixRows,
   runExplainSkill,
@@ -2233,6 +2236,10 @@ export class ReviewMapController {
     return { ok: true, rows: reviewFixRows(parsed.groups, bullets) };
   }
 
+  /**
+   * Indexes land in `fixes:` and `bullet:` after the worktree changes
+   * or the agent prints `SYN3_NEUROFIX_OK`.
+   */
   async runNeuroFix(
     pageId: string,
     messageId: string,
@@ -2300,6 +2307,8 @@ export class ReviewMapController {
       'Прави только файлы, нужные для этих пунктов.',
       'Не делай коммит, пуш и не пиши в Discord.',
       'Не меняй несвязанный код.',
+      `Если пункты исправлены или ты проверил, что они уже исправлены в рабочей копии, последней строкой ответа напиши ровно: ${NEUROFIX_OK_LINE}`,
+      'Если правки нет и успех не проверен, эту строку не пиши.',
       '',
       'Замечания:',
       '',
@@ -2311,6 +2320,7 @@ export class ReviewMapController {
         ? skillRaw
         : path.join(this.cwd(), skillRaw)
       : '';
+    const before = await worktreeFingerprint(this.cwd());
     const agent = await runNeuroFixSkill({
       cwd: this.cwd(),
       model: paths.fixModel,
@@ -2322,10 +2332,23 @@ export class ReviewMapController {
     if (!agent.ok) {
       return { ok: false, message: agent.message };
     }
+    const after = await worktreeFingerprint(this.cwd());
+    const changed = before.ok && after.ok && before.value !== after.value;
+    const marked = hasNeuroFixSuccessMarker(agent.answer);
+    if (!changed && !marked) {
+      const message =
+        before.ok && after.ok
+          ? 'Рабочая копия не изменилась и агент не подтвердил успех. Пункты не отмечены.'
+          : 'Не удалось сверить рабочую копию и агент не подтвердил успех. Пункты не отмечены.';
+      agent.report(message, false);
+      return { ok: false, message };
+    }
     const recorded = await this.recordNeuroFix(pageId, messageId, picked);
     if (!recorded.ok) {
+      agent.report(recorded.message, false);
       return { ok: false, message: recorded.message, discord: true };
     }
+    agent.report('нейрофикс завершён', true);
     return { ok: true, state: recorded.state };
   }
 

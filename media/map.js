@@ -4874,17 +4874,10 @@
     if (!counts) {
       return '';
     }
-    const parts = [];
-    if (Number(counts.H) > 0) {
-      parts.push(`H:${counts.H}`);
-    }
-    if (Number(counts.M) > 0) {
-      parts.push(`M:${counts.M}`);
-    }
-    if (Number(counts.L) > 0) {
-      parts.push(`L:${counts.L}`);
-    }
-    return parts.join(' | ');
+    const h = Number(counts.H) || 0;
+    const m = Number(counts.M) || 0;
+    const l = Number(counts.L) || 0;
+    return `H:${h} | M:${m} | L:${l}`;
   }
 
   /**
@@ -8604,7 +8597,7 @@
     const stampDate = (source.fixes && source.fixes.at) || '';
     const row = el('div', 'review-reply-node is-fix has-gap');
     row.dataset.reviewFixFor = messageId;
-    row.style.setProperty('--link-color', '#3dd68c');
+    row.style.setProperty('--link-color', '#52be37');
     row.append(
       linkElbow(
         reviewElbowMid({ leadingGap: true, hasStamp: !!stampDate, contentHalf: 17 }),

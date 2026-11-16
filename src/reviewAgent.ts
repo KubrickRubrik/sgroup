@@ -560,12 +560,37 @@ export async function runReviewSkill(opts: {
   });
 }
 
-export type NeuroFixAgentResult = { ok: true } | { ok: false; message: string };
+/** Whole line the neurofix agent writes when the items are fixed or already fixed in the worktree. */
+export const NEUROFIX_OK_LINE = 'SYN3_NEUROFIX_OK';
+
+export type NeuroFixAgentResult =
+  | {
+      ok: true;
+      /** Final agent text. The caller decides whether the items were fixed. */
+      answer: string;
+      /** Write a line to the neurofix terminal. Close it after the indexes are recorded. */
+      report: (line: string, close: boolean) => void;
+    }
+  | { ok: false; message: string };
+
+/** True when the last non-empty line of the agent answer is the success marker. */
+export function hasNeuroFixSuccessMarker(text: string): boolean {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.length > 0 && lines[lines.length - 1] === NEUROFIX_OK_LINE;
+}
+
+function neuroFixAnswer(state: AgentStream): string {
+  return (state.resultText || state.finalFlush || state.deltas || state.plain).trim();
+}
 
 /**
  * Run `agent --print` for Neurofix, or open a terminal with an error.
  * `--print` without `--mode` can write files and run shell. `plan` and `ask` are read-only.
- * Success is exit code 0. No Discord post, no severity parse.
+ * Exit code 0 returns the answer text. The caller records indexes after a worktree
+ * change or a `SYN3_NEUROFIX_OK` line. No Discord post, no severity parse.
  */
 export async function runNeuroFixSkill(opts: {
   cwd: string;
@@ -676,15 +701,18 @@ export async function runNeuroFixSkill(opts: {
       stderr += text;
       emit(text.replace(/\n/g, '\r\n'));
     });
+    const report = (line: string, closeTerminal: boolean) => {
+      emit(`\r\n${line}\r\n`);
+      if (closeTerminal) {
+        setTimeout(() => term.dispose(), 1200);
+      }
+    };
     const finish = (result: NeuroFixAgentResult) => {
       if (settled) {
         return;
       }
       settled = true;
       clearInterval(timer);
-      if (result.ok) {
-        setTimeout(() => term.dispose(), 1200);
-      }
       resolve(result);
     };
     child.on('error', (error) => {
@@ -697,8 +725,7 @@ export async function runNeuroFixSkill(opts: {
       }
       emit(`\r\n[exit ${code ?? '?'}]\r\n`);
       if (code === 0) {
-        emit('нейрофикс завершён\r\n');
-        finish({ ok: true });
+        finish({ ok: true, answer: neuroFixAnswer(stream), report });
         return;
       }
       const message =

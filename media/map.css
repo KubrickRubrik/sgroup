@@ -4090,7 +4090,26 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .review-reply-node.is-fix {
-  --link-color: #3dd68c;
+  --link-color: #52be37;
+}
+
+.review-reply-node.is-fix > .review-body {
+  align-items: stretch;
+  max-width: 100%;
+  width: max-content;
+}
+
+.review-reply-node.is-fix > .review-body > .review-stamp {
+  min-width: max-content;
+  white-space: nowrap;
+}
+
+.review-chip.is-fix {
+  align-self: stretch;
+  background: color-mix(in srgb, #52be37 18%, #121214);
+  border-color: #52be37;
+  color: #52be37;
+  width: 100%;
 }
 
 .review-chip-badge,
