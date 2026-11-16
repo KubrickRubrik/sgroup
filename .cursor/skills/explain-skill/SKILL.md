@@ -2,7 +2,7 @@
 name: syn3-explain
 description: >-
   Объяснение кода для Syn3 («Что делаем?»): что делает ветка или изменения.
-  Ответ — markdown без строки H:N | M:N | S:N. Глубина /rs, /rm, /rd.
+  Ответ — markdown без строки H:N | M:N | L:N. Глубина /rs, /rm, /rd.
   Use when Syn3 launches «Что делаем?» or the user asks what a branch or
   uncommitted changes do.
 disable-model-invocation: true
@@ -18,7 +18,7 @@ disable-model-invocation: true
 
 Весь ответ — markdown. Syn3 показывает его на чипе карты целиком.
 
-Не пиши строку `H:N | M:N | S:N`. Её нет в этом скилле: чип не ждёт счётчики.
+Не пиши строку `H:N | M:N | L:N`. Её нет в этом скилле: чип не ждёт счётчики.
 
 Язык — язык пользователя. Запуск от Syn3 — русский.
 

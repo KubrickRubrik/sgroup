@@ -4089,6 +4089,10 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   height: 34px;
 }
 
+.review-reply-node.is-fix {
+  --link-color: #3dd68c;
+}
+
 .review-chip-badge,
 .review-chip-label {
   min-width: 0;

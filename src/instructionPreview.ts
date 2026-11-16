@@ -1,3 +1,5 @@
+import { ReviewFixRow } from './reviewAgent';
+
 /** Rendered instruction page for a Syn3 editor tab. */
 
 export function instructionTitle(markdown: string): string {
@@ -461,6 +463,21 @@ function insertReviewSummary(html: string, summary: string): string {
  * Review pane HTML: markdown plus the summary block from the canvas
  * (counts, composition bar, «Сначала»).
  */
+/** Green-chip panel: the fixed bullets only, four columns, file paths stay links. */
+export function reviewFixTableHtml(rows: ReviewFixRow[]): string {
+  const body = rows
+    .map(
+      (row) =>
+        `<tr><td>${escapeHtml(row.level)}</td><td>${renderInline(row.broken)}</td>` +
+        `<td>${renderInline(row.fix)}</td><td>${renderInline(row.where)}</td></tr>`,
+    )
+    .join('');
+  return (
+    `<table><thead><tr><th>Уровень</th><th>Что сломано</th><th>Что чинить</th><th>Где</th></tr></thead>` +
+    `<tbody>${body}</tbody></table>`
+  );
+}
+
 export function reviewFileHtml(markdown: string): string {
   const counts = reviewCounts(markdown);
   const readable = reviewReadable(markdown);

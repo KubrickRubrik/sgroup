@@ -9,6 +9,9 @@ import {
   formatSeverityLine,
   parseReviewSeverityLine,
   REVIEW_SEVERITY_RE,
+  reviewLevel,
+  type ReviewFixBullets,
+  type ReviewLevel,
 } from './discordApi';
 import {
   ReviewDepth,
@@ -19,11 +22,11 @@ import {
 } from './reviewPending';
 
 export type ReviewFixGroups = {
-  counts: { H: number; M: number; S: number };
-  groups: { H: string[]; M: string[]; S: string[] };
+  counts: { H: number; M: number; L: number };
+  groups: { H: string[]; M: string[]; L: string[] };
 };
 
-/** Parse review attachment body into H/M/S groups. Legacy L headers map to S. */
+/** Parse review attachment body into H/M/L groups. Legacy S headers map to L. */
 export function parseReviewFixGroups(
   text: string,
 ): { ok: true; counts: ReviewFixGroups['counts']; groups: ReviewFixGroups['groups'] } | { ok: false; message: string } {
@@ -31,16 +34,16 @@ export function parseReviewFixGroups(
   const parsedLine = parseReviewSeverityLine((lines[2] || '').trim());
   const sevMatch = parsedLine?.severity.match(REVIEW_SEVERITY_RE);
   if (!parsedLine || !sevMatch) {
-    return { ok: false, message: 'В файле ревью нет строки H:N | M:N | S:N' };
+    return { ok: false, message: 'В файле ревью нет строки H:N | M:N | L:N' };
   }
   const counts = {
     H: Number(sevMatch[1]),
     M: Number(sevMatch[2]),
-    S: Number(sevMatch[4]),
+    L: Number(sevMatch[4]),
   };
-  const groups: ReviewFixGroups['groups'] = { H: [], M: [], S: [] };
-  const seen = new Set<'H' | 'M' | 'S'>();
-  let current: 'H' | 'M' | 'S' | undefined;
+  const groups: ReviewFixGroups['groups'] = { H: [], M: [], L: [] };
+  const seen = new Set<ReviewLevel>();
+  let current: ReviewLevel | undefined;
   for (const raw of lines.slice(3)) {
     const trimmed = raw.trim();
     if (!trimmed) {
@@ -48,7 +51,10 @@ export function parseReviewFixGroups(
     }
     const header = /^([HMLS])\s*$/i.exec(trimmed);
     if (header) {
-      const letter = header[1].toUpperCase() === 'L' ? 'S' : (header[1].toUpperCase() as 'H' | 'M' | 'S');
+      const letter = reviewLevel(header[1]);
+      if (!letter) {
+        continue;
+      }
       if (seen.has(letter)) {
         return { ok: false, message: `Повтор заголовка группы ${letter} в файле ревью` };
       }
@@ -58,14 +64,14 @@ export function parseReviewFixGroups(
     }
     if (/^-\s+/.test(trimmed)) {
       if (!current) {
-        return { ok: false, message: 'Пункт ревью вне группы H/M/S' };
+        return { ok: false, message: 'Пункт ревью вне группы H/M/L' };
       }
       groups[current].push(trimmed.replace(/^-\s+/, '').trim());
       continue;
     }
     // Ignore non-bullet prose after severity.
   }
-  for (const letter of ['H', 'M', 'S'] as const) {
+  for (const letter of ['H', 'M', 'L'] as const) {
     const expected = counts[letter];
     const actual = groups[letter].length;
     if (expected === 0 && actual === 0) {
@@ -79,6 +85,55 @@ export function parseReviewFixGroups(
     }
   }
   return { ok: true, counts, groups };
+}
+
+export type ReviewFixRow = {
+  level: 'High' | 'Medium' | 'Low';
+  broken: string;
+  fix: string;
+  where: string;
+};
+
+/** Split one group bullet into the three table cells. A line without the labels stays in «что сломано». */
+export function splitFixBullet(text: string): { broken: string; fix: string; where: string } {
+  const brokenMark = 'Что сломано:';
+  const fixMark = 'Что чинить:';
+  const whereMark = 'Где:';
+  const brokenAt = text.indexOf(brokenMark);
+  const fixAt = text.indexOf(fixMark);
+  const whereAt = text.indexOf(whereMark);
+  if (brokenAt < 0 || fixAt < 0 || whereAt < 0 || !(brokenAt < fixAt && fixAt < whereAt)) {
+    return { broken: text.trim(), fix: '', where: '' };
+  }
+  const title = text.slice(0, brokenAt).trim().replace(/\.+$/, '');
+  const brokenBody = text.slice(brokenAt + brokenMark.length, fixAt).trim();
+  const fix = text.slice(fixAt + fixMark.length, whereAt).trim();
+  const where = text.slice(whereAt + whereMark.length).trim().replace(/^[`]+|[`]+$/g, '');
+  const broken = [title, brokenBody].filter(Boolean).join('. ');
+  return { broken, fix, where };
+}
+
+const FIX_ROW_LEVEL: Record<ReviewLevel, ReviewFixRow['level']> = {
+  H: 'High',
+  M: 'Medium',
+  L: 'Low',
+};
+
+/** Rows for the green-chip table, in group order H, M, L and by 1-based index. */
+export function reviewFixRows(groups: ReviewFixGroups['groups'], bullets: ReviewFixBullets): ReviewFixRow[] {
+  const rows: ReviewFixRow[] = [];
+  for (const level of ['H', 'M', 'L'] as const) {
+    const indexes = [...new Set(bullets[level])].filter((item) => item > 0).sort((a, b) => a - b);
+    for (const index of indexes) {
+      const text = groups[level][index - 1];
+      if (!text) {
+        continue;
+      }
+      const cells = splitFixBullet(text);
+      rows.push({ level: FIX_ROW_LEVEL[level], ...cells });
+    }
+  }
+  return rows;
 }
 
 export type ReviewAgentResult =
@@ -152,9 +207,9 @@ function buildPrompt(opts: {
   }
   lines.push(
     'Answer in ask mode. Put the severity line first in the form exactly:',
-    'H:N | M:N | S:N',
+    'H:N | M:N | L:N',
     'Do not write branch, changes, rs, rm, or rd on that line. Syn3 adds them.',
-    'Then write the H/M/S groups with bullets, then the readable review block.',
+    'Then write the H/M/L groups with bullets, then the readable review block.',
   );
   return lines.join('\n');
 }
@@ -497,7 +552,7 @@ export async function runReviewSkill(opts: {
         !stdout && closed
           ? 'Review agent cancelled'
           : stdout
-            ? 'В ответе агента нет строки H:N | M:N | S:N'
+            ? 'В ответе агента нет строки H:N | M:N | L:N'
             : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
       emit(`\r\n${message}\r\n`);
       finish({ ok: false, message });
@@ -723,14 +778,14 @@ function buildExplainPrompt(opts: {
   lines.push(
     'Answer in ask mode.',
     'Write the full explanation as markdown.',
-    'Do not require or emit an H:N | M:N | S:N severity line.',
+    'Do not require or emit an H:N | M:N | L:N severity line.',
   );
   return lines.join('\n');
 }
 
 /**
  * Run the explain («Что делаем?») skill. Whole answer becomes the file body.
- * No H/M/S line required.
+ * No H/M/L line required.
  */
 export async function runExplainSkill(opts: {
   cwd: string;

@@ -37,7 +37,11 @@ import {
   parseReviewBranch,
   parseReviewColor,
   parseReviewMessagePill,
+  parseReviewFixes,
   deleteChannelMessage,
+  emptyFixBullets,
+  formatFixStamp,
+  formatSeverityLine,
   parseReviewStatus,
   fetchAttachmentText,
   postChannelMessage,
@@ -48,6 +52,8 @@ import {
   replaceMrDiscordStatus,
   replaceReviewDiscordStatus,
   ReviewChipStatus,
+  ReviewFixState,
+  writeReviewFixes,
   sortMessagesAsc,
   THREAD_STARTER_MESSAGE,
 } from './discordApi';
@@ -89,6 +95,7 @@ import {
 import {
   deleteReviewFile,
   parseReviewFixGroups,
+  reviewFixRows,
   runExplainSkill,
   runNeuroFixSkill,
   runReviewSkill,
@@ -117,8 +124,10 @@ export interface ReviewThreadMsg {
   isExplain?: boolean;
   /** True when attachment parsed to a review pill with H/M/S. */
   isPill?: boolean;
-  /** Label for the review pill, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | S:5`. */
+  /** Label for the review pill, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | L:5`. */
   pillLabel?: string;
+  /** `fixes:` / `bullet:` on this R_SYN3 message. Absent until the line is written. */
+  fixes?: ReviewFixState;
   /** Empty when Discord `status` is `-` or missing. */
   status?: ReviewChipStatus;
   /** Chip color from `color:` on an explain reply. */
@@ -145,8 +154,10 @@ export interface ReviewChip {
   title?: string;
   draft?: boolean;
   color?: string;
-  /** Pill label for a root review, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | S:5`. */
+  /** Pill label for a root review, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | L:5`. */
   pillLabel?: string;
+  /** `fixes:` / `bullet:` on a root R_SYN3 message. */
+  fixes?: ReviewFixState;
   /** `status: closed` on the Discord MR message. Missing line stays open. */
   status?: 'open' | 'closed';
   /** `status:` on a root R_SYN3 message. */
@@ -241,6 +252,7 @@ function toChip(
     filename: file?.filename,
     locked: parseDiscordLock(msg.content),
     branch: parseReviewBranch(msg.content),
+    fixes: isReviewRoot ? parseReviewFixes(msg.content) : undefined,
     threadId: msg.thread?.id,
     hasThread: !!msg.thread?.id || !!msg.hasThread,
     replies,
@@ -270,6 +282,7 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
     branch: explain ? parseReviewBranch(msg.content) : undefined,
     hasFile: !!file,
     filename: file?.filename,
+    fixes: isReviewMessage(msg.content) ? parseReviewFixes(msg.content) : undefined,
     contentMissing: msg.contentMissing,
   };
 }
@@ -460,7 +473,18 @@ export type ReviewProfilePaths = {
   printTools: boolean;
 };
 
-export type NeuroFixScope = 'H' | 'M' | 'S' | 'all';
+export type NeuroFixScope = 'H' | 'M' | 'L' | 'all';
+
+/** `S` from an older client is Low. */
+export function normalizeNeuroFixScope(scope: string): NeuroFixScope | undefined {
+  if (scope === 'H' || scope === 'M' || scope === 'L' || scope === 'all') {
+    return scope;
+  }
+  if (scope === 'S') {
+    return 'L';
+  }
+  return undefined;
+}
 
 export type ReviewProfileContext = ReviewProfilePaths & {
   profileId: string;
@@ -2191,12 +2215,30 @@ export class ReviewMapController {
    * Local edits only: no commit, push, Discord status, or Discord message.
    * Optional itemIndex limits the prompt to one bullet inside H/M/S.
    */
+  async reviewFixRowsFor(
+    pageId: string,
+    messageId: string,
+  ): Promise<{ ok: true; rows: ReturnType<typeof reviewFixRows> } | { ok: false; message: string }> {
+    const read = await this.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      return read;
+    }
+    const parsed = parseReviewFixGroups(read.text);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const win = this.windows.get(pageId);
+    const located = win ? this.findReviewMessage(win, messageId) : undefined;
+    const bullets = located ? parseReviewFixes(located.found.content)?.bullets ?? emptyFixBullets() : emptyFixBullets();
+    return { ok: true, rows: reviewFixRows(parsed.groups, bullets) };
+  }
+
   async runNeuroFix(
     pageId: string,
     messageId: string,
     scope: NeuroFixScope,
     itemIndex?: number,
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; state: ReviewPageState } | { ok: false; message: string; discord?: boolean }> {
     const paths = this.profilePaths();
     const fail = async (message: string) => {
       await runNeuroFixSkill({ cwd: this.cwd(), model: paths.fixModel, prompt: '', failMessage: message });
@@ -2210,43 +2252,48 @@ export class ReviewMapController {
     if (!parsed.ok) {
       return fail(parsed.message);
     }
+    const win = this.windows.get(pageId);
+    const located = win ? this.findReviewMessage(win, messageId) : undefined;
+    const fixed = located ? parseReviewFixes(located.found.content)?.bullets ?? emptyFixBullets() : emptyFixBullets();
+    const picked = emptyFixBullets();
     const sections: string[] = [];
+    const take = (level: 'H' | 'M' | 'L', indexes: number[]) => {
+      const lines: string[] = [];
+      for (const index of indexes) {
+        const item = parsed.groups[level][index];
+        const number = index + 1;
+        if (!item || fixed[level].includes(number)) {
+          continue;
+        }
+        picked[level].push(number);
+        lines.push(`- ${item}`);
+      }
+      if (lines.length) {
+        sections.push([level, ...lines].join('\n'));
+      }
+    };
     if (typeof itemIndex === 'number') {
       if (scope === 'all') {
         return fail('Нет замечаний для выбранного scope');
       }
-      const item = parsed.groups[scope][itemIndex];
-      if (!item) {
-        return fail('Нет замечаний для выбранного scope');
-      }
-      sections.push([scope, `- ${item}`].join('\n'));
+      take(scope, [itemIndex]);
     } else {
-      const letters: Array<'H' | 'M' | 'S'> = scope === 'all' ? ['H', 'M', 'S'] : [scope];
+      const letters: Array<'H' | 'M' | 'L'> = scope === 'all' ? ['H', 'M', 'L'] : [scope];
       for (const letter of letters) {
-        const items = parsed.groups[letter];
-        if (!items.length) {
-          continue;
-        }
-        sections.push([letter, ...items.map((item) => `- ${item}`)].join('\n'));
+        take(letter, parsed.groups[letter].map((_, index) => index));
       }
     }
     if (!sections.length) {
       return fail('Нет замечаний для выбранного scope');
     }
+    const levelName = (level: 'H' | 'M' | 'L') =>
+      level === 'H' ? 'High' : level === 'M' ? 'Medium' : 'Low';
     const scopeLabel =
-      typeof itemIndex === 'number'
-        ? scope === 'H'
-          ? `High #${itemIndex + 1}`
-          : scope === 'M'
-            ? `Medium #${itemIndex + 1}`
-            : `Simple #${itemIndex + 1}`
+      typeof itemIndex === 'number' && scope !== 'all'
+        ? `${levelName(scope)} #${itemIndex + 1}`
         : scope === 'all'
-          ? 'H, M и S'
-          : scope === 'H'
-            ? 'High'
-            : scope === 'M'
-              ? 'Medium'
-              : 'Simple';
+          ? 'H, M и L'
+          : levelName(scope);
     const prompt = [
       'Исправь замечания код-ревью в рабочей копии.',
       `Scope: ${scopeLabel}.`,
@@ -2272,7 +2319,89 @@ export class ReviewMapController {
       printThinking: paths.printThinking,
       printTools: paths.printTools,
     });
-    return agent.ok ? { ok: true } : { ok: false, message: agent.message };
+    if (!agent.ok) {
+      return { ok: false, message: agent.message };
+    }
+    const recorded = await this.recordNeuroFix(pageId, messageId, picked);
+    if (!recorded.ok) {
+      return { ok: false, message: recorded.message, discord: true };
+    }
+    return { ok: true, state: recorded.state };
+  }
+
+  /** After a successful neurofix, add the sent 1-based indexes to `fixes:` and `bullet:`. */
+  private async recordNeuroFix(
+    pageId: string,
+    messageId: string,
+    picked: ReviewFixState['bullets'],
+  ): Promise<{ ok: true; state: ReviewPageState } | { ok: false; message: string }> {
+    const win = this.windows.get(pageId);
+    const token = await this.discordToken();
+    if (!win || !token) {
+      return { ok: false, message: 'Review page is not ready' };
+    }
+    const located = this.findReviewMessage(win, messageId);
+    if (!located || !isReviewMessage(located.found.content)) {
+      return { ok: false, message: 'Review message not found on the map' };
+    }
+    const access = located.kind === 'channel' ? await this.getAccess(pageId) : undefined;
+    const editChannel = located.kind === 'channel' ? access?.channelId : located.channelId;
+    if (!editChannel) {
+      return { ok: false, message: 'Review page is not ready' };
+    }
+    const prev = parseReviewFixes(located.found.content);
+    const bullets = emptyFixBullets();
+    for (const level of ['H', 'M', 'L'] as const) {
+      bullets[level] = [...new Set([...(prev?.bullets[level] ?? []), ...picked[level]])].sort((a, b) => a - b);
+    }
+    const next: ReviewFixState = {
+      counts: { H: bullets.H.length, M: bullets.M.length, L: bullets.L.length },
+      at: formatFixStamp(),
+      bullets,
+    };
+    const edited = await editChannelMessage(
+      token,
+      editChannel,
+      located.found.id,
+      writeReviewFixes(located.found.content, next),
+    );
+    if (!edited.ok) {
+      return { ok: false, message: edited.message };
+    }
+    this.rememberEditedReview(win, located, edited.value);
+    return { ok: true, state: this.snapshot(pageId) };
+  }
+
+  private rememberEditedReview(
+    win: ReviewWindow,
+    located: { kind: 'channel'; found: DiscordMessage; channelId: string } | { kind: 'thread'; found: DiscordMessage; channelId: string },
+    edited: DiscordMessage,
+  ): void {
+    if (located.kind === 'channel') {
+      const idx = win.messages.findIndex((item) => item.id === located.found.id);
+      if (idx >= 0) {
+        const prev = win.messages[idx];
+        win.messages[idx] = {
+          ...edited,
+          thread: edited.thread ?? prev.thread,
+          hasThread: edited.hasThread || prev.hasThread,
+          attachments: edited.attachments?.length ? edited.attachments : prev.attachments,
+        };
+      }
+      return;
+    }
+    const bucket = win.threads.get(located.channelId);
+    if (!bucket) {
+      return;
+    }
+    const idx = bucket.replies.findIndex((item) => item.id === located.found.id);
+    if (idx >= 0) {
+      const prev = bucket.replies[idx];
+      bucket.replies[idx] = {
+        ...edited,
+        attachments: edited.attachments?.length ? edited.attachments : prev.attachments,
+      };
+    }
   }
 
   async startOrSendReview(
@@ -2796,7 +2925,7 @@ export class ReviewMapController {
     parent.thread = { id: thread.value.id, messageCount: thread.value.messageCount };
     const paths = this.profilePaths();
     let reviewNumber = 1;
-    let severity = 'H:0 | M:0 | S:0';
+    let severity = formatSeverityLine(0, 0, 0);
     let scope: 'branch' | 'changes' | undefined;
     let depthToken: 'rs' | 'rm' | 'rd' | undefined;
     try {
@@ -2875,7 +3004,7 @@ export class ReviewMapController {
     }
     const paths = this.profilePaths();
     let reviewNumber = 1;
-    let severity = 'H:0 | M:0 | S:0';
+    let severity = formatSeverityLine(0, 0, 0);
     let scope: 'branch' | 'changes' | undefined;
     let depthToken: 'rs' | 'rm' | 'rd' | undefined;
     try {

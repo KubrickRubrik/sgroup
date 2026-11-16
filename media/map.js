@@ -40,6 +40,9 @@
   const reviewFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-grow'));
   const reviewFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-shrink'));
   const reviewFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-save'));
+  const reviewFixesPane = /** @type {HTMLElement | null} */ (document.getElementById('review-fixes'));
+  const reviewFixesBody = /** @type {HTMLElement | null} */ (document.getElementById('review-fixes-body'));
+  const reviewFixesClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-fixes-close'));
   const explainFilePane = /** @type {HTMLElement | null} */ (document.getElementById('explain-file'));
   const explainFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-title'));
   const explainFileBody = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-body'));
@@ -445,8 +448,12 @@
   explainFileClose?.addEventListener('click', () => {
     closeExplainFileView();
   });
+  reviewFixesClose?.addEventListener('click', () => {
+    closeReviewFixesView();
+  });
   reviewFileBody?.addEventListener('click', openReviewFileLink);
   explainFileBody?.addEventListener('click', openReviewFileLink);
+  reviewFixesBody?.addEventListener('click', openReviewFileLink);
   toolbarExplorer?.addEventListener('click', () => {
     cancelMenuClose();
     closeToolbarMenus();
@@ -953,6 +960,11 @@
    *     draft?: boolean,
    *     color?: string,
    *     pillLabel?: string,
+   *     fixes?: {
+   *       counts: { H: number, M: number, L: number },
+   *       at?: string,
+   *       bullets: { H: number[], M: number[], L: number[] }
+   *     },
    *     status?: 'open' | 'closed',
    *     reviewStatus?: 'inProgress' | 'done',
    *     hasFile?: boolean,
@@ -969,6 +981,11 @@
    *       isExplain?: boolean,
    *       isPill?: boolean,
    *       pillLabel?: string,
+   *       fixes?: {
+   *         counts: { H: number, M: number, L: number },
+   *         at?: string,
+   *         bullets: { H: number[], M: number[], L: number[] }
+   *       },
    *       status?: 'inProgress' | 'done',
    *       color?: string,
    *       branch?: string,
@@ -1193,6 +1210,8 @@
       }
     } else if (message.type === 'reviewFile') {
       onReviewFileResult(message);
+    } else if (message.type === 'reviewFixes') {
+      onReviewFixesResult(message);
     } else if (message.type === 'reviewState') {
       const incoming = keepLoadedReview(message.review || null);
       const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
@@ -2722,7 +2741,7 @@
    * Side flyout for Neurofix scopes on the root review chip.
    * @param {string} pageId
    * @param {string} messageId
-   * @param {{ H: number, M: number, S: number }} counts
+   * @param {{ H: number, M: number, L: number }} counts
    */
   function mountNeuroFixMenu(pageId, messageId, counts) {
     clearNeuroFixMenu();
@@ -2736,15 +2755,15 @@
     const fly = document.createElement('div');
     fly.className = 'syn3-menu syn3-menu-sub';
     fly.setAttribute('role', 'menu');
-    /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
+    /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
     const items = [
       { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
       { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
-      { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
+      { scope: 'L', label: t('neurofixSimple'), show: counts.L > 0 },
       {
         scope: 'all',
         label: t('neurofixAll'),
-        show: counts.H > 0 || counts.M > 0 || counts.S > 0,
+        show: counts.H > 0 || counts.M > 0 || counts.L > 0,
       },
     ];
     for (const item of items) {
@@ -3046,8 +3065,9 @@
       const messageId = String(openMenuState.ctx.reviewMessageId || '');
       const reply = findReviewReply(messageId);
       const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
-      const counts = parsePillSeverityCounts(reply?.pillLabel || chip?.pillLabel);
-      if (counts) {
+      const source = reply || chip;
+      const counts = remainingSeverityCounts(parsePillSeverityCounts(source?.pillLabel), source);
+      if (counts && counts.H + counts.M + counts.L > 0) {
         mountNeuroFixMenu(pageId, messageId, counts);
       }
     }
@@ -3234,8 +3254,8 @@
         },
         { plain: true },
       );
-      const counts = parsePillSeverityCounts(chip?.pillLabel);
-      if (counts && (counts.H > 0 || counts.M > 0 || counts.S > 0)) {
+      const counts = remainingSeverityCounts(parsePillSeverityCounts(chip?.pillLabel), chip);
+      if (counts && counts.H + counts.M + counts.L > 0) {
         appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded);
       }
       scroller.append(
@@ -3331,8 +3351,8 @@
         },
         { plain: true },
       );
-      const counts = parsePillSeverityCounts(reply?.pillLabel);
-      if (counts && (counts.H > 0 || counts.M > 0 || counts.S > 0)) {
+      const counts = remainingSeverityCounts(parsePillSeverityCounts(reply?.pillLabel), reply);
+      if (counts && counts.H + counts.M + counts.L > 0) {
         appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded);
       }
       scroller.append(
@@ -3352,17 +3372,21 @@
       const rootChip = (reviewState?.messages || []).find(
         (item) => item.id === messageId && item.isReviewRoot,
       );
-      const counts = parsePillSeverityCounts(reply?.pillLabel || rootChip?.pillLabel);
+      const source = reply || rootChip;
+      const counts = remainingSeverityCounts(
+        parsePillSeverityCounts(source?.pillLabel),
+        source,
+      );
       if (counts) {
-        /** @type {Array<{ scope: 'H' | 'M' | 'S' | 'all', label: string, show: boolean }>} */
+        /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
         const items = [
           { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
           { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
-          { scope: 'S', label: t('neurofixSimple'), show: counts.S > 0 },
+          { scope: 'L', label: t('neurofixSimple'), show: counts.L > 0 },
           {
             scope: 'all',
             label: t('neurofixAll'),
-            show: counts.H > 0 || counts.M > 0 || counts.S > 0,
+            show: counts.H > 0 || counts.M > 0 || counts.L > 0,
           },
         ];
         let any = false;
@@ -4813,6 +4837,72 @@
   }
 
   /** MR chips, root reviews, and plain messages whose thread can fold. */
+  /** @param {string | undefined} pillLabel */
+  function parsePillSeverityCounts(pillLabel) {
+    if (!pillLabel) {
+      return undefined;
+    }
+    const match = pillLabel.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*[LS]:\s*(\d+)/i);
+    if (!match) {
+      return undefined;
+    }
+    return { H: Number(match[1]), M: Number(match[2]), L: Number(match[3]) };
+  }
+
+  /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number }, bullets?: { H?: number[], M?: number[], L?: number[] }, at?: string } } | null | undefined} node */
+  function reviewFixBullets(node) {
+    const bullets = node && node.fixes && node.fixes.bullets;
+    return {
+      H: Array.isArray(bullets && bullets.H) ? bullets.H : [],
+      M: Array.isArray(bullets && bullets.M) ? bullets.M : [],
+      L: Array.isArray(bullets && bullets.L) ? bullets.L : [],
+    };
+  }
+
+  /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number } } } | null | undefined} node */
+  function reviewHasFixes(node) {
+    const counts = node && node.fixes && node.fixes.counts;
+    if (!counts) {
+      return false;
+    }
+    return (Number(counts.H) || 0) + (Number(counts.M) || 0) + (Number(counts.L) || 0) > 0;
+  }
+
+  /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number } } } | null | undefined} node */
+  function reviewFixLabel(node) {
+    const counts = node && node.fixes && node.fixes.counts;
+    if (!counts) {
+      return '';
+    }
+    const parts = [];
+    if (Number(counts.H) > 0) {
+      parts.push(`H:${counts.H}`);
+    }
+    if (Number(counts.M) > 0) {
+      parts.push(`M:${counts.M}`);
+    }
+    if (Number(counts.L) > 0) {
+      parts.push(`L:${counts.L}`);
+    }
+    return parts.join(' | ');
+  }
+
+  /**
+   * @param {{ H: number, M: number, L: number } | undefined} counts
+   * @param {{ fixes?: { bullets?: { H?: number[], M?: number[], L?: number[] } } } | null | undefined} node
+   */
+  function remainingSeverityCounts(counts, node) {
+    if (!counts) {
+      return undefined;
+    }
+    const bullets = reviewFixBullets(node);
+    return {
+      H: Math.max(0, counts.H - bullets.H.length),
+      M: Math.max(0, counts.M - bullets.M.length),
+      L: Math.max(0, counts.L - bullets.L.length),
+    };
+  }
+
   function reviewMessageCanFold(msg) {
     if (!msg) {
       return false;
@@ -4825,7 +4915,12 @@
       return true;
     }
     if (msg.isMr || msg.isReviewRoot) {
-      return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+      return !!(
+        msg.hasThread ||
+        msg.threadId ||
+        (msg.replies && msg.replies.length) ||
+        reviewHasFixes(msg)
+      );
     }
     if (msg.isExplainRoot) {
       return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
@@ -8338,6 +8433,11 @@
     const color = msg.color || '#8e4ec6';
     const pendingExplain = activePendingExplainId(pageId) === msg.id;
     const showSkeleton = !!withReviewSkeleton || pendingExplain;
+    if (reviewHasFixes(msg)) {
+      const replies = msg.replies || [];
+      const hasNext = replies.length > 0 || showSkeleton || !!msg.repliesHasMore;
+      slide.append(renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : ''));
+    }
     if (msg.repliesHasMore) {
       const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
       more.type = 'button';
@@ -8481,6 +8581,51 @@
       });
       body.append(plain);
     }
+    if (reviewHasFixes(reply) && pageId) {
+      const children = el('div', 'review-children');
+      const clip = el('div', 'review-children-clip');
+      const slide = el('div', 'review-children-slide');
+      slide.append(renderReviewFixNode(pageId, reply.id, reply, ''));
+      clip.append(slide);
+      children.append(clip);
+      body.append(children);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ fixes?: { at?: string } }} source
+   * @param {string} nextColor
+   */
+  function renderReviewFixNode(pageId, messageId, source, nextColor) {
+    const stampDate = (source.fixes && source.fixes.at) || '';
+    const row = el('div', 'review-reply-node is-fix has-gap');
+    row.dataset.reviewFixFor = messageId;
+    row.style.setProperty('--link-color', '#3dd68c');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: !!stampDate, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    if (stampDate) {
+      body.append(el('div', 'review-stamp', stampDate));
+    }
+    const chip = el('button', 'review-chip is-review-pill is-fix');
+    chip.type = 'button';
+    const label = el('span', 'review-chip-label');
+    setReviewPillText(label, reviewFixLabel(source));
+    chip.append(label);
+    chip.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openReviewFixesView(pageId, messageId);
+    });
+    body.append(chip);
     row.append(body);
     return row;
   }
@@ -8491,6 +8636,7 @@
       return;
     }
     closeExplainFileView();
+    closeReviewFixesView();
     if (reviewFileView && reviewFileView.pageId === pageId && reviewFileView.messageId === reply.id) {
       closeReviewFileView();
       return;
@@ -8547,6 +8693,7 @@
       return;
     }
     closeReviewFileView();
+    closeReviewFixesView();
     if (explainFileView && explainFileView.pageId === pageId && explainFileView.messageId === chip.id) {
       closeExplainFileView();
       return;
@@ -8575,6 +8722,95 @@
     }
     explainFileView = null;
     mountExplainFile();
+  }
+
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   html: string,
+   *   error: string
+   * } | null}
+   */
+  let reviewFixesView = null;
+
+  /** @param {string} pageId @param {string} messageId */
+  function openReviewFixesView(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    if (reviewFixesView && reviewFixesView.pageId === pageId && reviewFixesView.messageId === messageId) {
+      closeReviewFixesView();
+      return;
+    }
+    closeReviewFileView();
+    closeExplainFileView();
+    reviewFixesView = {
+      pageId,
+      messageId,
+      status: 'loading',
+      html: '',
+      error: '',
+    };
+    mountReviewFixes();
+    vscode.postMessage({ type: 'reviewOpenFixes', pageId, messageId });
+  }
+
+  function closeReviewFixesView() {
+    if (!reviewFixesView) {
+      mountReviewFixes();
+      return;
+    }
+    reviewFixesView = null;
+    mountReviewFixes();
+  }
+
+  function mountReviewFixes() {
+    if (!reviewFixesPane || !reviewFixesBody) {
+      return;
+    }
+    const view = reviewFixesView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      reviewFixesPane.hidden = true;
+      return;
+    }
+    reviewFixesPane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      reviewFixesPane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    if (reviewFixesClose) {
+      reviewFixesClose.title = t('reviewFileClose');
+      reviewFixesClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    reviewFixesBody.replaceChildren();
+    if (view.status === 'loading') {
+      reviewFixesBody.append(reviewFileSkeleton());
+    } else if (view.status === 'error') {
+      reviewFixesBody.append(el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')));
+    } else {
+      const table = el('div', 'explain-md');
+      table.innerHTML = view.html || '';
+      reviewFixesBody.append(table);
+    }
+  }
+
+  /** @param {{ messageId?: string, ok?: boolean, html?: string, message?: string }} message */
+  function onReviewFixesResult(message) {
+    if (!reviewFixesView || reviewFixesView.messageId !== message.messageId) {
+      return;
+    }
+    if (message.ok && typeof message.html === 'string') {
+      reviewFixesView.status = 'ready';
+      reviewFixesView.html = message.html;
+      reviewFixesView.error = '';
+    } else {
+      reviewFixesView.status = 'error';
+      reviewFixesView.error = message.message || t('reviewFileDownloadFail');
+    }
+    mountReviewFixes();
   }
 
   function mountExplainFile() {
@@ -8934,24 +9170,13 @@
     return '';
   }
 
-  function parsePillSeverityCounts(pillLabel) {
-    if (!pillLabel) {
-      return undefined;
-    }
-    const match = pillLabel.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*S:\s*(\d+)/i);
-    if (!match) {
-      return undefined;
-    }
-    return { H: Number(match[1]), M: Number(match[2]), S: Number(match[3]) };
-  }
-
   /**
    * Client-side mirror of parseReviewFixGroups for the Neurofix list panel.
    * @param {string} text
    * @returns {{
    *   ok: true,
    *   counts: { H: number, M: number, S: number },
-   *   groups: { H: string[], M: string[], S: string[] },
+   *   groups: { H: string[], M: string[], L: string[] },
    * } | { ok: false, message: string }}
    */
   function parseReviewFixGroupsClient(text) {
@@ -8966,13 +9191,13 @@
     const counts = {
       H: Number(sevMatch[1]),
       M: Number(sevMatch[2]),
-      S: Number(sevMatch[4]),
+      L: Number(sevMatch[4]),
     };
-    /** @type {{ H: string[], M: string[], S: string[] }} */
-    const groups = { H: [], M: [], S: [] };
-    /** @type {Set<'H' | 'M' | 'S'>} */
+    /** @type {{ H: string[], M: string[], L: string[] }} */
+    const groups = { H: [], M: [], L: [] };
+    /** @type {Set<'H' | 'M' | 'L'>} */
     const seen = new Set();
-    /** @type {'H' | 'M' | 'S' | undefined} */
+    /** @type {'H' | 'M' | 'L' | undefined} */
     let current;
     for (const raw of lines.slice(3)) {
       const trimmed = raw.trim();
@@ -8981,8 +9206,11 @@
       }
       const header = /^([HMLS])\s*$/i.exec(trimmed);
       if (header) {
-        const letter =
-          header[1].toUpperCase() === 'L' ? 'S' : /** @type {'H' | 'M' | 'S'} */ (header[1].toUpperCase());
+        const upper = header[1].toUpperCase();
+        const letter = upper === 'S' || upper === 'L' ? 'L' : upper === 'H' || upper === 'M' ? upper : '';
+        if (letter !== 'H' && letter !== 'M' && letter !== 'L') {
+          continue;
+        }
         if (seen.has(letter)) {
           return { ok: false, message: t('neurofixListParseFail') };
         }
@@ -8998,7 +9226,7 @@
         continue;
       }
     }
-    for (const letter of /** @type {Array<'H' | 'M' | 'S'>} */ (['H', 'M', 'S'])) {
+    for (const letter of /** @type {Array<'H' | 'M' | 'L'>} */ (['H', 'M', 'L'])) {
       const expected = counts[letter];
       const actual = groups[letter].length;
       if (expected === 0 && actual === 0) {
@@ -9117,28 +9345,49 @@
       );
     } else if (parsed) {
       const counts = parsed.counts;
+      const pageId = neuroFixListPanel.pageId;
+      const messageId = neuroFixListPanel.messageId;
+      const source =
+        findReviewReply(messageId) ||
+        (reviewState?.messages || []).find((item) => item.id === messageId);
+      const bullets = reviewFixBullets(source);
+      const fixedBy = {
+        H: new Set(bullets.H),
+        M: new Set(bullets.M),
+        L: new Set(bullets.L),
+      };
+      const remaining = {
+        H: counts.H - fixedBy.H.size,
+        M: counts.M - fixedBy.M.size,
+        L: counts.L - fixedBy.L.size,
+      };
       panel.append(
         el(
           'div',
           'syn3-neurofix-list-counts',
-          `H:${counts.H} | M:${counts.M} | S:${counts.S}`,
+          `H:${Math.max(0, remaining.H)} | M:${Math.max(0, remaining.M)} | L:${Math.max(0, remaining.L)}`,
         ),
       );
-      /** @type {Array<{ letter: 'H' | 'M' | 'S', label: string }>} */
+      /** @type {Array<{ letter: 'H' | 'M' | 'L', label: string }>} */
       const groupMeta = [
         { letter: 'H', label: 'High' },
         { letter: 'M', label: 'Medium' },
-        { letter: 'S', label: 'Simple' },
+        { letter: 'L', label: 'Low' },
       ];
-      const pageId = neuroFixListPanel.pageId;
-      const messageId = neuroFixListPanel.messageId;
       for (const group of groupMeta) {
         const items = parsed.groups[group.letter];
         if (!items.length) {
           continue;
         }
+        const visible = items.some((_, index) => !fixedBy[group.letter].has(index + 1));
+        if (!visible) {
+          continue;
+        }
         panel.append(el('div', 'syn3-neurofix-list-group', group.label));
         for (let index = 0; index < items.length; index += 1) {
+          if (fixedBy[group.letter].has(index + 1)) {
+            continue;
+          }
           const full = items[index];
           const short =
             full.length > 80 ? full.slice(0, 80).replace(/\s+\S*$/, '').trimEnd() + '…' : full;
@@ -14040,6 +14289,10 @@
     if (page?.kind !== 'review' && reviewFileView) {
       reviewFileView = null;
       mountReviewFile();
+    }
+    if (page?.kind !== 'review' && reviewFixesView) {
+      reviewFixesView = null;
+      mountReviewFixes();
     }
     if (page?.kind === 'review') {
       closeGroupPanel(false);

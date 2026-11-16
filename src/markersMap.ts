@@ -23,7 +23,7 @@ import {
   snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
-import { instructionPageHtml, instructionTitle, reviewFileHtml } from './instructionPreview';
+import { instructionPageHtml, instructionTitle, reviewFileHtml, reviewFixTableHtml } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
@@ -36,7 +36,7 @@ import {
   type SetupChannelKind,
 } from './discordSetup';
 import { ReviewDepth, ReviewKind } from './reviewPending';
-import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
+import { normalizeNeuroFixScope, ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
 import { ScenarioMapController, ScenarioPageState } from './scenarioMap';
 import {
   createRepositoryTokenKey,
@@ -494,6 +494,7 @@ type IncomingMessage =
   | { type: 'explainRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFile'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFixes'; pageId: string; messageId: string }
   | { type: 'reviewSaveFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFileTab'; pageId: string; messageId: string }
   | {
@@ -3239,6 +3240,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
       return;
     }
+    if (message.type === 'reviewOpenFixes') {
+      const table = await this.review.reviewFixRowsFor(message.pageId, message.messageId);
+      await webview.postMessage({
+        type: 'reviewFixes',
+        pageId: message.pageId,
+        messageId: message.messageId,
+        ok: table.ok,
+        html: table.ok ? reviewFixTableHtml(table.rows) : undefined,
+        message: table.ok ? undefined : table.message,
+      });
+      return;
+    }
     if (message.type === 'reviewOpenFile') {
       const result = await this.review.readReviewAttachment(message.pageId, message.messageId);
       await webview.postMessage({
@@ -3383,20 +3396,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewNeurofix') {
-      const scope = message.scope;
+      const scope = normalizeNeuroFixScope(message.scope);
       const itemIndex =
         typeof message.itemIndex === 'number' && Number.isInteger(message.itemIndex)
           ? message.itemIndex
           : undefined;
-      if (itemIndex !== undefined) {
-        if (scope === 'H' || scope === 'M' || scope === 'S') {
-          await this.review.runNeuroFix(message.pageId, message.messageId, scope, itemIndex);
+      if (!scope || (itemIndex !== undefined && scope === 'all')) {
+        return;
+      }
+      const result = await this.review.runNeuroFix(message.pageId, message.messageId, scope, itemIndex);
+      if (!result.ok) {
+        if (result.discord) {
+          void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
         }
         return;
       }
-      if (scope === 'H' || scope === 'M' || scope === 'S' || scope === 'all') {
-        await this.review.runNeuroFix(message.pageId, message.messageId, scope);
-      }
+      await this.pushReviewState(webview, result.state);
       return;
     }
     if (message.type === 'listProjectDir') {
@@ -7143,6 +7158,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </div>
       </div>
       <div id="review-file-body" class="review-file-body"></div>
+    </aside>
+    <aside id="review-fixes" class="review-file review-fixes" hidden>
+      <div class="review-file-head">
+        <span class="review-file-title"></span>
+        <button id="review-fixes-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+      </div>
+      <div id="review-fixes-body" class="review-file-body"></div>
     </aside>
     <aside id="explain-file" class="review-file explain-file" hidden>
       <div class="review-file-head">

@@ -36,11 +36,14 @@ export {
 import { formatConfigHeaderDate } from './configFormat';
 /**
  * Severity line inside agent stdout.
- * Canonical form is `H:n | M:n | S:n`. Legacy `L` (former low) maps to `S`.
+ * Canonical form is `H:n | M:n | L:n`. Legacy `S` (former simple) maps to `L`.
  * A review file and chip put `branch|changes | rs|rm|rd | ` in front of this line.
  */
 export const REVIEW_SEVERITY_RE =
   /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i;
+
+/** Review severity group. `S` in older files and chips is the same level as `L`. */
+export type ReviewLevel = 'H' | 'M' | 'L';
 
 /** Kind token on a review file line and chip. Legacy files may still say `change`. */
 export type ReviewScopeToken = 'branch' | 'changes';
@@ -64,21 +67,33 @@ export function normalizeReviewScopeToken(raw: string): ReviewScopeToken | undef
 export type ParsedReviewSeverity = {
   scope?: ReviewScopeToken;
   depth?: ReviewDepthToken;
-  /** Canonical `H:n | M:n | S:n`. */
+  /** Canonical `H:n | M:n | L:n`. */
   severity: string;
 };
 
-/** Format a normalized severity line. Legacy L counts become S. */
-export function formatSeverityLine(h: string | number, m: string | number, s: string | number): string {
-  return `H:${h} | M:${m} | S:${s}`;
+/** `H`, `M`, `L`. Older `S` is Low. */
+export function reviewLevel(raw: string): ReviewLevel | undefined {
+  const letter = raw.trim().toUpperCase();
+  if (letter === 'H' || letter === 'M' || letter === 'L') {
+    return letter;
+  }
+  if (letter === 'S') {
+    return 'L';
+  }
+  return undefined;
 }
 
-/** Match a severity line and return the canonical `H:n | M:n | S:n` form. */
+/** Format a normalized severity line. Legacy S counts become L. */
+export function formatSeverityLine(h: string | number, m: string | number, low: string | number): string {
+  return `H:${h} | M:${m} | L:${low}`;
+}
+
+/** Match a severity line and return the canonical `H:n | M:n | L:n` form. */
 export function normalizeSeverityMatch(match: RegExpMatchArray): string {
   return formatSeverityLine(match[1], match[2], match[4]);
 }
 
-/** File line 3 and the tail of a chip: `branch | rd | H:n | M:n | S:n`. */
+/** File line 3 and the tail of a chip: `branch | rd | H:n | M:n | L:n`. Legacy S is Low. */
 export function formatReviewScopeLine(
   scope: ReviewScopeToken,
   depth: ReviewDepthToken,
@@ -410,7 +425,7 @@ export function isScenarioMessage(content: string): boolean {
   return SCENARIO_HEAD_RE.test(head.trim()) && !isScenarioGroupMessage(content);
 }
 
-/** First severity line `H:n | M:n | S:n` in free text (agent stdout or file body). Legacy L → S. */
+/** First severity line `H:n | M:n | L:n` in free text (agent stdout or file body). Legacy S → L. */
 export function findSeverityLine(text: string): string | undefined {
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -426,8 +441,8 @@ export function findSeverityLine(text: string): string | undefined {
  * Review attachment layout:
  * 1: Ревью N
  * 2: MR meta
- * 3: branch|changes | rs|rm|rd | H:N | M:N | S:N
- *    Older files keep a bare H:N | M:N | S:N on this line.
+ * 3: branch|changes | rs|rm|rd | H:N | M:N | L:N
+ *    Older files keep a bare H:N | M:N | S:N on this line. S is Low.
  * rest: body
  */
 export function parseReviewAttachment(text: string): {
@@ -665,6 +680,122 @@ export type ReviewChipStatus = 'inProgress' | 'done';
 /** Set or append `status: -|inProgress|done` on an R_SYN3 message. */
 export function replaceReviewDiscordStatus(content: string, status: ReviewChipStatus | '-'): string {
   return replaceDiscordMetaLine(content, 'status', status);
+}
+
+export type ReviewFixCounts = { H: number; M: number; L: number };
+export type ReviewFixBullets = { H: number[]; M: number[]; L: number[] };
+
+/** Counts, stamp, and 1-based bullet indexes stored on an R_SYN3 message. */
+export type ReviewFixState = {
+  counts: ReviewFixCounts;
+  /** `ДД.ММ.ГГ чч:мм`. Absent while every count is zero. */
+  at?: string;
+  bullets: ReviewFixBullets;
+};
+
+const FIX_STAMP_RE = /^(\d{2}\.\d{2}\.\d{2} \d{2}:\d{2})$/;
+const FIX_COUNT_RE = /^([HMLS]):\s*(\d+)$/i;
+const FIX_BULLET_RE = /^([HMLS]):\s*([\d,\s]+)$/i;
+
+export function emptyFixBullets(): ReviewFixBullets {
+  return { H: [], M: [], L: [] };
+}
+
+export function emptyFixCounts(): ReviewFixCounts {
+  return { H: 0, M: 0, L: 0 };
+}
+
+/** `ДД.ММ.ГГ чч:мм`, same shape as the map stamp. */
+export function formatFixStamp(date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${String(date.getFullYear()).slice(-2)} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
+}
+
+function parseFixCounts(value: string): { counts: ReviewFixCounts; at?: string } {
+  const counts = emptyFixCounts();
+  let at: string | undefined;
+  for (const part of value.split('|').map((item) => item.trim()).filter(Boolean)) {
+    const stamp = FIX_STAMP_RE.exec(part);
+    if (stamp) {
+      at = stamp[1];
+      continue;
+    }
+    const count = FIX_COUNT_RE.exec(part);
+    const level = count ? reviewLevel(count[1]) : undefined;
+    if (!count || !level) {
+      continue;
+    }
+    counts[level] = Number(count[2]);
+  }
+  return { counts, at };
+}
+
+function parseFixBullets(value: string): ReviewFixBullets {
+  const bullets = emptyFixBullets();
+  for (const part of value.split('|').map((item) => item.trim()).filter(Boolean)) {
+    const match = FIX_BULLET_RE.exec(part);
+    const level = match ? reviewLevel(match[1]) : undefined;
+    if (!match || !level) {
+      continue;
+    }
+    const nums = match[2]
+      .split(',')
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item > 0);
+    bullets[level] = [...new Set([...bullets[level], ...nums])].sort((a, b) => a - b);
+  }
+  return bullets;
+}
+
+/** `fixes:` plus optional `bullet:` on an R_SYN3 message. Missing `fixes:` means none. */
+export function parseReviewFixes(content: string): ReviewFixState | undefined {
+  const fixes = metaLineValue(content, 'fixes');
+  if (fixes === undefined) {
+    return undefined;
+  }
+  const parsed = parseFixCounts(fixes);
+  const bullet = metaLineValue(content, 'bullet');
+  return {
+    counts: parsed.counts,
+    at: parsed.at,
+    bullets: bullet ? parseFixBullets(bullet) : emptyFixBullets(),
+  };
+}
+
+export function formatFixesValue(counts: ReviewFixCounts, at?: string): string {
+  const core = formatSeverityLine(counts.H, counts.M, counts.L);
+  return at ? `${core} | ${at}` : core;
+}
+
+/** Groups with no indexes are omitted. */
+export function formatBulletValue(bullets: ReviewFixBullets): string | undefined {
+  const parts: string[] = [];
+  for (const level of ['H', 'M', 'L'] as const) {
+    const nums = [...new Set(bullets[level])].filter((item) => item > 0).sort((a, b) => a - b);
+    if (nums.length) {
+      parts.push(`${level}:${nums.join(',')}`);
+    }
+  }
+  return parts.length ? parts.join(' | ') : undefined;
+}
+
+function removeDiscordMetaLine(content: string, key: string): string {
+  const needle = `${key.toLowerCase()}:`;
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  return lines.filter((line) => !line.trim().toLowerCase().startsWith(needle)).join('\n');
+}
+
+/** Write `fixes:` and `bullet:` back onto an R_SYN3 message. An empty bullet line is removed. */
+export function writeReviewFixes(content: string, state: ReviewFixState): string {
+  let next = replaceDiscordMetaLine(content, 'fixes', formatFixesValue(state.counts, state.at));
+  const bullet = formatBulletValue(state.bullets);
+  if (!bullet) {
+    return removeDiscordMetaLine(next, 'bullet');
+  }
+  return replaceDiscordMetaLine(next, 'bullet', bullet);
 }
 
 export async function postChannelMessage(
@@ -953,21 +1084,24 @@ export function parseMrChip(content: string): {
  * Discord message for a review file attachment.
  *
  * Thread reply (under MR or under a root review):
- * R_SYN3: Ревью N | branch | rd | H:n | M:n | S:n
+ * R_SYN3: Ревью N | branch | rd | H:n | M:n | L:n
  * Model: …
  * Skill: …
+ * fixes: H:0 | M:0 | L:0
  * status: -|inProgress|done
  *
  * Channel root (no MR):
- * R_SYN3: Ревью N | branch | rd | H:n | M:n | S:n
+ * R_SYN3: Ревью N | branch | rd | H:n | M:n | L:n
  * Branch: name
  * Model: …
  * Skill: …
  * color: #hex
+ * fixes: H:0 | M:0 | L:0
  * status: -
  * lock: false
  *
- * Older messages omit kind and depth: `Ревью N | H:n | M:n | S:n`.
+ * Older messages omit kind and depth: `Ревью N | H:n | M:n | S:n`. S is Low.
+ * After a neurofix the fixes line gains a stamp and a `bullet:` line lists 1-based indexes.
  */
 export function formatReviewDiscordBody(opts: {
   reviewNumber: number;
@@ -996,6 +1130,7 @@ export function formatReviewDiscordBody(opts: {
   if (color) {
     lines.push(`color: ${color}`);
   }
+  lines.push(`fixes: ${formatFixesValue(emptyFixCounts())}`);
   lines.push('status: -');
   if (branch) {
     lines.push('lock: false');
