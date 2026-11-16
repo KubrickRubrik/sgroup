@@ -48,6 +48,7 @@ export type CatalogChannels = {
   notes?: string;
   links?: string;
   review?: string;
+  scenarios?: string;
 };
 
 /** Stamp of the last applied Discord message. */
@@ -64,6 +65,7 @@ export interface ProjectChannels {
   notes?: string;
   links?: string;
   review?: string;
+  scenarios?: string;
 }
 
 /** Drop empty channel keys. */
@@ -73,6 +75,7 @@ export function packProjectChannels(channels: ProjectChannels): ProjectChannels 
     ...(channels.notes?.trim() ? { notes: channels.notes.trim() } : {}),
     ...(channels.links?.trim() ? { links: channels.links.trim() } : {}),
     ...(channels.review?.trim() ? { review: channels.review.trim() } : {}),
+    ...(channels.scenarios?.trim() ? { scenarios: channels.scenarios.trim() } : {}),
   };
 }
 
@@ -138,6 +141,14 @@ export interface ProjectProfileEntry {
   reviewPrintThinking?: boolean;
   /** Print tool calls in the agent terminal. Absent means on; false hides them. */
   reviewPrintTools?: boolean;
+  /** Absolute or workspace-relative path to the scenarios skill. */
+  scenarioSkillPath?: string;
+  /** Optional model for the scenarios chat. */
+  scenarioModel?: string;
+  /** Keep reasoning out of the scenario md. Absent means off. */
+  scenarioPrintThinking?: boolean;
+  /** Allow tool calls in the scenarios chat. Absent means on; false forbids them. */
+  scenarioPrintTools?: boolean;
 }
 
 /** One project inside the base snapshot (memory keeps Records by id). */
@@ -195,6 +206,7 @@ export function pageKindToConfigKind(kind: PageKind): ConfigMessageKind | undefi
   if (kind === 'review') {
     return 'REVIEW';
   }
+  // Scenarios live in Discord messages, not in a page config attachment.
   return undefined;
 }
 
@@ -223,6 +235,9 @@ export function pageKindToChannelKey(kind: PageKind): keyof ProjectChannels {
   }
   if (kind === 'links') {
     return 'links';
+  }
+  if (kind === 'scenarios') {
+    return 'scenarios';
   }
   return 'review';
 }
@@ -414,6 +429,7 @@ export function normalizeProjectChannels(raw: unknown): ProjectChannels {
     notes: pick('notes'),
     links: pick('links'),
     review: pick('review'),
+    scenarios: pick('scenarios'),
   });
 }
 

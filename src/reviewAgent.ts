@@ -2,8 +2,21 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { EXPLAIN_TITLE, findSeverityLine, REVIEW_SEVERITY_RE } from './discordApi';
-import { ReviewDepth, ReviewKind, reviewDepthCommand } from './reviewPending';
+import {
+  EXPLAIN_TITLE,
+  findSeverityLine,
+  formatReviewScopeLine,
+  formatSeverityLine,
+  parseReviewSeverityLine,
+  REVIEW_SEVERITY_RE,
+} from './discordApi';
+import {
+  ReviewDepth,
+  ReviewKind,
+  reviewDepthCommand,
+  reviewDepthToken,
+  reviewScopeToken,
+} from './reviewPending';
 
 export type ReviewFixGroups = {
   counts: { H: number; M: number; S: number };
@@ -15,9 +28,9 @@ export function parseReviewFixGroups(
   text: string,
 ): { ok: true; counts: ReviewFixGroups['counts']; groups: ReviewFixGroups['groups'] } | { ok: false; message: string } {
   const lines = text.split(/\r?\n/);
-  const severityRaw = (lines[2] || '').trim();
-  const sevMatch = severityRaw.match(REVIEW_SEVERITY_RE);
-  if (!sevMatch) {
+  const parsedLine = parseReviewSeverityLine((lines[2] || '').trim());
+  const sevMatch = parsedLine?.severity.match(REVIEW_SEVERITY_RE);
+  if (!parsedLine || !sevMatch) {
     return { ok: false, message: 'В файле ревью нет строки H:N | M:N | S:N' };
   }
   const counts = {
@@ -140,7 +153,8 @@ function buildPrompt(opts: {
   lines.push(
     'Answer in ask mode. Put the severity line first in the form exactly:',
     'H:N | M:N | S:N',
-    'Then write the review body.',
+    'Do not write branch, changes, rs, rm, or rd on that line. Syn3 adds them.',
+    'Then write the H/M/S groups with bullets, then the readable review block.',
   );
   return lines.join('\n');
 }
@@ -647,15 +661,18 @@ export async function writeReviewFile(opts: {
   reviewNumber: number;
   mrLine: string;
   severity: string;
+  kind: ReviewKind;
+  depth: ReviewDepth;
   body: string;
 }): Promise<string> {
   await fs.mkdir(opts.dirPath, { recursive: true });
   const name = `review-${opts.reviewNumber}-${Date.now()}.md`;
   const fsPath = path.join(opts.dirPath, name);
+  const counts = parseReviewSeverityLine(opts.severity)?.severity ?? formatSeverityLine(0, 0, 0);
   const text = [
     `Ревью ${opts.reviewNumber}`,
     opts.mrLine,
-    opts.severity,
+    formatReviewScopeLine(reviewScopeToken(opts.kind), reviewDepthToken(opts.depth), counts),
     opts.body,
     '',
   ].join('\n');
@@ -858,7 +875,7 @@ export async function writeExplainFile(opts: {
   await fs.mkdir(opts.dirPath, { recursive: true });
   const name = `explain-${Date.now()}.md`;
   const fsPath = path.join(opts.dirPath, name);
-  const text = [EXPLAIN_TITLE, `Ветка: ${opts.branch}`, '', opts.body, ''].join('\n');
+  const text = [EXPLAIN_TITLE, `Branch: ${opts.branch}`, '', opts.body, ''].join('\n');
   await fs.writeFile(fsPath, text, 'utf8');
   return fsPath;
 }

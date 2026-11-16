@@ -37,6 +37,9 @@
   const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
   const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
   const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
+  const reviewFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-grow'));
+  const reviewFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-shrink'));
+  const reviewFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-save'));
   const explainFilePane = /** @type {HTMLElement | null} */ (document.getElementById('explain-file'));
   const explainFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-title'));
   const explainFileBody = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-body'));
@@ -305,6 +308,19 @@
       postToolbar('createLinkLayout');
       return;
     }
+    if (activePage()?.kind === 'scenarios') {
+      if (!toolbarCreateMenu) {
+        return;
+      }
+      const open = toolbarCreateMenu.hidden;
+      cancelMenuClose();
+      closeToolbarMenus();
+      closeContextMenu();
+      if (open) {
+        openToolbarCreateMenu();
+      }
+      return;
+    }
     if (!toolbarCreateMenu) {
       return;
     }
@@ -318,7 +334,7 @@
   });
   toolbarCreateWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-create');
-    if (toolbarCreate?.disabled || activePage()?.kind === 'links') {
+    if (toolbarCreate?.disabled || activePage()?.kind === 'links' || activePage()?.kind === 'scenarios') {
       return;
     }
     if (!toolbarCreateMenu || !toolbarCreateMenu.hidden) {
@@ -391,6 +407,10 @@
       setAllReviewCollapsed(!allTopCollapsed());
       return;
     }
+    if (activePage()?.kind === 'scenarios') {
+      setAllScenarioCollapsed(!allTopCollapsed());
+      return;
+    }
     postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
   });
   toolbarReviewTab?.addEventListener('click', () => {
@@ -406,9 +426,27 @@
   reviewFileClose?.addEventListener('click', () => {
     closeReviewFileView();
   });
+  reviewFileGrow?.addEventListener('click', () => {
+    stepReviewFont(0.05);
+  });
+  reviewFileShrink?.addEventListener('click', () => {
+    stepReviewFont(-0.05);
+  });
+  reviewFileSave?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewSaveFile',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+    });
+  });
   explainFileClose?.addEventListener('click', () => {
     closeExplainFileView();
   });
+  reviewFileBody?.addEventListener('click', openReviewFileLink);
+  explainFileBody?.addEventListener('click', openReviewFileLink);
   toolbarExplorer?.addEventListener('click', () => {
     cancelMenuClose();
     closeToolbarMenus();
@@ -958,6 +996,55 @@
    */
   /** @type {ReviewState | null} */
   let reviewState = null;
+  /**
+   * @typedef {Object} ScenarioChildChip
+   * @property {string} id
+   * @property {string} title
+   * @property {boolean} hasFile
+   * @property {string} [md]
+   * @property {number} order
+   * @property {number} steep
+   */
+  /**
+   * @typedef {Object} ScenarioChip
+   * @property {string} id
+   * @property {boolean} isGroup
+   * @property {string} title
+   * @property {string} [color]
+   * @property {string} [alias]
+   * @property {string} [description]
+   * @property {boolean} hasFile
+   * @property {string} [md]
+   * @property {boolean} locked
+   * @property {ScenarioChildChip[]} children
+   * @property {boolean} [childrenLoaded]
+   */
+  /**
+   * @typedef {Object} ScenarioPageState
+   * @property {string} pageId
+   * @property {boolean} loading
+   * @property {string} [error]
+   * @property {boolean} [empty]
+   * @property {ScenarioChip[]} messages
+   */
+  /** @type {ScenarioPageState | null} */
+  let scenarioState = null;
+  /** @type {Map<string, ScenarioPageState>} */
+  const scenarioByPage = new Map();
+  let scenariosStructureKey = '';
+  /** @type {string | null} */
+  let openScenarioGroupPanelId = null;
+  let focusScenarioGroupNameOnOpen = false;
+  /** @type {{ id: string, groupId: string, targetGroupId?: string, copy?: boolean } | null} */
+  let pendingScenarioDrop = null;
+  /** @type {{ kind: 'row', row: HTMLElement, edge: 'before' | 'after' | 'into' } | { kind: 'tail', tail: HTMLElement } | null} */
+  let scenarioCue = null;
+  /** @type {HTMLElement | null} */
+  let scenarioDropSlotEl = null;
+  /** @type {HTMLElement | null} */
+  let scenarioOverlayEl = null;
+  /** @type {string | null} */
+  let scenarioOverlayMessageId = null;
   /** Optimistic channel-load edge until the host snapshot arrives. */
   /** @type {{ pageId: string, edge: 'initial' | 'older' | 'newer' } | null} */
   let reviewLoadPending = null;
@@ -995,6 +1082,8 @@
   let reviewSkelShown = '';
   /** Pages that already sent reviewLoad while the snapshot was still missing. */
   const reviewAutoLoad = new Set();
+  /** Pages that already sent scenarioReload while the snapshot was still missing. */
+  const scenarioAutoLoad = new Set();
   /** Settled review snapshots, so switching back does not refetch. */
   const reviewByPage = new Map();
   /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, defaultAssignee: string, provider: 'gitlab' | 'github' } | null} */
@@ -1169,6 +1258,45 @@
       }
       if (activePage()?.kind === 'review') {
         paintReviewPage();
+      }
+    } else if (message.type === 'scenarioState') {
+      const incoming = message.scenario || null;
+      scenarioState = incoming;
+      if (incoming && incoming.pageId) {
+        if (incoming.loading) {
+          scenarioByPage.delete(incoming.pageId);
+        } else {
+          scenarioByPage.set(incoming.pageId, incoming);
+          scenarioAutoLoad.delete(incoming.pageId);
+        }
+      }
+      if (activePage()?.kind === 'scenarios') {
+        render();
+      }
+    } else if (message.type === 'scenarioPagePanel') {
+      openScenarioPagePanel({
+        mode: message.mode === 'edit' ? 'edit' : 'create',
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        hasDiscord: message.hasDiscord === true,
+        scenarioSkillPath:
+          typeof message.scenarioSkillPath === 'string' ? message.scenarioSkillPath : '',
+        scenarioModel: typeof message.scenarioModel === 'string' ? message.scenarioModel : '',
+        scenarioPrintThinking: message.scenarioPrintThinking === true,
+        scenarioPrintTools: message.scenarioPrintTools !== false,
+      });
+    } else if (message.type === 'scenarioPageDone') {
+      setPanelBusy(document.getElementById('scenario-page-panel'), false);
+      closeScenarioPagePanel();
+    } else if (message.type === 'scenarioPageError') {
+      const panel = document.getElementById('scenario-page-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
       }
     } else if (message.type === 'reviewMrPanel') {
       reviewMrPanel = {
@@ -1603,10 +1731,28 @@
   function postToolbar(action) {
     if (action === 'refresh') {
       const page = activePage();
+      if (page && page.kind === 'scenarios') {
+        vscode.postMessage({ type: 'scenarioReload', pageId: page.id });
+        return;
+      }
       if (page && page.kind === 'review') {
         requestReviewChannelLoad(page.id, 'initial');
         return;
       }
+    }
+    if (action === 'scenarioCreate') {
+      const pageId = uiState.activePageId;
+      if (pageId) {
+        vscode.postMessage({ type: 'scenarioCreate', pageId });
+      }
+      return;
+    }
+    if (action === 'scenarioCreateGroup') {
+      const pageId = uiState.activePageId;
+      if (pageId) {
+        vscode.postMessage({ type: 'scenarioCreateGroup', pageId });
+      }
+      return;
     }
     if (action === 'pullMr') {
       const pageId = uiState.activePageId;
@@ -1964,7 +2110,7 @@
   }
 
   function pageHasSettings(page) {
-    return page?.kind === 'review';
+    return page?.kind === 'review' || page?.kind === 'scenarios';
   }
 
   function updatePageMenu() {
@@ -1982,6 +2128,7 @@
       ['createPageNotes', 'notes'],
       ['createPageLinks', 'links'],
       ['createPageReview', 'review'],
+      ['createPageScenarios', 'scenarios'],
     ];
     let available = 0;
     for (const [action, kind] of kindActions) {
@@ -2060,6 +2207,7 @@
     setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
     setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
     setMenuItemLocaleByAction('createPageReview', 'menuNewPageReview');
+    setMenuItemLocaleByAction('createPageScenarios', 'menuNewPageScenarios');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
     setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
     setMenuItemLocaleByAction('whySyn3', 'menuWhy');
@@ -2263,6 +2411,9 @@
     target.replaceChildren();
     if (activePage()?.kind === 'links') {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
+    } else if (activePage()?.kind === 'scenarios') {
+      target.append(menuActionChoice(t('createScenario'), { toolbar: 'scenarioCreate' }));
+      target.append(menuActionChoice(t('createScenarioGroup'), { toolbar: 'scenarioCreateGroup' }));
     } else if (activePage()?.kind === 'review') {
       const isGithub = data?.reviewProvider === 'github';
       target.append(menuActionChoice(t(isGithub ? 'createPr' : 'createMr'), { toolbar: 'createMr' }));
@@ -4632,6 +4783,17 @@
   /** Top-level groups, root notes, and link layouts that can fold. */
   function collapsibleTopGroups() {
     const page = activePage();
+    if (page?.kind === 'scenarios') {
+      return pageScenarioMessages().filter((chip) => {
+        if (chip.locked) {
+          return false;
+        }
+        if (chip.isGroup) {
+          return (chip.children || []).length > 0;
+        }
+        return !!(chip.md && chip.hasFile);
+      });
+    }
     if (page?.kind === 'links') {
       return (data?.links || []).filter(
         (link) =>
@@ -4683,6 +4845,10 @@
   }
 
   function allTopCollapsed() {
+    if (activePage()?.kind === 'scenarios') {
+      const items = collapsibleTopGroups();
+      return items.length > 0 && items.every((chip) => isCollapsed(chip.id));
+    }
     if (activePage()?.kind === 'review') {
       const items = foldableReviewMessages();
       return items.length > 0 && items.every((msg) => reviewCollapsed.has(msg.id));
@@ -4715,7 +4881,7 @@
 
   function syncToolbarView() {
     const kind = activePage()?.kind;
-    const hide = !isAuxPageOpen() && (kind === 'links' || kind === 'review');
+    const hide = !isAuxPageOpen() && (kind === 'links' || kind === 'review' || kind === 'scenarios');
     if (toolbarViewWrap) {
       toolbarViewWrap.hidden = hide;
     }
@@ -4956,7 +5122,7 @@
     return String(Math.round(value * 10) / 10) + '%';
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number, showProblemsTab?: boolean, cyclePageScroll?: boolean, problemsError?: boolean, problemsWarning?: boolean, problemsInfo?: boolean } | undefined} appearance */
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontReview?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number, showProblemsTab?: boolean, cyclePageScroll?: boolean, problemsError?: boolean, problemsWarning?: boolean, problemsInfo?: boolean } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
@@ -4969,6 +5135,22 @@
     setSize('--size-subgroup', a.fontSubgroup, 1.05);
     setSize('--size-folder', a.fontFolder, 0.95);
     setSize('--size-file', a.fontFile, 0.9);
+    setSize('--size-review', a.fontReview, 1);
+    const reviewSize = typeof a.fontReview === 'number' ? a.fontReview : 1;
+    if (reviewFileGrow) {
+      reviewFileGrow.disabled = reviewSize >= 1.999;
+      reviewFileGrow.title = t('reviewFileGrow');
+      reviewFileGrow.setAttribute('aria-label', t('reviewFileGrow'));
+    }
+    if (reviewFileShrink) {
+      reviewFileShrink.disabled = reviewSize <= 0.601;
+      reviewFileShrink.title = t('reviewFileShrink');
+      reviewFileShrink.setAttribute('aria-label', t('reviewFileShrink'));
+    }
+    if (reviewFileSave) {
+      reviewFileSave.title = t('reviewFileSave');
+      reviewFileSave.setAttribute('aria-label', t('reviewFileSave'));
+    }
     const turn = typeof a.gradientDirection === 'number' ? a.gradientDirection : 0;
     document.body.style.setProperty('--gradient-turn', String(turn));
 
@@ -5180,6 +5362,10 @@
       return true;
     }
     const page = activePage();
+    // Scenarios paint their own empty/loading UI — do not park on is-page-loading.
+    if (page?.kind === 'scenarios') {
+      return true;
+    }
     return !!page && data.contentPageId === page.id;
   }
 
@@ -5189,7 +5375,7 @@
       return '';
     }
     const page = activePage();
-    if (!page || page.kind === 'review') {
+    if (!page || page.kind === 'review' || page.kind === 'scenarios') {
       return '';
     }
     if (page.kind === 'notes' || page.kind === 'links') {
@@ -5465,7 +5651,7 @@
     clearDropHighlights();
   }
 
-  /** @param {'files' | 'notes' | 'links'} kind */
+  /** @param {'files' | 'notes' | 'links' | 'scenarios'} kind */
   function paintPageSkeleton(kind) {
     closeContextMenu();
     dismissLinkPreview();
@@ -5474,12 +5660,14 @@
     const page = activePage();
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
-    root.className = 'map-page is-page-skeleton' + (kind === 'links' ? ' links-page' : '');
+    root.className =
+      'map-page is-page-skeleton' +
+      (kind === 'links' || kind === 'scenarios' ? ' links-page scenarios-page' : '');
     root.dataset.skeletonKind = kind;
     root.dataset.skeletonPageId = page ? page.id : '';
     root.setAttribute('aria-busy', 'true');
     clearDropHighlights();
-    if (kind === 'links') {
+    if (kind === 'links' || kind === 'scenarios') {
       paintLinksSkeleton();
       return;
     }
@@ -6019,6 +6207,19 @@
         messageId: target.id,
         color: value,
       });
+      finish();
+      return;
+    }
+    if (target.kind === 'scenario-group' && target.id && value) {
+      const pageId = activePage()?.id;
+      if (pageId) {
+        vscode.postMessage({
+          type: 'scenarioUpdateGroup',
+          pageId,
+          groupId: target.id,
+          color: value,
+        });
+      }
       finish();
       return;
     }
@@ -7742,7 +7943,7 @@
     return content
       .split(/\r?\n/)
       .filter((line) => !/^lock:\s*(true|false)\s*$/i.test(line.trim()))
-      .filter((line) => !/^Ветка\s*:/i.test(line.trim()))
+      .filter((line) => !/^(?:Branch|Ветка)\s*:/i.test(line.trim()))
       .join('\n')
       .trim();
   }
@@ -7980,7 +8181,9 @@
       const chip = el('button', 'review-chip is-review-pill');
       chip.type = 'button';
       chip.append(reviewStatusIcon(msg.reviewStatus));
-      chip.append(el('span', 'review-chip-label', msg.pillLabel || t('reviewFileTitle')));
+      const rootLabel = el('span', 'review-chip-label');
+      setReviewPillText(rootLabel, msg.pillLabel || t('reviewFileTitle'));
+      chip.append(rootLabel);
       if (rootCanFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
         tri.append(linkCaretIcon());
@@ -8232,7 +8435,9 @@
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill');
       chip.append(reviewStatusIcon(reply.status));
-      chip.append(el('span', 'review-chip-label', reply.pillLabel || ''));
+      const replyLabel = el('span', 'review-chip-label');
+      setReviewPillText(replyLabel, reply.pillLabel || '');
+      chip.append(replyLabel);
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -8298,6 +8503,7 @@
       filename: (cached && cached.filename) || reply.filename || '',
       status: cached ? 'ready' : reply.hasFile === false ? 'error' : 'loading',
       text: cached ? cached.text : '',
+      html: cached && cached.html ? cached.html : '',
       error: reply.hasFile === false ? t('reviewFileMissing') : '',
     };
     mountReviewFile();
@@ -8456,6 +8662,7 @@
       const filename = message.filename || reviewFileView.filename;
       reviewFileView.status = 'ready';
       reviewFileView.text = message.text;
+      reviewFileView.html = typeof message.html === 'string' ? message.html : '';
       reviewFileView.filename = filename;
       reviewFileView.error = '';
     } else {
@@ -8473,6 +8680,70 @@
       wrap.append(bar);
     }
     return wrap;
+  }
+
+  /**
+   * @param {MouseEvent} event
+   */
+  function openReviewFileLink(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const link = target.closest('a.review-file-link');
+    if (!(link instanceof HTMLAnchorElement)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const relPath = link.getAttribute('data-syn3-file') || '';
+    const line = Number(link.getAttribute('data-syn3-line') || '');
+    if (!relPath) {
+      return;
+    }
+    if (Number.isInteger(line) && line > 0) {
+      const zero = line - 1;
+      vscode.postMessage({
+        type: 'openAt',
+        relPath,
+        line: zero,
+        character: 0,
+        endLine: zero,
+        endCharacter: 0,
+      });
+      return;
+    }
+    vscode.postMessage({ type: 'open', relPath });
+  }
+
+  function stepReviewFont(delta) {
+    const current = typeof data?.appearance?.fontReview === 'number' ? data.appearance.fontReview : 1;
+    const next = Math.round((current + delta) * 20) / 20;
+    const snapped = Math.min(2, Math.max(0.6, next));
+    if (Math.abs(snapped - current) < 0.001) {
+      return;
+    }
+    if (data?.appearance) {
+      data.appearance.fontReview = snapped;
+      applyAppearance(data.appearance);
+    }
+    vscode.postMessage({ type: 'setAppearance', appearance: { fontReview: snapped } });
+  }
+
+  /** Webview CSP drops inline styles, so segment widths are applied here. */
+  function layoutReviewUsage(root) {
+    root.querySelectorAll('.review-usage-bar').forEach((bar) => {
+      const segs = Array.from(bar.querySelectorAll('.review-usage-seg'));
+      const total = segs.reduce((sum, seg) => sum + Number(seg.getAttribute('data-count') || 0), 0);
+      if (!total) {
+        return;
+      }
+      segs.forEach((seg) => {
+        const count = Number(seg.getAttribute('data-count') || 0);
+        const pct = (count / total) * 100;
+        seg.style.flex = `0 0 ${pct}%`;
+      });
+    });
   }
 
   function mountReviewFile() {
@@ -8494,11 +8765,14 @@
     if (chrome instanceof HTMLElement) {
       reviewFilePane.style.top = chrome.getBoundingClientRect().bottom + 'px';
     }
-    reviewFileTitle.textContent = view.title || t('reviewFileTitle');
-    reviewFileTitle.title = view.filename || '';
+    setReviewPillText(reviewFileTitle, view.title || t('reviewFileTitle'));
+    reviewFileTitle.title = view.filename || view.title || '';
     if (reviewFileClose) {
       reviewFileClose.title = t('reviewFileClose');
       reviewFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    if (reviewFileSave) {
+      reviewFileSave.disabled = view.status !== 'ready';
     }
     reviewFileBody.replaceChildren();
     if (view.status === 'loading') {
@@ -8512,7 +8786,10 @@
         toolbarReviewTab.hidden = true;
       }
     } else {
-      reviewFileBody.append(el('pre', 'review-file-text', view.text || ''));
+      const md = el('div', 'explain-md');
+      md.innerHTML = view.html || '';
+      layoutReviewUsage(md);
+      reviewFileBody.append(md);
       if (toolbarReviewTab) {
         toolbarReviewTab.hidden = false;
         const label = t('reviewOpenTab');
@@ -8588,10 +8865,75 @@
   }
 
   /**
-   * Counts from a normalized pill label `Ревью N | H:n | M:n | S:n`.
+   * Counts from a pill label. The label may be
+   * `Ревью N | H:n | M:n | S:n` or `Ревью N | branch | rd | H:n | M:n | S:n`.
    * @param {string | undefined} pillLabel
    * @returns {{ H: number, M: number, S: number } | undefined}
    */
+  /**
+   * Chip and review-panel title: `Ревью N | branch|changes | rs|rm|rd | H:n | M:n | S:n`.
+   * Severity, scope and depth each get their own color. `rl` uses the shallow color.
+   * @param {HTMLElement} node
+   * @param {string} label
+   */
+  function setReviewPillText(node, label) {
+    const text = String(label || '');
+    node.replaceChildren();
+    const chunks = text.split(/\s*\|\s*/);
+    const tail = chunks.slice(-3);
+    const colored =
+      chunks.length >= 3 &&
+      /^H:\s*\d+$/i.test(tail[0]) &&
+      /^M:\s*\d+$/i.test(tail[1]) &&
+      /^[LS]:\s*\d+$/i.test(tail[2]);
+    if (!colored) {
+      node.textContent = text;
+      return;
+    }
+    chunks.forEach((chunk, index) => {
+      if (index > 0) {
+        node.append(document.createTextNode(' | '));
+      }
+      const shown = chunk.trim();
+      const tone = reviewPillTone(shown);
+      if (!tone) {
+        node.append(document.createTextNode(shown));
+        return;
+      }
+      node.append(el('span', 'review-pill-bit review-pill-' + tone, shown));
+    });
+  }
+
+  /** @param {string} token */
+  function reviewPillTone(token) {
+    const value = token.trim().toLowerCase();
+    if (value === 'changes' || value === 'change') {
+      return 'changes';
+    }
+    if (value === 'branch') {
+      return 'branch';
+    }
+    if (value === 'rd') {
+      return 'rd';
+    }
+    if (value === 'rm') {
+      return 'rm';
+    }
+    if (value === 'rs' || value === 'rl') {
+      return 'rs';
+    }
+    if (/^h:\s*\d+$/.test(value)) {
+      return 'high';
+    }
+    if (/^m:\s*\d+$/.test(value)) {
+      return 'medium';
+    }
+    if (/^[ls]:\s*\d+$/.test(value)) {
+      return 'low';
+    }
+    return '';
+  }
+
   function parsePillSeverityCounts(pillLabel) {
     if (!pillLabel) {
       return undefined;
@@ -8614,7 +8956,9 @@
    */
   function parseReviewFixGroupsClient(text) {
     const lines = String(text || '').split(/\r?\n/);
-    const severityRaw = (lines[2] || '').trim();
+    const severityRaw = (lines[2] || '')
+      .trim()
+      .replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rm|rd)\s*\|\s*/i, '');
     const sevMatch = severityRaw.match(/^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i);
     if (!sevMatch) {
       return { ok: false, message: t('neurofixListParseFail') };
@@ -12116,7 +12460,7 @@
   }
 
   root.addEventListener('dragover', (event) => {
-    if (!dragPayload || dragPayload.kind !== 'link') {
+    if (!dragPayload || (dragPayload.kind !== 'link' && dragPayload.kind !== 'scenario')) {
       return;
     }
     const target = event.target;
@@ -12127,6 +12471,7 @@
       return;
     }
     clearLinkDropCue();
+    clearScenarioDropCue();
   });
 
   /** @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending */
@@ -12415,6 +12760,1268 @@
     return panel;
   }
 
+  const SCENARIO_PREVIEW_W = 300;
+  const SCENARIO_PREVIEW_H = 188;
+
+  function pageScenarioMessages() {
+    const pageId = activePage()?.id;
+    if (!pageId) {
+      return [];
+    }
+    const state = scenarioState && scenarioState.pageId === pageId ? scenarioState : scenarioByPage.get(pageId);
+    return state?.messages || [];
+  }
+
+  /** @param {ScenarioChip[]} messages */
+  function scenarioStructureKey(messages) {
+    return messages
+      .map((chip) => {
+        const kids = (chip.children || [])
+          .map((child) =>
+            [child.id, child.title || '', child.order ?? '', child.hasFile ? 1 : 0].join('\u001f'),
+          )
+          .join(',');
+        return [
+          chip.id,
+          chip.isGroup ? 1 : 0,
+          chip.title || '',
+          chip.color || '',
+          chip.locked ? 1 : 0,
+          chip.hasFile ? 1 : 0,
+          chip.md ? 1 : 0,
+          kids,
+        ].join('\u001e');
+      })
+      .join('\u001d');
+  }
+
+  function syncScenarioCollapsed() {
+    root.querySelectorAll('.link-node[data-scenario-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement) || !node.dataset.scenarioId) {
+        return;
+      }
+      const collapsed = isCollapsed(node.dataset.scenarioId);
+      node.classList.toggle('is-collapsed', collapsed);
+      const tri = node.querySelector(':scope .link-chip-tri');
+      if (tri) {
+        tri.classList.toggle('is-collapsed', collapsed);
+      }
+      const preview = node.querySelector(':scope .scenario-preview-wrap');
+      if (preview instanceof HTMLElement) {
+        preview.hidden = collapsed;
+      }
+      const kids = node.querySelector(':scope .link-children');
+      if (kids instanceof HTMLElement) {
+        kids.hidden = collapsed;
+      }
+    });
+  }
+
+  function paintScenariosPage() {
+    const pageId = activePage()?.id || '';
+    const cached =
+      scenarioState && scenarioState.pageId === pageId
+        ? scenarioState
+        : scenarioByPage.get(pageId);
+    const state = cached || { pageId, loading: true, messages: [] };
+    const messages = state.messages || [];
+    const settled = !!cached && state.loading !== true;
+    if (pageId && !settled && !scenarioAutoLoad.has(pageId)) {
+      scenarioAutoLoad.add(pageId);
+      vscode.postMessage({ type: 'scenarioReload', pageId });
+    }
+    const key = scenarioStructureKey(messages) + (settled ? '|ready' : '|wait');
+    const tree = root.querySelector(':scope > .links-tree');
+    const emptyNode = root.querySelector(':scope > .empty');
+    if (
+      key === scenariosStructureKey &&
+      (tree || emptyNode) &&
+      root.classList.contains('scenarios-page') &&
+      openScenarioGroupPanelId === null
+    ) {
+      syncScenarioCollapsed();
+      setCollapseButton();
+      mountScenarioGroupPanel();
+      return;
+    }
+    scenariosStructureKey = key;
+    dismissLinkPreview();
+    closeScenarioOverlay();
+    const folds = captureFolds();
+    foldToken += 1;
+    isFolding = false;
+    setCollapseButton();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page links-page scenarios-page';
+    clearDropHighlights();
+    if (state.error && settled) {
+      root.removeAttribute('aria-busy');
+      const box = el('div', 'review-error');
+      box.append(el('div', 'review-error-text', state.error));
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        scenarioAutoLoad.delete(pageId);
+        vscode.postMessage({ type: 'scenarioReload', pageId });
+      });
+      box.append(retry);
+      root.append(box);
+      return;
+    }
+    if (messages.length === 0) {
+      // Empty channel (hello only): show CTA instead of a stuck page skeleton.
+      if (!settled) {
+        root.setAttribute('aria-busy', 'true');
+      } else {
+        root.removeAttribute('aria-busy');
+      }
+      root.append(el('div', 'empty', t('scenarioEmpty')));
+      return;
+    }
+    root.removeAttribute('aria-busy');
+    const roots = messages.slice().sort((a, b) => {
+      const ao = a.order ?? 0;
+      const bo = b.order ?? 0;
+      return ao - bo || a.id.localeCompare(b.id);
+    });
+    const nextTree = el('div', 'links-tree');
+    roots.forEach((chip, index) => {
+      const next = roots[index + 1];
+      nextTree.append(
+        renderScenarioNode(chip, null, index > 0, next ? next.color || 'var(--vscode-foreground)' : ''),
+      );
+    });
+    nextTree.append(renderScenarioTail(roots[roots.length - 1]));
+    root.append(nextTree);
+    mountScenarioGroupPanel();
+    playFolds(folds);
+  }
+
+  /**
+   * @param {ScenarioChip | ScenarioChildChip} chip
+   * @param {string | null} groupId
+   * @param {boolean} leadingGap
+   * @param {string} [nextColor]
+   */
+  function renderScenarioNode(chip, groupId, leadingGap, nextColor) {
+    const isGroup = !!chip.isGroup;
+    const childList = isGroup ? chip.children || [] : [];
+    const canFoldChildren = isGroup && childList.length > 0;
+    const canFoldPreview = !isGroup && !!(chip.md && chip.hasFile);
+    const canFold = canFoldChildren || canFoldPreview;
+    const collapsed = canFold && isCollapsed(chip.id);
+    const locked = !!chip.locked;
+    const depth = groupId ? 1 : 0;
+    const row = el(
+      'div',
+      'link-node depth-' +
+        depth +
+        (leadingGap ? ' has-gap' : '') +
+        (collapsed ? ' is-collapsed' : '') +
+        (locked ? ' is-locked' : '') +
+        (depth ? ' is-component' : ' is-layout'),
+    );
+    row.dataset.scenarioId = chip.id;
+    if (groupId) {
+      row.dataset.scenarioGroup = groupId;
+    }
+    const parentGroup = groupId ? pageScenarioMessages().find((item) => item.id === groupId) : null;
+    row.style.setProperty(
+      '--link-color',
+      chip.color || parentGroup?.color || 'var(--vscode-foreground)',
+    );
+    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + linkChipHalf(depth), nextColor));
+
+    const body = el('div', 'link-body');
+    const chipWrap = el('div', 'link-chip-wrap scenario-chip-wrap');
+    const chipBtn = el('button', 'link-chip scenario-chip');
+    chipBtn.type = 'button';
+    const label = el('span', 'link-chip-label scenario-chip-label', chip.title || t('scenarioDefaultTitle'));
+    label.title = chip.title || '';
+    chipBtn.append(label);
+    if (canFold) {
+      const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+      tri.append(linkCaretIcon());
+      tri.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (locked) {
+          flashLock(chip.id, chipWrap);
+          return;
+        }
+        toggleScenarioCollapsed(chip.id);
+      });
+      tri.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      chipBtn.append(tri);
+    }
+    label.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (isGroup) {
+        openScenarioGroupPanelId = chip.id;
+        focusScenarioGroupNameOnOpen = true;
+        paintScenariosPage();
+        return;
+      }
+      if (locked) {
+        return;
+      }
+      beginScenarioRename(label, chip.id);
+    });
+    chipWrap.append(chipBtn);
+    if (!isGroup && !(chip.md && chip.hasFile)) {
+      const formBtn = el('button', 'scenario-form-btn');
+      formBtn.type = 'button';
+      formBtn.title = t('formScenario');
+      formBtn.setAttribute('aria-label', t('formScenario'));
+      formBtn.append(reviewSparkleIcon());
+      formBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const pageId = activePage()?.id;
+        if (pageId) {
+          vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
+        }
+      });
+      chipWrap.append(formBtn);
+    }
+    if (isGroup) {
+      const side = el('div', 'link-side scenario-group-side');
+      const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+      lock.type = 'button';
+      lock.title = locked ? t('scenarioUnlock') : t('lockGroup');
+      lock.setAttribute('aria-label', lock.title);
+      lock.setAttribute('aria-pressed', locked ? 'true' : 'false');
+      lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+      lock.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (!locked) {
+          return;
+        }
+        unlockScenarioGroup(chip.id);
+      });
+      side.append(lock);
+      if (childList.length) {
+        side.append(el('span', 'count', String(childList.length)));
+      }
+      chipWrap.append(side);
+    }
+    body.append(chipWrap);
+    if (!isGroup && chip.md && chip.hasFile) {
+      const previewWrap = el('div', 'scenario-preview-wrap');
+      previewWrap.hidden = collapsed;
+      const preview = el('button', 'scenario-preview');
+      preview.type = 'button';
+      preview.setAttribute('aria-label', t('openScenarioScheme'));
+      const svg = buildScenarioMermaidSvg(chip.md);
+      if (svg) {
+        preview.append(svg);
+      }
+      preview.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openScenarioOverlay(chip.id, chip.md || '');
+      });
+      chipBtn.addEventListener('click', (event) => {
+        if (event.detail > 1) {
+          return;
+        }
+        const target = event.target;
+        if (target instanceof Element && target.closest('.link-chip-tri, .scenario-preview, .scenario-form-btn')) {
+          return;
+        }
+        openScenarioOverlay(chip.id, chip.md || '');
+      });
+      previewWrap.append(preview);
+      body.append(previewWrap);
+    }
+
+    if (!locked && !isGroup) {
+      chipBtn.draggable = true;
+      chipBtn.addEventListener('dragstart', (event) => {
+        beginDrag(
+          event,
+          {
+            kind: 'scenario',
+            id: chip.id,
+            groupId: groupId || '',
+            title: chip.title,
+          },
+          'copyMove',
+          chip.title || '',
+        );
+        chipBtn.classList.add('dragging');
+        revealScenarioTail();
+      });
+      chipBtn.addEventListener('dragend', () => {
+        chipBtn.classList.remove('dragging');
+        endDrag();
+      });
+    }
+
+    row.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || payload.id === chip.id) {
+        return;
+      }
+      if (isGroup) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'move';
+        }
+        showScenarioRowCue(row, scenarioDropEdge(event, row));
+        return;
+      }
+      if (!groupId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      showScenarioRowCue(row, scenarioDropEdge(event, row));
+    });
+    row.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || payload.id === chip.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const edge = scenarioDropEdge(event, row);
+      clearScenarioDropCue();
+      applyScenarioRowDrop(payload, chip, groupId, isGroup, edge);
+    });
+
+    row.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openScenarioContextMenu(event.clientX, event.clientY, chip, groupId);
+    });
+
+    chipBtn.addEventListener('dblclick', (event) => {
+      if (!isGroup) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openScenarioGroupPanelId = chip.id;
+      focusScenarioGroupNameOnOpen = true;
+      paintScenariosPage();
+    });
+
+    if (isGroup && childList.length > 0) {
+      const kids = el('div', 'link-children');
+      kids.hidden = collapsed;
+      const clip = el('div', 'link-children-clip');
+      const slide = el('div', 'link-children-slide');
+      const foldRail = el('button', 'link-fold-rail');
+      foldRail.type = 'button';
+      foldRail.title = t('toolbarCollapse');
+      foldRail.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (locked) {
+          flashLock(chip.id, chipWrap);
+          return;
+        }
+        toggleScenarioCollapsed(chip.id);
+      });
+      const ordered = childList.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+      ordered.forEach((child, index) => {
+        const next = ordered[index + 1];
+        slide.append(
+          renderScenarioNode(
+            { ...child, locked },
+            chip.id,
+            true,
+            next ? chip.color || 'var(--vscode-foreground)' : '',
+          ),
+        );
+      });
+      clip.append(slide);
+      kids.append(foldRail, clip);
+      body.append(kids);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /** @param {string} md */
+  function buildScenarioMermaidSvg(md) {
+    const body = extractMermaidSource(md);
+    if (!body) {
+      return null;
+    }
+    const participants = [];
+    const messages = [];
+    for (const line of body.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('%%') || /^sequenceDiagram/i.test(trimmed)) {
+        continue;
+      }
+      const part = /^(?:participant|actor)\s+([^\s:]+)/i.exec(trimmed);
+      if (part) {
+        const name = part[1].replace(/["']/g, '').trim();
+        if (name && !participants.includes(name)) {
+          participants.push(name);
+        }
+        continue;
+      }
+      const arrow = /^([^-]+?)\s*(->>|-->>)\s*([^:]+?)(?::\s*(.*))?$/.exec(trimmed);
+      if (arrow) {
+        const from = arrow[1].trim();
+        const to = arrow[3].trim();
+        if (!participants.includes(from)) {
+          participants.push(from);
+        }
+        if (!participants.includes(to)) {
+          participants.push(to);
+        }
+        messages.push({ from, to, dashed: arrow[2] === '-->>' });
+      }
+    }
+    if (!participants.length) {
+      return null;
+    }
+    const w = SCENARIO_PREVIEW_W;
+    const h = SCENARIO_PREVIEW_H;
+    const pad = 12;
+    const boxW = Math.max(48, (w - pad * 2) / Math.max(1, participants.length) - 8);
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'scenario-mermaid-thumb');
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('aria-hidden', 'true');
+  const colX = (index) => pad + index * ((w - pad * 2) / Math.max(1, participants.length - 1 || 1));
+    participants.forEach((name, index) => {
+      const x = participants.length === 1 ? w / 2 - boxW / 2 : colX(index) - boxW / 2;
+      const box = document.createElementNS(SVG_NS, 'rect');
+      box.setAttribute('x', String(Math.max(pad, x)));
+      box.setAttribute('y', '16');
+      box.setAttribute('width', String(boxW));
+      box.setAttribute('height', '28');
+      box.setAttribute('rx', '6');
+      box.setAttribute('fill', 'color-mix(in srgb, var(--vscode-foreground) 8%, transparent)');
+      box.setAttribute('stroke', 'currentColor');
+      box.setAttribute('stroke-opacity', '0.35');
+      svg.append(box);
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('x', String(Math.max(pad, x) + boxW / 2));
+      text.setAttribute('y', '34');
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('fill', 'currentColor');
+      text.setAttribute('font-size', '11');
+      const short = name.length > 10 ? name.slice(0, 9) + '…' : name;
+      text.textContent = short;
+      svg.append(text);
+      const stem = document.createElementNS(SVG_NS, 'line');
+      const cx = Math.max(pad, x) + boxW / 2;
+      stem.setAttribute('x1', String(cx));
+      stem.setAttribute('x2', String(cx));
+      stem.setAttribute('y1', '44');
+      stem.setAttribute('y2', String(h - 12));
+      stem.setAttribute('stroke', 'currentColor');
+      stem.setAttribute('stroke-opacity', '0.2');
+      svg.append(stem);
+    });
+    const idx = (name) => participants.indexOf(name);
+    const arrowId = 'scenario-arrow-' + Math.random().toString(36).slice(2, 9);
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    const marker = document.createElementNS(SVG_NS, 'marker');
+    marker.setAttribute('id', arrowId);
+    marker.setAttribute('markerWidth', '6');
+    marker.setAttribute('markerHeight', '6');
+    marker.setAttribute('refX', '5');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    const head = document.createElementNS(SVG_NS, 'path');
+    head.setAttribute('d', 'M0,0 L6,3 L0,6 Z');
+    head.setAttribute('fill', 'currentColor');
+    marker.append(head);
+    defs.append(marker);
+    svg.prepend(defs);
+    messages.slice(0, 14).forEach((msg, line) => {
+      const y = 56 + line * 9;
+      const x1 = idx(msg.from) < 0 ? w / 2 : colX(idx(msg.from));
+      const x2 = idx(msg.to) < 0 ? w / 2 : colX(idx(msg.to));
+      const path = document.createElementNS(SVG_NS, 'path');
+      const left = Math.min(x1, x2);
+      const right = Math.max(x1, x2);
+      path.setAttribute('d', `M${left} ${y} H${right}`);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '1.2');
+      if (msg.dashed) {
+        path.setAttribute('stroke-dasharray', '4 3');
+      }
+      path.setAttribute('marker-end', 'url(#' + arrowId + ')');
+      svg.append(path);
+    });
+    return svg;
+  }
+
+  /** @param {string} md */
+  function extractMermaidSource(md) {
+    const match = /```\s*mermaid\s*\n([\s\S]*?)```/i.exec(String(md || ''));
+    return match ? match[1] : '';
+  }
+
+  /** @param {HTMLElement} label @param {string} messageId */
+  function beginScenarioRename(label, messageId) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'scenario-rename-input';
+    input.value = label.textContent || '';
+    input.style.width = Math.max(80, label.offsetWidth + 16) + 'px';
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      const title = input.value.trim();
+      const pageId = activePage()?.id;
+      if (pageId && title) {
+        vscode.postMessage({ type: 'scenarioRename', pageId, messageId, title });
+      }
+      paintScenariosPage();
+    };
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        paintScenariosPage();
+      }
+    });
+    input.addEventListener('blur', () => {
+      commit();
+    });
+  }
+
+  /** @param {string} id */
+  function toggleScenarioCollapsed(id) {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    const next = { ...(page.collapsed || {}) };
+    if (next[id]) {
+      delete next[id];
+    } else {
+      next[id] = true;
+    }
+    vscode.postMessage({
+      type: 'setCollapsed',
+      pageId: page.id,
+      collapsed: next,
+      allTopCollapsed: allTopCollapsed(),
+    });
+    page.collapsed = next;
+    paintScenariosPage();
+  }
+
+  function setAllScenarioCollapsed(collapsed) {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    const next = { ...(page.collapsed || {}) };
+    for (const chip of collapsibleTopGroups()) {
+      if (collapsed) {
+        next[chip.id] = true;
+      } else {
+        delete next[chip.id];
+      }
+    }
+    vscode.postMessage({
+      type: 'setCollapsed',
+      pageId: page.id,
+      collapsed: next,
+      allTopCollapsed: allTopCollapsed(),
+    });
+    page.collapsed = next;
+    paintScenariosPage();
+  }
+
+  /** @param {string} groupId */
+  function unlockScenarioGroup(groupId) {
+    const pageId = activePage()?.id;
+    if (!pageId) {
+      return;
+    }
+    vscode.postMessage({
+      type: 'scenarioUpdateGroup',
+      pageId,
+      groupId,
+      status: 'open',
+    });
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {ScenarioChip | ScenarioChildChip} chip
+   * @param {string | null} groupId
+   */
+  function openScenarioContextMenu(x, y, chip, groupId) {
+    cancelMenuClose('context');
+    closeToolbarMenus();
+    const pageId = activePage()?.id || '';
+    const isGroup = !!chip.isGroup;
+    const locked = !!chip.locked;
+    /** @type {HTMLElement[]} */
+    const items = [];
+    if (isGroup) {
+      const createBtn = menuActionChoice(t('createScenario'), {});
+      createBtn.disabled = locked;
+      createBtn.addEventListener('click', () => {
+        closeContextMenu();
+        if (!createBtn.disabled && pageId) {
+          vscode.postMessage({ type: 'scenarioCreate', pageId, groupId: chip.id });
+        }
+      });
+      items.push(createBtn);
+      const settingsBtn = menuAction(t('menuSettings'));
+      settingsBtn.addEventListener('click', () => {
+        closeContextMenu();
+        openScenarioGroupPanelId = chip.id;
+        focusScenarioGroupNameOnOpen = true;
+        paintScenariosPage();
+      });
+      items.push(settingsBtn);
+    } else if (!chip.hasFile) {
+      const formBtn = menuAction(t('formScenario'));
+      formBtn.addEventListener('click', () => {
+        closeContextMenu();
+        if (pageId) {
+          vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
+        }
+      });
+      items.push(formBtn);
+    }
+    const copyBtn = menuAction(t('menuCopyLink'));
+    copyBtn.addEventListener('click', () => {
+      closeContextMenu();
+      const url = scenarioEntityLink(chip.id, isGroup ? undefined : groupId || undefined);
+      if (url) {
+        vscode.postMessage({ type: 'clipboardWrite', text: url });
+      }
+    });
+    items.push(copyBtn);
+    const delBtn = menuAction(t('menuDelete'));
+    delBtn.disabled = locked && isGroup;
+    delBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (pageId && (!locked || !isGroup)) {
+        vscode.postMessage({ type: 'scenarioDelete', pageId, messageId: chip.id });
+      }
+    });
+    items.push(delBtn);
+    if (isGroup && locked) {
+      const unlockBtn = menuAction(t('scenarioUnlock'));
+      unlockBtn.addEventListener('click', () => {
+        closeContextMenu();
+        unlockScenarioGroup(chip.id);
+      });
+      items.push(unlockBtn);
+    }
+    openMenuState = { kind: 'context', viewExpanded: false, ctx: { scenarioId: chip.id }, x, y };
+    const scroller = ensureMenuChrome(contextMenu).scroller;
+    scroller.replaceChildren(...items);
+    updateMenuScrollbar(contextMenu);
+    contextMenu.hidden = false;
+    positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  /**
+   * @param {string} messageId
+   * @param {string | undefined} groupId
+   */
+  function scenarioEntityLink(messageId, groupId) {
+    const pageId = uiState.activePageId;
+    if (!pageId) {
+      return '';
+    }
+    if (groupId) {
+      return pageId + '://scenario/' + groupId + '/' + messageId;
+    }
+    const chip = pageScenarioMessages().find((item) => item.id === messageId);
+    if (chip?.isGroup) {
+      return pageId + '://group/' + messageId;
+    }
+    return pageId + '://scenario/' + messageId;
+  }
+
+  /**
+   * @param {DragEvent} event
+   * @param {HTMLElement} row
+   */
+  function scenarioDropEdge(event, row) {
+    return linkDropEdge(event, row);
+  }
+
+  function scenarioSlotEl() {
+    if (!scenarioDropSlotEl) {
+      scenarioDropSlotEl = el('div', 'link-drop-slot');
+      scenarioDropSlotEl.setAttribute('aria-hidden', 'true');
+    }
+    return scenarioDropSlotEl;
+  }
+
+  function clearScenarioDropCue() {
+    hideDropEdge();
+    if (scenarioDropSlotEl && scenarioDropSlotEl.isConnected) {
+      scenarioDropSlotEl.remove();
+    }
+    scenarioCue = null;
+    root.querySelectorAll('.link-node.link-drop-into').forEach((node) => {
+      node.classList.remove('link-drop-into');
+    });
+    root.querySelectorAll('.link-drop-tail.is-active').forEach((node) => {
+      node.classList.remove('is-active');
+    });
+  }
+
+  /**
+   * @param {HTMLElement} row
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function showScenarioRowCue(row, edge) {
+    const same = scenarioCue && scenarioCue.kind === 'row' && scenarioCue.row === row && scenarioCue.edge === edge;
+    if (!same) {
+      clearScenarioDropCue();
+      scenarioCue = { kind: 'row', row, edge };
+      if (edge === 'into') {
+        row.classList.add('link-drop-into');
+      }
+    }
+    if (edge === 'into') {
+      return;
+    }
+    showDropEdge(row, edge);
+    const slot = scenarioSlotEl();
+    const rect = row.getBoundingClientRect();
+    slot.style.left = rect.left + 'px';
+    slot.style.width = Math.max(rect.width, 0) + 'px';
+    slot.style.top = (edge === 'before' ? rect.top - 24 : rect.bottom) + 'px';
+    if (!slot.isConnected) {
+      document.body.append(slot);
+    }
+  }
+
+  /**
+   * @param {*} payload
+   * @param {*} target
+   * @param {string | null} targetGroupId
+   * @param {boolean} targetIsGroup
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function applyScenarioRowDrop(payload, target, targetGroupId, targetIsGroup, edge) {
+    const pageId = activePage()?.id;
+    if (!pageId || payload.isGroup) {
+      return;
+    }
+    const sourceGroup = payload.groupId || '';
+    const destGroup = targetIsGroup && edge === 'into' ? target.id : targetGroupId || '';
+    if (!destGroup && !sourceGroup && edge !== 'into') {
+      return;
+    }
+    if (sourceGroup === destGroup && destGroup) {
+      const group = pageScenarioMessages().find((item) => item.id === destGroup);
+      const ids = (group?.children || []).map((child) => child.id);
+      const from = ids.indexOf(payload.id);
+      let to = ids.indexOf(target.id);
+      if (from < 0 || to < 0) {
+        return;
+      }
+      if (edge === 'after') {
+        to += 1;
+      }
+      if (from < to) {
+        to -= 1;
+      }
+      ids.splice(from, 1);
+      ids.splice(to, 0, payload.id);
+      vscode.postMessage({ type: 'scenarioReorder', pageId, groupId: destGroup, orderedIds: ids });
+      return;
+    }
+    pendingScenarioDrop = {
+      id: payload.id,
+      groupId: sourceGroup,
+      targetGroupId: destGroup || undefined,
+    };
+    pendingLinkDrop = null;
+    pendingChipDrop = null;
+    dialogKind = 'drop';
+    choiceDismiss = null;
+    dropDialog.hidden = false;
+    dropDialog.replaceChildren();
+    const panel = el('div', 'drop-dialog-panel');
+    const actions = el('div', 'drop-dialog-actions');
+    const moveBtn = el('button', 'drop-dialog-btn');
+    moveBtn.type = 'button';
+    moveBtn.textContent = t('dropMove');
+    moveBtn.addEventListener('click', () => {
+      const pending = pendingScenarioDrop;
+      closeDropDialog();
+      pendingScenarioDrop = null;
+      if (pending && pageId) {
+        vscode.postMessage({
+          type: 'scenarioTransfer',
+          pageId,
+          messageId: pending.id,
+          targetGroupId: pending.targetGroupId,
+          copy: false,
+        });
+      }
+    });
+    const copyBtn = el('button', 'drop-dialog-btn');
+    copyBtn.type = 'button';
+    copyBtn.textContent = t('dropCopy');
+    copyBtn.addEventListener('click', () => {
+      const pending = pendingScenarioDrop;
+      closeDropDialog();
+      pendingScenarioDrop = null;
+      if (pending && pageId) {
+        vscode.postMessage({
+          type: 'scenarioTransfer',
+          pageId,
+          messageId: pending.id,
+          targetGroupId: pending.targetGroupId,
+          copy: true,
+        });
+      }
+    });
+    actions.append(moveBtn, copyBtn);
+    panel.append(actions);
+    dropDialog.append(panel);
+    moveBtn.focus();
+  }
+
+  /** @param {*} lastRoot */
+  function renderScenarioTail(lastRoot) {
+    const tail = el('div', 'link-drop-tail');
+    tail.hidden = true;
+    tail.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || !payload.groupId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      clearScenarioDropCue();
+      tail.classList.add('is-active');
+    });
+    tail.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || !payload.groupId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      clearScenarioDropCue();
+      const pageId = activePage()?.id;
+      if (!pageId) {
+        return;
+      }
+      pendingScenarioDrop = { id: payload.id, groupId: payload.groupId, targetGroupId: undefined };
+      pendingLinkDrop = null;
+      pendingChipDrop = null;
+      dialogKind = 'drop';
+      choiceDismiss = null;
+      dropDialog.hidden = false;
+      dropDialog.replaceChildren();
+      const panel = el('div', 'drop-dialog-panel');
+      const actions = el('div', 'drop-dialog-actions');
+      const moveBtn = el('button', 'drop-dialog-btn');
+      moveBtn.type = 'button';
+      moveBtn.textContent = t('dropMove');
+      moveBtn.addEventListener('click', () => {
+        const pending = pendingScenarioDrop;
+        closeDropDialog();
+        pendingScenarioDrop = null;
+        if (pending) {
+          vscode.postMessage({
+            type: 'scenarioTransfer',
+            pageId,
+            messageId: pending.id,
+            targetGroupId: pending.targetGroupId,
+            copy: false,
+          });
+        }
+      });
+      const copyBtn = el('button', 'drop-dialog-btn');
+      copyBtn.type = 'button';
+      copyBtn.textContent = t('dropCopy');
+      copyBtn.addEventListener('click', () => {
+        const pending = pendingScenarioDrop;
+        closeDropDialog();
+        pendingScenarioDrop = null;
+        if (pending) {
+          vscode.postMessage({
+            type: 'scenarioTransfer',
+            pageId,
+            messageId: pending.id,
+            targetGroupId: pending.targetGroupId,
+            copy: true,
+          });
+        }
+      });
+      actions.append(moveBtn, copyBtn);
+      panel.append(actions);
+      dropDialog.append(panel);
+      moveBtn.focus();
+    });
+    return tail;
+  }
+
+  function revealScenarioTail() {
+    const tail = root.querySelector('.link-drop-tail');
+    if (tail instanceof HTMLElement) {
+      tail.hidden = false;
+    }
+  }
+
+  function mountScenarioGroupPanel() {
+    if (!openScenarioGroupPanelId) {
+      document.querySelectorAll('.scenario-group-panel-backdrop').forEach((node) => node.remove());
+      return;
+    }
+    const chip = pageScenarioMessages().find((item) => item.id === openScenarioGroupPanelId);
+    if (!chip || !chip.isGroup) {
+      openScenarioGroupPanelId = null;
+      return;
+    }
+    const locked = !!chip.locked;
+    document.querySelectorAll('.scenario-group-panel-backdrop').forEach((node) => node.remove());
+    const backdrop = el('div', 'link-panel-backdrop scenario-group-panel-backdrop');
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        openScenarioGroupPanelId = null;
+        paintScenariosPage();
+      }
+    });
+    const panel = el('aside', 'link-panel' + (locked ? ' is-locked' : ''));
+    const nameRow = el('div', 'link-panel-name-row');
+    const nameInput = el('input', 'link-panel-input');
+    nameInput.type = 'text';
+    nameInput.value = chip.title || '';
+    nameInput.disabled = locked;
+    const lockBtn = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    lockBtn.type = 'button';
+    lockBtn.title = locked ? t('scenarioUnlock') : t('lockGroup');
+    lockBtn.append(locked ? lockClosedIcon() : lockOpenIcon());
+    lockBtn.addEventListener('click', () => {
+      if (locked) {
+        unlockScenarioGroup(chip.id);
+      } else {
+        vscode.postMessage({
+          type: 'scenarioUpdateGroup',
+          pageId: activePage()?.id || '',
+          groupId: chip.id,
+          status: 'lock',
+        });
+      }
+    });
+    nameRow.append(nameInput, lockBtn);
+    panel.append(nameRow);
+    const aliasLabel = el('label', 'link-panel-field');
+    aliasLabel.append(document.createTextNode(t('groupAlias')));
+    const aliasInput = el('input', 'link-panel-input');
+    aliasInput.type = 'text';
+    aliasInput.value = chip.alias || '';
+    aliasInput.disabled = locked;
+    aliasLabel.append(aliasInput);
+    panel.append(aliasLabel);
+    const descField = el('div', 'link-panel-field');
+    const descInput = el('textarea', 'link-panel-input');
+    descInput.rows = 3;
+    descInput.value = chip.description || '';
+    descInput.disabled = locked;
+    descField.append(el('span', 'link-color-caption', t('groupDescription')), descInput);
+    panel.append(descField);
+    const colorField = el('div', 'link-panel-field link-panel-color');
+    const well = el('button', 'link-color-well' + (!chip.color ? ' is-empty' : ''));
+    well.type = 'button';
+    well.disabled = locked;
+    if (chip.color) {
+      well.style.setProperty('--swatch', chip.color);
+    }
+    well.addEventListener('click', () => {
+      if (locked) {
+        return;
+      }
+      openColorsPanel({
+        kind: 'scenario-group',
+        id: chip.id,
+        currentHex: chip.color || '',
+        allowNone: false,
+        locked: false,
+      });
+    });
+    colorField.append(el('span', 'link-color-caption', t('changeColor')), well);
+    panel.append(colorField);
+    const pageId = activePage()?.id || '';
+    const save = (partial) => {
+      if (locked || !pageId) {
+        return;
+      }
+      vscode.postMessage({ type: 'scenarioUpdateGroup', pageId, groupId: chip.id, ...partial });
+    };
+    nameInput.addEventListener('change', () => {
+      if (nameInput.value.trim()) {
+        save({ title: nameInput.value.trim() });
+      }
+    });
+    aliasInput.addEventListener('change', () => save({ alias: aliasInput.value.trim() }));
+    descInput.addEventListener('change', () => save({ description: descInput.value.trim() }));
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    if (focusScenarioGroupNameOnOpen) {
+      focusScenarioGroupNameOnOpen = false;
+      nameInput.focus();
+      nameInput.select();
+    }
+  }
+
+  /** @param {string} messageId @param {string} md */
+  function openScenarioOverlay(messageId, md) {
+    if (!md) {
+      return;
+    }
+    closeScenarioOverlay();
+    scenarioOverlayMessageId = messageId;
+    const backdrop = el('div', 'scenario-overlay-backdrop');
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) {
+        closeScenarioOverlay();
+      }
+    });
+    const panel = el('div', 'scenario-overlay-panel');
+    const screen = el('div', 'scenario-overlay-screen');
+    const svg = buildScenarioMermaidSvg(md);
+    const inner = document.createElementNS(SVG_NS, 'svg');
+    inner.setAttribute('class', 'scenario-overlay-svg');
+    if (svg) {
+      inner.setAttribute('viewBox', svg.getAttribute('viewBox') || '0 0 300 188');
+      while (svg.firstChild) {
+        if (svg.firstChild.tagName !== 'defs') {
+          inner.append(svg.firstChild);
+        } else {
+          svg.removeChild(svg.firstChild);
+        }
+      }
+    }
+    screen.append(inner);
+    bindScenarioOverlayPan(screen, inner);
+    panel.append(screen);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    scenarioOverlayEl = backdrop;
+    document.addEventListener(
+      'keydown',
+      scenarioOverlayEsc,
+      true,
+    );
+  }
+
+  function scenarioOverlayEsc(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeScenarioOverlay();
+    }
+  }
+
+  function closeScenarioOverlay() {
+    if (scenarioOverlayEl) {
+      scenarioOverlayEl.remove();
+      scenarioOverlayEl = null;
+    }
+    scenarioOverlayMessageId = null;
+    document.removeEventListener('keydown', scenarioOverlayEsc, true);
+  }
+
+  /**
+   * @param {HTMLElement} screen
+   * @param {SVGSVGElement} inner
+   */
+  function bindScenarioOverlayPan(screen, inner) {
+    let scale = 1;
+    let x = 0;
+    let y = 0;
+    const apply = () => {
+      inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    };
+    apply();
+    screen.addEventListener(
+      'wheel',
+      (event) => {
+        event.preventDefault();
+        const rect = screen.getBoundingClientRect();
+        const mx = event.clientX - rect.left;
+        const my = event.clientY - rect.top;
+        const next = scale * Math.exp(-event.deltaY * 0.0016);
+        const clamped = Math.min(8, Math.max(0.4, next));
+        const k = clamped / scale;
+        x = mx - (mx - x) * k;
+        y = my - (my - y) * k;
+        scale = clamped;
+        apply();
+      },
+      { passive: false },
+    );
+    screen.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      screen.setPointerCapture(event.pointerId);
+      screen.classList.add('is-panning');
+      const sx = event.clientX;
+      const sy = event.clientY;
+      const ox = x;
+      const oy = y;
+      const move = (ev) => {
+        x = ox + (ev.clientX - sx);
+        y = oy + (ev.clientY - sy);
+        apply();
+      };
+      const up = () => {
+        screen.removeEventListener('pointermove', move);
+        screen.removeEventListener('pointerup', up);
+        screen.removeEventListener('pointercancel', up);
+        screen.classList.remove('is-panning');
+      };
+      screen.addEventListener('pointermove', move);
+      screen.addEventListener('pointerup', up);
+      screen.addEventListener('pointercancel', up);
+    });
+  }
+
+  /**
+   * @param {{
+   *   mode: 'create' | 'edit',
+   *   pageId?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   hasDiscord?: boolean,
+   *   scenarioSkillPath?: string,
+   *   scenarioModel?: string,
+   *   scenarioPrintThinking?: boolean,
+   *   scenarioPrintTools?: boolean
+   * }} opts
+   */
+  function openScenarioPagePanel(opts) {
+    closeScenarioPagePanel();
+    const editing = opts.mode === 'edit';
+    const panel = el('div', 'review-mr-panel review-create-page-panel');
+    panel.id = 'scenario-page-panel';
+    panel.append(
+      el(
+        'div',
+        'review-mr-people-title',
+        t(editing ? 'pageSettingsTitle' : 'scenarioCreatePageTitle'),
+      ),
+    );
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.value = opts.name || '';
+    panel.append(nameInput);
+    const pageDesc = pageDescriptionField(opts.description || '');
+    panel.append(pageDesc.label);
+    const channelLabel = el('label', 'review-mr-field', t('labelChannelDiscord'));
+    const channelInput = document.createElement('input');
+    channelInput.className = 'review-mr-title';
+    channelInput.value = opts.channelId || '';
+    channelLabel.append(channelInput);
+    panel.append(channelLabel);
+    if (opts.hasDiscord) {
+      panel.append(el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved')));
+    } else {
+      const discordLabel = el('label', 'review-mr-field', t('reviewFieldDiscordToken'));
+      const discordInput = document.createElement('input');
+      discordInput.className = 'review-mr-title';
+      discordInput.type = 'password';
+      discordLabel.append(discordInput);
+      panel.append(discordLabel);
+    }
+    const skillInput = document.createElement('input');
+    skillInput.className = 'review-mr-title';
+    skillInput.value = opts.scenarioSkillPath || '';
+    panel.append(el('label', 'review-mr-field', t('labelScenarioSkillPath')), skillInput);
+    const modelInput = document.createElement('input');
+    modelInput.className = 'review-mr-title';
+    modelInput.value = opts.scenarioModel || '';
+    panel.append(el('label', 'review-mr-field', t('labelScenarioModel')), modelInput);
+    const thinkingLabel = el('label', 'review-mr-field');
+    const thinking = document.createElement('input');
+    thinking.type = 'checkbox';
+    thinking.checked = !!opts.scenarioPrintThinking;
+    thinkingLabel.append(thinking, document.createTextNode(' ' + t('labelScenarioPrintThinking')));
+    panel.append(thinkingLabel);
+    const toolsLabel = el('label', 'review-mr-field');
+    const tools = document.createElement('input');
+    tools.type = 'checkbox';
+    tools.checked = opts.scenarioPrintTools !== false;
+    toolsLabel.append(tools, document.createTextNode(' ' + t('labelScenarioPrintTools')));
+    panel.append(toolsLabel);
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeScenarioPagePanel());
+    const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        nameInput.focus();
+        return;
+      }
+      setPanelBusy(panel, true);
+      const discordInput = panel.querySelector('input[type="password"]');
+      vscode.postMessage({
+        type: 'scenarioSavePage',
+        pageId: editing ? opts.pageId : undefined,
+        name,
+        description: pageDesc.input.value.trim() || undefined,
+        channelId: channelInput.value.trim() || undefined,
+        discordToken:
+          discordInput instanceof HTMLInputElement ? discordInput.value.trim() || undefined : undefined,
+        scenarioSkillPath: skillInput.value.trim() || undefined,
+        scenarioModel: modelInput.value.trim() || undefined,
+        scenarioPrintThinking: thinking.checked || undefined,
+        scenarioPrintTools: tools.checked ? undefined : false,
+      });
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeScenarioPagePanel);
+    nameInput.focus();
+  }
+
+  function closeScenarioPagePanel() {
+    const panel = document.getElementById('scenario-page-panel');
+    panel?.remove();
+    document.querySelector('.settings-overlay-backdrop')?.remove();
+  }
+
   function paintPage() {
     syncToolbarView();
     removeLinkPanelBackdrop();
@@ -12449,6 +14056,12 @@
       if (openGroupPanel) {
         mountGroupPanel();
       }
+      return;
+    }
+    if (page?.kind === 'scenarios') {
+      closeGroupPanel(false);
+      closeLinkPanel();
+      paintScenariosPage();
       return;
     }
     const folds = captureFolds();
@@ -12790,6 +14403,10 @@
       vscode.postMessage({ type: 'reviewOpenPageSettings', pageId: page.id });
       return;
     }
+    if (page.kind === 'scenarios') {
+      vscode.postMessage({ type: 'pageOpenSettings', pageId: page.id });
+      return;
+    }
     vscode.postMessage({ type: 'pageOpenSettings', pageId: page.id });
   }
 
@@ -12975,9 +14592,11 @@
           ? page.name + ' (' + t('pageKindLinks') + ')'
           : page.kind === 'review'
             ? page.name + ' (' + t('pageKindReview') + ')'
-            : page.kind === 'notes'
-              ? page.name + ' (' + t('pageKindNotes') + ')'
-              : page.name + ' (' + t('pageKindFiles') + ')';
+            : page.kind === 'scenarios'
+              ? page.name + ' (' + t('pageKindScenarios') + ')'
+              : page.kind === 'notes'
+                ? page.name + ' (' + t('pageKindNotes') + ')'
+                : page.name + ' (' + t('pageKindFiles') + ')';
       const chipLabel = el('span', 'pager-chip-label', page.name);
       chip.append(chipLabel);
       if (pagesFixed) {
@@ -19497,7 +21116,7 @@
 
   /** @param {string | undefined} raw */
   function parseEntityLink(raw) {
-    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note)\/([^?\s#]+)$/.exec(
+    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note|scenario)\/([^?\s#]+)$/.exec(
       String(raw || '').trim(),
     );
     if (!match) {
@@ -19509,7 +21128,7 @@
     }
     return {
       pageId: match[1],
-      kind: /** @type {'group' | 'note'} */ (match[2]),
+      kind: /** @type {'group' | 'note' | 'scenario'} */ (match[2]),
       ids,
       leaf: ids[ids.length - 1],
     };

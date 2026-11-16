@@ -9,7 +9,7 @@ import {
 import { listChannelMessages, postChannelMessage } from './discordApi';
 import type { Syn3Locale } from './i18n';
 
-export type SetupChannelKind = 'profile' | 'explorer' | 'notes' | 'links' | 'review';
+export type SetupChannelKind = 'profile' | 'explorer' | 'notes' | 'links' | 'review' | 'scenarios';
 
 export const SETUP_CHANNEL_KINDS: readonly SetupChannelKind[] = [
   'profile',
@@ -17,7 +17,15 @@ export const SETUP_CHANNEL_KINDS: readonly SetupChannelKind[] = [
   'notes',
   'links',
   'review',
+  'scenarios',
 ];
+
+/**
+ * Hello marker for the scenarios channel.
+ * Must not equal SCN_SYN3 / GRSCN_SYN3 — those are real content headers.
+ * Content lives in SCN/GRSCN messages.
+ */
+export const SCENARIOS_SETUP_PREFIX = 'SCENARIOS_SYN3';
 
 const PREFIX_BY_KIND: Record<SetupChannelKind, string> = {
   profile: PROFILE_CONFIG_PREFIX,
@@ -25,6 +33,7 @@ const PREFIX_BY_KIND: Record<SetupChannelKind, string> = {
   notes: NOTES_CONFIG_PREFIX,
   links: LINKS_CONFIG_PREFIX,
   review: REVIEW_CONFIG_PREFIX,
+  scenarios: SCENARIOS_SETUP_PREFIX,
 };
 
 const HELLO_ROLE_EN: Record<SetupChannelKind, string> = {
@@ -33,6 +42,7 @@ const HELLO_ROLE_EN: Record<SetupChannelKind, string> = {
   notes: 'the content of the notes map',
   links: 'the content of the links map',
   review: 'the content of the review map',
+  scenarios: 'the content of the scenarios map',
 };
 
 const HELLO_ROLE_RU: Record<SetupChannelKind, string> = {
@@ -41,6 +51,7 @@ const HELLO_ROLE_RU: Record<SetupChannelKind, string> = {
   notes: 'контента карты заметок',
   links: 'контента карты ссылок',
   review: 'контента карты ревью',
+  scenarios: 'контента карты сценариев',
 };
 
 export function setupPrefix(kind: SetupChannelKind): string {
@@ -100,7 +111,17 @@ export async function ensureSetupProbe(
   if (!listed.ok) {
     return { ok: false, message: listed.message };
   }
-  const existing = listed.value.find((msg) => msg.content.includes(prefix));
+  const existing = listed.value.find((msg) => {
+    if (msg.content.includes(prefix)) {
+      return true;
+    }
+    // Legacy scenarios hello used SCN_SYN3 as the bare marker line.
+    return (
+      kind === 'scenarios' &&
+      /(?:^|\n)\(?SCN_SYN3\)?\s*$/im.test(msg.content) &&
+      !/^\(?SCN_SYN3\)?\s*$/im.test((msg.content.trimStart().split(/\r?\n/, 1)[0] || '').trim())
+    );
+  });
   if (existing) {
     return { ok: true, posted: false };
   }

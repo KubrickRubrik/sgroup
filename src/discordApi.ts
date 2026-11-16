@@ -5,7 +5,7 @@ const API = 'https://discord.com/api/v10';
 export const MR_PREFIX = 'MR_SYN3';
 /** Draft merge-request message prefix (same chip family as MR_SYN3). */
 export const DMR_PREFIX = 'DMR_SYN3';
-/** Review message prefix in Discord threads: `R_SYN3: Ревью N | H:…`. */
+/** Review message prefix in Discord threads: `R_SYN3: Ревью N | branch | rd | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
 /** Explain («Что делаем?») message prefix: `W_SYN3: Что делаем?`. */
 export const EXPLAIN_PREFIX = 'W_SYN3';
@@ -13,6 +13,16 @@ export const EXPLAIN_PREFIX = 'W_SYN3';
 export const EXPLAIN_TITLE = 'Что делаем?';
 /** Default chip color for explain messages (Violet). */
 export const EXPLAIN_DEFAULT_COLOR = '#8e4ec6';
+/** Scenario group root message: `GRSCN_SYN3`. */
+export const SCENARIO_GROUP_PREFIX = 'GRSCN_SYN3';
+/** Scenario chip message: `SCN_SYN3`. */
+export const SCENARIO_PREFIX = 'SCN_SYN3';
+/** Default title for a new scenario chip. */
+export const SCENARIO_DEFAULT_TITLE = 'сценарий';
+/** Default title for a new scenario group. */
+export const SCENARIO_GROUP_DEFAULT_TITLE = 'Группа сценариев';
+/** Max scenarios inside one GRSCN_SYN3 thread. */
+export const SCENARIO_GROUP_MAX = 10;
 export {
   PROFILE_CONFIG_PREFIX,
   EXPLORER_CONFIG_PREFIX,
@@ -23,12 +33,40 @@ export {
   parseConfigHeader,
   formatConfigHeader,
 } from './configFormat';
+import { formatConfigHeaderDate } from './configFormat';
 /**
- * Severity line inside a review file / agent stdout.
+ * Severity line inside agent stdout.
  * Canonical form is `H:n | M:n | S:n`. Legacy `L` (former low) maps to `S`.
+ * A review file and chip put `branch|changes | rs|rm|rd | ` in front of this line.
  */
 export const REVIEW_SEVERITY_RE =
   /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i;
+
+/** Kind token on a review file line and chip. Legacy files may still say `change`. */
+export type ReviewScopeToken = 'branch' | 'changes';
+/** Depth token on a review file line and chip. */
+export type ReviewDepthToken = 'rs' | 'rm' | 'rd';
+
+const REVIEW_SCOPE_PREFIX_RE = /^(branch|changes?)\s*\|\s*(rs|rm|rd)\s*\|\s*/i;
+
+/** `change` from older files and chips is the same scope as `changes`. */
+export function normalizeReviewScopeToken(raw: string): ReviewScopeToken | undefined {
+  const v = raw.trim().toLowerCase();
+  if (v === 'branch') {
+    return 'branch';
+  }
+  if (v === 'change' || v === 'changes') {
+    return 'changes';
+  }
+  return undefined;
+}
+
+export type ParsedReviewSeverity = {
+  scope?: ReviewScopeToken;
+  depth?: ReviewDepthToken;
+  /** Canonical `H:n | M:n | S:n`. */
+  severity: string;
+};
 
 /** Format a normalized severity line. Legacy L counts become S. */
 export function formatSeverityLine(h: string | number, m: string | number, s: string | number): string {
@@ -40,9 +78,43 @@ export function normalizeSeverityMatch(match: RegExpMatchArray): string {
   return formatSeverityLine(match[1], match[2], match[4]);
 }
 
+/** File line 3 and the tail of a chip: `branch | rd | H:n | M:n | S:n`. */
+export function formatReviewScopeLine(
+  scope: ReviewScopeToken,
+  depth: ReviewDepthToken,
+  severity: string,
+): string {
+  return `${scope} | ${depth} | ${severity}`;
+}
+
+/**
+ * Read a bare severity line or one with a kind and depth prefix.
+ * A bare line stays valid for reviews written before the prefix.
+ */
+export function parseReviewSeverityLine(line: string): ParsedReviewSeverity | undefined {
+  const trimmed = line.trim();
+  const prefix = REVIEW_SCOPE_PREFIX_RE.exec(trimmed);
+  const rest = prefix ? trimmed.slice(prefix[0].length).trim() : trimmed;
+  const sev = rest.match(REVIEW_SEVERITY_RE);
+  if (!sev) {
+    return undefined;
+  }
+  const severity = normalizeSeverityMatch(sev);
+  if (!prefix) {
+    return { severity };
+  }
+  return {
+    scope: normalizeReviewScopeToken(prefix[1]),
+    depth: prefix[2].toLowerCase() as ReviewDepthToken,
+    severity,
+  };
+}
+
 const MR_HEAD_RE = /^\(?((?:MR_SYN3|DMR_SYN3))\)?:\s*(.*)$/;
 const REVIEW_HEAD_RE = /^\(?R_SYN3\)?:\s*(.*)$/;
 const EXPLAIN_HEAD_RE = /^\(?W_SYN3\)?:\s*(.*)$/;
+const SCENARIO_GROUP_HEAD_RE = /^\(?GRSCN_SYN3\)?\s*$/i;
+const SCENARIO_HEAD_RE = /^\(?SCN_SYN3\)?\s*$/i;
 const MD_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/;
 /** Discord message flag: do not unfurl links into embed previews. */
 const SUPPRESS_EMBEDS = 1 << 2;
@@ -327,6 +399,17 @@ export function isExplainMessage(content: string): boolean {
   return EXPLAIN_HEAD_RE.test(head);
 }
 
+export function isScenarioGroupMessage(content: string): boolean {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return SCENARIO_GROUP_HEAD_RE.test(head.trim());
+}
+
+export function isScenarioMessage(content: string): boolean {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  // A group hello also contains SCN_SYN3 as a bare marker — only the first line counts.
+  return SCENARIO_HEAD_RE.test(head.trim()) && !isScenarioGroupMessage(content);
+}
+
 /** First severity line `H:n | M:n | S:n` in free text (agent stdout or file body). Legacy L → S. */
 export function findSeverityLine(text: string): string | undefined {
   for (const raw of text.split(/\r?\n/)) {
@@ -343,29 +426,36 @@ export function findSeverityLine(text: string): string | undefined {
  * Review attachment layout:
  * 1: Ревью N
  * 2: MR meta
- * 3: H:N | M:N | S:N
+ * 3: branch|changes | rs|rm|rd | H:N | M:N | S:N
+ *    Older files keep a bare H:N | M:N | S:N on this line.
  * rest: body
  */
 export function parseReviewAttachment(text: string): {
   reviewNumber?: number;
   severity?: string;
+  scope?: ReviewScopeToken;
+  depth?: ReviewDepthToken;
   pillLabel?: string;
 } {
   const lines = text.split(/\r?\n/).map((l) => l.trim());
   const reviewLine = lines[0] || '';
   const numMatch = /^Ревью\s+(\d+)\b/i.exec(reviewLine) || /^Review\s+(\d+)\b/i.exec(reviewLine);
   const reviewNumber = numMatch ? Number(numMatch[1]) : undefined;
-  const severityRaw = lines[2] || '';
-  const sevMatch = severityRaw.match(REVIEW_SEVERITY_RE);
-  if (!sevMatch) {
+  const parsed = parseReviewSeverityLine(lines[2] || '');
+  if (!parsed) {
     return { reviewNumber };
   }
-  const severity = normalizeSeverityMatch(sevMatch);
   const n = reviewNumber ?? 0;
+  const tail =
+    parsed.scope && parsed.depth
+      ? formatReviewScopeLine(parsed.scope, parsed.depth, parsed.severity)
+      : parsed.severity;
   return {
     reviewNumber,
-    severity,
-    pillLabel: `Ревью ${n} | ${severity}`,
+    severity: parsed.severity,
+    scope: parsed.scope,
+    depth: parsed.depth,
+    pillLabel: `Ревью ${n} | ${tail}`,
   };
 }
 
@@ -784,11 +874,11 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
  * Human-readable MR/PR body for Discord. First line carries the parse marker.
  *
  * DMR_SYN3: Title
- * МР: [МР !12](url)
- * Ветка: [branch](tree-url)
- * Репозиторий: [group/app](repo-url)
- * Автор ревью: Profile
- * Исполнители: A, B
+ * MR: [MR !12](url)
+ * Branch: [branch](tree-url)
+ * Repository: [group/app](repo-url)
+ * Review author: Profile
+ * Assignees: A, B
  * color: #hex
  * status: open|closed
  * lock: true|false
@@ -806,9 +896,9 @@ export function formatMrDiscordBody(opts: {
   assignees: string[];
 }): string {
   const repo = normalizeRepoWebUrl(opts.repoUrl);
-  const kindLabel = opts.provider === 'github' ? 'PR' : 'МР';
+  const kindLabel = opts.provider === 'github' ? 'PR' : 'MR';
   const iidLabel =
-    opts.provider === 'github' ? `PR #${opts.iid}` : `МР !${opts.iid}`;
+    opts.provider === 'github' ? `PR #${opts.iid}` : `MR !${opts.iid}`;
   const prefix = opts.draft ? DMR_PREFIX : MR_PREFIX;
   const assignees =
     opts.assignees.length > 0 ? opts.assignees.join(', ') : '—';
@@ -817,14 +907,14 @@ export function formatMrDiscordBody(opts: {
   const lines = [
     `${prefix}: ${opts.title.trim() || iidLabel}`,
     `${kindLabel}: ${mdLink(iidLabel, opts.webUrl.trim())}`,
-    `Ветка: ${
+    `Branch: ${
       opts.sourceBranch.trim()
         ? mdLink(branch, branchTreeUrl(opts.provider, repo, opts.sourceBranch.trim()))
         : '—'
     }`,
-    `Репозиторий: ${mdLink(repoPathLabel(repo) || repo, repo)}`,
-    `Автор ревью: ${author}`,
-    `Исполнители: ${assignees}`,
+    `Repository: ${mdLink(repoPathLabel(repo) || repo, repo)}`,
+    `Review author: ${author}`,
+    `Assignees: ${assignees}`,
     `color: ${opts.color}`,
     'status: open',
     'lock: false',
@@ -848,7 +938,7 @@ export function parseMrChip(content: string): {
   }
   const draft = headMatch[1] === DMR_PREFIX;
   const title = (headMatch[2] || '').trim() || undefined;
-  const mrLine = lines.find((l) => /^(МР|PR)\s*:/i.test(l));
+  const mrLine = lines.find((l) => /^(?:MR|МР|PR)\s*:/i.test(l));
   const webUrl = mrLine ? firstMdLinkUrl(mrLine) : undefined;
   const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
   const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
@@ -863,39 +953,45 @@ export function parseMrChip(content: string): {
  * Discord message for a review file attachment.
  *
  * Thread reply (under MR or under a root review):
- * R_SYN3: Ревью N | H:n | M:n | S:n
- * Модель: …
- * Скилл: …
+ * R_SYN3: Ревью N | branch | rd | H:n | M:n | S:n
+ * Model: …
+ * Skill: …
  * status: -|inProgress|done
  *
  * Channel root (no MR):
- * R_SYN3: Ревью N | H:n | M:n | S:n
- * Ветка: name
- * Модель: …
- * Скилл: …
+ * R_SYN3: Ревью N | branch | rd | H:n | M:n | S:n
+ * Branch: name
+ * Model: …
+ * Skill: …
  * color: #hex
  * status: -
  * lock: false
+ *
+ * Older messages omit kind and depth: `Ревью N | H:n | M:n | S:n`.
  */
 export function formatReviewDiscordBody(opts: {
   reviewNumber: number;
   severity: string;
+  scope?: ReviewScopeToken;
+  depth?: ReviewDepthToken;
   model: string;
   skillPath: string;
   branch?: string;
   color?: string;
 }): string {
-  const raw = opts.severity.trim();
-  const matched = raw.match(REVIEW_SEVERITY_RE);
-  const severity = matched ? normalizeSeverityMatch(matched) : formatSeverityLine(0, 0, 0);
+  const parsed = parseReviewSeverityLine(opts.severity);
+  const severity = parsed?.severity ?? formatSeverityLine(0, 0, 0);
+  const scope = opts.scope ?? parsed?.scope;
+  const depth = opts.depth ?? parsed?.depth;
+  const tail = scope && depth ? formatReviewScopeLine(scope, depth, severity) : severity;
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
-  const lines = [`${REVIEW_PREFIX}: Ревью ${opts.reviewNumber} | ${severity}`];
+  const lines = [`${REVIEW_PREFIX}: Ревью ${opts.reviewNumber} | ${tail}`];
   const branch = opts.branch?.trim();
   if (branch) {
-    lines.push(`Ветка: ${branch}`);
+    lines.push(`Branch: ${branch}`);
   }
-  lines.push(`Модель: ${model}`, `Скилл: ${skill}`);
+  lines.push(`Model: ${model}`, `Skill: ${skill}`);
   const color = opts.color?.trim();
   if (color) {
     lines.push(`color: ${color}`);
@@ -912,9 +1008,9 @@ export function formatReviewDiscordBody(opts: {
  *
  * Channel root or thread reply:
  * W_SYN3: Что делаем?
- * Ветка: name
- * Модель: …
- * Скилл: …
+ * Branch: name
+ * Model: …
+ * Skill: …
  * color: #hex
  */
 export function formatExplainDiscordBody(opts: {
@@ -929,9 +1025,9 @@ export function formatExplainDiscordBody(opts: {
   const color = (opts.color?.trim() || EXPLAIN_DEFAULT_COLOR).trim();
   return [
     `${EXPLAIN_PREFIX}: ${EXPLAIN_TITLE}`,
-    `Ветка: ${branch}`,
-    `Модель: ${model}`,
-    `Скилл: ${skill}`,
+    `Branch: ${branch}`,
+    `Model: ${model}`,
+    `Skill: ${skill}`,
     `color: ${color}`,
   ].join('\n');
 }
@@ -946,14 +1042,16 @@ export function parseExplainMessagePill(content: string): string | undefined {
   return EXPLAIN_TITLE;
 }
 
-/** Branch name from a `Ветка:` line. A markdown link keeps only its text. */
+/** Branch name from a `Branch:` line. Older messages use `Ветка:`. A markdown link keeps only its text. */
+const REVIEW_BRANCH_LINE_RE = /^(?:Branch|Ветка)\s*:/i;
+
 export function parseReviewBranch(content: string): string | undefined {
   const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const line = lines.find((l) => /^Ветка\s*:/i.test(l));
+  const line = lines.find((l) => REVIEW_BRANCH_LINE_RE.test(l));
   if (!line) {
     return undefined;
   }
-  const value = line.replace(/^Ветка\s*:/i, '').trim();
+  const value = line.replace(REVIEW_BRANCH_LINE_RE, '').trim();
   if (!value || value === '—') {
     return undefined;
   }
@@ -994,18 +1092,231 @@ export function parseReviewMessagePill(content: string): string | undefined {
   if (!match) {
     return undefined;
   }
-  const rest = (match[1] || '').trim();
-  const pill =
-    /^Ревью\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+$/i.exec(rest) ||
-    /^Review\s+\d+\s*\|\s*H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+$/i.exec(rest);
-  if (!pill) {
+  const rest = (match[1] || '').trim().replace(/\s+/g, ' ');
+  const scoped =
+    /^(?:Ревью|Review)\s+(\d+)\s*\|\s*(branch|changes?)\s*\|\s*(rs|rm|rd)\s*\|\s*(H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+)$/i.exec(
+      rest,
+    );
+  if (scoped) {
+    const sev = scoped[4].match(REVIEW_SEVERITY_RE);
+    const scope = normalizeReviewScopeToken(scoped[2]);
+    if (!sev || !scope) {
+      return undefined;
+    }
+    return `Ревью ${scoped[1]} | ${scope} | ${scoped[3].toLowerCase()} | ${normalizeSeverityMatch(sev)}`;
+  }
+  const plain =
+    /^(?:Ревью|Review)\s+(\d+)\s*\|\s*(H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+)$/i.exec(rest);
+  if (!plain) {
     return undefined;
   }
-  const normalized = rest.replace(/\s+/g, ' ');
-  const sev = normalized.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)/i);
-  const num = normalized.match(/^(?:Ревью|Review)\s+(\d+)/i);
-  if (!sev || !num) {
+  const sev = plain[2].match(REVIEW_SEVERITY_RE);
+  if (!sev) {
     return undefined;
   }
-  return `Ревью ${num[1]} | ${normalizeSeverityMatch(sev)}`;
+  return `Ревью ${plain[1]} | ${normalizeSeverityMatch(sev)}`;
+}
+
+export type ScenarioGroupStatus = 'open' | 'lock';
+
+function metaLineValue(content: string, key: string): string | undefined {
+  const needle = `${key.toLowerCase()}:`;
+  for (const raw of content.replace(/\r\n/g, '\n').split('\n')) {
+    const line = raw.trim();
+    if (!line.toLowerCase().startsWith(needle)) {
+      continue;
+    }
+    return line.slice(needle.length).trim();
+  }
+  return undefined;
+}
+
+/**
+ * GRSCN_SYN3
+ * date: …
+ * title: …
+ * counter: n
+ * status: open|lock
+ * alias:
+ * description:
+ * color: #hex
+ */
+export function formatScenarioGroupDiscordBody(opts: {
+  title: string;
+  color: string;
+  date?: string;
+  counter?: number;
+  status?: ScenarioGroupStatus;
+  alias?: string;
+  description?: string;
+}): string {
+  const date = opts.date?.trim() || formatConfigHeaderDate();
+  const title = opts.title.trim() || SCENARIO_GROUP_DEFAULT_TITLE;
+  const color = opts.color.trim() || '#8e4ec6';
+  const counter = Math.max(0, Math.floor(opts.counter ?? 0));
+  const status: ScenarioGroupStatus = opts.status === 'lock' ? 'lock' : 'open';
+  return [
+    SCENARIO_GROUP_PREFIX,
+    `date: ${date}`,
+    `title: ${title}`,
+    `counter: ${counter}`,
+    `status: ${status}`,
+    `alias: ${(opts.alias || '').trim()}`,
+    `description: ${(opts.description || '').trim()}`,
+    `color: ${color}`,
+  ].join('\n');
+}
+
+export function parseScenarioGroupChip(content: string): {
+  title?: string;
+  date?: string;
+  counter?: number;
+  status?: ScenarioGroupStatus;
+  alias?: string;
+  description?: string;
+  color?: string;
+} {
+  if (!isScenarioGroupMessage(content)) {
+    return {};
+  }
+  const title = metaLineValue(content, 'title');
+  const date = metaLineValue(content, 'date');
+  const alias = metaLineValue(content, 'alias');
+  const description = metaLineValue(content, 'description');
+  const colorRaw = metaLineValue(content, 'color');
+  const color = colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
+  const counterRaw = metaLineValue(content, 'counter');
+  const counter =
+    counterRaw && /^\d+$/.test(counterRaw) ? Number(counterRaw) : undefined;
+  const statusRaw = (metaLineValue(content, 'status') || '').toLowerCase();
+  const status: ScenarioGroupStatus = statusRaw === 'lock' ? 'lock' : 'open';
+  return {
+    ...(title !== undefined ? { title } : {}),
+    ...(date ? { date } : {}),
+    ...(counter !== undefined ? { counter } : {}),
+    status,
+    ...(alias !== undefined ? { alias } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(color ? { color } : {}),
+  };
+}
+
+/**
+ * SCN_SYN3
+ * date: …
+ * title: …
+ * steep: n
+ * order: n   (group thread only)
+ */
+export function formatScenarioDiscordBody(opts: {
+  title: string;
+  date?: string;
+  steep?: number;
+  order?: number;
+}): string {
+  const date = opts.date?.trim() || formatConfigHeaderDate();
+  const title = opts.title.trim() || SCENARIO_DEFAULT_TITLE;
+  const steep = Math.max(0, Math.floor(opts.steep ?? 0));
+  const lines = [
+    SCENARIO_PREFIX,
+    `date: ${date}`,
+    `title: ${title}`,
+    `steep: ${steep}`,
+  ];
+  if (opts.order !== undefined) {
+    lines.push(`order: ${Math.max(1, Math.floor(opts.order))}`);
+  }
+  return lines.join('\n');
+}
+
+export function parseScenarioChip(content: string): {
+  title?: string;
+  date?: string;
+  steep?: number;
+  order?: number;
+} {
+  if (!isScenarioMessage(content)) {
+    return {};
+  }
+  const title = metaLineValue(content, 'title');
+  const date = metaLineValue(content, 'date');
+  const steepRaw = metaLineValue(content, 'steep');
+  const orderRaw = metaLineValue(content, 'order');
+  const steep = steepRaw && /^\d+$/.test(steepRaw) ? Number(steepRaw) : undefined;
+  const order = orderRaw && /^\d+$/.test(orderRaw) ? Number(orderRaw) : undefined;
+  return {
+    ...(title !== undefined ? { title } : {}),
+    ...(date ? { date } : {}),
+    ...(steep !== undefined ? { steep } : {}),
+    ...(order !== undefined ? { order } : {}),
+  };
+}
+
+/** Count mermaid call/return arrows for the `steep:` field. */
+export function countScenarioSteeps(md: string): number {
+  let count = 0;
+  for (const line of md.replace(/\r\n/g, '\n').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('%%') || trimmed.startsWith('sequenceDiagram')) {
+      continue;
+    }
+    if (/->>|-->>/.test(trimmed)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/** Edit a Discord message and attach (or replace) a file. */
+export async function editMessageWithFile(
+  token: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+  filePath: string,
+): Promise<DiscordResult<DiscordMessage>> {
+  const filename = path.basename(filePath);
+  const bytes = await fs.readFile(filePath);
+  return editMessageWithAttachment(token, channelId, messageId, content, filename, bytes);
+}
+
+export async function editMessageWithAttachment(
+  token: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+  filename: string,
+  bytes: Uint8Array | Buffer,
+): Promise<DiscordResult<DiscordMessage>> {
+  const payload = JSON.stringify({
+    ...messagePayload(content),
+    attachments: [{ id: 0, filename }],
+  });
+  const fileBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const encoded = encodeAttachmentMultipart(payload, filename, fileBytes);
+  let last: DiscordFetchAttempt = { ok: false, status: 0, message: 'Upload failed' };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    last = await discordFetchOnce(
+      token,
+      'PATCH',
+      `/channels/${channelId}/messages/${messageId}`,
+      encoded.body,
+      encoded.contentType,
+    );
+    if (last.ok) {
+      const msg = asMessage(last.value);
+      if (!msg) {
+        return { ok: false, status: 0, message: 'Invalid Discord message response' };
+      }
+      return { ok: true, value: msg };
+    }
+    if (last.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      continue;
+    }
+    break;
+  }
+  return last.ok
+    ? { ok: false, status: 0, message: 'Invalid Discord message response' }
+    : last;
 }

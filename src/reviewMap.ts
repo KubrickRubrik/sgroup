@@ -117,13 +117,13 @@ export interface ReviewThreadMsg {
   isExplain?: boolean;
   /** True when attachment parsed to a review pill with H/M/S. */
   isPill?: boolean;
-  /** Label for the review pill, e.g. `Ревью 1 | H:4 | M:4 | S:5`. */
+  /** Label for the review pill, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | S:5`. */
   pillLabel?: string;
   /** Empty when Discord `status` is `-` or missing. */
   status?: ReviewChipStatus;
   /** Chip color from `color:` on an explain reply. */
   color?: string;
-  /** Branch from `Ветка:` on an explain reply. */
+  /** Branch from `Branch:` on an explain reply. */
   branch?: string;
   /** Discord attachment on this message. The CDN url stays on the host. */
   hasFile?: boolean;
@@ -145,7 +145,7 @@ export interface ReviewChip {
   title?: string;
   draft?: boolean;
   color?: string;
-  /** Pill label for a root review, e.g. `Ревью 1 | H:4 | M:4 | S:5`. */
+  /** Pill label for a root review, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | S:5`. */
   pillLabel?: string;
   /** `status: closed` on the Discord MR message. Missing line stays open. */
   status?: 'open' | 'closed';
@@ -156,7 +156,7 @@ export interface ReviewChip {
   filename?: string;
   /** `lock: true` on the parent Discord message. Missing line stays open. */
   locked?: boolean;
-  /** Branch this channel message was made on, from `Ветка:`. */
+  /** Branch this channel message was made on, from `Branch:`. */
   branch?: string;
   threadId?: string;
   hasThread?: boolean;
@@ -2167,7 +2167,7 @@ export class ReviewMapController {
     return { ok: true, filename: value.filename, text: value.text };
   }
 
-  /** Write the cached attachment to a temp file and open it in an editor tab. */
+  /** Write the cached attachment to a temp markdown file and open its preview. */
   async openReviewAttachmentTab(
     pageId: string,
     messageId: string,
@@ -2176,16 +2176,13 @@ export class ReviewMapController {
     if (!read.ok) {
       return read;
     }
-    const safe = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
+    const safeName = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
+    const safe = /\.md$/i.test(safeName) ? safeName : `${safeName}.md`;
     const dir = path.join(os.tmpdir(), 'syn3-reviews');
     await fs.mkdir(dir, { recursive: true });
     const full = path.join(dir, `${messageId}-${safe}`);
     await fs.writeFile(full, read.text, 'utf8');
-    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
-    await vscode.window.showTextDocument(doc, {
-      preview: false,
-      viewColumn: vscode.ViewColumn.Beside,
-    });
+    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(full));
     return { ok: true };
   }
 
@@ -2414,6 +2411,8 @@ export class ReviewMapController {
         reviewNumber,
         mrLine,
         severity: agent.severity,
+        kind,
+        depth: parseReviewDepth(depth),
         body: agent.body,
       });
       await this.pending.write(pendingKey, kind, filePath);
@@ -2613,7 +2612,7 @@ export class ReviewMapController {
           const mrIid = m ? m[1] : '';
           return [mrIid, title, webUrl].filter(Boolean).join(' ');
         })()
-      : `Ветка: ${branchName}`;
+      : `Branch: ${branchName}`;
 
     try {
       const filePath = await writeReviewFile({
@@ -2621,6 +2620,8 @@ export class ReviewMapController {
         reviewNumber,
         mrLine,
         severity: agent.severity,
+        kind: opts.kind,
+        depth: opts.depth,
         body: agent.body,
       });
       await this.pending.write(pendingKey, opts.kind, filePath);
@@ -2724,8 +2725,10 @@ export class ReviewMapController {
       const filePath = await writeReviewFile({
         dirPath: dirAbs,
         reviewNumber,
-        mrLine: `Ветка: ${branchName}`,
+        mrLine: `Branch: ${branchName}`,
         severity: agent.severity,
+        kind,
+        depth: parseReviewDepth(depth),
         body: agent.body,
       });
       await this.pending.write(pendingKey, kind, filePath);
@@ -2794,6 +2797,8 @@ export class ReviewMapController {
     const paths = this.profilePaths();
     let reviewNumber = 1;
     let severity = 'H:0 | M:0 | S:0';
+    let scope: 'branch' | 'changes' | undefined;
+    let depthToken: 'rs' | 'rm' | 'rd' | undefined;
     try {
       const fileText = await fs.readFile(filePath, 'utf8');
       const parsedFile = parseReviewAttachment(fileText);
@@ -2803,12 +2808,16 @@ export class ReviewMapController {
       if (parsedFile.severity) {
         severity = parsedFile.severity;
       }
+      scope = parsedFile.scope;
+      depthToken = parsedFile.depth;
     } catch {
       // keep defaults
     }
     const content = formatReviewDiscordBody({
       reviewNumber,
       severity,
+      scope,
+      depth: depthToken,
       model: paths.model,
       skillPath: paths.skillPath,
     });
@@ -2867,6 +2876,8 @@ export class ReviewMapController {
     const paths = this.profilePaths();
     let reviewNumber = 1;
     let severity = 'H:0 | M:0 | S:0';
+    let scope: 'branch' | 'changes' | undefined;
+    let depthToken: 'rs' | 'rm' | 'rd' | undefined;
     try {
       const fileText = await fs.readFile(filePath, 'utf8');
       const parsedFile = parseReviewAttachment(fileText);
@@ -2876,12 +2887,16 @@ export class ReviewMapController {
       if (parsedFile.severity) {
         severity = parsedFile.severity;
       }
+      scope = parsedFile.scope;
+      depthToken = parsedFile.depth;
     } catch {
       // keep defaults
     }
     const content = formatReviewDiscordBody({
       reviewNumber,
       severity,
+      scope,
+      depth: depthToken,
       model: paths.model,
       skillPath: paths.skillPath,
       branch,

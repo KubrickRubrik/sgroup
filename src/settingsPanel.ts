@@ -446,6 +446,7 @@ export class SettingsPanel implements vscode.Disposable {
         notes: channels.notes || '',
         links: channels.links || '',
         review: channels.review || '',
+        scenarios: channels.scenarios || '',
       },
       projectRepo: this.store.projectRepo() ?? null,
       hasDiscord: secrets.hasDiscord,
@@ -1223,6 +1224,11 @@ export class SettingsPanel implements vscode.Disposable {
         <span class="value" data-for="fontFile"></span>
       </div>
       <div class="row">
+        <label for="fontReview" data-i18n="labelFontReview">Review panel</label>
+        <input id="fontReview" type="range" min="0.6" max="2" step="0.05">
+        <span class="value" data-for="fontReview"></span>
+      </div>
+      <div class="row">
         <label for="fontScale" data-i18n="labelFontScale">Multiplier</label>
         <input id="fontScale" type="range" min="1" max="5" step="0.1">
         <span class="value" data-for="fontScale"></span>
@@ -1393,7 +1399,7 @@ export class SettingsPanel implements vscode.Disposable {
     const vscode = acquireVsCodeApi();
     const GENERAL_ID = ${JSON.stringify(generalId)};
     const keys = [
-      'fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontScale',
+      'fontGroup', 'fontSubgroup', 'fontFolder', 'fontFile', 'fontReview', 'fontScale',
       'gradientDirection', 'cardFill', 'cardBorder',
       'bgFolder', 'bgFile', 'bgSubgroup', 'bgClass', 'bgNote', 'bgHover',
       'labelSaturation', 'openFileDuration', 'reviewRefreshSec',

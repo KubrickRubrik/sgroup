@@ -23,7 +23,7 @@ import {
   snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
-import { instructionPageHtml, instructionTitle, markdownToHtml } from './instructionPreview';
+import { instructionPageHtml, instructionTitle, reviewFileHtml } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { cssColor, normalizeHex, PALETTE } from './palette';
@@ -37,6 +37,7 @@ import {
 } from './discordSetup';
 import { ReviewDepth, ReviewKind } from './reviewPending';
 import { ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
+import { ScenarioMapController, ScenarioPageState } from './scenarioMap';
 import {
   createRepositoryTokenKey,
   deleteFigmaToken,
@@ -197,6 +198,7 @@ type IncomingToolbarAction =
   | 'createPageNotes'
   | 'createPageLinks'
   | 'createPageReview'
+  | 'createPageScenarios'
   | 'createMr'
   | 'pullMr'
   | 'renamePage'
@@ -492,6 +494,7 @@ type IncomingMessage =
   | { type: 'explainRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFile'; pageId: string; messageId: string }
+  | { type: 'reviewSaveFile'; pageId: string; messageId: string }
   | { type: 'reviewOpenFileTab'; pageId: string; messageId: string }
   | {
       type: 'reviewCreatePage';
@@ -558,7 +561,43 @@ type IncomingMessage =
       review: string;
       discordToken?: string;
       dirty: SetupChannelKind[];
-    };
+    }
+  | {
+      type: 'scenarioSavePage';
+      pageId?: string;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+      scenarioSkillPath?: string;
+      scenarioModel?: string;
+      scenarioPrintThinking?: boolean;
+      scenarioPrintTools?: boolean;
+    }
+  | { type: 'scenarioCreate'; pageId: string; groupId?: string }
+  | { type: 'scenarioCreateGroup'; pageId: string }
+  | { type: 'scenarioRename'; pageId: string; messageId: string; title: string }
+  | {
+      type: 'scenarioUpdateGroup';
+      pageId: string;
+      groupId: string;
+      title?: string;
+      alias?: string;
+      description?: string;
+      color?: string | null;
+      status?: 'open' | 'lock';
+    }
+  | { type: 'scenarioDelete'; pageId: string; messageId: string }
+  | { type: 'scenarioReorder'; pageId: string; groupId: string; orderedIds: string[] }
+  | {
+      type: 'scenarioTransfer';
+      pageId: string;
+      messageId: string;
+      targetGroupId?: string;
+      copy?: boolean;
+    }
+  | { type: 'scenarioForm'; pageId: string; messageId: string }
+  | { type: 'scenarioReload'; pageId: string };
 
 interface DirListingEntry {
   name: string;
@@ -914,6 +953,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   /** Coalesces refresh bursts and lets the caller finish switching the active page first. */
   private readonly stateDelay = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
   private readonly review: ReviewMapController;
+  private readonly scenarios: ScenarioMapController;
   private readonly hostSecrets: vscode.SecretStorage;
   /** MR waiting for Discord retry after a failed post. */
   private pendingDiscordMr?: { pageId: string; mr: ReviewMr };
@@ -967,6 +1007,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         };
       },
     );
+    this.scenarios = new ScenarioMapController(store, this.hostSecrets, () => store.root.fsPath);
+    this.scenarios.setChangeHandler((pageId, state) => {
+      for (const webview of this.webviews) {
+        if (this.activePageByWebview.get(webview) === pageId) {
+          void this.pushScenarioState(webview, state);
+        }
+      }
+    });
+    this.scenarios.bindChannel(this.store.catalogChannels().scenarios || '');
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
     this.dirtyWatcher = new DirtyPathWatcher(store, (paths) => {
@@ -1050,6 +1099,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       panel.dispose();
     }
     this.instructionPanels.clear();
+    this.scenarios.dispose();
   }
 
   private clearReviewRefresh(webview: vscode.Webview): void {
@@ -2591,6 +2641,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (this.store.page(readyPage)?.kind === 'review') {
         await this.showReviewPage(webview, readyPage);
       }
+      if (this.store.page(readyPage)?.kind === 'scenarios') {
+        this.scenarios.bindChannel(this.store.catalogChannels().scenarios || '');
+        await this.pushScenarioState(webview, await this.scenarios.loadInitial(readyPage));
+      }
       this.armReviewRefresh(webview);
       return;
     }
@@ -2635,6 +2689,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       // Only fetch Discord when entering a review page — state churn must not re-hit the API.
       if (switched && this.store.page(message.pageId)?.kind === 'review') {
         await this.showReviewPage(webview, message.pageId);
+      }
+      if (switched && this.store.page(message.pageId)?.kind === 'scenarios') {
+        this.scenarios.bindChannel(this.store.catalogChannels().scenarios || '');
+        await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
       }
       if (switched) {
         this.armReviewRefresh(webview);
@@ -3190,9 +3248,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ok: result.ok,
         filename: result.ok ? result.filename : undefined,
         text: result.ok ? result.text : undefined,
-        html: result.ok ? markdownToHtml(result.text) : undefined,
+        html: result.ok ? reviewFileHtml(result.text) : undefined,
         message: result.ok ? undefined : result.message,
       });
+      return;
+    }
+    if (message.type === 'reviewSaveFile') {
+      await this.saveReviewAttachment(message.pageId, message.messageId);
       return;
     }
     if (message.type === 'reviewOpenFileTab') {
@@ -3204,6 +3266,91 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewCreatePage') {
       await this.createReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'scenarioSavePage') {
+      await this.createOrSaveScenarioPage(webview, message);
+      return;
+    }
+    if (message.type === 'scenarioCreate') {
+      const result = await this.scenarios.createScenario(message.pageId, message.groupId);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioCreateGroup') {
+      const result = await this.scenarios.createGroup(message.pageId);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioRename') {
+      const result = await this.scenarios.renameScenario(message.pageId, message.messageId, message.title);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioUpdateGroup') {
+      const result = await this.scenarios.updateGroup(message.pageId, message.groupId, message);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioDelete') {
+      const result = await this.scenarios.deleteMessage(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioReorder') {
+      const result = await this.scenarios.reorderInGroup(
+        message.pageId,
+        message.groupId,
+        message.orderedIds,
+      );
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioTransfer') {
+      const result = await this.scenarios.transferScenario(message.pageId, message.messageId, {
+        targetGroupId: message.targetGroupId,
+        copy: !!message.copy,
+      });
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioForm') {
+      const result = await this.scenarios.startForm(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
+      return;
+    }
+    if (message.type === 'scenarioReload') {
+      await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
       return;
     }
     if (message.type === 'pageSaveSettings') {
@@ -3930,6 +4077,28 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
       return undefined;
     }
+  }
+
+  private async saveReviewAttachment(pageId: string, messageId: string): Promise<void> {
+    const read = await this.review.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      void vscode.window.showErrorMessage(`Syn3: ${read.message}`);
+      return;
+    }
+    const safeName = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
+    const safe = /\.md$/i.test(safeName) ? safeName : `${safeName}.md`;
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const defaultUri = folder ? vscode.Uri.joinPath(folder, safe) : vscode.Uri.file(safe);
+    const locale = normalizeLocale(this.store.appearance.language);
+    const target = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { Markdown: ['md'] },
+      saveLabel: t(locale, 'reviewFileSave'),
+    });
+    if (!target) {
+      return;
+    }
+    await vscode.workspace.fs.writeFile(target, Buffer.from(read.text, 'utf8'));
   }
 
   private async onReviewSkillFile(
@@ -4716,7 +4885,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       action === 'createPageFiles' ||
       action === 'createPageNotes' ||
       action === 'createPageLinks' ||
-      action === 'createPageReview'
+      action === 'createPageReview' ||
+      action === 'createPageScenarios'
     ) {
       const kind: PageKind =
         action === 'createPageNotes'
@@ -4725,7 +4895,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             ? 'links'
             : action === 'createPageReview'
               ? 'review'
-              : 'files';
+              : action === 'createPageScenarios'
+                ? 'scenarios'
+                : 'files';
       await this.createPageFlow(webview, kind);
       return;
     }
@@ -5570,6 +5742,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    if (pageKind === 'scenarios') {
+      await this.postScenarioPagePanel(webview, { mode: 'create' });
+      return;
+    }
     await this.postPageSettingsPanel(webview, { mode: 'create', kind: pageKind });
   }
 
@@ -5631,6 +5807,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.openReviewPageSettings(webview, pageId);
       return;
     }
+    if (page.kind === 'scenarios') {
+      await this.postScenarioPagePanel(webview, {
+        mode: 'edit',
+        pageId,
+        name: page.name,
+        description: page.description || '',
+      });
+      return;
+    }
     await this.postPageSettingsPanel(webview, {
       mode: 'edit',
       pageId,
@@ -5638,6 +5823,83 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       name: page.name,
       description: page.description || '',
     });
+  }
+
+  private async createOrSaveScenarioPage(
+    webview: vscode.Webview,
+    message: {
+      pageId?: string;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+      scenarioSkillPath?: string;
+      scenarioModel?: string;
+      scenarioPrintThinking?: boolean;
+      scenarioPrintTools?: boolean;
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'scenarioPageError', message: text });
+      void vscode.window.showErrorMessage(`Syn3: ${text}`);
+    };
+    const name = message.name.trim();
+    if (!name) {
+      await fail(t(locale, 'profileNameEmpty'));
+      return;
+    }
+    const channelId = (message.channelId || '').trim();
+    if (!channelId || !/^\d{5,}$/.test(channelId)) {
+      await fail(t(locale, 'projectChannelInvalid'));
+      return;
+    }
+    if (message.discordToken?.trim()) {
+      await storeSecrets(this.hostSecrets, { discord: message.discordToken });
+    }
+    const status = await secretsStatus(this.hostSecrets);
+    if (!status.hasDiscord) {
+      await fail(t(locale, 'discordTokenRequired'));
+      return;
+    }
+    await this.store.setActiveScenarioPaths({
+      scenarioSkillPath: message.scenarioSkillPath,
+      scenarioModel: message.scenarioModel,
+      scenarioPrintThinking: message.scenarioPrintThinking,
+      scenarioPrintTools: message.scenarioPrintTools,
+    });
+    if (message.pageId) {
+      await this.store.setPageMeta(message.pageId, name, message.description || '');
+      await this.store.setCatalogChannels({ scenarios: channelId });
+      this.scenarios.bindChannel(channelId);
+      await webview.postMessage({ type: 'scenarioPageDone' });
+      await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
+      return;
+    }
+    if (this.store.pages().length >= MAX_PAGES || this.store.hasPageKind('scenarios')) {
+      await fail(t(locale, 'pageKindTaken'));
+      return;
+    }
+    const hello = await this.postPageChannelHello('scenarios', channelId);
+    if (!hello.ok) {
+      await fail(hello.message);
+      return;
+    }
+    await this.store.setCatalogChannels({ scenarios: channelId });
+    this.scenarios.bindChannel(channelId);
+    const id = await this.store.createPage(name, 'scenarios', message.description);
+    if (!id) {
+      await fail('Failed to create page');
+      return;
+    }
+    await this.store.touchPageConfig(id);
+    await this.pushBaseAfterPageHello();
+    this.activePageByWebview.set(webview, id);
+    this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'scenarioPageDone' });
+    await webview.postMessage({ type: 'openPage', pageId: id });
+    const state = await this.scenarios.loadInitial(id);
+    await this.pushScenarioState(webview, state);
   }
 
   private pageSetupKind(kind: PageKind): SetupChannelKind {
@@ -5650,7 +5912,35 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (kind === 'review') {
       return 'review';
     }
+    if (kind === 'scenarios') {
+      return 'scenarios';
+    }
     return 'explorer';
+  }
+
+  private async postScenarioPagePanel(
+    webview: vscode.Webview,
+    opts: { mode: 'create' | 'edit'; pageId?: string; name?: string; description?: string },
+  ): Promise<void> {
+    const status = await secretsStatus(this.hostSecrets);
+    const paths = this.store.activeScenarioPaths();
+    await webview.postMessage({
+      type: 'scenarioPagePanel',
+      mode: opts.mode,
+      pageId: opts.pageId || '',
+      name: opts.name || '',
+      description: opts.description || '',
+      channelId: this.store.catalogChannels().scenarios || '',
+      hasDiscord: status.hasDiscord,
+      scenarioSkillPath: paths.skillPath,
+      scenarioModel: paths.model,
+      scenarioPrintThinking: paths.printThinking,
+      scenarioPrintTools: paths.printTools,
+    });
+  }
+
+  private async pushScenarioState(webview: vscode.Webview, state: ScenarioPageState): Promise<void> {
+    await webview.postMessage({ type: 'scenarioState', scenario: state });
   }
 
   /** Post the map hello into the page channel. Does not look for an older hello. */
@@ -6699,6 +6989,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const groupIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-light.svg'));
     const groupIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-dark.svg'));
     const icon = (name: string, mode?: string, hidden = false) => this.toolIcon(webview, name, mode, hidden);
+    const glyph = (d: string) =>
+      `<svg class="review-file-ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="${d}"></path></svg>`;
+    const iconGrow =
+      'M11 11V7H13V11H17V13H13V17H11V13H7V11H11ZM12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20Z';
+    const iconShrink =
+      'M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20ZM7 11H17V13H7V11Z';
+    const iconDownload =
+      'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z';
+    const iconClose =
+      'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z';
     const sideAttr = surface === 'left' || surface === 'right' ? ` data-side="${surface}"` : '';
     return `<!DOCTYPE html>
 <html lang="en">
@@ -6805,6 +7105,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
               <button type="button" data-action="createPageNotes" role="menuitem"><span data-i18n="menuNewPageNotes">Notes</span></button>
               <button type="button" data-action="createPageLinks" role="menuitem"><span data-i18n="menuNewPageLinks">Links</span></button>
               <button type="button" data-action="createPageReview" role="menuitem"><span data-i18n="menuNewPageReview">Review</span></button>
+              <button type="button" data-action="createPageScenarios" role="menuitem"><span data-i18n="menuNewPageScenarios">Scenarios</span></button>
             </div>
           </div>
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
@@ -6834,14 +7135,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     <aside id="review-file" class="review-file" hidden>
       <div class="review-file-head">
         <span id="review-file-title" class="review-file-title"></span>
-        <button id="review-file-close" class="history-btn" type="button" aria-label="Закрыть">×</button>
+        <div class="review-file-actions">
+          <button id="review-file-grow" class="history-btn" type="button" aria-label="Увеличить">${glyph(iconGrow)}</button>
+          <button id="review-file-shrink" class="history-btn" type="button" aria-label="Уменьшить">${glyph(iconShrink)}</button>
+          <button id="review-file-save" class="history-btn" type="button" aria-label="Скачать" disabled>${glyph(iconDownload)}</button>
+          <button id="review-file-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+        </div>
       </div>
       <div id="review-file-body" class="review-file-body"></div>
     </aside>
     <aside id="explain-file" class="review-file explain-file" hidden>
       <div class="review-file-head">
         <span id="explain-file-title" class="review-file-title"></span>
-        <button id="explain-file-close" class="history-btn" type="button" aria-label="Закрыть">×</button>
+        <button id="explain-file-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
       </div>
       <div id="explain-file-body" class="review-file-body explain-file-body"></div>
     </aside>

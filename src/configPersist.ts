@@ -48,6 +48,7 @@ const DEFAULT_APPEARANCE_LOCAL: Appearance = {
   fontSubgroup: 1.05,
   fontFolder: 0.95,
   fontFile: 0.9,
+  fontReview: 1,
   fontScale: 1,
   gradientDirection: 0,
   cardGradient: true,
@@ -96,7 +97,11 @@ function normalizeGroupsLayoutLocal(value: unknown): GroupsLayout {
 }
 
 function normalizePageKindLocal(value: unknown): PageKind | undefined {
-  return value === 'files' || value === 'notes' || value === 'links' || value === 'review'
+  return value === 'files' ||
+    value === 'notes' ||
+    value === 'links' ||
+    value === 'review' ||
+    value === 'scenarios'
     ? value
     : undefined;
 }
@@ -302,6 +307,7 @@ function normalizeAppearanceLocal(raw: unknown): Appearance {
     fontSubgroup: numOr(source.fontSubgroup, DEFAULT_APPEARANCE_LOCAL.fontSubgroup),
     fontFolder: numOr(source.fontFolder, DEFAULT_APPEARANCE_LOCAL.fontFolder),
     fontFile: numOr(source.fontFile, DEFAULT_APPEARANCE_LOCAL.fontFile),
+    fontReview: numOr(source.fontReview, DEFAULT_APPEARANCE_LOCAL.fontReview),
     fontScale: numOr(source.fontScale, DEFAULT_APPEARANCE_LOCAL.fontScale),
     gradientDirection: numOr(source.gradientDirection, DEFAULT_APPEARANCE_LOCAL.gradientDirection),
     cardGradient: boolOr(source.cardGradient, DEFAULT_APPEARANCE_LOCAL.cardGradient),
@@ -1075,6 +1081,10 @@ export function packProfileEntry(opts: {
     ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
     ...(opts.profile.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(opts.profile.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+    ...(opts.profile.scenarioSkillPath ? { scenarioSkillPath: opts.profile.scenarioSkillPath } : {}),
+    ...(opts.profile.scenarioModel ? { scenarioModel: opts.profile.scenarioModel } : {}),
+    ...(opts.profile.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
+    ...(opts.profile.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
   };
 }
 
@@ -1116,6 +1126,10 @@ export function unpackProfilesFromBase(
       ...(data?.reviewFixModel ? { reviewFixModel: data.reviewFixModel } : {}),
       ...(data?.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
       ...(data?.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+      ...(data?.scenarioSkillPath ? { scenarioSkillPath: data.scenarioSkillPath } : {}),
+      ...(data?.scenarioModel ? { scenarioModel: data.scenarioModel } : {}),
+      ...(data?.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
+      ...(data?.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
       ...(data?.githubNick ? { githubNick: data.githubNick } : {}),
       ...(data?.gitlabNick ? { gitlabNick: data.gitlabNick } : {}),
       ...(data?.repositoryTokenKey ? { repositoryTokenKey: data.repositoryTokenKey } : {}),
@@ -1468,5 +1482,6 @@ export function mergeProjectChannels(
     notes: partial.notes !== undefined ? partial.notes : current.notes,
     links: partial.links !== undefined ? partial.links : current.links,
     review: partial.review !== undefined ? partial.review : current.review,
+    scenarios: partial.scenarios !== undefined ? partial.scenarios : current.scenarios,
   });
 }

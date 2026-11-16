@@ -50,7 +50,7 @@ export interface PageTombstone {
   kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
   channelId: string;
   name: string;
-  pageKind: 'files' | 'notes' | 'links' | 'review';
+  pageKind: 'files' | 'notes' | 'links' | 'review' | 'scenarios';
   order: number;
   number: number;
   headerDate: string;
@@ -479,7 +479,11 @@ function normalizePageTombstones(raw: unknown): Record<string, PageTombstone> | 
     const name = typeof item.name === 'string' ? item.name.trim() : '';
     if (
       (kind !== 'EXPLORER' && kind !== 'NOTES' && kind !== 'LINKS' && kind !== 'REVIEW') ||
-      (pageKind !== 'files' && pageKind !== 'notes' && pageKind !== 'links' && pageKind !== 'review') ||
+      (pageKind !== 'files' &&
+        pageKind !== 'notes' &&
+        pageKind !== 'links' &&
+        pageKind !== 'review' &&
+        pageKind !== 'scenarios') ||
       !channelId ||
       !name
     ) {

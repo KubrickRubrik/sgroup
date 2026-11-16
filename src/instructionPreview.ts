@@ -49,6 +49,12 @@ export function instructionPageHtml(markdown: string): string {
     text-align: left;
     vertical-align: top;
   }
+  td.review-level { vertical-align: middle; white-space: nowrap; width: 1%; }
+  .review-level-mark { align-items: center; display: inline-flex; gap: 8px; }
+  .review-level-dot { border-radius: 50%; flex: none; height: 6px; width: 6px; }
+  .review-level-high { background: #a53d3f; }
+  .review-level-medium { background: #d68b42; }
+  .review-level-low { background: #8b9396; }
   th { background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.15)); }
 </style>
 </head>
@@ -173,12 +179,47 @@ function readTable(lines: string[], start: number): { html: string; next: number
   if (rows.length === 0) {
     return { html: '', next: index };
   }
+  const levelCol = rows[0].findIndex((cell) => cell.trim().toLowerCase() === 'уровень');
   const head = rows[0].map((cell) => `<th>${renderInline(cell)}</th>`).join('');
   const body = rows
     .slice(1)
-    .map((row) => `<tr>${row.map((cell) => `<td>${renderInline(cell)}</td>`).join('')}</tr>`)
+    .map((row) => {
+      const cells = row.map((cell, index) =>
+        index === levelCol ? reviewLevelCell(cell) : `<td>${renderInline(cell)}</td>`,
+      );
+      return `<tr>${cells.join('')}</tr>`;
+    })
     .join('');
   return { html: `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`, next: index };
+}
+
+type ReviewLevel = { tone: 'high' | 'medium' | 'low'; label: string };
+
+/** Column «Уровень»: a colored dot and one letter, H, M or L. */
+function reviewLevel(cell: string): ReviewLevel | undefined {
+  const value = cell.trim().toLowerCase();
+  if (value === 'h' || value === 'high') {
+    return { tone: 'high', label: 'H' };
+  }
+  if (value === 'm' || value === 'medium') {
+    return { tone: 'medium', label: 'M' };
+  }
+  if (value === 'l' || value === 'low' || value === 's' || value === 'simple') {
+    return { tone: 'low', label: 'L' };
+  }
+  return undefined;
+}
+
+function reviewLevelCell(cell: string): string {
+  const level = reviewLevel(cell);
+  if (!level) {
+    return `<td>${renderInline(cell)}</td>`;
+  }
+  return (
+    `<td class="review-level"><span class="review-level-mark">` +
+    `<span class="review-level-dot review-level-${level.tone}" aria-hidden="true"></span>` +
+    `${level.label}</span></td>`
+  );
 }
 
 function lineIndent(line: string): number {
@@ -186,11 +227,101 @@ function lineIndent(line: string): number {
 }
 
 function renderInline(text: string): string {
-  let html = escapeHtml(text);
-  html = html.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const re = /\[([^\]]+)\]\(([^)\s]+)\)|`([^`]+)`|\*\*([^*]+)\*\*/g;
+  let html = '';
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    html += linkifyFileRefs(text.slice(last, match.index));
+    if (match[1] !== undefined) {
+      html += renderLink(match[1], match[2]);
+    } else if (match[3] !== undefined) {
+      const file = workspaceFile(match[3], match[3]);
+      html += file ? fileAnchor(file, match[3]) : `<code>${escapeHtml(match[3])}</code>`;
+    } else {
+      html += `<strong>${renderInline(match[4])}</strong>`;
+    }
+    last = match.index + match[0].length;
+  }
+  html += linkifyFileRefs(text.slice(last));
   return html;
+}
+
+/** `media/map.js:13832` and `` `media/map.js:13832` `` become the same file link. */
+function linkifyFileRefs(raw: string): string {
+  const re = /(^|[^\w./@+-])((?:[\w.+@-]+\/)*[\w.+@-]+\.[A-Za-z][\w]*:\d+)(?![\w])/g;
+  let html = '';
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw))) {
+    html += escapeHtml(raw.slice(last, match.index) + match[1]);
+    const file = workspaceFile(match[2], match[2]);
+    html += file ? fileAnchor(file, match[2]) : escapeHtml(match[2]);
+    last = match.index + match[0].length;
+  }
+  html += escapeHtml(raw.slice(last));
+  return html;
+}
+
+function renderLink(label: string, href: string): string {
+  if (/^https?:\/\//i.test(href)) {
+    return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+  }
+  const file = workspaceFile(href, label);
+  if (!file) {
+    return escapeHtml(`[${label}](${href})`);
+  }
+  return fileAnchor(file, label);
+}
+
+type WorkspaceFile = { rel: string; line?: number };
+
+/** Href is a project-relative path. The line comes from `#L123`, `:123`, or the label. */
+function workspaceFile(href: string, label: string): WorkspaceFile | undefined {
+  let raw = href.trim();
+  if (!raw || /^(?:https?|file|vscode|command):/i.test(raw) || raw.startsWith('//') || raw.startsWith('/')) {
+    return undefined;
+  }
+  let line: number | undefined;
+  const hashAt = raw.indexOf('#');
+  if (hashAt >= 0) {
+    const hashLine = /^L(\d+)$/i.exec(raw.slice(hashAt + 1));
+    if (hashLine) {
+      line = Number(hashLine[1]);
+    }
+    raw = raw.slice(0, hashAt);
+  }
+  const colon = /:(\d+)$/.exec(raw);
+  if (colon) {
+    line = line ?? Number(colon[1]);
+    raw = raw.slice(0, colon.index);
+  }
+  if (raw.startsWith('./')) {
+    raw = raw.slice(2);
+  }
+  if (!raw || raw.endsWith('/')) {
+    return undefined;
+  }
+  const parts = raw.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..' || !/^[\w.+@-]+$/.test(part))) {
+    return undefined;
+  }
+  const name = parts[parts.length - 1];
+  if (!name.includes('.') && parts.length < 2) {
+    return undefined;
+  }
+  if (line === undefined) {
+    const labelLine = /:(\d+)\s*$/.exec(label.trim());
+    if (labelLine) {
+      line = Number(labelLine[1]);
+    }
+  }
+  return { rel: parts.join('/'), line: line && line > 0 ? line : undefined };
+}
+
+function fileAnchor(file: WorkspaceFile, label: string): string {
+  const line = file.line ? ` data-syn3-line="${file.line}"` : '';
+  return `<a class="review-file-link" href="#" data-syn3-file="${escapeHtml(file.rel)}"${line}>${escapeHtml(label)}</a>`;
 }
 
 function escapeHtml(text: string): string {
@@ -199,4 +330,141 @@ function escapeHtml(text: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+type ReviewCounts = { h: number; m: number; s: number };
+
+/** Severity counts from review file line 3, with or without the kind/depth prefix. */
+function reviewCounts(markdown: string): ReviewCounts | undefined {
+  const line = markdown.replace(/\r\n/g, '\n').split('\n')[2] || '';
+  const match = line.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*[LS]:\s*(\d+)/i);
+  if (!match) {
+    return undefined;
+  }
+  return { h: Number(match[1]), m: Number(match[2]), s: Number(match[3]) };
+}
+
+/**
+ * Preview starts at the first `# ` heading. Lines above it are the chip stamp
+ * and the H/M/S groups; the parser still reads the full file.
+ */
+function reviewReadable(markdown: string): string {
+  const normalized = markdown.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const start = lines.findIndex((line) => /^#\s+\S/.test(line.trim()));
+  return start < 0 ? normalized : lines.slice(start).join('\n');
+}
+
+/** Body under `## Сначала`, up to the next heading. */
+function reviewLead(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
+  const start = lines.findIndex((line) => /^##\s+Сначала\s*$/.test(line.trim()));
+  if (start < 0) {
+    return '';
+  }
+  const body: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,3}\s+\S/.test(line.trim())) {
+      break;
+    }
+    body.push(line);
+  }
+  return body.join('\n').trim();
+}
+
+function withoutReviewSummary(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
+  const kept: string[] = [];
+  let skippingLead = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (skippingLead) {
+      if (/^#{1,3}\s+\S/.test(trimmed)) {
+        skippingLead = false;
+      } else {
+        continue;
+      }
+    }
+    if (/^##\s+Сначала\s*$/.test(trimmed)) {
+      skippingLead = true;
+      continue;
+    }
+    if (/^High\s+\d+\s*·\s*Medium\s+\d+\s*·\s*Low\s+\d+\s*$/i.test(trimmed)) {
+      continue;
+    }
+    if (/^Состав находок(?:\s|:|$)/i.test(trimmed)) {
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
+
+function reviewSummaryHtml(counts: ReviewCounts | undefined, lead: string): string {
+  const parts: string[] = [];
+  const total = counts ? counts.h + counts.m + counts.s : 0;
+  if (counts && total > 0) {
+    parts.push(
+      `<div class="review-stats">` +
+        statHtml('high', counts.h, 'High') +
+        statHtml('medium', counts.m, 'Medium') +
+        statHtml('low', counts.s, 'Low') +
+        `</div>`,
+    );
+    const segs = [
+      counts.h ? `<span class="review-usage-seg review-usage-high" data-count="${counts.h}"></span>` : '',
+      counts.m ? `<span class="review-usage-seg review-usage-medium" data-count="${counts.m}"></span>` : '',
+      counts.s ? `<span class="review-usage-seg review-usage-low" data-count="${counts.s}"></span>` : '',
+    ].join('');
+    parts.push(
+      `<div class="review-usage">` +
+        `<div class="review-usage-top"><span>Состав находок по уровню</span>` +
+        `<span>${counts.h} high · ${counts.m} medium · ${counts.s} low</span></div>` +
+        `<div class="review-usage-bar">${segs}</div></div>`,
+    );
+  }
+  if (lead) {
+    parts.push(
+      `<div class="review-callout"><div class="review-callout-title">Сначала</div>` +
+        `<div class="review-callout-body">${markdownToHtml(lead)}</div></div>`,
+    );
+  }
+  return parts.join('\n');
+}
+
+function statHtml(tone: 'high' | 'medium' | 'low', value: number, label: string): string {
+  return (
+    `<div class="review-stat review-stat-${tone}">` +
+    `<span class="review-stat-value">${value}</span>` +
+    `<span class="review-stat-label">${label}</span></div>`
+  );
+}
+
+/** Place the summary after the title and the first paragraph under it. */
+function insertReviewSummary(html: string, summary: string): string {
+  if (!summary) {
+    return html;
+  }
+  const h1End = html.indexOf('</h1>');
+  if (h1End < 0) {
+    return summary + html;
+  }
+  const afterH1 = h1End + '</h1>'.length;
+  const pEnd = html.indexOf('</p>', afterH1);
+  const between = pEnd < 0 ? '' : html.slice(afterH1, pEnd);
+  const cut =
+    pEnd >= 0 && !/<(h\d|ul|ol|table)\b/.test(between) ? pEnd + '</p>'.length : afterH1;
+  return html.slice(0, cut) + summary + html.slice(cut);
+}
+
+/**
+ * Review pane HTML: markdown plus the summary block from the canvas
+ * (counts, composition bar, «Сначала»).
+ */
+export function reviewFileHtml(markdown: string): string {
+  const counts = reviewCounts(markdown);
+  const readable = reviewReadable(markdown);
+  const lead = reviewLead(readable);
+  const html = markdownToHtml(withoutReviewSummary(readable));
+  return insertReviewSummary(html, reviewSummaryHtml(counts, lead));
 }

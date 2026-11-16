@@ -17,6 +17,22 @@ export function reviewDepthCommand(depth: ReviewDepth): '/rs' | '/rm' | '/rd' {
   return '/rm';
 }
 
+/** File and chip token for the review kind. */
+export function reviewScopeToken(kind: ReviewKind): 'branch' | 'changes' {
+  return kind === 'branch' ? 'branch' : 'changes';
+}
+
+/** File and chip token for the review depth. Missing depth stays medium (`rm`). */
+export function reviewDepthToken(depth: ReviewDepth): 'rs' | 'rm' | 'rd' {
+  if (depth === 'shallow') {
+    return 'rs';
+  }
+  if (depth === 'deep') {
+    return 'rd';
+  }
+  return 'rm';
+}
+
 export function parseReviewDepth(raw: unknown): ReviewDepth {
   if (raw === 'shallow' || raw === 'medium' || raw === 'deep') {
     return raw;

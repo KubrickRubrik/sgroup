@@ -111,6 +111,7 @@ export type CatalogChannels = {
   notes?: string;
   links?: string;
   review?: string;
+  scenarios?: string;
 };
 
 /** Max nesting depth: root (0) → subgroup (1) → subgroup of subgroup (2). */
@@ -145,12 +146,12 @@ const LEGACY_HISTORY_PATH = '.sgroup/history.json';
 export type ColumnsMode = 'flow' | '1' | '2' | '3';
 export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '1', '2', '3'];
 
-/** Max named map pages (one per kind: files, notes, links, review). */
-export const MAX_PAGES = 4;
+/** Max named map pages (one per kind: files, notes, links, review, scenarios). */
+export const MAX_PAGES = 5;
 /** Default page id created for legacy files and empty stores. */
 export const DEFAULT_PAGE_ID = 'map';
 
-export type PageKind = 'files' | 'notes' | 'links' | 'review';
+export type PageKind = 'files' | 'notes' | 'links' | 'review' | 'scenarios';
 export type MapLayout = 'chips' | 'list';
 export type GroupsLayout = 'flow' | '1' | '2' | '3';
 
@@ -180,7 +181,11 @@ export function normalizeGroupDescription(value: unknown): string | undefined {
 }
 
 export function normalizePageKind(value: unknown): PageKind | undefined {
-  return value === 'files' || value === 'notes' || value === 'links' || value === 'review'
+  return value === 'files' ||
+    value === 'notes' ||
+    value === 'links' ||
+    value === 'review' ||
+    value === 'scenarios'
     ? value
     : undefined;
 }
@@ -215,6 +220,14 @@ export interface StyleProfile {
   reviewPrintThinking?: boolean;
   /** When false, hide tool-call lines. Absent means show them. */
   reviewPrintTools?: boolean;
+  /** Absolute or workspace-relative path to the scenarios skill. */
+  scenarioSkillPath?: string;
+  /** Optional Cursor Agent / chat model for scenarios. Empty → default. */
+  scenarioModel?: string;
+  /** Ask the scenarios chat to keep reasoning out of the md file. */
+  scenarioPrintThinking?: boolean;
+  /** When false, ask the scenarios chat not to call tools. Absent means allow. */
+  scenarioPrintTools?: boolean;
   /** GitHub login for this profile. The token is not stored here. */
   githubNick?: string;
   /** GitLab username for this profile. The token is not stored here. */
@@ -247,7 +260,9 @@ export interface Appearance {
   fontFolder: number;
   /** File row scale. */
   fontFile: number;
-  /** Multiplier applied to all four font scales. */
+  /** Review panel and «Что делаем» body scale. */
+  fontReview: number;
+  /** Multiplier applied to the map font scales and the review panel. */
   fontScale: number;
   /** Group-card gradient turn: 0 = default 135°, 100 = +360° (same look). */
   gradientDirection: number;
@@ -319,6 +334,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   fontSubgroup: 1.05,
   fontFolder: 0.95,
   fontFile: 0.9,
+  fontReview: 1,
   fontScale: 1,
   gradientDirection: 0,
   cardGradient: true,
@@ -407,6 +423,7 @@ export function normalizeAppearance(raw: unknown): Appearance {
     fontSubgroup: snapFontScale(numOr(source.fontSubgroup, DEFAULT_APPEARANCE.fontSubgroup)),
     fontFolder: snapFontScale(numOr(source.fontFolder, DEFAULT_APPEARANCE.fontFolder)),
     fontFile: snapFontScale(numOr(source.fontFile, DEFAULT_APPEARANCE.fontFile)),
+    fontReview: snapFontScale(numOr(source.fontReview, DEFAULT_APPEARANCE.fontReview)),
     fontScale: snapMultiplier(numOr(source.fontScale, DEFAULT_APPEARANCE.fontScale)),
     gradientDirection: snapGradientDirection(
       numOr(source.gradientDirection, DEFAULT_APPEARANCE.gradientDirection),
@@ -1695,6 +1712,63 @@ export class MarkerStore implements vscode.Disposable {
     };
   }
 
+  /** Scenario skill / model and chat flags of the active profile. */
+  activeScenarioPaths(): {
+    skillPath: string;
+    model: string;
+    printThinking: boolean;
+    printTools: boolean;
+  } {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    const skillPath = (profile?.scenarioSkillPath ?? '').trim();
+    return {
+      skillPath: skillPath || '.cursor/skills/scenarios',
+      model: (profile?.scenarioModel ?? '').trim().toLowerCase(),
+      printThinking: profile?.scenarioPrintThinking === true,
+      printTools: profile?.scenarioPrintTools !== false,
+    };
+  }
+
+  async setActiveScenarioPaths(partial: {
+    scenarioSkillPath?: string;
+    scenarioModel?: string;
+    scenarioPrintThinking?: boolean;
+    scenarioPrintTools?: boolean;
+  }): Promise<void> {
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      if (!profile) {
+        return;
+      }
+      if (partial.scenarioSkillPath !== undefined) {
+        profile.scenarioSkillPath = partial.scenarioSkillPath.trim();
+      }
+      if (partial.scenarioModel !== undefined) {
+        profile.scenarioModel = partial.scenarioModel.trim().toLowerCase();
+      }
+      if (partial.scenarioPrintThinking !== undefined) {
+        if (partial.scenarioPrintThinking) {
+          profile.scenarioPrintThinking = true;
+        } else {
+          delete profile.scenarioPrintThinking;
+        }
+      }
+      if (partial.scenarioPrintTools !== undefined) {
+        if (partial.scenarioPrintTools) {
+          delete profile.scenarioPrintTools;
+        } else {
+          profile.scenarioPrintTools = false;
+        }
+      }
+      await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
+  }
+
   async setActiveReviewPaths(partial: {
     reviewSkillPath?: string;
     reviewFixSkillPath?: string;
@@ -2145,7 +2219,8 @@ export class MarkerStore implements vscode.Disposable {
       channels.files?.trim() ||
       channels.notes?.trim() ||
       channels.links?.trim() ||
-      channels.review?.trim()
+      channels.review?.trim() ||
+      channels.scenarios?.trim()
     ) {
       return true;
     }
@@ -2246,6 +2321,7 @@ export class MarkerStore implements vscode.Disposable {
       notes: channels.notes,
       links: channels.links,
       review: channels.review,
+      scenarios: channels.scenarios,
     };
   }
 
@@ -2286,6 +2362,9 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (partial.review !== undefined) {
         projectPartial.review = partial.review.trim();
+      }
+      if (partial.scenarios !== undefined) {
+        projectPartial.scenarios = partial.scenarios.trim();
       }
       if (Object.keys(projectPartial).length > 0) {
         const project = this.ensureActiveProject();
@@ -6669,6 +6748,10 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.reviewFixModel ? { reviewFixModel: p.reviewFixModel } : {}),
           ...(p.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
           ...(p.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+          ...(p.scenarioSkillPath ? { scenarioSkillPath: p.scenarioSkillPath } : {}),
+          ...(p.scenarioModel ? { scenarioModel: p.scenarioModel } : {}),
+          ...(p.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
+          ...(p.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
           ...(p.githubNick ? { githubNick: p.githubNick } : {}),
           ...(p.gitlabNick ? { gitlabNick: p.gitlabNick } : {}),
         })),
@@ -9166,6 +9249,10 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewFixModel?: unknown;
         reviewPrintThinking?: unknown;
         reviewPrintTools?: unknown;
+        scenarioSkillPath?: unknown;
+        scenarioModel?: unknown;
+        scenarioPrintThinking?: unknown;
+        scenarioPrintTools?: unknown;
         githubNick?: unknown;
         gitlabNick?: unknown;
       };
@@ -9188,6 +9275,12 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         typeof item.reviewFixModel === 'string' ? item.reviewFixModel.trim() : undefined;
       const reviewPrintThinking = item.reviewPrintThinking === true ? true : undefined;
       const reviewPrintTools = item.reviewPrintTools === false ? false : undefined;
+      const scenarioSkillPath =
+        typeof item.scenarioSkillPath === 'string' ? item.scenarioSkillPath.trim() : undefined;
+      const scenarioModel =
+        typeof item.scenarioModel === 'string' ? item.scenarioModel.trim() : undefined;
+      const scenarioPrintThinking = item.scenarioPrintThinking === true ? true : undefined;
+      const scenarioPrintTools = item.scenarioPrintTools === false ? false : undefined;
       const githubNick = normalizeGitNick(item.githubNick);
       const gitlabNick = normalizeGitNick(item.gitlabNick);
       if (id === GENERAL_PROFILE_ID) {
@@ -9204,6 +9297,10 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewFixModel ? { reviewFixModel } : {}),
           ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
           ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
+          ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
+          ...(scenarioModel ? { scenarioModel } : {}),
+          ...(scenarioPrintThinking ? { scenarioPrintThinking } : {}),
+          ...(scenarioPrintTools === false ? { scenarioPrintTools } : {}),
           ...(githubNick ? { githubNick } : {}),
           ...(gitlabNick ? { gitlabNick } : {}),
         };
@@ -9230,6 +9327,10 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewFixModel ? { reviewFixModel } : {}),
         ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
         ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
+        ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
+        ...(scenarioModel ? { scenarioModel } : {}),
+        ...(scenarioPrintThinking ? { scenarioPrintThinking } : {}),
+        ...(scenarioPrintTools === false ? { scenarioPrintTools } : {}),
         ...(githubNick ? { githubNick } : {}),
         ...(gitlabNick ? { gitlabNick } : {}),
       });
