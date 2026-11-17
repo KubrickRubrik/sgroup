@@ -400,7 +400,7 @@ type IncomingMessage =
   | { type: 'reviewLoad'; pageId: string; force?: boolean }
   | { type: 'reviewLoadOlder'; pageId: string }
   | { type: 'reviewLoadNewer'; pageId: string }
-  | { type: 'reviewLoadThread'; pageId: string; messageId: string }
+  | { type: 'reviewLoadThread'; pageId: string; messageId: string; direction?: 'older' | 'newer' }
   | { type: 'reviewExpandPlain'; pageId: string; messageId: string }
   | { type: 'reviewOpenPromptExample' }
   | { type: 'reviewSkillFile'; which: 'review' | 'explain'; action: 'open' | 'copy' | 'save' }
@@ -2891,7 +2891,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'reviewLoadThread') {
       await this.pushReviewState(
         webview,
-        await this.review.loadMoreThread(message.pageId, message.messageId),
+        await this.review.loadMoreThread(
+          message.pageId,
+          message.messageId,
+          message.direction === 'newer' ? 'newer' : 'older',
+        ),
       );
       return;
     }
@@ -3401,11 +3405,41 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         typeof message.itemIndex === 'number' && Number.isInteger(message.itemIndex)
           ? message.itemIndex
           : undefined;
+      const idle = () =>
+        webview.postMessage({
+          type: 'reviewNeurofixIdle',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
       if (!scope || (itemIndex !== undefined && scope === 'all')) {
+        await idle();
         return;
       }
-      const result = await this.review.runNeuroFix(message.pageId, message.messageId, scope, itemIndex);
-      if (!result.ok) {
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(
+          `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
+        );
+        await idle();
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginNeurofixSkeleton(message.pageId, message.messageId),
+        () => this.review.endNeurofixSkeleton(message.pageId, message.messageId),
+        async () => {
+          const ran = await this.review.runNeuroFix(
+            message.pageId,
+            message.messageId,
+            scope,
+            itemIndex,
+          );
+          if (!ran.ok) {
+            return { kind: 'error' as const, message: ran.message, discord: ran.discord === true };
+          }
+          return { kind: 'state' as const, state: ran.state };
+        },
+      );
+      if (result.kind === 'error') {
         if (result.discord) {
           void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
         }

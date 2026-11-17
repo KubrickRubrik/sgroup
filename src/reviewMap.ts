@@ -178,6 +178,10 @@ export interface ReviewChip {
   hasThread?: boolean;
   replies: ReviewThreadMsg[];
   repliesHasMore: boolean;
+  /** More replies exist after the loaded thread span. */
+  repliesHasNewer?: boolean;
+  /** Loaded replies skip Discord history immediately before this reply id. */
+  gapBeforeReplyId?: string;
   /** Thread replies were fetched for this parent. */
   repliesLoaded?: boolean;
   contentMissing?: boolean;
@@ -198,6 +202,8 @@ export interface ReviewPageState {
   messages: ReviewChip[];
   canLoadOlder: boolean;
   canLoadNewer: boolean;
+  /** Channel history is missing immediately before this message id. */
+  gapBeforeMessageId?: string;
   focusMessageId?: string;
   /** Placeholder MR chip while the host request and the Discord post are in flight. */
   pendingMr?: { title: string; draft: boolean };
@@ -209,6 +215,8 @@ export interface ReviewPageState {
   pendingExplainRoot?: { branch: string };
   /** Parent message whose thread shows an explain pill until Discord posts it. */
   pendingExplainId?: string;
+  /** Review message whose thread shows a neurofix chip until the agent finishes. */
+  pendingNeurofixId?: string;
   /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
   skeletonSeq?: number;
   /** Branch checked out in this window. Empty when git has no branch name. */
@@ -298,20 +306,35 @@ const CHANNEL_VISIBLE = 5;
 const CHANNEL_PROBE = 1;
 /** One-sided fetch: visible page + one probe. */
 const CHANNEL_FETCH_SIDE = CHANNEL_VISIBLE + CHANNEL_PROBE;
-/** Around-target fetch: visible + probe before + probe after. */
-const CHANNEL_FETCH_AROUND = CHANNEL_VISIBLE + 2 * CHANNEL_PROBE;
+/** Around-target fetch: 4 before + target + 4 after. The 4th on each side is only a probe. */
+const JUMP_SIDE = 3;
+const JUMP_FETCH = JUMP_SIDE + 1 + 1 + JUMP_SIDE + 1;
 /** Initial MR thread window. */
 const THREAD_INITIAL = 3;
 /** Thread page size when loading more / plain expand. */
 const THREAD_PAGE = 5;
 /** Extra slot so the type-21 starter can sit in the page without hiding a real reply. */
 const THREAD_PROBE = 1;
+/** Shown channel messages. Further loads trim the opposite edge back to this. */
+const CHANNEL_CAP = 20;
+/** Shown replies in one thread. */
+const THREAD_CAP = 10;
+/** Extra Discord rows so system/config messages don't truncate a sync of the shown span. */
+const SYNC_SLACK = 20;
 
 type ThreadBucket = {
   replies: DiscordMessage[];
   /** Discord `message_count` for this thread, when the channel payload included it. */
   messageCount?: number;
-  exhausted: boolean;
+  /** More replies exist before the oldest loaded reply. */
+  canLoadOlder: boolean;
+  /** More replies exist after the loaded span (a hole, or past a contiguous end). */
+  canLoadNewer: boolean;
+  /**
+   * Own post kept at the live end while `replies` before this id do not reach it.
+   * The id is the last reply.
+   */
+  gapBeforeId?: string;
 };
 
 type ReviewWindow = {
@@ -320,8 +343,13 @@ type ReviewWindow = {
   focusMessageId?: string;
   /** More history exists before the oldest message in the window. */
   canLoadOlder: boolean;
-  /** More messages exist after the newest message in the window. */
+  /** More messages exist after the loaded span (a hole, or past a contiguous end). */
   canLoadNewer: boolean;
+  /**
+   * Own channel post kept at the live end while `messages` before this id do not reach it.
+   * The id is the last message.
+   */
+  gapBeforeId?: string;
 };
 
 /** Config snapshots share the channel with MR chips — hide them from the tree. */
@@ -366,11 +394,94 @@ function threadHasMore(parent: DiscordMessage, bucket: ThreadBucket | undefined)
   if (!bucket) {
     return !!(parent.thread?.id || parent.hasThread);
   }
-  const count = bucket.messageCount ?? parent.thread?.messageCount;
-  if (typeof count === 'number') {
-    return bucket.replies.length < count;
+  return bucket.canLoadOlder;
+}
+
+function snowflakeBefore(id: string): string {
+  try {
+    return (BigInt(id) - 1n).toString();
+  } catch {
+    return id;
   }
-  return !bucket.exhausted;
+}
+
+function snowflakeLess(a: string, b: string): boolean {
+  try {
+    return BigInt(a) < BigInt(b);
+  } catch {
+    return a < b;
+  }
+}
+
+function isVisibleChannel(msg: DiscordMessage): boolean {
+  return !isReviewChannelNoise(msg);
+}
+
+function isVisibleReply(msg: DiscordMessage): boolean {
+  return !isThreadStarter(msg) && !isReviewChannelNoise(msg);
+}
+
+/** Messages strictly before the hole. The whole list, when there is no hole. */
+function spanBeforeGap(messages: DiscordMessage[], gapBeforeId?: string): DiscordMessage[] {
+  if (!gapBeforeId) {
+    return messages;
+  }
+  const idx = messages.findIndex((msg) => msg.id === gapBeforeId);
+  return idx < 0 ? messages : messages.slice(0, idx);
+}
+
+function trimToCap<T extends { id: string }>(
+  items: T[],
+  cap: number,
+  drop: 'oldest' | 'newest',
+  protect?: Set<string>,
+): T[] {
+  const next = items.slice();
+  while (next.length > cap) {
+    if (drop === 'oldest') {
+      const idx = next.findIndex((item) => !protect?.has(item.id));
+      if (idx < 0) {
+        break;
+      }
+      next.splice(idx, 1);
+    } else {
+      next.pop();
+    }
+  }
+  return next;
+}
+
+/**
+ * Refresh texts already on screen. Unknown ids stay out.
+ * A missing id is a deletion only when the fetch covered the newest shown id.
+ */
+function applyShownSync(
+  loaded: DiscordMessage[],
+  fetchedAsc: DiscordMessage[],
+  visible: (msg: DiscordMessage) => boolean,
+  reachedEnd: boolean,
+): DiscordMessage[] {
+  if (loaded.length === 0) {
+    return loaded;
+  }
+  const byId = new Map(fetchedAsc.filter(visible).map((msg) => [msg.id, msg]));
+  const newestId = loaded[loaded.length - 1].id;
+  const covered =
+    byId.has(newestId) ||
+    reachedEnd ||
+    fetchedAsc.some((msg) => snowflakeLess(newestId, msg.id));
+  const merge = (prev: DiscordMessage, next: DiscordMessage): DiscordMessage => ({
+    ...next,
+    thread: next.thread ?? prev.thread,
+    hasThread: next.hasThread || prev.hasThread,
+  });
+  if (!covered) {
+    return loaded.map((msg) => {
+      const next = byId.get(msg.id);
+      return next ? merge(msg, next) : msg;
+    });
+  }
+  return loaded.filter((msg) => byId.has(msg.id)).map((msg) => merge(msg, byId.get(msg.id)!));
 }
 
 /**
@@ -435,16 +546,9 @@ function takeNewerPage(batchAsc: DiscordMessage[]): {
 }
 
 /**
- * Jump window: up to 2 before + target + 2 after. Probes beyond that in the
- * same fetch tell whether load-older / load-newer buttons are needed.
+ * Jump window: up to 3 before + target + 3 after. A 4th message on either side
+ * of the same fetch is only the probe for the load button.
  */
-function mrIidFromWebUrl(webUrl: string): number | undefined {
-  const match = /\/merge_requests\/(\d+)\b|\/pull\/(\d+)\b/.exec(webUrl);
-  const raw = match?.[1] || match?.[2];
-  const n = raw ? Number(raw) : NaN;
-  return Number.isInteger(n) && n > 0 ? n : undefined;
-}
-
 function windowAroundMessage(
   fetchedAsc: DiscordMessage[],
   messageId: string,
@@ -454,15 +558,25 @@ function windowAroundMessage(
   if (idx < 0) {
     return windowFromChannelTip(sorted);
   }
-  const beforeAll = sorted.slice(0, idx);
-  const afterAll = sorted.slice(idx + 1);
-  const showBefore = beforeAll.slice(-2);
-  const showAfter = afterAll.slice(0, 2);
+  const beforeAll = sorted.slice(0, idx).filter(isVisibleChannel);
+  const afterAll = sorted.slice(idx + 1).filter(isVisibleChannel);
+  const showBefore = beforeAll.slice(-JUMP_SIDE);
+  const showAfter = afterAll.slice(0, JUMP_SIDE);
+  const target = sorted[idx];
   return {
-    messages: [...showBefore, sorted[idx], ...showAfter].filter((msg) => !isReviewChannelNoise(msg)),
+    messages: [...showBefore, target, ...showAfter].filter(
+      (msg) => msg.id === messageId || isVisibleChannel(msg),
+    ),
     canLoadOlder: beforeAll.length > showBefore.length,
     canLoadNewer: afterAll.length > showAfter.length,
   };
+}
+
+function mrIidFromWebUrl(webUrl: string): number | undefined {
+  const match = /\/merge_requests\/(\d+)\b|\/pull\/(\d+)\b/.exec(webUrl);
+  const raw = match?.[1] || match?.[2];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 export type ReviewProfilePaths = {
@@ -503,7 +617,7 @@ export class ReviewMapController {
   private readonly access: AccessStore;
   private readonly pending: ReviewPendingStore;
   private readonly explainPending: ExplainPendingStore;
-  /** True while a review or explain agent run holds a skeleton. */
+  /** True while a review, explain, or neurofix agent run holds a skeleton. */
   private agentBusy = false;
   /** In-memory channel window per page. */
   private readonly windows = new Map<string, ReviewWindow>();
@@ -521,6 +635,8 @@ export class ReviewMapController {
   private readonly explainRootSkeleton = new Map<string, { branch: string }>();
   /** Explain pill placeholder: page id → parent Discord message id. */
   private readonly explainSkeleton = new Map<string, string>();
+  /** Neurofix chip placeholder: page id → review message id. */
+  private readonly neurofixSkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
   private readonly skeletonSeq = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
@@ -576,7 +692,7 @@ export class ReviewMapController {
     };
   }
 
-  /** True while review or explain agent skeleton is held. MR create ignores this. */
+  /** True while a review, explain, or neurofix agent skeleton is held. MR create ignores this. */
   isAgentBusy(): boolean {
     return this.agentBusy;
   }
@@ -733,6 +849,21 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
+  /** Show the green fix chip under this review message until neurofix settles. */
+  beginNeurofixSkeleton(pageId: string, messageId: string): ReviewPageState {
+    this.neurofixSkeleton.set(pageId, messageId);
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  endNeurofixSkeleton(pageId: string, messageId: string): ReviewPageState {
+    if (messageId && this.neurofixSkeleton.get(pageId) === messageId) {
+      this.neurofixSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
   private mrSkeletonTitle(title: string): string {
     return title.trim() || 'MR';
   }
@@ -759,6 +890,7 @@ export class ReviewMapController {
     | 'pendingReviewId'
     | 'pendingExplainRoot'
     | 'pendingExplainId'
+    | 'pendingNeurofixId'
     | 'skeletonSeq'
   > {
     return {
@@ -767,6 +899,7 @@ export class ReviewMapController {
       pendingReviewId: this.reviewSkeleton.get(pageId),
       pendingExplainRoot: this.explainRootSkeleton.get(pageId),
       pendingExplainId: this.explainSkeleton.get(pageId),
+      pendingNeurofixId: this.neurofixSkeleton.get(pageId),
       skeletonSeq: this.skeletonSeq.get(pageId) ?? 0,
     };
   }
@@ -793,6 +926,7 @@ export class ReviewMapController {
     this.reviewSkeleton.clear();
     this.explainRootSkeleton.clear();
     this.explainSkeleton.clear();
+    this.neurofixSkeleton.clear();
   }
 
   /** Remember the project review channel so posts work without an access.json page row. */
@@ -839,7 +973,7 @@ export class ReviewMapController {
     }
     const messages = win.messages.filter((m) => !isReviewChannelNoise(m)).map((m) => {
       const thread = m.thread?.id ? win.threads.get(m.thread.id) : undefined;
-      const replies = (thread?.replies ?? []).filter((r) => !isReviewChannelNoise(r)).map((r) => {
+      const replies = (thread?.replies ?? []).filter((r) => isVisibleReply(r)).map((r) => {
         const base = toReplyBase(r);
         const meta = this.replyMeta.get(r.id);
         if (!meta) {
@@ -856,7 +990,14 @@ export class ReviewMapController {
       });
       const loaded = !!thread;
       const hasMore = threadHasMore(m, thread);
-      return toChip(m, replies, hasMore, loaded);
+      const chip = toChip(m, replies, hasMore, loaded);
+      if (thread?.canLoadNewer) {
+        chip.repliesHasNewer = true;
+      }
+      if (thread?.gapBeforeId) {
+        chip.gapBeforeReplyId = thread.gapBeforeId;
+      }
+      return chip;
     });
     const missingCount = messages.filter((m) => m.contentMissing).length;
     const contentBlocked =
@@ -871,6 +1012,7 @@ export class ReviewMapController {
       messages,
       canLoadOlder: win.canLoadOlder,
       canLoadNewer: win.canLoadNewer,
+      gapBeforeMessageId: win.gapBeforeId,
       focusMessageId: win.focusMessageId,
       ...this.skeletonFields(pageId),
     };
@@ -919,7 +1061,7 @@ export class ReviewMapController {
     if (!win) {
       return false;
     }
-    return win.messages.some((message) => !isReviewChannelNoise(message));
+    return win.messages.some((message) => isVisibleChannel(message));
   }
 
   private noteChannelError(pageId: string, result: DiscordError, dropWindow: boolean): void {
@@ -1020,7 +1162,8 @@ export class ReviewMapController {
       win.threads.set(threadId, {
         replies: page.toAdd,
         messageCount: page.messageCount,
-        exhausted: page.exhausted,
+        canLoadOlder: !page.exhausted,
+        canLoadNewer: false,
       });
       await this.enrichReplies(token, page.toAdd);
     }
@@ -1044,26 +1187,36 @@ export class ReviewMapController {
     this.loading.add(pageId);
     this.errors.delete(pageId);
     try {
-      const edge = direction === 'older' ? win.messages[0] : win.messages[win.messages.length - 1];
-      const result = await listChannelMessages(token, channel, {
-        limit: CHANNEL_FETCH_SIDE,
-        ...(direction === 'older' ? { before: edge.id } : { after: edge.id }),
-      });
-      if (!result.ok) {
-        this.noteChannelError(pageId, result, false);
+      if (direction === 'newer' && win.gapBeforeId) {
+        await this.fillChannelGap(pageId, token, channel, win);
       } else {
-        const known = new Set(win.messages.map((m) => m.id));
-        const batch = sortMessagesAsc(result.value.filter((m) => !known.has(m.id)));
-        if (direction === 'older') {
-          const { toAdd, canLoadOlder } = takeOlderPage(batch);
-          win.messages = sortMessagesAsc([...toAdd, ...win.messages]);
-          win.canLoadOlder = canLoadOlder;
+        const span = spanBeforeGap(win.messages, win.gapBeforeId);
+        const edge = direction === 'older' ? win.messages[0] : span[span.length - 1] ?? win.messages[win.messages.length - 1];
+        const result = await listChannelMessages(token, channel, {
+          limit: CHANNEL_FETCH_SIDE,
+          ...(direction === 'older' ? { before: edge.id } : { after: edge.id }),
+        });
+        if (!result.ok) {
+          this.noteChannelError(pageId, result, false);
         } else {
-          const { toAdd, canLoadNewer } = takeNewerPage(batch);
-          win.messages = sortMessagesAsc([...win.messages, ...toAdd]);
-          win.canLoadNewer = canLoadNewer;
+          const known = new Set(win.messages.map((m) => m.id));
+          const batch = sortMessagesAsc(result.value.filter((m) => !known.has(m.id)));
+          if (direction === 'older') {
+            const { toAdd, canLoadOlder } = takeOlderPage(batch);
+            const tipId = win.gapBeforeId;
+            const tip = tipId ? win.messages.find((msg) => msg.id === tipId) : undefined;
+            const rest = tip ? win.messages.filter((msg) => msg.id !== tipId) : win.messages;
+            win.messages = sortMessagesAsc([...toAdd, ...rest, ...(tip ? [tip] : [])]);
+            win.canLoadOlder = canLoadOlder;
+            this.capChannel(win, 'newest');
+          } else {
+            const { toAdd, canLoadNewer } = takeNewerPage(batch);
+            win.messages = sortMessagesAsc([...win.messages, ...toAdd]);
+            win.canLoadNewer = canLoadNewer;
+            this.capChannel(win, 'oldest');
+          }
+          await this.prefetchThreads(token, win);
         }
-        await this.prefetchThreads(token, win);
       }
     } finally {
       this.loading.delete(pageId);
@@ -1071,7 +1224,11 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
-  async loadMoreThread(pageId: string, messageId: string): Promise<ReviewPageState> {
+  async loadMoreThread(
+    pageId: string,
+    messageId: string,
+    direction: 'older' | 'newer' = 'older',
+  ): Promise<ReviewPageState> {
     const win = this.windows.get(pageId);
     const token = await this.discordToken();
     if (!win || !token) {
@@ -1086,30 +1243,62 @@ export class ReviewMapController {
     try {
       let entry = win.threads.get(threadId);
       if (!entry) {
-        entry = { replies: [], messageCount: parent.thread?.messageCount, exhausted: false };
+        entry = {
+          replies: [],
+          messageCount: parent.thread?.messageCount,
+          canLoadOlder: false,
+          canLoadNewer: false,
+        };
         win.threads.set(threadId, entry);
       } else if (entry.messageCount === undefined && parent.thread?.messageCount !== undefined) {
         entry.messageCount = parent.thread.messageCount;
       }
-      const before = entry.replies[0]?.id;
-      const pageSize = entry.replies.length === 0 ? THREAD_INITIAL : THREAD_PAGE;
-      const result = await listThreadMessages(token, threadId, {
-        limit: pageSize + THREAD_PROBE,
-        before,
-      });
-      if (!result.ok) {
-        this.noteChannelError(pageId, result, false);
+      if (direction === 'newer' && entry.gapBeforeId) {
+        await this.fillThreadGap(pageId, token, threadId, entry);
+      } else if (direction === 'newer') {
+        const edge = entry.replies[entry.replies.length - 1];
+        const result = await listThreadMessages(token, threadId, {
+          limit: THREAD_PAGE + THREAD_PROBE,
+          after: edge?.id,
+        });
+        if (!result.ok) {
+          this.noteChannelError(pageId, result, false);
+        } else {
+          const known = new Set(entry.replies.map((msg) => msg.id));
+          const real = sortMessagesAsc(result.value).filter(
+            (msg) => isVisibleReply(msg) && !known.has(msg.id),
+          );
+          const toAdd = real.slice(0, THREAD_PAGE);
+          entry.replies = sortMessagesAsc([...entry.replies, ...toAdd]);
+          entry.canLoadNewer = real.length > THREAD_PAGE;
+          this.capThread(entry, 'oldest');
+          await this.enrichReplies(token, toAdd);
+        }
       } else {
-        const page = takeThreadPage(
-          sortMessagesAsc(result.value),
-          pageSize,
-          entry.messageCount,
-          entry.replies,
-        );
-        entry.replies = sortMessagesAsc([...page.toAdd, ...entry.replies]);
-        entry.messageCount = page.messageCount ?? entry.messageCount;
-        entry.exhausted = page.exhausted;
-        await this.enrichReplies(token, page.toAdd);
+        const span = spanBeforeGap(entry.replies, entry.gapBeforeId);
+        const before = span[0]?.id ?? entry.gapBeforeId;
+        const result = await listThreadMessages(token, threadId, {
+          limit: THREAD_PAGE + THREAD_PROBE,
+          before,
+        });
+        if (!result.ok) {
+          this.noteChannelError(pageId, result, false);
+        } else {
+          const page = takeThreadPage(
+            sortMessagesAsc(result.value),
+            THREAD_PAGE,
+            entry.messageCount,
+            entry.replies,
+          );
+          const tipId = entry.gapBeforeId;
+          const tip = tipId ? entry.replies.find((msg) => msg.id === tipId) : undefined;
+          const rest = tip ? entry.replies.filter((msg) => msg.id !== tipId) : entry.replies;
+          entry.replies = sortMessagesAsc([...page.toAdd, ...rest, ...(tip ? [tip] : [])]);
+          entry.messageCount = page.messageCount ?? entry.messageCount;
+          entry.canLoadOlder = !page.exhausted;
+          this.capThread(entry, 'newest');
+          await this.enrichReplies(token, page.toAdd);
+        }
       }
     } finally {
       this.loading.delete(pageId);
@@ -1151,7 +1340,8 @@ export class ReviewMapController {
           win.threads.set(threadId, {
             replies: page.toAdd,
             messageCount: page.messageCount,
-            exhausted: page.exhausted,
+            canLoadOlder: !page.exhausted,
+            canLoadNewer: false,
           });
           await this.enrichReplies(token, page.toAdd);
         }
@@ -1171,10 +1361,10 @@ export class ReviewMapController {
     this.loading.add(pageId);
     this.errors.delete(pageId);
     try {
-      // 5 visible + 1 older probe + 1 newer probe.
+      // 3 before + target + 3 after, plus one probe on each side.
       const result = await listChannelMessages(token, channel, {
         around: messageId,
-        limit: CHANNEL_FETCH_AROUND,
+        limit: JUMP_FETCH,
       });
       if (!result.ok) {
         this.noteChannelError(pageId, result, false);
@@ -1202,23 +1392,486 @@ export class ReviewMapController {
   }
 
   /**
-   * Periodic refresh: at the live tip reload the newest window; otherwise only pull newer.
+   * Periodic refresh: keep the loaded window, update its texts, and light load buttons.
+   * New Discord messages stay behind the button until a click.
    */
   async pollRefresh(pageId: string): Promise<ReviewPageState> {
     if (this.loading.has(pageId)) {
       return this.snapshot(pageId);
     }
-    if (!(await this.listingChannel(pageId))) {
+    const channel = await this.listingChannel(pageId);
+    if (!channel) {
       return this.snapshot(pageId);
     }
     const win = this.windows.get(pageId);
     if (!win) {
       return this.loadInitial(pageId);
     }
-    if (win.canLoadNewer) {
-      return this.extendWindow(pageId, 'newer');
+    const token = await this.discordToken();
+    if (!token) {
+      return this.snapshot(pageId);
     }
-    return this.loadInitial(pageId);
+    this.loading.add(pageId);
+    this.errors.delete(pageId);
+    try {
+      await this.syncChannelWindow(pageId, token, channel, win);
+      await this.syncLoadedThreads(token, win);
+    } finally {
+      this.loading.delete(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
+  private capChannel(win: ReviewWindow, drop: 'oldest' | 'newest', protect?: Set<string>): void {
+    const previous = win.messages;
+    const next = trimToCap(previous, CHANNEL_CAP, drop, protect);
+    const kept = new Set(next.map((msg) => msg.id));
+    this.forgetThreads(
+      win,
+      previous.filter((msg) => !kept.has(msg.id)),
+    );
+    win.messages = next;
+    if (win.gapBeforeId && !kept.has(win.gapBeforeId)) {
+      win.gapBeforeId = undefined;
+    }
+    if (next.length < previous.length && drop === 'oldest') {
+      win.canLoadOlder = true;
+    }
+    if (next.length < previous.length && drop === 'newest' && !win.gapBeforeId) {
+      win.canLoadNewer = true;
+    }
+  }
+
+  private capThread(bucket: ThreadBucket, drop: 'oldest' | 'newest', protect?: Set<string>): void {
+    const previous = bucket.replies;
+    const next = trimToCap(previous, THREAD_CAP, drop, protect);
+    bucket.replies = next;
+    if (bucket.gapBeforeId && !next.some((msg) => msg.id === bucket.gapBeforeId)) {
+      bucket.gapBeforeId = undefined;
+    }
+    if (next.length < previous.length && drop === 'oldest') {
+      bucket.canLoadOlder = true;
+    }
+    if (next.length < previous.length && drop === 'newest' && !bucket.gapBeforeId) {
+      bucket.canLoadNewer = true;
+    }
+  }
+
+  private forgetThreads(win: ReviewWindow, removed: DiscordMessage[]): void {
+    for (const msg of removed) {
+      const threadId = msg.thread?.id;
+      if (threadId) {
+        win.threads.delete(threadId);
+      }
+    }
+  }
+
+  /** At the live end, append and trim oldest. Otherwise keep one new message past the hole. */
+  private placeChannelPost(win: ReviewWindow, message: DiscordMessage): void {
+    const idx = win.messages.findIndex((item) => item.id === message.id);
+    if (idx >= 0) {
+      const prev = win.messages[idx];
+      win.messages[idx] = {
+        ...message,
+        thread: message.thread ?? prev.thread,
+        hasThread: message.hasThread || prev.hasThread,
+      };
+      win.focusMessageId = message.id;
+      return;
+    }
+    if (!win.canLoadNewer && !win.gapBeforeId) {
+      win.messages = sortMessagesAsc([...win.messages, message]);
+      win.canLoadNewer = false;
+      this.capChannel(win, 'oldest', new Set([message.id]));
+      win.focusMessageId = message.id;
+      return;
+    }
+    if (win.gapBeforeId) {
+      const oldTip = win.messages.find((item) => item.id === win.gapBeforeId);
+      win.messages = win.messages.filter((item) => item.id !== win.gapBeforeId);
+      if (oldTip) {
+        this.forgetThreads(win, [oldTip]);
+      }
+    }
+    win.messages = [...win.messages, message];
+    win.gapBeforeId = message.id;
+    win.canLoadNewer = true;
+    win.focusMessageId = message.id;
+  }
+
+  /** At the live end of a thread, append and trim oldest. Otherwise the post is the detached tip. */
+  private placeThreadPost(
+    win: ReviewWindow,
+    threadId: string,
+    posted: DiscordMessage,
+    messageCount: number | undefined,
+  ): void {
+    let entry = win.threads.get(threadId);
+    const atLiveEnd = !entry || (!entry.canLoadNewer && !entry.gapBeforeId);
+    if (!entry) {
+      entry = {
+        replies: [],
+        messageCount,
+        canLoadOlder: typeof messageCount === 'number' && messageCount > 1,
+        canLoadNewer: false,
+      };
+      win.threads.set(threadId, entry);
+    } else if (messageCount !== undefined) {
+      entry.messageCount = messageCount;
+    }
+    const idx = entry.replies.findIndex((item) => item.id === posted.id);
+    if (idx >= 0) {
+      entry.replies[idx] = posted;
+      return;
+    }
+    if (atLiveEnd) {
+      entry.replies = sortMessagesAsc([...entry.replies, posted]);
+      entry.gapBeforeId = undefined;
+      entry.canLoadNewer = false;
+      this.capThread(entry, 'oldest', new Set([posted.id]));
+      return;
+    }
+    if (entry.gapBeforeId) {
+      entry.replies = entry.replies.filter((item) => item.id !== entry.gapBeforeId);
+    }
+    entry.replies = [...entry.replies, posted];
+    entry.gapBeforeId = posted.id;
+    entry.canLoadNewer = true;
+  }
+
+  private async fillChannelGap(
+    pageId: string,
+    token: string,
+    channel: string,
+    win: ReviewWindow,
+  ): Promise<void> {
+    const tipId = win.gapBeforeId;
+    if (!tipId) {
+      return;
+    }
+    const span = spanBeforeGap(win.messages, tipId);
+    const edge = span[span.length - 1];
+    const result = await listChannelMessages(token, channel, {
+      limit: CHANNEL_FETCH_SIDE,
+      ...(edge ? { after: edge.id } : { before: tipId }),
+    });
+    if (!result.ok) {
+      this.noteChannelError(pageId, result, false);
+      return;
+    }
+    const known = new Set(win.messages.map((msg) => msg.id));
+    const fresh = result.value.filter(isVisibleChannel);
+    const visible = fresh.filter((msg) => !known.has(msg.id));
+    const beforeTip = visible.filter((msg) => snowflakeLess(msg.id, tipId));
+    const toAdd = beforeTip.slice(0, CHANNEL_VISIBLE);
+    const moreBefore = beforeTip.length > CHANNEL_VISIBLE;
+    const sawTipOrPast = fresh.some((msg) => !snowflakeLess(msg.id, tipId));
+    const short = result.value.length < CHANNEL_FETCH_SIDE;
+    const tip = win.messages.find((msg) => msg.id === tipId);
+    const withoutTip = win.messages.filter((msg) => msg.id !== tipId);
+    win.messages = sortMessagesAsc([...withoutTip, ...toAdd]);
+    if (!moreBefore && (sawTipOrPast || short)) {
+      if (tip) {
+        win.messages = sortMessagesAsc([...win.messages, tip]);
+      }
+      win.gapBeforeId = undefined;
+      win.canLoadNewer = fresh.some((msg) => snowflakeLess(tipId, msg.id));
+      this.capChannel(win, 'oldest');
+    } else {
+      if (tip) {
+        win.messages = [...win.messages, tip];
+      }
+      win.gapBeforeId = tip ? tipId : undefined;
+      win.canLoadNewer = !!tip;
+      this.capChannel(win, 'oldest', tip ? new Set([tipId]) : undefined);
+    }
+    await this.prefetchThreads(token, win);
+  }
+
+  private async fillThreadGap(
+    pageId: string,
+    token: string,
+    threadId: string,
+    entry: ThreadBucket,
+  ): Promise<void> {
+    const tipId = entry.gapBeforeId;
+    if (!tipId) {
+      return;
+    }
+    const span = spanBeforeGap(entry.replies, tipId);
+    const edge = span[span.length - 1];
+    const result = await listThreadMessages(token, threadId, {
+      limit: THREAD_PAGE + THREAD_PROBE,
+      ...(edge ? { after: edge.id } : { before: tipId }),
+    });
+    if (!result.ok) {
+      this.noteChannelError(pageId, result, false);
+      return;
+    }
+    const known = new Set(entry.replies.map((msg) => msg.id));
+    const fresh = sortMessagesAsc(result.value).filter(isVisibleReply);
+    const visible = fresh.filter((msg) => !known.has(msg.id));
+    const beforeTip = visible.filter((msg) => snowflakeLess(msg.id, tipId));
+    const toAdd = beforeTip.slice(0, THREAD_PAGE);
+    const moreBefore = beforeTip.length > THREAD_PAGE;
+    const sawTipOrPast = fresh.some((msg) => !snowflakeLess(msg.id, tipId));
+    const short = result.value.length < THREAD_PAGE + THREAD_PROBE;
+    const tip = entry.replies.find((msg) => msg.id === tipId);
+    const withoutTip = entry.replies.filter((msg) => msg.id !== tipId);
+    entry.replies = sortMessagesAsc([...withoutTip, ...toAdd]);
+    if (!moreBefore && (sawTipOrPast || short)) {
+      if (tip) {
+        entry.replies = sortMessagesAsc([...entry.replies, tip]);
+      }
+      entry.gapBeforeId = undefined;
+      entry.canLoadNewer = fresh.some((msg) => snowflakeLess(tipId, msg.id));
+      this.capThread(entry, 'oldest');
+    } else {
+      if (tip) {
+        entry.replies = [...entry.replies, tip];
+      }
+      entry.gapBeforeId = tip ? tipId : undefined;
+      entry.canLoadNewer = !!tip;
+      this.capThread(entry, 'oldest', tip ? new Set([tipId]) : undefined);
+    }
+    await this.enrichReplies(token, toAdd);
+  }
+
+  private async probeVisible(
+    token: string,
+    channelId: string,
+    edge: { before?: string; after?: string },
+    visible: (msg: DiscordMessage) => boolean,
+  ): Promise<boolean | undefined> {
+    const result = await listChannelMessages(token, channelId, { ...edge, limit: 5 });
+    if (!result.ok) {
+      return undefined;
+    }
+    return result.value.some(visible);
+  }
+
+  /** A failed tick must not replace a window that is already on screen. */
+  private keepLoadedOnSyncError(pageId: string, result: DiscordError): boolean {
+    if (!this.hasLoadedContent(pageId)) {
+      this.noteChannelError(pageId, result, false);
+      return false;
+    }
+    return true;
+  }
+
+  private async syncChannelWindow(
+    pageId: string,
+    token: string,
+    channelId: string,
+    win: ReviewWindow,
+  ): Promise<void> {
+    const span = spanBeforeGap(win.messages, win.gapBeforeId);
+    const tip = win.gapBeforeId
+      ? win.messages.find((msg) => msg.id === win.gapBeforeId)
+      : undefined;
+    if (span.length > 0) {
+      const limit = Math.min(100, span.length + SYNC_SLACK);
+      const fetched = await listChannelMessages(token, channelId, {
+        after: snowflakeBefore(span[0].id),
+        limit,
+      });
+      if (!fetched.ok) {
+        this.keepLoadedOnSyncError(pageId, fetched);
+        return;
+      }
+      const synced = applyShownSync(span, fetched.value, isVisibleChannel, fetched.value.length < limit);
+      const removed = span.filter((msg) => !synced.some((item) => item.id === msg.id));
+      this.forgetThreads(win, removed);
+      win.messages = tip ? [...synced, tip] : synced;
+      if (win.gapBeforeId && !win.messages.some((msg) => msg.id === win.gapBeforeId)) {
+        win.gapBeforeId = undefined;
+      }
+    }
+    if (win.gapBeforeId) {
+      const fresh = await getChannelMessage(token, channelId, win.gapBeforeId);
+      if (!fresh.ok) {
+        if (fresh.status === 404) {
+          const removed = win.messages.filter((msg) => msg.id === win.gapBeforeId);
+          win.messages = win.messages.filter((msg) => msg.id !== win.gapBeforeId);
+          win.gapBeforeId = undefined;
+          this.forgetThreads(win, removed);
+        }
+      } else {
+        const idx = win.messages.findIndex((msg) => msg.id === fresh.value.id);
+        if (idx >= 0) {
+          const prev = win.messages[idx];
+          win.messages[idx] = {
+            ...fresh.value,
+            thread: fresh.value.thread ?? prev.thread,
+            hasThread: fresh.value.hasThread || prev.hasThread,
+          };
+        }
+      }
+    }
+    await this.probeChannelEdges(token, channelId, win);
+    this.retainLiveThreads(win);
+  }
+
+  private async probeChannelEdges(token: string, channelId: string, win: ReviewWindow): Promise<void> {
+    const span = spanBeforeGap(win.messages, win.gapBeforeId);
+    const tip = win.gapBeforeId
+      ? win.messages.find((msg) => msg.id === win.gapBeforeId)
+      : undefined;
+    const oldest = span[0] ?? tip;
+    if (oldest) {
+      const older = await this.probeVisible(token, channelId, { before: oldest.id }, isVisibleChannel);
+      if (older !== undefined) {
+        win.canLoadOlder = older;
+      }
+    }
+    if (tip && span.length > 0) {
+      const between = await listChannelMessages(token, channelId, {
+        after: span[span.length - 1].id,
+        limit: 5,
+      });
+      if (!between.ok) {
+        return;
+      }
+      const real = between.value.filter(isVisibleChannel);
+      const hole = real.filter((msg) => snowflakeLess(msg.id, tip.id));
+      if (hole.length === 0) {
+        win.gapBeforeId = undefined;
+        win.messages = sortMessagesAsc(win.messages);
+        win.canLoadNewer = real.some((msg) => snowflakeLess(tip.id, msg.id));
+      } else {
+        win.canLoadNewer = true;
+      }
+      return;
+    }
+    const newest = span[span.length - 1];
+    if (!newest) {
+      return;
+    }
+    const newer = await this.probeVisible(token, channelId, { after: newest.id }, isVisibleChannel);
+    if (newer !== undefined) {
+      win.canLoadNewer = newer;
+    }
+  }
+
+  private async syncLoadedThreads(token: string, win: ReviewWindow): Promise<void> {
+    let first = true;
+    for (const parent of win.messages) {
+      const threadId = parent.thread?.id;
+      if (!threadId) {
+        continue;
+      }
+      const bucket = win.threads.get(threadId);
+      if (!bucket || (bucket.replies.length === 0 && !bucket.gapBeforeId)) {
+        continue;
+      }
+      if (!first) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      first = false;
+      await this.syncThreadBucket(token, threadId, bucket);
+    }
+  }
+
+  private async syncThreadBucket(token: string, threadId: string, bucket: ThreadBucket): Promise<void> {
+    const span = spanBeforeGap(bucket.replies, bucket.gapBeforeId);
+    const tip = bucket.gapBeforeId
+      ? bucket.replies.find((msg) => msg.id === bucket.gapBeforeId)
+      : undefined;
+    if (span.length > 0) {
+      const limit = Math.min(100, span.length + SYNC_SLACK);
+      const fetched = await listThreadMessages(token, threadId, {
+        after: snowflakeBefore(span[0].id),
+        limit,
+      });
+      if (fetched.ok) {
+        const previous = span;
+        const synced = applyShownSync(span, fetched.value, isVisibleReply, fetched.value.length < limit);
+        this.refreshReplyMeta(previous, synced);
+        bucket.replies = tip ? [...synced, tip] : synced;
+        if (bucket.gapBeforeId && !bucket.replies.some((msg) => msg.id === bucket.gapBeforeId)) {
+          bucket.gapBeforeId = undefined;
+        }
+        await this.enrichReplies(token, synced);
+      }
+    }
+    if (bucket.gapBeforeId) {
+      const fresh = await getChannelMessage(token, threadId, bucket.gapBeforeId);
+      if (!fresh.ok) {
+        if (fresh.status === 404) {
+          bucket.replies = bucket.replies.filter((msg) => msg.id !== bucket.gapBeforeId);
+          bucket.gapBeforeId = undefined;
+        }
+      } else {
+        const idx = bucket.replies.findIndex((msg) => msg.id === fresh.value.id);
+        if (idx >= 0) {
+          if (bucket.replies[idx].content !== fresh.value.content) {
+            this.replyMeta.delete(fresh.value.id);
+          }
+          bucket.replies[idx] = fresh.value;
+          await this.enrichReplies(token, [fresh.value]);
+        }
+      }
+    }
+    const oldest = spanBeforeGap(bucket.replies, bucket.gapBeforeId)[0];
+    const tipNow = bucket.gapBeforeId
+      ? bucket.replies.find((msg) => msg.id === bucket.gapBeforeId)
+      : undefined;
+    const probeOldest = oldest ?? tipNow;
+    if (probeOldest) {
+      const older = await this.probeVisible(token, threadId, { before: probeOldest.id }, isVisibleReply);
+      if (older !== undefined) {
+        bucket.canLoadOlder = older;
+      }
+    }
+    const syncedSpan = spanBeforeGap(bucket.replies, bucket.gapBeforeId);
+    if (tipNow && syncedSpan.length > 0) {
+      const between = await listThreadMessages(token, threadId, {
+        after: syncedSpan[syncedSpan.length - 1].id,
+        limit: 5,
+      });
+      if (!between.ok) {
+        return;
+      }
+      const real = between.value.filter(isVisibleReply);
+      const hole = real.filter((msg) => snowflakeLess(msg.id, tipNow.id));
+      if (hole.length === 0) {
+        bucket.gapBeforeId = undefined;
+        bucket.replies = sortMessagesAsc(bucket.replies);
+        bucket.canLoadNewer = real.some((msg) => snowflakeLess(tipNow.id, msg.id));
+      } else {
+        bucket.canLoadNewer = true;
+      }
+      return;
+    }
+    const newest = syncedSpan[syncedSpan.length - 1];
+    if (!newest) {
+      return;
+    }
+    const newer = await this.probeVisible(token, threadId, { after: newest.id }, isVisibleReply);
+    if (newer !== undefined) {
+      bucket.canLoadNewer = newer;
+    }
+  }
+
+  private refreshReplyMeta(previous: DiscordMessage[], next: DiscordMessage[]): void {
+    const prevById = new Map(previous.map((msg) => [msg.id, msg]));
+    for (const msg of next) {
+      const prev = prevById.get(msg.id);
+      if (!prev || prev.content !== msg.content) {
+        this.replyMeta.delete(msg.id);
+      }
+    }
+  }
+
+  private retainLiveThreads(win: ReviewWindow): void {
+    const live = new Set(
+      win.messages.map((msg) => msg.thread?.id).filter((id): id is string => !!id),
+    );
+    for (const id of [...win.threads.keys()]) {
+      if (!live.has(id)) {
+        win.threads.delete(id);
+      }
+    }
   }
 
   async createPageDefaults(): Promise<
@@ -1353,8 +2006,9 @@ export class ReviewMapController {
   }
 
   /**
-   * Put a message Discord just accepted at the end of the open channel window.
-   * Re-reads it from Discord so the list matches the stored text.
+   * Put a message Discord just accepted into the open channel window.
+   * At the live end it is appended. Behind the end it stays as one new message
+   * with a hole in front of it. Re-reads it from Discord so the list matches the stored text.
    */
   private async appendPostedMessage(pageId: string, channelId: string, posted: DiscordMessage): Promise<void> {
     const token = await this.discordToken();
@@ -1366,30 +2020,14 @@ export class ReviewMapController {
       }
     }
     let win = this.windows.get(pageId);
-    if (!win || win.canLoadNewer) {
+    if (!win) {
       await this.loadInitial(pageId);
       win = this.windows.get(pageId);
     }
     if (!win) {
       return;
     }
-    const idx = win.messages.findIndex((item) => item.id === message.id);
-    if (idx >= 0) {
-      const prev = win.messages[idx];
-      win.messages[idx] = {
-        ...message,
-        thread: message.thread ?? prev.thread,
-        hasThread: message.hasThread || prev.hasThread,
-      };
-    } else {
-      win.messages = sortMessagesAsc([...win.messages, message]);
-      if (win.messages.length > CHANNEL_VISIBLE) {
-        win.messages = win.messages.slice(-CHANNEL_VISIBLE);
-        win.canLoadOlder = true;
-      }
-      win.canLoadNewer = false;
-    }
-    win.focusMessageId = message.id;
+    this.placeChannelPost(win, message);
   }
 
   /**
@@ -2994,20 +3632,8 @@ export class ReviewMapController {
           hasThread: true,
         };
       }
-      const listed = await listThreadMessages(token, thread.value.id, {
-        limit: THREAD_INITIAL + THREAD_PROBE,
-      });
-      let replies = listed.ok ? sortMessagesAsc(listed.value) : [];
-      if (!replies.some((item) => item.id === posted.value.id)) {
-        replies = [...replies, posted.value];
-      }
-      const page = takeThreadPage(replies, THREAD_INITIAL, postedCount, []);
-      win.threads.set(thread.value.id, {
-        replies: page.toAdd,
-        messageCount: page.messageCount,
-        exhausted: page.exhausted,
-      });
-      await this.enrichReplies(token, page.toAdd);
+      this.placeThreadPost(win, thread.value.id, posted.value, postedCount);
+      await this.enrichReplies(token, [posted.value]);
     }
     return { kind: 'state', state: this.snapshot(pageId) };
   }
@@ -3556,20 +4182,8 @@ export class ReviewMapController {
           hasThread: true,
         };
       }
-      const listed = await listThreadMessages(token, thread.value.id, {
-        limit: THREAD_INITIAL + THREAD_PROBE,
-      });
-      let replies = listed.ok ? sortMessagesAsc(listed.value) : [];
-      if (!replies.some((item) => item.id === posted.value.id)) {
-        replies = [...replies, posted.value];
-      }
-      const page = takeThreadPage(replies, THREAD_INITIAL, postedCount, []);
-      win.threads.set(thread.value.id, {
-        replies: page.toAdd,
-        messageCount: page.messageCount,
-        exhausted: page.exhausted,
-      });
-      await this.enrichReplies(token, page.toAdd);
+      this.placeThreadPost(win, thread.value.id, posted.value, postedCount);
+      await this.enrichReplies(token, [posted.value]);
     }
     return { kind: 'state', state: this.snapshot(pageId) };
   }

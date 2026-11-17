@@ -545,7 +545,7 @@ export async function listChannelMessages(
 export async function listThreadMessages(
   token: string,
   threadId: string,
-  opts: { limit?: number; before?: string } = {},
+  opts: { limit?: number; before?: string; after?: string } = {},
 ): Promise<DiscordResult<DiscordMessage[]>> {
   return listChannelMessages(token, threadId, opts);
 }

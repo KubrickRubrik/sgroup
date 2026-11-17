@@ -4381,6 +4381,47 @@ button.review-neurofix-btn:hover {
   width: 150px;
 }
 
+/* Fix chip sits in a column, so flex-basis would set height and make a square. */
+.review-chip.is-fix.is-skel {
+  align-self: flex-start;
+  flex: 0 0 auto;
+  height: 34px;
+  max-width: 150px;
+  min-width: 150px;
+  width: 150px;
+}
+
+.review-fix-line.is-busy {
+  align-items: center;
+  align-self: flex-start;
+  display: flex;
+  gap: 8px;
+  width: max-content;
+}
+
+.review-fix-line.is-busy > .review-chip.is-fix {
+  align-self: center;
+  flex: 0 1 auto;
+  width: auto;
+}
+
+.review-fix-loader {
+  align-items: center;
+  color: #52be37;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.review-fix-loader .review-ico {
+  animation: pager-cloud-spin 0.9s linear infinite;
+  height: 16px;
+  width: 16px;
+}
+
+.review-fix-loader .review-ico-progress {
+  color: #52be37;
+}
+
 .review-skel-title {
   flex: 0 1 220px;
   height: 12px;
@@ -4409,6 +4450,7 @@ button.review-neurofix-btn:hover {
 @media (prefers-reduced-motion: reduce) {
   .review-skel-ico,
   .review-skel-bar,
+  .review-fix-loader .review-ico,
   .review-children,
   .review-children-slide,
   .review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide {

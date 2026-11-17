@@ -1013,6 +1013,8 @@
    *       contentMissing?: boolean
    *     }>,
    *     repliesHasMore: boolean,
+   *     repliesHasNewer?: boolean,
+   *     gapBeforeReplyId?: string,
    *     repliesLoaded?: boolean,
    *     contentMissing?: boolean,
    *     branch?: string,
@@ -1020,6 +1022,7 @@
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
+   *   gapBeforeMessageId?: string,
    *   focusMessageId?: string,
    *   checkout?: string,
    *   pendingMr?: { title: string, draft?: boolean },
@@ -1027,6 +1030,7 @@
    *   pendingReviewId?: string,
    *   pendingExplainRoot?: { branch: string },
    *   pendingExplainId?: string,
+   *   pendingNeurofixId?: string,
    *   skeletonSeq?: number
    * }} ReviewState
    */
@@ -1112,6 +1116,12 @@
    * @type {{ pageId: string, branch: string } | null}
    */
   let localPendingExplainRoot = null;
+  /**
+   * Green fix chip drawn under a review message before the host snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingNeurofix = null;
   /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
   const reviewSkeletonSeq = new Map();
   /** Last placeholder scrolled into view, so later paints do not jump. */
@@ -1212,6 +1222,7 @@
       pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
       pendingExplainRoot: incoming.pendingExplainRoot || kept.pendingExplainRoot,
       pendingExplainId: incoming.pendingExplainId || kept.pendingExplainId,
+      pendingNeurofixId: incoming.pendingNeurofixId || kept.pendingNeurofixId,
     };
   }
 
@@ -1231,6 +1242,17 @@
       onReviewFileResult(message);
     } else if (message.type === 'reviewFixes') {
       onReviewFixesResult(message);
+    } else if (message.type === 'reviewNeurofixIdle') {
+      if (
+        localPendingNeurofix &&
+        localPendingNeurofix.pageId === message.pageId &&
+        localPendingNeurofix.messageId === message.messageId
+      ) {
+        localPendingNeurofix = null;
+        if (activePage()?.kind === 'review' && activePage()?.id === message.pageId) {
+          paintReviewPage();
+        }
+      }
     } else if (message.type === 'reviewState') {
       const incoming = keepLoadedReview(message.review || null);
       const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
@@ -1273,11 +1295,19 @@
             localPendingExplainRoot = null;
           }
         }
+        if (localPendingNeurofix && localPendingNeurofix.pageId === reviewState.pageId) {
+          if (reviewState.pendingNeurofixId === localPendingNeurofix.messageId) {
+            localPendingNeurofix = null;
+          }
+        }
         if (reviewState.pendingReviewId) {
           reviewCollapsed.delete(reviewState.pendingReviewId);
         }
         if (reviewState.pendingExplainId) {
           reviewCollapsed.delete(reviewState.pendingExplainId);
+        }
+        if (reviewState.pendingNeurofixId) {
+          reviewCollapsed.delete(reviewFoldParentId(reviewState.pendingNeurofixId));
         }
         reviewAutoLoad.delete(reviewState.pageId);
         if (reviewState.error || reviewState.loadingEdge === 'initial') {
@@ -2890,6 +2920,19 @@
     return undefined;
   }
 
+  /** Parent chip to unfold so a neurofix skeleton under this message stays visible. */
+  function reviewFoldParentId(messageId) {
+    for (const msg of reviewState?.messages || []) {
+      if (msg.id === messageId) {
+        return msg.id;
+      }
+      if ((msg.replies || []).some((item) => item.id === messageId)) {
+        return msg.id;
+      }
+    }
+    return messageId;
+  }
+
   /**
    * @param {HTMLElement} nest
    * @param {'inProgress' | 'done'} status
@@ -4034,11 +4077,14 @@
     }
 
     if (button.dataset.neuroFix) {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
       closeContextMenu();
+      beginLocalNeurofixSkeleton(pageId, messageId);
       vscode.postMessage({
         type: 'reviewNeurofix',
-        pageId: button.dataset.pageId || '',
-        messageId: button.dataset.messageId || '',
+        pageId,
+        messageId,
         scope: button.dataset.neuroFix,
       });
       return;
@@ -4920,6 +4966,9 @@
       return false;
     }
     const pageId = activePage()?.id || '';
+    if (activePendingNeurofixId(pageId) === msg.id) {
+      return true;
+    }
     if (
       (msg.isMr || msg.isReviewRoot) &&
       (activePendingReviewId(pageId) === msg.id || activePendingExplainId(pageId) === msg.id)
@@ -4937,7 +4986,11 @@
     if (msg.isExplainRoot) {
       return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
     }
-    return !!((msg.replies && msg.replies.length) || msg.repliesHasMore);
+    return !!(
+      (msg.replies && msg.replies.length) ||
+      msg.repliesHasMore ||
+      msg.repliesHasNewer
+    );
   }
 
   function foldableReviewMessages() {
@@ -7471,6 +7524,16 @@
   }
 
   /** @param {string} pageId */
+  function activePendingNeurofixId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingNeurofixId) {
+      return reviewState.pendingNeurofixId;
+    }
+    if (localPendingNeurofix && localPendingNeurofix.pageId === pageId) {
+      return localPendingNeurofix.messageId;
+    }
+    return '';
+  }
+
   function activePendingExplainRoot(pageId) {
     if (
       reviewState &&
@@ -7554,8 +7617,19 @@
 
   /**
    * @param {string} pageId
-   * @param {string} branch
+   * @param {string} messageId
    */
+  function beginLocalNeurofixSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingNeurofix = { pageId, messageId };
+    reviewCollapsed.delete(reviewFoldParentId(messageId));
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
   function beginLocalExplainRootSkeleton(pageId, branch) {
     if (!pageId) {
       return;
@@ -7566,15 +7640,17 @@
     }
   }
 
-  /** @param {'mr' | 'review' | 'root'} kind */
+  /** @param {'mr' | 'review' | 'root' | 'neurofix'} kind */
   function noteReviewSkeletonScroll(kind) {
     const pageId = activePage()?.id || '';
     const token =
       kind === 'review'
         ? 'review:' + activePendingReviewId(pageId)
-        : kind === 'root'
-          ? 'root:' + (activePendingRoot(pageId)?.branch || '')
-          : 'mr:' + (activePendingMr(pageId)?.title || '');
+        : kind === 'neurofix'
+          ? 'neurofix:' + activePendingNeurofixId(pageId)
+          : kind === 'root'
+            ? 'root:' + (activePendingRoot(pageId)?.branch || '')
+            : 'mr:' + (activePendingMr(pageId)?.title || '');
     if (!token || token === reviewSkelShown) {
       return;
     }
@@ -7674,6 +7750,34 @@
     return row;
   }
 
+  /**
+   * Green fix chip while neurofix is running.
+   * @param {string} nextColor
+   */
+  function renderReviewFixSkeleton(nextColor) {
+    const row = el('div', 'review-reply-node is-fix has-gap is-skel');
+    row.dataset.reviewSkel = 'neurofix';
+    row.style.setProperty('--link-color', '#52be37');
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: true, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    const stamp = el('div', 'review-stamp');
+    const dateBar = reviewSkeletonBar('72px', 0);
+    dateBar.classList.add('review-stamp-date');
+    stamp.append(dateBar);
+    body.append(stamp);
+    const chip = el('div', 'review-chip is-review-pill is-fix is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
   /** Three plain parents, each with three plain replies. */
   function renderReviewSkeletonTree() {
     const tree = el('div', 'review-tree review-skel');
@@ -7769,6 +7873,20 @@
     }
   }
 
+  /**
+   * @param {string} pageId
+   * @param {boolean} busy
+   */
+  function reviewNewerButton(pageId, busy) {
+    const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
+    newer.type = 'button';
+    newer.disabled = busy;
+    newer.addEventListener('click', () => {
+      requestReviewChannelLoad(pageId, 'newer');
+    });
+    return newer;
+  }
+
   function paintReviewPage() {
     const page = activePage();
     const pageId = page?.id || '';
@@ -7787,10 +7905,21 @@
     if (pendingExplainId) {
       reviewCollapsed.delete(pendingExplainId);
     }
+    const pendingNeurofixId = activePendingNeurofixId(pageId);
+    if (pendingNeurofixId) {
+      reviewCollapsed.delete(reviewFoldParentId(pendingNeurofixId));
+    }
     const pendingMr = activePendingMr(pageId);
     const pendingRoot = activePendingRoot(pageId);
     const pendingExplainRoot = activePendingExplainRoot(pageId);
-    if (!pendingMr && !pendingRoot && !pendingReviewId && !pendingExplainRoot && !pendingExplainId) {
+    if (
+      !pendingMr &&
+      !pendingRoot &&
+      !pendingReviewId &&
+      !pendingExplainRoot &&
+      !pendingExplainId &&
+      !pendingNeurofixId
+    ) {
       reviewSkelShown = '';
     }
     setCollapseButton();
@@ -7814,7 +7943,15 @@
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page review-page';
     clearDropHighlights();
-    if (edge || pendingMr || pendingRoot || pendingReviewId || pendingExplainRoot || pendingExplainId) {
+    if (
+      edge ||
+      pendingMr ||
+      pendingRoot ||
+      pendingReviewId ||
+      pendingExplainRoot ||
+      pendingExplainId ||
+      pendingNeurofixId
+    ) {
       root.setAttribute('aria-busy', 'true');
     } else {
       root.removeAttribute('aria-busy');
@@ -7904,7 +8041,15 @@
     }
     const tree = el('div', 'review-tree');
     const messages = reviewState.messages;
+    const gapId = reviewState.gapBeforeMessageId || '';
     messages.forEach((msg, index) => {
+      if (gapId && msg.id === gapId) {
+        if (edge === 'newer') {
+          tree.append(renderReviewSkeletonTree());
+        } else if (reviewState.canLoadNewer) {
+          tree.append(reviewNewerButton(pageId, busy));
+        }
+      }
       const next = messages[index + 1];
       const nextColor = next
         ? next.color ||
@@ -7922,17 +8067,11 @@
       tree.append(renderReviewRootSkeleton(pendingExplainRoot, messages.length > 0));
     }
     root.append(tree);
-    if (edge === 'newer') {
+    if (edge === 'newer' && !gapId) {
       root.append(renderReviewSkeletonTree());
     }
-    if (reviewState.canLoadNewer && edge !== 'newer') {
-      const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
-      newer.type = 'button';
-      newer.disabled = busy;
-      newer.addEventListener('click', () => {
-        requestReviewChannelLoad(pageId, 'newer');
-      });
-      root.append(newer);
+    if (reviewState.canLoadNewer && !gapId && edge !== 'newer') {
+      root.append(reviewNewerButton(pageId, busy));
     }
     if (keepScroll) {
       applyDocScroll(keepScroll);
@@ -7949,13 +8088,22 @@
       if (skel instanceof HTMLElement) {
         skel.scrollIntoView({ block: 'nearest' });
       }
-    } else if (pendingReviewId || pendingExplainId || pendingMr || pendingRoot || pendingExplainRoot) {
+    } else if (
+      pendingReviewId ||
+      pendingExplainId ||
+      pendingNeurofixId ||
+      pendingMr ||
+      pendingRoot ||
+      pendingExplainRoot
+    ) {
       noteReviewSkeletonScroll(
-        pendingReviewId || pendingExplainId
-          ? 'review'
-          : pendingMr
-            ? 'mr'
-            : 'root',
+        pendingNeurofixId
+          ? 'neurofix'
+          : pendingReviewId || pendingExplainId
+            ? 'review'
+            : pendingMr
+              ? 'mr'
+              : 'root',
       );
     }
     syncReviewFileMark();
@@ -7980,12 +8128,14 @@
       state.contentBlocked ? '1' : '0',
       state.canLoadOlder ? '1' : '0',
       state.canLoadNewer ? '1' : '0',
+      state.gapBeforeMessageId || '',
       state.focusMessageId || '',
       state.checkout || '',
       [...reviewTitleExpanded].sort().join(','),
       [...reviewPlainExpanded].sort().join(','),
       activePendingReviewId(pageId),
       activePendingExplainId(pageId),
+      activePendingNeurofixId(pageId),
       (() => {
         const pending = activePendingMr(pageId);
         return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
@@ -8015,8 +8165,10 @@
         msg.branch || '',
         msg.hasThread ? 't' : '',
         msg.repliesHasMore ? 'm' : '',
+        msg.repliesHasNewer ? 'n' : '',
+        msg.gapBeforeReplyId || '',
         msg.contentMissing ? 'x' : '',
-        String((msg.content || '').length),
+        msg.content || '',
       );
       for (const reply of msg.replies || []) {
         chunks.push(
@@ -8028,7 +8180,7 @@
           reply.hasFile ? 'f' : '',
           reply.filename || '',
           reply.contentMissing ? 'x' : '',
-          String((reply.content || '').length),
+          reply.content || '',
         );
       }
     }
@@ -8435,7 +8587,7 @@
         openReviewMessageContextMenu(event.clientX, event.clientY, pageId, msg.id);
       });
       body.append(preview);
-      if ((msg.replies && msg.replies.length) || msg.repliesHasMore) {
+      if ((msg.replies && msg.replies.length) || msg.repliesHasMore || msg.repliesHasNewer) {
         body.append(renderReviewThread(msg, pageId, false));
       }
     }
@@ -8449,6 +8601,29 @@
    * @param {boolean} allowPills
    * @param {boolean} [withReviewSkeleton]
    */
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   */
+  function reviewThreadNewerButton(msg, pageId) {
+    const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadNewer'));
+    more.type = 'button';
+    more.disabled = !!msg.locked;
+    more.addEventListener('click', () => {
+      if (msg.locked) {
+        flashReviewLock(msg.id);
+        return;
+      }
+      vscode.postMessage({
+        type: 'reviewLoadThread',
+        pageId,
+        messageId: msg.id,
+        direction: 'newer',
+      });
+    });
+    return more;
+  }
+
   function renderReviewThread(msg, pageId, allowPills, withReviewSkeleton) {
     const children = el('div', 'review-children');
     const clip = el('div', 'review-children-clip');
@@ -8456,10 +8631,15 @@
     const color = msg.color || '#8e4ec6';
     const pendingExplain = activePendingExplainId(pageId) === msg.id;
     const showSkeleton = !!withReviewSkeleton || pendingExplain;
-    if (reviewHasFixes(msg)) {
+    const pendingFix = activePendingNeurofixId(pageId) === msg.id;
+    if (reviewHasFixes(msg) || pendingFix) {
       const replies = msg.replies || [];
       const hasNext = replies.length > 0 || showSkeleton || !!msg.repliesHasMore;
-      slide.append(renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : ''));
+      if (reviewHasFixes(msg)) {
+        slide.append(renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : '', pendingFix));
+      } else if (pendingFix) {
+        slide.append(renderReviewFixSkeleton(hasNext ? color : ''));
+      }
     }
     if (msg.repliesHasMore) {
       const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
@@ -8475,12 +8655,19 @@
       slide.append(more);
     }
     const replies = msg.replies || [];
+    const gapReplyId = msg.gapBeforeReplyId || '';
     for (let index = 0; index < replies.length; index += 1) {
+      if (gapReplyId && replies[index].id === gapReplyId && msg.repliesHasNewer) {
+        slide.append(reviewThreadNewerButton(msg, pageId));
+      }
       const next = replies[index + 1];
       const hasNext = !!next || showSkeleton;
       slide.append(
         renderReviewReply(replies[index], color, allowPills, true, hasNext ? color : '', pageId),
       );
+    }
+    if (msg.repliesHasNewer && !gapReplyId) {
+      slide.append(reviewThreadNewerButton(msg, pageId));
     }
     if (showSkeleton) {
       slide.append(
@@ -8606,11 +8793,16 @@
       });
       body.append(plain);
     }
-    if (reviewHasFixes(reply) && pageId) {
+    const pendingFix = !!(pageId && activePendingNeurofixId(pageId) === reply.id);
+    if ((reviewHasFixes(reply) || pendingFix) && pageId) {
       const children = el('div', 'review-children');
       const clip = el('div', 'review-children-clip');
       const slide = el('div', 'review-children-slide');
-      slide.append(renderReviewFixNode(pageId, reply.id, reply, ''));
+      if (reviewHasFixes(reply)) {
+        slide.append(renderReviewFixNode(pageId, reply.id, reply, '', pendingFix));
+      } else if (pendingFix) {
+        slide.append(renderReviewFixSkeleton(''));
+      }
       clip.append(slide);
       children.append(clip);
       body.append(children);
@@ -8624,8 +8816,9 @@
    * @param {string} messageId
    * @param {{ fixes?: { at?: string } }} source
    * @param {string} nextColor
+   * @param {boolean} [busy] neurofix is running against this chip
    */
-  function renderReviewFixNode(pageId, messageId, source, nextColor) {
+  function renderReviewFixNode(pageId, messageId, source, nextColor, busy) {
     const stampDate = (source.fixes && source.fixes.at) || '';
     const row = el('div', 'review-reply-node is-fix has-gap');
     row.dataset.reviewFixFor = messageId;
@@ -8650,7 +8843,19 @@
       event.stopPropagation();
       openReviewFixesView(pageId, messageId);
     });
-    body.append(chip);
+    if (busy) {
+      row.dataset.reviewSkel = 'neurofix';
+      row.setAttribute('aria-busy', 'true');
+      const line = el('div', 'review-fix-line is-busy');
+      const loader = el('span', 'review-fix-loader');
+      loader.setAttribute('role', 'status');
+      loader.setAttribute('aria-label', t('neurofix'));
+      loader.append(reviewProgressIcon());
+      line.append(chip, loader);
+      body.append(line);
+    } else {
+      body.append(chip);
+    }
     row.append(body);
     return row;
   }
@@ -9426,6 +9631,7 @@
           main.addEventListener('click', (event) => {
             event.preventDefault();
             closeNeuroFixListPanel();
+            beginLocalNeurofixSkeleton(pageId, messageId);
             vscode.postMessage({
               type: 'reviewNeurofix',
               pageId,
