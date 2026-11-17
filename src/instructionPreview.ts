@@ -182,13 +182,20 @@ function readTable(lines: string[], start: number): { html: string; next: number
     return { html: '', next: index };
   }
   const levelCol = rows[0].findIndex((cell) => cell.trim().toLowerCase() === 'уровень');
+  const whereCol = rows[0].findIndex((cell) => cell.trim().toLowerCase() === 'где');
   const head = rows[0].map((cell) => `<th>${renderInline(cell)}</th>`).join('');
   const body = rows
     .slice(1)
     .map((row) => {
-      const cells = row.map((cell, index) =>
-        index === levelCol ? reviewLevelCell(cell) : `<td>${renderInline(cell)}</td>`,
-      );
+      const cells = row.map((cell, index) => {
+        if (index === levelCol) {
+          return reviewLevelCell(cell);
+        }
+        if (index === whereCol) {
+          return `<td>${renderWhere(cell)}</td>`;
+        }
+        return `<td>${renderInline(cell)}</td>`;
+      });
       return `<tr>${cells.join('')}</tr>`;
     })
     .join('');
@@ -228,29 +235,42 @@ function lineIndent(line: string): number {
   return /^(\s*)/.exec(line)?.[1].length ?? 0;
 }
 
-function renderInline(text: string): string {
+type InlineOpts = { shortFile?: boolean };
+
+function renderInline(text: string, opts?: InlineOpts): string {
   const re = /\[([^\]]+)\]\(([^)\s]+)\)|`([^`]+)`|\*\*([^*]+)\*\*/g;
   let html = '';
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text))) {
-    html += linkifyFileRefs(text.slice(last, match.index));
+    html += linkifyFileRefs(text.slice(last, match.index), opts);
     if (match[1] !== undefined) {
-      html += renderLink(match[1], match[2]);
+      html += renderLink(match[1], match[2], opts);
     } else if (match[3] !== undefined) {
       const file = workspaceFile(match[3], match[3]);
-      html += file ? fileAnchor(file, match[3]) : `<code>${escapeHtml(match[3])}</code>`;
+      const shown = file && opts?.shortFile ? fileChipLabel(file) : match[3];
+      html += file ? fileAnchor(file, shown) : `<code>${escapeHtml(match[3])}</code>`;
     } else {
-      html += `<strong>${renderInline(match[4])}</strong>`;
+      html += `<strong>${renderInline(match[4], opts)}</strong>`;
     }
     last = match.index + match[0].length;
   }
-  html += linkifyFileRefs(text.slice(last));
+  html += linkifyFileRefs(text.slice(last), opts);
   return html;
 }
 
+/** Column «Где»: the link still opens the full path, the label is `File.kt:130`. */
+function renderWhere(text: string): string {
+  const trimmed = text.trim().replace(/^`+|`+$/g, '');
+  const whole = workspaceFile(trimmed, trimmed);
+  if (whole && !/[\[\]*]/.test(trimmed)) {
+    return fileAnchor(whole, fileChipLabel(whole));
+  }
+  return renderInline(text, { shortFile: true });
+}
+
 /** `media/map.js:13832` and `` `media/map.js:13832` `` become the same file link. */
-function linkifyFileRefs(raw: string): string {
+function linkifyFileRefs(raw: string, opts?: InlineOpts): string {
   const re = /(^|[^\w./@+-])((?:[\w.+@-]+\/)*[\w.+@-]+\.[A-Za-z][\w]*:\d+)(?![\w])/g;
   let html = '';
   let last = 0;
@@ -258,14 +278,15 @@ function linkifyFileRefs(raw: string): string {
   while ((match = re.exec(raw))) {
     html += escapeHtml(raw.slice(last, match.index) + match[1]);
     const file = workspaceFile(match[2], match[2]);
-    html += file ? fileAnchor(file, match[2]) : escapeHtml(match[2]);
+    const shown = file && opts?.shortFile ? fileChipLabel(file) : match[2];
+    html += file ? fileAnchor(file, shown) : escapeHtml(match[2]);
     last = match.index + match[0].length;
   }
   html += escapeHtml(raw.slice(last));
   return html;
 }
 
-function renderLink(label: string, href: string): string {
+function renderLink(label: string, href: string, opts?: InlineOpts): string {
   if (/^https?:\/\//i.test(href)) {
     return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
   }
@@ -273,7 +294,14 @@ function renderLink(label: string, href: string): string {
   if (!file) {
     return escapeHtml(`[${label}](${href})`);
   }
-  return fileAnchor(file, label);
+  const shown = opts?.shortFile ? fileChipLabel(file) : label;
+  return fileAnchor(file, shown);
+}
+
+/** Visible file label: basename and line, without the directory. */
+function fileChipLabel(file: WorkspaceFile): string {
+  const name = file.rel.split('/').pop() || file.rel;
+  return file.line ? `${name}:${file.line}` : name;
 }
 
 type WorkspaceFile = { rel: string; line?: number };
@@ -468,8 +496,8 @@ export function reviewFixTableHtml(rows: ReviewFixRow[]): string {
   const body = rows
     .map(
       (row) =>
-        `<tr><td>${escapeHtml(row.level)}</td><td>${renderInline(row.broken)}</td>` +
-        `<td>${renderInline(row.fix)}</td><td>${renderInline(row.where)}</td></tr>`,
+        `<tr>${reviewLevelCell(row.level)}<td>${renderInline(row.broken)}</td>` +
+        `<td>${renderInline(row.fix)}</td><td>${renderWhere(row.where)}</td></tr>`,
     )
     .join('');
   return (
