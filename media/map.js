@@ -47,6 +47,9 @@
   const explainFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-title'));
   const explainFileBody = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-body'));
   const explainFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-close'));
+  const explainFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-grow'));
+  const explainFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-shrink'));
+  const explainFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-save'));
   const toolbarExplorer = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-explorer'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
@@ -447,6 +450,22 @@
   });
   explainFileClose?.addEventListener('click', () => {
     closeExplainFileView();
+  });
+  explainFileGrow?.addEventListener('click', () => {
+    stepReviewFont(0.05);
+  });
+  explainFileShrink?.addEventListener('click', () => {
+    stepReviewFont(-0.05);
+  });
+  explainFileSave?.addEventListener('click', () => {
+    if (!explainFileView || explainFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewSaveFile',
+      pageId: explainFileView.pageId,
+      messageId: explainFileView.messageId,
+    });
   });
   reviewFixesClose?.addEventListener('click', () => {
     closeReviewFixesView();
@@ -5225,19 +5244,28 @@
     setSize('--size-file', a.fontFile, 0.9);
     setSize('--size-review', a.fontReview, 1);
     const reviewSize = typeof a.fontReview === 'number' ? a.fontReview : 1;
-    if (reviewFileGrow) {
-      reviewFileGrow.disabled = reviewSize >= 1.999;
-      reviewFileGrow.title = t('reviewFileGrow');
-      reviewFileGrow.setAttribute('aria-label', t('reviewFileGrow'));
+    for (const grow of [reviewFileGrow, explainFileGrow]) {
+      if (!grow) {
+        continue;
+      }
+      grow.disabled = reviewSize >= 1.999;
+      grow.title = t('reviewFileGrow');
+      grow.setAttribute('aria-label', t('reviewFileGrow'));
     }
-    if (reviewFileShrink) {
-      reviewFileShrink.disabled = reviewSize <= 0.601;
-      reviewFileShrink.title = t('reviewFileShrink');
-      reviewFileShrink.setAttribute('aria-label', t('reviewFileShrink'));
+    for (const shrink of [reviewFileShrink, explainFileShrink]) {
+      if (!shrink) {
+        continue;
+      }
+      shrink.disabled = reviewSize <= 0.601;
+      shrink.title = t('reviewFileShrink');
+      shrink.setAttribute('aria-label', t('reviewFileShrink'));
     }
-    if (reviewFileSave) {
-      reviewFileSave.title = t('reviewFileSave');
-      reviewFileSave.setAttribute('aria-label', t('reviewFileSave'));
+    for (const save of [reviewFileSave, explainFileSave]) {
+      if (!save) {
+        continue;
+      }
+      save.title = t('reviewFileSave');
+      save.setAttribute('aria-label', t('reviewFileSave'));
     }
     const turn = typeof a.gradientDirection === 'number' ? a.gradientDirection : 0;
     document.body.style.setProperty('--gradient-turn', String(turn));
@@ -8322,7 +8350,9 @@
       const chipWrap = el('div', 'review-chip-wrap');
       const chip = el('button', 'review-chip is-review-pill is-explain-pill');
       chip.type = 'button';
-      chip.append(el('span', 'review-chip-label', msg.pillLabel || t('explainFileTitle')));
+      const explainLabel = el('span', 'review-chip-label');
+      setReviewPillText(explainLabel, msg.pillLabel || t('explainFileTitle'));
+      chip.append(explainLabel);
       if (explainCanFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
         tri.append(linkCaretIcon());
@@ -8511,7 +8541,9 @@
     if (isExplain && isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill is-explain-pill');
-      chip.append(el('span', 'review-chip-label', reply.pillLabel || t('explainFileTitle')));
+      const explainLabel = el('span', 'review-chip-label');
+      setReviewPillText(explainLabel, reply.pillLabel || t('explainFileTitle'));
+      chip.append(explainLabel);
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -8828,6 +8860,9 @@
       explainFileClose.title = t('reviewFileClose');
       explainFileClose.setAttribute('aria-label', t('reviewFileClose'));
     }
+    if (explainFileSave) {
+      explainFileSave.disabled = view.status !== 'ready';
+    }
     explainFileBody.replaceChildren();
     if (view.status === 'loading') {
       explainFileBody.append(reviewFileSkeleton());
@@ -9100,8 +9135,9 @@
    * @returns {{ H: number, M: number, S: number } | undefined}
    */
   /**
-   * Chip and review-panel title: `Ревью N | branch|changes | rs|rm|rd | H:n | M:n | S:n`.
-   * Severity, scope and depth each get their own color. `rl` uses the shallow color.
+   * Chip label. Review: `Ревью N | branch|changes | rl|rm|rd | H:n | M:n | L:n`.
+   * Explain: `Что делаем? | branch|changes | rl|rm|rd`. Older explain chips are the title alone.
+   * Severity, scope and depth each get their own color. `rs` and `rl` share the shallow color.
    * @param {HTMLElement} node
    * @param {string} label
    */
@@ -9109,13 +9145,8 @@
     const text = String(label || '');
     node.replaceChildren();
     const chunks = text.split(/\s*\|\s*/);
-    const tail = chunks.slice(-3);
-    const colored =
-      chunks.length >= 3 &&
-      /^H:\s*\d+$/i.test(tail[0]) &&
-      /^M:\s*\d+$/i.test(tail[1]) &&
-      /^[LS]:\s*\d+$/i.test(tail[2]);
-    if (!colored) {
+    const anyTone = chunks.some((chunk) => reviewPillTone(chunk.trim()));
+    if (!anyTone) {
       node.textContent = text;
       return;
     }
@@ -9176,7 +9207,7 @@
     const lines = String(text || '').split(/\r?\n/);
     const severityRaw = (lines[2] || '')
       .trim()
-      .replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rm|rd)\s*\|\s*/i, '');
+      .replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
     const sevMatch = severityRaw.match(/^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i);
     if (!sevMatch) {
       return { ok: false, message: t('neurofixListParseFail') };

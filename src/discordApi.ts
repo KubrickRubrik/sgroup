@@ -7,7 +7,7 @@ export const MR_PREFIX = 'MR_SYN3';
 export const DMR_PREFIX = 'DMR_SYN3';
 /** Review message prefix in Discord threads: `R_SYN3: Ревью N | branch | rd | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
-/** Explain («Что делаем?») message prefix: `W_SYN3: Что делаем?`. */
+/** Explain («Что делаем?») message prefix: `W_SYN3: Что делаем? | branch | rl`. */
 export const EXPLAIN_PREFIX = 'W_SYN3';
 /** Chip and file title for an explain message. */
 export const EXPLAIN_TITLE = 'Что делаем?';
@@ -37,7 +37,8 @@ import { formatConfigHeaderDate } from './configFormat';
 /**
  * Severity line inside agent stdout.
  * Canonical form is `H:n | M:n | L:n`. Legacy `S` (former simple) maps to `L`.
- * A review file and chip put `branch|changes | rs|rm|rd | ` in front of this line.
+ * A review file and chip put `branch|changes | rl|rm|rd | ` in front of this line.
+ * Older chips may still say `rs` instead of `rl`.
  */
 export const REVIEW_SEVERITY_RE =
   /^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i;
@@ -47,10 +48,10 @@ export type ReviewLevel = 'H' | 'M' | 'L';
 
 /** Kind token on a review file line and chip. Legacy files may still say `change`. */
 export type ReviewScopeToken = 'branch' | 'changes';
-/** Depth token on a review file line and chip. */
-export type ReviewDepthToken = 'rs' | 'rm' | 'rd';
+/** Depth token on a review file line and chip. New runs write `rl`. Older chips may still say `rs`. */
+export type ReviewDepthToken = 'rs' | 'rl' | 'rm' | 'rd';
 
-const REVIEW_SCOPE_PREFIX_RE = /^(branch|changes?)\s*\|\s*(rs|rm|rd)\s*\|\s*/i;
+const REVIEW_SCOPE_PREFIX_RE = /^(branch|changes?)\s*\|\s*(rs|rl|rm|rd)\s*\|\s*/i;
 
 /** `change` from older files and chips is the same scope as `changes`. */
 export function normalizeReviewScopeToken(raw: string): ReviewScopeToken | undefined {
@@ -441,7 +442,8 @@ export function findSeverityLine(text: string): string | undefined {
  * Review attachment layout:
  * 1: Ревью N
  * 2: MR meta
- * 3: branch|changes | rs|rm|rd | H:N | M:N | L:N
+ * 3: branch|changes | rl|rm|rd | H:N | M:N | L:N
+ *    Older files may still say `rs` instead of `rl`.
  *    Older files keep a bare H:N | M:N | S:N on this line. S is Low.
  * rest: body
  */
@@ -1142,16 +1144,20 @@ export function formatReviewDiscordBody(opts: {
  * Discord message for an explain («Что делаем?») file attachment.
  *
  * Channel root or thread reply:
- * W_SYN3: Что делаем?
+ * W_SYN3: Что делаем? | branch | rl
  * Branch: name
  * Model: …
  * Skill: …
  * color: #hex
+ *
+ * Older messages omit scope and depth. Their chip stays `Что делаем?`.
  */
 export function formatExplainDiscordBody(opts: {
   model: string;
   skillPath: string;
   branch: string;
+  scope: ReviewScopeToken;
+  depth: ReviewDepthToken;
   color?: string;
 }): string {
   const model = opts.model.trim() || '—';
@@ -1159,13 +1165,15 @@ export function formatExplainDiscordBody(opts: {
   const branch = opts.branch.trim() || '—';
   const color = (opts.color?.trim() || EXPLAIN_DEFAULT_COLOR).trim();
   return [
-    `${EXPLAIN_PREFIX}: ${EXPLAIN_TITLE}`,
+    `${EXPLAIN_PREFIX}: ${EXPLAIN_TITLE} | ${opts.scope} | ${opts.depth}`,
     `Branch: ${branch}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
     `color: ${color}`,
   ].join('\n');
 }
+
+const EXPLAIN_PILL_RE = /^Что делаем\?\s*\|\s*(branch|changes?)\s*\|\s*(rs|rl|rm|rd)\s*$/i;
 
 /** Chip label from a W_SYN3 Discord message. */
 export function parseExplainMessagePill(content: string): string | undefined {
@@ -1174,7 +1182,16 @@ export function parseExplainMessagePill(content: string): string | undefined {
   if (!match) {
     return undefined;
   }
-  return EXPLAIN_TITLE;
+  const rest = (match[1] || '').trim().replace(/\s+/g, ' ');
+  const scoped = EXPLAIN_PILL_RE.exec(rest);
+  if (!scoped) {
+    return EXPLAIN_TITLE;
+  }
+  const scope = normalizeReviewScopeToken(scoped[1]);
+  if (!scope) {
+    return EXPLAIN_TITLE;
+  }
+  return `${EXPLAIN_TITLE} | ${scope} | ${scoped[2].toLowerCase()}`;
 }
 
 /** Branch name from a `Branch:` line. Older messages use `Ветка:`. A markdown link keeps only its text. */
@@ -1229,7 +1246,7 @@ export function parseReviewMessagePill(content: string): string | undefined {
   }
   const rest = (match[1] || '').trim().replace(/\s+/g, ' ');
   const scoped =
-    /^(?:Ревью|Review)\s+(\d+)\s*\|\s*(branch|changes?)\s*\|\s*(rs|rm|rd)\s*\|\s*(H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+)$/i.exec(
+    /^(?:Ревью|Review)\s+(\d+)\s*\|\s*(branch|changes?)\s*\|\s*(rs|rl|rm|rd)\s*\|\s*(H:\s*\d+\s*\|\s*M:\s*\d+\s*\|\s*[LS]:\s*\d+)$/i.exec(
       rest,
     );
   if (scoped) {

@@ -4,12 +4,12 @@ export const REVIEW_PENDING_REL = '.syn3/review-pending.md';
 
 export type ReviewKind = 'branch' | 'changes';
 
-/** Context-menu depth. Shallow `/rs`, medium `/rm`, deep `/rd`. */
+/** Context-menu depth. Shallow `/rl`, medium `/rm`, deep `/rd`. */
 export type ReviewDepth = 'shallow' | 'medium' | 'deep';
 
-export function reviewDepthCommand(depth: ReviewDepth): '/rs' | '/rm' | '/rd' {
+export function reviewDepthCommand(depth: ReviewDepth): '/rl' | '/rm' | '/rd' {
   if (depth === 'shallow') {
-    return '/rs';
+    return '/rl';
   }
   if (depth === 'deep') {
     return '/rd';
@@ -22,10 +22,10 @@ export function reviewScopeToken(kind: ReviewKind): 'branch' | 'changes' {
   return kind === 'branch' ? 'branch' : 'changes';
 }
 
-/** File and chip token for the review depth. Missing depth stays medium (`rm`). */
-export function reviewDepthToken(depth: ReviewDepth): 'rs' | 'rm' | 'rd' {
+/** File and chip token for the review depth. Missing depth stays medium (`rm`). New runs write `rl`; older chips may still say `rs`. */
+export function reviewDepthToken(depth: ReviewDepth): 'rl' | 'rm' | 'rd' {
   if (depth === 'shallow') {
-    return 'rs';
+    return 'rl';
   }
   if (depth === 'deep') {
     return 'rd';

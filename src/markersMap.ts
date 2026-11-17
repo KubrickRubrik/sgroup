@@ -7169,7 +7169,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     <aside id="explain-file" class="review-file explain-file" hidden>
       <div class="review-file-head">
         <span id="explain-file-title" class="review-file-title"></span>
-        <button id="explain-file-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+        <div class="review-file-actions">
+          <button id="explain-file-grow" class="history-btn" type="button" aria-label="Увеличить">${glyph(iconGrow)}</button>
+          <button id="explain-file-shrink" class="history-btn" type="button" aria-label="Уменьшить">${glyph(iconShrink)}</button>
+          <button id="explain-file-save" class="history-btn" type="button" aria-label="Скачать" disabled>${glyph(iconDownload)}</button>
+          <button id="explain-file-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+        </div>
       </div>
       <div id="explain-file-body" class="review-file-body explain-file-body"></div>
     </aside>

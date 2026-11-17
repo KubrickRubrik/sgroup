@@ -109,6 +109,8 @@ import {
   isPendingBranchKey,
   parseReviewDepth,
   pendingBranchKey,
+  reviewDepthToken,
+  reviewScopeToken,
   ReviewDepth,
   ReviewKind,
   ReviewPendingStore,
@@ -2950,7 +2952,7 @@ export class ReviewMapController {
     let reviewNumber = 1;
     let severity = formatSeverityLine(0, 0, 0);
     let scope: 'branch' | 'changes' | undefined;
-    let depthToken: 'rs' | 'rm' | 'rd' | undefined;
+    let depthToken: 'rs' | 'rl' | 'rm' | 'rd' | undefined;
     try {
       const fileText = await fs.readFile(filePath, 'utf8');
       const parsedFile = parseReviewAttachment(fileText);
@@ -3029,7 +3031,7 @@ export class ReviewMapController {
     let reviewNumber = 1;
     let severity = formatSeverityLine(0, 0, 0);
     let scope: 'branch' | 'changes' | undefined;
-    let depthToken: 'rs' | 'rm' | 'rd' | undefined;
+    let depthToken: 'rs' | 'rl' | 'rm' | 'rd' | undefined;
     try {
       const fileText = await fs.readFile(filePath, 'utf8');
       const parsedFile = parseReviewAttachment(fileText);
@@ -3189,7 +3191,7 @@ export class ReviewMapController {
         branch,
         body: agent.body,
       });
-      await this.explainPending.write(pendingKey, kind, filePath, branch);
+      await this.explainPending.write(pendingKey, kind, filePath, branch, parseReviewDepth(depth));
       const sent = await this.sendPendingExplain(pageId, parent, filePath, branch);
       if (sent.kind === 'state') {
         agent.report('Сообщение опубликовано в треде.', true);
@@ -3277,7 +3279,7 @@ export class ReviewMapController {
         branch: branchName,
         body: agent.body,
       });
-      await this.explainPending.write(pendingKey, kind, filePath, branchName);
+      await this.explainPending.write(pendingKey, kind, filePath, branchName, parseReviewDepth(depth));
       const sent = await this.sendPendingRootExplain(pageId, branchName, filePath);
       if (sent.kind === 'state') {
         agent.report('Сообщение опубликовано в канале.', true);
@@ -3453,7 +3455,7 @@ export class ReviewMapController {
         branch: branchName,
         body: agent.body,
       });
-      await this.explainPending.write(pendingKey, opts.kind, filePath, branchName);
+      await this.explainPending.write(pendingKey, opts.kind, filePath, branchName, opts.depth);
       const sent =
         threadParent && (isMrParent || isRootParent)
           ? await this.sendPendingExplain(pageId, threadParent, filePath, branchName)
@@ -3526,10 +3528,13 @@ export class ReviewMapController {
     }
     parent.thread = { id: thread.value.id, messageCount: thread.value.messageCount };
     const paths = this.profilePaths();
+    const pending = await this.explainPending.read();
     const content = formatExplainDiscordBody({
       model: paths.model,
       skillPath: paths.explainSkillPath,
       branch,
+      scope: reviewScopeToken(pending?.kind ?? 'changes'),
+      depth: reviewDepthToken(pending?.depth ?? 'medium'),
       color: EXPLAIN_DEFAULT_COLOR,
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
@@ -3584,10 +3589,13 @@ export class ReviewMapController {
       return { kind: 'error', message: 'Missing Discord access' };
     }
     const paths = this.profilePaths();
+    const pending = await this.explainPending.read();
     const content = formatExplainDiscordBody({
       model: paths.model,
       skillPath: paths.explainSkillPath,
       branch,
+      scope: reviewScopeToken(pending?.kind ?? 'branch'),
+      depth: reviewDepthToken(pending?.depth ?? 'medium'),
       color: EXPLAIN_DEFAULT_COLOR,
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);

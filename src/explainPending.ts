@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
-import { ReviewKind } from './reviewPending';
-import { isPendingBranchKey, pendingBranchKey } from './reviewPending';
+import { isPendingBranchKey, parseReviewDepth, pendingBranchKey, ReviewDepth, ReviewKind } from './reviewPending';
 
 export const EXPLAIN_PENDING_REL = '.syn3/explain-pending.md';
 
@@ -14,6 +13,8 @@ export interface PendingExplain {
   fsPath: string;
   /** Branch name stamped on the Discord message. */
   branch: string;
+  /** Analysis depth. Older pending files omit the line; those read as medium. */
+  depth: ReviewDepth;
 }
 
 function parseKind(raw: string): ReviewKind | undefined {
@@ -55,7 +56,8 @@ export class ExplainPendingStore {
       if (!isPendingKey(webUrl) || !kind || !fsPath || !branch) {
         return undefined;
       }
-      return { webUrl, kind, fsPath, branch };
+      const depth = parseReviewDepth((lines[4] || '').trim());
+      return { webUrl, kind, fsPath, branch, depth };
     } catch {
       return undefined;
     }
@@ -66,6 +68,7 @@ export class ExplainPendingStore {
     kind: ReviewKind,
     fsPath: string,
     branch: string,
+    depth: ReviewDepth = 'medium',
   ): Promise<PendingExplain> {
     const dir = vscode.Uri.joinPath(this.root, '.syn3');
     try {
@@ -73,13 +76,15 @@ export class ExplainPendingStore {
     } catch {
       // exists
     }
-    const body = `${webUrl.trim()}\n${kind}\n${fsPath.trim()}\n${branch.trim()}\n`;
+    const storedDepth = parseReviewDepth(depth);
+    const body = `${webUrl.trim()}\n${kind}\n${fsPath.trim()}\n${branch.trim()}\n${storedDepth}\n`;
     await vscode.workspace.fs.writeFile(this.uri(), Buffer.from(body, 'utf8'));
     return {
       webUrl: webUrl.trim(),
       kind,
       fsPath: fsPath.trim(),
       branch: branch.trim(),
+      depth: storedDepth,
     };
   }
 

@@ -208,7 +208,7 @@ function buildPrompt(opts: {
   lines.push(
     'Answer in ask mode. Put the severity line first in the form exactly:',
     'H:N | M:N | L:N',
-    'Do not write branch, changes, rs, rm, or rd on that line. Syn3 adds them.',
+    'Do not write branch, changes, rl, rm, or rd on that line. Syn3 adds them.',
     'Then write the H/M/L groups with bullets, then the readable review block.',
   );
   return lines.join('\n');
@@ -805,6 +805,7 @@ function buildExplainPrompt(opts: {
   lines.push(
     'Answer in ask mode.',
     'Write the full explanation as markdown.',
+    'Start the file with a # heading. Do not write the chip line.',
     'Do not require or emit an H:N | M:N | L:N severity line.',
   );
   return lines.join('\n');
