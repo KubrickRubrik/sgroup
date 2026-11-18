@@ -560,6 +560,144 @@ export async function runReviewSkill(opts: {
   });
 }
 
+export type ScenarioAskResult =
+  | {
+      ok: true;
+      answer: string;
+      report: (line: string, close: boolean) => void;
+    }
+  | { ok: false; message: string };
+
+/**
+ * Run `agent --print --mode ask` for a scenario pass. The caller owns the prompt.
+ * The answer is the agent text. No severity line and no file write.
+ */
+export async function runScenarioAsk(opts: {
+  cwd: string;
+  prompt: string;
+  model?: string;
+  printThinking?: boolean;
+  printTools?: boolean;
+}): Promise<ScenarioAskResult> {
+  const resolved = await resolveAgentBin();
+  if (!resolved) {
+    return { ok: false, message: 'Cursor Agent CLI not found (agent / cursor agent)' };
+  }
+  const prompt = opts.prompt;
+  const args = [
+    ...resolved.prefix,
+    '--print',
+    '--trust',
+    '--force',
+    '--mode',
+    'ask',
+    '--output-format',
+    'stream-json',
+    '--stream-partial-output',
+    '--workspace',
+    opts.cwd,
+  ];
+  if (opts.model && opts.model.trim()) {
+    args.push('--model', opts.model.trim());
+  }
+  args.push(prompt);
+  const print = terminalPrint(opts);
+
+  const writeEmitter = new vscode.EventEmitter<string>();
+  let closed = false;
+  let child: ChildProcess | undefined;
+  const started = Date.now();
+  const pty: vscode.Pseudoterminal = {
+    onDidWrite: writeEmitter.event,
+    open: () => {
+      writeEmitter.fire(
+        `$ ${resolved.bin} ${args.filter((a) => a !== prompt).join(' ')} «prompt»\r\n\r\n`,
+      );
+      writeEmitter.fire('агент запущен, шаги появятся ниже\r\n');
+    },
+    close: () => {
+      closed = true;
+      child?.kill();
+    },
+  };
+  const term = vscode.window.createTerminal({ name: 'Syn3 Scenario', pty });
+  term.show(true);
+
+  return new Promise((resolve) => {
+    const stream: AgentStream = {
+      buf: '',
+      deltas: '',
+      plain: '',
+      resultText: '',
+      finalFlush: '',
+      sawDelta: false,
+      thinkingOpen: false,
+    };
+    let stderr = '';
+    let settled = false;
+    let lastEmit = Date.now();
+    const emit = (text: string) => {
+      lastEmit = Date.now();
+      if (!closed) {
+        writeEmitter.fire(text);
+      }
+    };
+    const timer = setInterval(() => {
+      if (closed || Date.now() - lastEmit < 20_000) {
+        return;
+      }
+      emit(`… ждём модель, ${Math.round((Date.now() - started) / 1000)} с\r\n`);
+    }, 5_000);
+    child = spawn(resolved.bin, args, {
+      cwd: opts.cwd,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      takeStreamLines(stream, chunk.toString('utf8'), emit, print);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      emit(text.replace(/\n/g, '\r\n'));
+    });
+    const report = (line: string, closeTerminal: boolean) => {
+      emit(`\r\n${line}\r\n`);
+      if (closeTerminal) {
+        setTimeout(() => term.dispose(), 1200);
+      }
+    };
+    const finish = (result: ScenarioAskResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(timer);
+      resolve(result);
+    };
+    child.on('error', (error) => {
+      emit(`\r\n${error.message}\r\n`);
+      finish({ ok: false, message: error.message });
+    });
+    child.on('close', (code) => {
+      if (stream.buf.trim()) {
+        emitStreamLine(stream, stream.buf, emit, print);
+      }
+      emit(`\r\n[exit ${code ?? '?'}]\r\n`);
+      const answer = pickAnswer(stream).trim();
+      if (answer) {
+        finish({ ok: true, answer, report });
+        return;
+      }
+      const message = closed
+        ? 'Scenario agent cancelled'
+        : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
+      emit(`\r\n${message}\r\n`);
+      finish({ ok: false, message });
+    });
+  });
+}
+
 /** Whole line the neurofix agent writes when the items are fixed or already fixed in the worktree. */
 export const NEUROFIX_OK_LINE = 'SYN3_NEUROFIX_OK';
 
@@ -812,7 +950,7 @@ function buildExplainPrompt(opts: {
 }
 
 /**
- * Run the explain («Что делаем?») skill. Whole answer becomes the file body.
+ * Run the explain («Что сделано») skill. Whole answer becomes the file body.
  * No H/M/L line required.
  */
 export async function runExplainSkill(opts: {

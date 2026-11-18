@@ -13,6 +13,31 @@ export interface ReviewMr {
   reviewers: Array<{ username: string; name?: string }>;
 }
 
+/** One open MR/PR row for the branch picker. */
+export interface HostOpenRequest {
+  title: string;
+  sourceBranch: string;
+  author: string;
+  draft: boolean;
+}
+
+export type HostOpenRequestPage = {
+  requests: HostOpenRequest[];
+  nextPage: number | undefined;
+};
+
+/** Author label: display name when the host sent one, otherwise the login. */
+export function hostOpenRequest(mr: ReviewMr): HostOpenRequest {
+  const name = mr.author.name?.trim() || '';
+  const username = mr.author.username.trim();
+  return {
+    title: mr.title,
+    sourceBranch: mr.source_branch,
+    author: name || username,
+    draft: mr.draft,
+  };
+}
+
 export function isReviewHostProvider(value: unknown): value is ReviewHostProvider {
   return value === 'gitlab' || value === 'github';
 }

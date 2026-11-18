@@ -1,5 +1,5 @@
 import { normalizeRepoUrl } from './accessStore';
-import { ReviewMr } from './reviewHost';
+import { hostOpenRequest, ReviewMr, type HostOpenRequestPage } from './reviewHost';
 
 export type GithubResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
@@ -426,6 +426,34 @@ async function fetchGithubBranchPage(
     return page;
   }
   return { ok: true, value: page };
+}
+
+/** One page of open pull requests, newest update first. Drafts stay in `state=open`. */
+export async function listGithubOpenPrs(
+  repoUrl: string,
+  token: string,
+  page = 1,
+  perPage = 30,
+): Promise<GithubResult<HostOpenRequestPage>> {
+  const loc = ownerRepo(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitHub repository URL' };
+  }
+  const first = Math.min(100, Math.max(1, perPage));
+  const route =
+    `/repos/${encodeURIComponent(loc.owner)}/${encodeURIComponent(loc.repo)}/pulls` +
+    `?state=open&sort=updated&direction=desc&per_page=${first}&page=${page}`;
+  const result = await githubFetchRaw(token, 'GET', route);
+  if (!result.ok) {
+    return result;
+  }
+  const requests = Array.isArray(result.value.body)
+    ? result.value.body.flatMap((item) => {
+        const pr = asPr(item);
+        return pr ? [hostOpenRequest(pr)] : [];
+      })
+    : [];
+  return { ok: true, value: { requests, nextPage: result.value.nextPage } };
 }
 
 /**

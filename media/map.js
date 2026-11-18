@@ -89,7 +89,7 @@
   /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   /**
-   * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка» / «Что делаем? → другая ветка».
+   * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка» / «Что сделано → другая ветка».
    * @type {{
    *   mode: 'pull' | 'review' | 'explain',
    *   pageId: string,
@@ -1075,6 +1075,18 @@
   /** @type {string | null} */
   let openScenarioGroupPanelId = null;
   let focusScenarioGroupNameOnOpen = false;
+  /** @type {{ pageId: string, messageId: string } | null} */
+  let scenarioFormBusy = null;
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   questions: { id: string, prompt: string, options: { id: string, label: string }[] }[]
+   * } | null}
+   */
+  let scenarioFormQuestions = null;
+  /** @type {Record<string, string>} */
+  let scenarioFormPicks = {};
   /** @type {{ id: string, groupId: string, targetGroupId?: string, copy?: boolean } | null} */
   let pendingScenarioDrop = null;
   /** @type {{ kind: 'row', row: HTMLElement, edge: 'before' | 'after' | 'into' } | { kind: 'tail', tail: HTMLElement } | null} */
@@ -1228,8 +1240,10 @@
 
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'reviewSkillCopied') {
-      const note = document.getElementById('review-skill-copied');
+    if (message.type === 'reviewSkillCopied' || message.type === 'scenarioSkillCopied') {
+      const note = document.getElementById(
+        message.type === 'scenarioSkillCopied' ? 'scenario-skill-copied' : 'review-skill-copied',
+      );
       if (note) {
         note.textContent = t('reviewSkillCopied');
         note.hidden = false;
@@ -1341,6 +1355,38 @@
       if (activePage()?.kind === 'scenarios') {
         render();
       }
+    } else if (message.type === 'scenarioFormBusy') {
+      const pageId = typeof message.pageId === 'string' ? message.pageId : '';
+      const messageId = typeof message.messageId === 'string' ? message.messageId : '';
+      if (pageId && messageId) {
+        scenarioFormBusy = { pageId, messageId };
+      }
+      closeContextMenu();
+      if (activePage()?.kind === 'scenarios') {
+        paintScenariosPage();
+      }
+    } else if (message.type === 'scenarioFormIdle') {
+      scenarioFormBusy = null;
+      closeScenarioFormPanel(false);
+      if (activePage()?.kind === 'scenarios') {
+        paintScenariosPage();
+      }
+    } else if (message.type === 'scenarioQuestions') {
+      const pageId = typeof message.pageId === 'string' ? message.pageId : '';
+      const messageId = typeof message.messageId === 'string' ? message.messageId : '';
+      const questions = Array.isArray(message.questions) ? message.questions : [];
+      scenarioFormQuestions =
+        pageId && messageId && questions.length
+          ? { pageId, messageId, questions }
+          : null;
+      scenarioFormPicks = {};
+      if (scenarioFormQuestions) {
+        scenarioFormBusy = { pageId, messageId };
+      }
+      closeContextMenu();
+      if (activePage()?.kind === 'scenarios') {
+        paintScenariosPage();
+      }
     } else if (message.type === 'scenarioPagePanel') {
       openScenarioPagePanel({
         mode: message.mode === 'edit' ? 'edit' : 'create',
@@ -1381,6 +1427,15 @@
         requestId: typeof message.requestId === 'string' ? message.requestId : '',
         ok: message.ok === true,
         branches: Array.isArray(message.branches) ? message.branches : [],
+        nextPage: typeof message.nextPage === 'number' ? message.nextPage : undefined,
+        currentBranch: typeof message.currentBranch === 'string' ? message.currentBranch : '',
+        message: typeof message.message === 'string' ? message.message : undefined,
+      });
+    } else if (message.type === 'reviewOpenRequests') {
+      onReviewOpenRequestsMessage({
+        requestId: typeof message.requestId === 'string' ? message.requestId : '',
+        ok: message.ok === true,
+        requests: readOpenRequests(message.requests),
         nextPage: typeof message.nextPage === 'number' ? message.nextPage : undefined,
         currentBranch: typeof message.currentBranch === 'string' ? message.currentBranch : '',
         message: typeof message.message === 'string' ? message.message : undefined,
@@ -2767,12 +2822,19 @@
 
   /**
    * Neurofix row inside the root review chip menu. Click opens the scope flyout.
+   * On a foreign branch the row stays muted and still opens the flyout.
+   * The actions inside are muted, and a click reports the error.
    * @param {HTMLElement} scroller
    * @param {boolean} expanded
+   * @param {boolean} [blocked]
    */
-  function appendNeuroFixRow(scroller, expanded) {
+  function appendNeuroFixRow(scroller, expanded, blocked) {
     const row = menuAction('', expanded ? 'is-expanded' : '');
     row.dataset.menuAction = 'toggleNeuroFix';
+    if (blocked) {
+      row.classList.add('is-muted');
+      row.title = t('neurofixForeignBranch');
+    }
     row.setAttribute('aria-haspopup', 'menu');
     row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     const title = document.createElement('span');
@@ -2797,6 +2859,7 @@
     if (!(contextMenu instanceof HTMLElement)) {
       return;
     }
+    const blocked = reviewNeurofixBlocked(messageId);
     const anchor = contextMenu.querySelector('[data-menu-action="toggleNeuroFix"]');
     if (!(anchor instanceof HTMLElement)) {
       return;
@@ -2819,18 +2882,23 @@
       if (!item.show) {
         continue;
       }
-      fly.append(
-        menuActionChoice(item.label, {
-          neuroFix: item.scope,
-          pageId,
-          messageId,
-        }),
-      );
+      const choice = menuActionChoice(item.label, {
+        neuroFix: item.scope,
+        pageId,
+        messageId,
+      });
+      if (blocked) {
+        muteNeurofixAction(choice);
+      }
+      fly.append(choice);
     }
     const listBtn = menuAction(t('neurofixList'));
     listBtn.dataset.menuAction = 'neuroFixList';
     listBtn.dataset.pageId = pageId;
     listBtn.dataset.messageId = messageId;
+    if (blocked) {
+      muteNeurofixAction(listBtn);
+    }
     fly.append(listBtn);
     fly.addEventListener('mouseenter', () => {
       cancelMenuClose('context');
@@ -2883,7 +2951,7 @@
   }
 
   /**
-   * Scope row inside «Что делаем?». Click opens the depth submenu.
+   * Scope row inside «Что сделано». Click opens the depth submenu.
    * @param {HTMLElement} nest
    * @param {'branch' | 'changes'} scope
    * @param {string} label
@@ -3025,7 +3093,7 @@
   }
 
   /**
-   * Depth flyout for «Что делаем?».
+   * Depth flyout for «Что сделано».
    * @param {'branch' | 'changes'} scope
    * @param {string} pageId
    * @param {string} messageId
@@ -3318,7 +3386,7 @@
       );
       const counts = remainingSeverityCounts(parsePillSeverityCounts(chip?.pillLabel), chip);
       if (counts && counts.H + counts.M + counts.L > 0) {
-        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded);
+        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
       }
       scroller.append(
         menuActionChoice(t('menuChangeColor'), {
@@ -3415,7 +3483,7 @@
       );
       const counts = remainingSeverityCounts(parsePillSeverityCounts(reply?.pillLabel), reply);
       if (counts && counts.H + counts.M + counts.L > 0) {
-        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded);
+        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
       }
       scroller.append(
         menuActionChoice(t('menuDelete'), {
@@ -3435,6 +3503,7 @@
         (item) => item.id === messageId && item.isReviewRoot,
       );
       const source = reply || rootChip;
+      const blocked = reviewNeurofixBlocked(messageId);
       const counts = remainingSeverityCounts(
         parsePillSeverityCounts(source?.pillLabel),
         source,
@@ -3457,19 +3526,24 @@
             continue;
           }
           any = true;
-          scroller.append(
-            menuActionChoice(item.label, {
-              neuroFix: item.scope,
-              pageId,
-              messageId,
-            }),
-          );
+          const choice = menuActionChoice(item.label, {
+            neuroFix: item.scope,
+            pageId,
+            messageId,
+          });
+          if (blocked) {
+            muteNeurofixAction(choice);
+          }
+          scroller.append(choice);
         }
         if (any) {
           const listBtn = menuAction(t('neurofixList'));
           listBtn.dataset.menuAction = 'neuroFixList';
           listBtn.dataset.pageId = pageId;
           listBtn.dataset.messageId = messageId;
+          if (blocked) {
+            muteNeurofixAction(listBtn);
+          }
           scroller.append(listBtn);
         }
       }
@@ -3830,6 +3904,12 @@
     const target = event.target instanceof HTMLElement ? event.target : null;
     const button = target?.closest('button');
     if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    if (button.dataset.neurofixBlocked === '1') {
+      event.preventDefault();
+      event.stopPropagation();
+      denyForeignNeurofix();
       return;
     }
     event.stopPropagation();
@@ -7171,6 +7251,51 @@
     return name.toLocaleLowerCase() === current.toLocaleLowerCase();
   }
 
+  /**
+   * Branch this review was written for. A thread reply uses the parent chip
+   * when the reply itself has no `Branch:` line.
+   * @param {string} messageId
+   */
+  function reviewSubjectBranch(messageId) {
+    const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (chip) {
+      return reviewBranchLabel(chip.branch);
+    }
+    const reply = findReviewReply(messageId);
+    const own = reviewBranchLabel(reply && reply.branch);
+    if (own) {
+      return own;
+    }
+    for (const msg of reviewState?.messages || []) {
+      if ((msg.replies || []).some((item) => item.id === messageId)) {
+        return reviewBranchLabel(msg.branch);
+      }
+    }
+    return '';
+  }
+
+  /** Neurofix edits the checkout, so a review of another branch cannot run it. */
+  function reviewNeurofixBlocked(messageId) {
+    const branch = reviewSubjectBranch(messageId);
+    if (!branch) {
+      return false;
+    }
+    return !reviewBranchMatchesCheckout(branch);
+  }
+
+  /** @param {HTMLButtonElement} button */
+  function muteNeurofixAction(button) {
+    button.classList.add('is-muted');
+    button.dataset.neurofixBlocked = '1';
+    button.title = t('neurofixForeignBranch');
+  }
+
+  function denyForeignNeurofix() {
+    closeContextMenu();
+    closeNeuroFixListPanel();
+    vscode.postMessage({ type: 'reviewNeurofixDenied' });
+  }
+
   /** Branch label from a root review. A full markdown link keeps only its text. */
   function reviewBranchLabel(raw) {
     const value = String(raw || '').trim();
@@ -8476,17 +8601,7 @@
         openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
       });
       chipWrap.append(chip);
-      const side = el('button', 'review-side review-neurofix-btn');
-      side.type = 'button';
-      side.title = t('neurofix');
-      side.setAttribute('aria-label', t('neurofix'));
-      side.append(reviewSparkleIcon());
-      side.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openNeuroFixMenu(event.clientX, event.clientY, pageId, msg.id);
-      });
-      chipWrap.append(side);
+      chipWrap.append(reviewNeurofixButton(pageId, msg.id));
 
       const head = el('div', 'review-mr-head');
       head.append(chipWrap);
@@ -8761,17 +8876,7 @@
         openReviewFileView(pageId || '', reply);
       });
       wrap.append(chip);
-      const side = el('button', 'review-side review-neurofix-btn');
-      side.type = 'button';
-      side.title = t('neurofix');
-      side.setAttribute('aria-label', t('neurofix'));
-      side.append(reviewSparkleIcon());
-      side.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openNeuroFixMenu(event.clientX, event.clientY, pageId || '', reply.id);
-      });
-      wrap.append(side);
+      wrap.append(reviewNeurofixButton(pageId || '', reply.id));
       body.append(wrap);
     } else {
       const plain = el('div', 'review-plain is-child');
@@ -9320,11 +9425,32 @@
   }
 
   /**
-   * @param {number} x
-   * @param {number} y
+   * Sparkle beside a review chip. On a foreign branch it stays visible and muted.
    * @param {string} pageId
    * @param {string} messageId
    */
+  function reviewNeurofixButton(pageId, messageId) {
+    const side = el('button', 'review-side review-neurofix-btn');
+    side.type = 'button';
+    const blocked = reviewNeurofixBlocked(messageId);
+    side.title = blocked ? t('neurofixForeignBranch') : t('neurofix');
+    side.setAttribute('aria-label', side.title);
+    if (blocked) {
+      side.classList.add('is-muted');
+    }
+    side.append(reviewSparkleIcon());
+    side.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (reviewNeurofixBlocked(messageId)) {
+        denyForeignNeurofix();
+        return;
+      }
+      openNeuroFixMenu(event.clientX, event.clientY, pageId, messageId);
+    });
+    return side;
+  }
+
   function openNeuroFixMenu(x, y, pageId, messageId) {
     openContextMenu(
       { webviewSection: 'reviewNeurofix', reviewPageId: pageId, reviewMessageId: messageId },
@@ -9341,7 +9467,7 @@
    */
   /**
    * Chip label. Review: `Ревью N | branch|changes | rl|rm|rd | H:n | M:n | L:n`.
-   * Explain: `Что делаем? | branch|changes | rl|rm|rd`. Older explain chips are the title alone.
+   * Explain: `Что сделано | branch|changes | rl|rm|rd`. Older explain chips are the title alone.
    * Severity, scope and depth each get their own color. `rs` and `rl` share the shallow color.
    * @param {HTMLElement} node
    * @param {string} label
@@ -9628,8 +9754,15 @@
           main.className = 'syn3-neurofix-list-item-main';
           main.textContent = `${index + 1}. ${short}`;
           main.title = full;
+          if (reviewNeurofixBlocked(messageId)) {
+            muteNeurofixAction(main);
+          }
           main.addEventListener('click', (event) => {
             event.preventDefault();
+            if (reviewNeurofixBlocked(messageId)) {
+              denyForeignNeurofix();
+              return;
+            }
             closeNeuroFixListPanel();
             beginLocalNeurofixSkeleton(pageId, messageId);
             vscode.postMessage({
@@ -9736,16 +9869,25 @@
       mode,
       pageId,
       parentMessageId: opts?.parentMessageId || '',
+      source: 'mrs',
       currentBranch: '',
       branches: [],
-      nextPage: 1,
-      loading: true,
+      branchesLoaded: false,
+      branchNextPage: undefined,
+      loadingBranches: false,
+      inflightBranches: '',
+      requests: [],
+      requestsLoaded: false,
+      requestNextPage: undefined,
+      loadingMrs: false,
+      inflightRequests: '',
+      resolvingParent: false,
       step: 'branches',
       query: '',
       activeQuery: '',
       pendingSearchFocus: true,
     };
-    requestHostBranches(1);
+    requestHostOpenRequests(1);
   }
 
   /** @param {number} page */
@@ -9754,8 +9896,9 @@
       return;
     }
     const requestId = newBranchRequestId();
-    branchPicker.requestId = requestId;
-    branchPicker.loading = true;
+    branchPicker.inflightBranches = requestId;
+    branchPicker.loadingBranches = true;
+    branchPicker.branchNextPage = undefined;
     renderHostBranchPanel();
     vscode.postMessage({
       type: 'reviewListBranches',
@@ -9765,15 +9908,59 @@
     });
   }
 
+  /** @param {number} page */
+  function requestHostOpenRequests(page) {
+    if (!branchPicker) {
+      return;
+    }
+    const requestId = newBranchRequestId();
+    branchPicker.inflightRequests = requestId;
+    branchPicker.loadingMrs = true;
+    branchPicker.requestNextPage = undefined;
+    renderHostBranchPanel();
+    vscode.postMessage({
+      type: 'reviewListOpenRequests',
+      pageId: branchPicker.pageId,
+      page,
+      requestId,
+    });
+  }
+
+  /** @param {'mrs' | 'branches'} next */
+  function selectBranchPickerSource(next) {
+    if (!branchPicker || branchPicker.step !== 'branches' || branchPicker.source === next) {
+      return;
+    }
+    clearBranchDepthMenu();
+    clearBranchSearchTimer();
+    branchPicker.source = next;
+    branchPicker.query = '';
+    branchPicker.activeQuery = '';
+    branchPicker.pendingSearchFocus = true;
+    if (next === 'mrs') {
+      if (!branchPicker.requestsLoaded && !branchPicker.loadingMrs) {
+        requestHostOpenRequests(1);
+        return;
+      }
+    } else if (!branchPicker.branchesLoaded && !branchPicker.loadingBranches) {
+      requestHostBranches(1);
+      return;
+    }
+    renderHostBranchPanel();
+  }
+
   function requestHostParent(branch) {
     if (!branchPicker) {
       return;
     }
     const requestId = newBranchRequestId();
     branchPicker.requestId = requestId;
-    branchPicker.loading = true;
+    branchPicker.resolvingParent = true;
     branchPicker.step = 'bases';
     branchPicker.selectedBranch = branch;
+    branchPicker.query = '';
+    branchPicker.activeQuery = '';
+    clearBranchSearchTimer();
     renderHostBranchPanel();
     vscode.postMessage({
       type: 'reviewResolveParent',
@@ -9781,6 +9968,24 @@
       branch,
       requestId,
     });
+  }
+
+  /** @param {typeof branchPicker} picker */
+  function pickerShowsRequests(picker) {
+    return !!picker && picker.step !== 'bases' && picker.source === 'mrs';
+  }
+
+  /** @param {NonNullable<typeof branchPicker>} picker */
+  function pickerListLoading(picker) {
+    if (pickerShowsRequests(picker)) {
+      return !!picker.loadingMrs;
+    }
+    return !!picker.loadingBranches || (!!picker.resolvingParent && !picker.branchesLoaded);
+  }
+
+  /** @param {NonNullable<typeof branchPicker>} picker */
+  function pickerListNext(picker) {
+    return pickerShowsRequests(picker) ? picker.requestNextPage : picker.branchNextPage;
   }
 
   /**
@@ -9801,7 +10006,7 @@
       return;
     }
     branchPicker.activeQuery = query;
-    if (branchPicker.nextPage != null && !branchPicker.loading) {
+    if (pickerListNext(branchPicker) != null && !pickerListLoading(branchPicker)) {
       pumpBranchSearch();
       return;
     }
@@ -9810,11 +10015,14 @@
 
   /** Keep loading later pages while a search is active so matches below the input can appear. */
   function pumpBranchSearch() {
-    if (!branchPicker?.activeQuery || branchPicker.loading || branchPicker.nextPage == null) {
+    if (!branchPicker?.activeQuery || pickerListLoading(branchPicker) || pickerListNext(branchPicker) == null) {
       return;
     }
-    const page = branchPicker.nextPage;
-    branchPicker.nextPage = undefined;
+    const page = pickerListNext(branchPicker);
+    if (pickerShowsRequests(branchPicker)) {
+      requestHostOpenRequests(page);
+      return;
+    }
     requestHostBranches(page);
   }
 
@@ -9837,6 +10045,101 @@
       out.push(name);
     }
     return out;
+  }
+
+  /**
+   * @param {unknown} raw
+   */
+  function readOpenRequests(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    const out = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const sourceBranch = typeof item.sourceBranch === 'string' ? item.sourceBranch : '';
+      if (!sourceBranch) {
+        continue;
+      }
+      out.push({
+        title: typeof item.title === 'string' ? item.title : '',
+        sourceBranch,
+        author: typeof item.author === 'string' ? item.author : '',
+        draft: item.draft === true,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * @param {{ sourceBranch: string, title: string, author: string, draft: boolean }} item
+   */
+  function openRequestKey(item) {
+    return [item.sourceBranch, item.title, item.author, item.draft ? '1' : '0'].join('\0');
+  }
+
+  /**
+   * @param {Array<{ sourceBranch: string, title: string, author: string, draft: boolean }>} items
+   * @param {string} hide
+   */
+  function filterPickerRequests(items, hide) {
+    const seen = new Set();
+    const out = [];
+    for (const item of items) {
+      if (!item?.sourceBranch || item.sourceBranch === hide || seen.has(openRequestKey(item))) {
+        continue;
+      }
+      seen.add(openRequestKey(item));
+      out.push(item);
+    }
+    return out;
+  }
+
+  /**
+   * @param {{ title?: string }} item
+   * @param {string} query
+   */
+  function requestTitleMatches(item, query) {
+    return (item.title || '').toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  }
+
+  /**
+   * @param {{ sourceBranch: string, author?: string }} item
+   */
+  function requestMeta(item) {
+    const author = item.author || '';
+    return author ? `${item.sourceBranch} · ${author}` : item.sourceBranch;
+  }
+
+  /**
+   * @param {string} name
+   */
+  function activatePickerBranch(name) {
+    if (!branchPicker || !name) {
+      return;
+    }
+    if (branchPicker.mode === 'pull') {
+      const pageId = branchPicker.pageId;
+      closeHostBranchPanel();
+      beginLocalMrSkeleton(pageId, '…', false);
+      vscode.postMessage({ type: 'reviewPullOther', pageId, branch: name });
+      return;
+    }
+    branchPicker.selectedBranch = name;
+    renderHostBranchPanel();
+    const panelNode = document.getElementById('host-branch-panel');
+    let anchor = null;
+    for (const node of panelNode?.querySelectorAll('[data-branch]') || []) {
+      if (node instanceof HTMLElement && node.dataset.branch === name) {
+        anchor = node;
+        break;
+      }
+    }
+    if (anchor instanceof HTMLElement) {
+      mountBranchPanelDepthMenu(anchor, name);
+    }
   }
 
   function renderHostBranchPanel() {
@@ -9870,13 +10173,41 @@
     head.append(closeBtn);
     panel.append(head);
 
+    const showingRequests = pickerShowsRequests(picker);
+    if (picker.step !== 'bases') {
+      const tabs = el('div', 'host-branch-tabs');
+      tabs.setAttribute('role', 'tablist');
+      const mrKey = data?.reviewProvider === 'github' ? 'branchPanelTabPr' : 'branchPanelTabMr';
+      const mrTab = el('button', 'host-branch-tab', t(mrKey));
+      mrTab.type = 'button';
+      mrTab.setAttribute('role', 'tab');
+      const mrsSelected = picker.source === 'mrs';
+      mrTab.setAttribute('aria-selected', mrsSelected ? 'true' : 'false');
+      if (mrsSelected) {
+        mrTab.classList.add('is-selected');
+      }
+      mrTab.addEventListener('click', () => selectBranchPickerSource('mrs'));
+      const branchTab = el('button', 'host-branch-tab', t('branchPanelTabBranches'));
+      branchTab.type = 'button';
+      branchTab.setAttribute('role', 'tab');
+      const branchesSelected = picker.source === 'branches';
+      branchTab.setAttribute('aria-selected', branchesSelected ? 'true' : 'false');
+      if (branchesSelected) {
+        branchTab.classList.add('is-selected');
+      }
+      branchTab.addEventListener('click', () => selectBranchPickerSource('branches'));
+      tabs.append(mrTab, branchTab);
+      panel.append(tabs);
+    }
+
+    const searchKey = showingRequests ? 'branchPanelSearchMrs' : 'branchPanelSearch';
     const search = document.createElement('input');
     search.className = 'review-mr-title host-branch-search';
     search.type = 'text';
     search.spellcheck = false;
     search.autocomplete = 'off';
-    search.placeholder = t('branchPanelSearch');
-    search.setAttribute('aria-label', t('branchPanelSearch'));
+    search.placeholder = t(searchKey);
+    search.setAttribute('aria-label', t(searchKey));
     search.value = picker.query || '';
     search.addEventListener('input', () => {
       if (!branchPicker) {
@@ -9912,87 +10243,115 @@
 
     const hide =
       picker.step === 'bases' ? picker.selectedBranch || '' : picker.currentBranch || '';
-    let names = filterPickerBranches(picker.branches, hide);
     const activeQuery = (picker.activeQuery || '').trim();
-    if (activeQuery.length >= 3) {
-      names = names.filter((name) => branchNameMatches(name, activeQuery));
-    }
-    if (picker.step === 'bases' && picker.parentBranch && !names.includes(picker.parentBranch)) {
-      names = [picker.parentBranch, ...names];
-    }
+    const loading = pickerListLoading(picker);
 
-    if (picker.loading && names.length === 0) {
-      for (let i = 0; i < 4; i += 1) {
-        list.append(el('div', 'host-branch-skeleton'));
+    if (showingRequests) {
+      let items = filterPickerRequests(picker.requests, picker.currentBranch || '');
+      if (activeQuery.length >= 3) {
+        items = items.filter((item) => requestTitleMatches(item, activeQuery));
       }
-    } else if (!picker.loading && names.length === 0) {
-      list.append(
-        el('div', 'host-branch-empty', t(activeQuery ? 'branchPanelNoMatch' : 'branchPanelEmpty')),
-      );
-    } else {
-      for (const name of names) {
-        const row = el('button', 'host-branch-row');
-        row.type = 'button';
-        row.setAttribute('role', 'option');
-        const label = el('span', 'host-branch-row-label', name);
-        row.append(label);
-        if (picker.step === 'bases' && name === picker.parentBranch) {
-          row.append(el('span', 'host-branch-row-mark', t('branchPanelParentMark')));
-        }
-        if (picker.step === 'bases' && name === picker.selectedBase) {
-          row.classList.add('is-selected');
-          row.setAttribute('aria-selected', 'true');
-        } else if (picker.step === 'branches' && name === picker.selectedBranch) {
-          row.classList.add('is-selected');
-        }
-        row.dataset.branch = name;
-        if (picker.step === 'branches') {
-          row.addEventListener('click', () => {
-            if (picker.mode === 'pull') {
-              const pageId = picker.pageId;
-              closeHostBranchPanel();
-              beginLocalMrSkeleton(pageId, '…', false);
-              vscode.postMessage({ type: 'reviewPullOther', pageId, branch: name });
-              return;
-            }
-            picker.selectedBranch = name;
-            renderHostBranchPanel();
-            const panelNode = document.getElementById('host-branch-panel');
-            let anchor = null;
-            for (const node of panelNode?.querySelectorAll('[data-branch]') || []) {
-              if (node instanceof HTMLElement && node.dataset.branch === name) {
-                anchor = node;
-                break;
-              }
-            }
-            if (anchor instanceof HTMLElement) {
-              mountBranchPanelDepthMenu(anchor, name);
-            }
-          });
-        } else {
-          row.addEventListener('click', () => {
-            picker.selectedBase = name;
-            renderHostBranchPanel();
-          });
-        }
-        list.append(row);
-      }
-      if (picker.loading) {
-        for (let i = 0; i < 2; i += 1) {
+      if (loading && items.length === 0) {
+        for (let i = 0; i < 4; i += 1) {
           list.append(el('div', 'host-branch-skeleton'));
+        }
+      } else if (!loading && items.length === 0) {
+        list.append(
+          el(
+            'div',
+            'host-branch-empty',
+            t(activeQuery ? 'branchPanelMrsNoMatch' : 'branchPanelMrsEmpty'),
+          ),
+        );
+      } else {
+        for (const item of items) {
+          const row = el('button', 'host-branch-row');
+          row.type = 'button';
+          row.setAttribute('role', 'option');
+          const main = el('span', 'host-branch-row-main');
+          main.append(el('span', 'host-branch-row-label', item.title || item.sourceBranch));
+          main.append(el('span', 'host-branch-row-meta', requestMeta(item)));
+          row.append(main);
+          if (item.draft) {
+            row.append(el('span', 'host-branch-row-mark', t('branchPanelDraft')));
+          }
+          if (item.sourceBranch === picker.selectedBranch) {
+            row.classList.add('is-selected');
+          }
+          row.dataset.branch = item.sourceBranch;
+          row.addEventListener('click', () => activatePickerBranch(item.sourceBranch));
+          list.append(row);
+        }
+        if (loading) {
+          for (let i = 0; i < 2; i += 1) {
+            list.append(el('div', 'host-branch-skeleton'));
+          }
+        }
+      }
+    } else {
+      let names = filterPickerBranches(picker.branches, hide);
+      if (activeQuery.length >= 3) {
+        names = names.filter((name) => branchNameMatches(name, activeQuery));
+      }
+      if (picker.step === 'bases' && picker.parentBranch && !names.includes(picker.parentBranch)) {
+        names = [picker.parentBranch, ...names];
+      }
+
+      if (loading && names.length === 0) {
+        for (let i = 0; i < 4; i += 1) {
+          list.append(el('div', 'host-branch-skeleton'));
+        }
+      } else if (!loading && names.length === 0) {
+        list.append(
+          el('div', 'host-branch-empty', t(activeQuery ? 'branchPanelNoMatch' : 'branchPanelEmpty')),
+        );
+      } else {
+        for (const name of names) {
+          const row = el('button', 'host-branch-row');
+          row.type = 'button';
+          row.setAttribute('role', 'option');
+          const label = el('span', 'host-branch-row-label', name);
+          row.append(label);
+          if (picker.step === 'bases' && name === picker.parentBranch) {
+            row.append(el('span', 'host-branch-row-mark', t('branchPanelParentMark')));
+          }
+          if (picker.step === 'bases' && name === picker.selectedBase) {
+            row.classList.add('is-selected');
+            row.setAttribute('aria-selected', 'true');
+          } else if (picker.step === 'branches' && name === picker.selectedBranch) {
+            row.classList.add('is-selected');
+          }
+          row.dataset.branch = name;
+          if (picker.step === 'branches') {
+            row.addEventListener('click', () => activatePickerBranch(name));
+          } else {
+            row.addEventListener('click', () => {
+              picker.selectedBase = name;
+              renderHostBranchPanel();
+            });
+          }
+          list.append(row);
+        }
+        if (loading) {
+          for (let i = 0; i < 2; i += 1) {
+            list.append(el('div', 'host-branch-skeleton'));
+          }
         }
       }
     }
 
     list.addEventListener('scroll', () => {
-      if (!branchPicker || branchPicker.loading || branchPicker.nextPage == null) {
+      if (!branchPicker || pickerListLoading(branchPicker) || pickerListNext(branchPicker) == null) {
         return;
       }
       if (list.scrollTop + list.clientHeight < list.scrollHeight - 40) {
         return;
       }
-      const page = branchPicker.nextPage;
-      branchPicker.nextPage = undefined;
+      const page = pickerListNext(branchPicker);
+      if (pickerShowsRequests(branchPicker)) {
+        requestHostOpenRequests(page);
+        return;
+      }
       requestHostBranches(page);
     });
     panel.append(list);
@@ -10006,7 +10365,7 @@
         t(explainMode ? 'branchPanelStartExplain' : 'branchPanelStart'),
       );
       start.type = 'button';
-      start.disabled = !picker.selectedBase || !picker.selectedDepth || picker.loading;
+      start.disabled = !picker.selectedBase || !picker.selectedDepth || !!picker.resolvingParent || !!picker.loadingBranches;
       start.addEventListener('click', () => {
         if (!branchPicker?.selectedBranch || !branchPicker.selectedBase || !branchPicker.selectedDepth) {
           return;
@@ -10120,9 +10479,11 @@
    * }} message
    */
   function onReviewBranchesMessage(message) {
-    if (!branchPicker || branchPicker.requestId !== message.requestId) {
+    if (!branchPicker || branchPicker.inflightBranches !== message.requestId) {
       return;
     }
+    branchPicker.inflightBranches = '';
+    branchPicker.loadingBranches = false;
     if (!message.ok) {
       closeHostBranchPanel();
       return;
@@ -10138,11 +10499,53 @@
         branchPicker.branches.push(name);
       }
     }
-    branchPicker.nextPage =
+    branchPicker.branchesLoaded = true;
+    branchPicker.branchNextPage =
       typeof message.nextPage === 'number' ? message.nextPage : undefined;
-    branchPicker.loading = false;
     renderHostBranchPanel();
-    if (branchPicker?.activeQuery) {
+    if (branchPicker?.activeQuery && !pickerShowsRequests(branchPicker)) {
+      pumpBranchSearch();
+    }
+  }
+
+  /**
+   * @param {{
+   *   requestId: string,
+   *   ok: boolean,
+   *   requests?: Array<{ title: string, sourceBranch: string, author: string, draft: boolean }>,
+   *   nextPage?: number,
+   *   currentBranch?: string,
+   *   message?: string,
+   * }} message
+   */
+  function onReviewOpenRequestsMessage(message) {
+    if (!branchPicker || branchPicker.inflightRequests !== message.requestId) {
+      return;
+    }
+    branchPicker.inflightRequests = '';
+    branchPicker.loadingMrs = false;
+    if (!message.ok) {
+      closeHostBranchPanel();
+      return;
+    }
+    const incoming = Array.isArray(message.requests) ? message.requests : [];
+    if (typeof message.currentBranch === 'string' && message.currentBranch) {
+      branchPicker.currentBranch = message.currentBranch;
+    }
+    const seen = new Set(branchPicker.requests.map((item) => openRequestKey(item)));
+    for (const item of incoming) {
+      const key = openRequestKey(item);
+      if (!item.sourceBranch || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      branchPicker.requests.push(item);
+    }
+    branchPicker.requestsLoaded = true;
+    branchPicker.requestNextPage =
+      typeof message.nextPage === 'number' ? message.nextPage : undefined;
+    renderHostBranchPanel();
+    if (branchPicker?.activeQuery && pickerShowsRequests(branchPicker)) {
       pumpBranchSearch();
     }
   }
@@ -10168,16 +10571,14 @@
     }
     branchPicker.parentBranch = message.parent;
     branchPicker.selectedBase = message.parent;
-    branchPicker.loading = false;
+    branchPicker.resolvingParent = false;
     branchPicker.step = 'bases';
-    // Load bases from page 1 if the list is empty after hiding the review branch.
-    if (!branchPicker.branches.length) {
-      branchPicker.nextPage = 1;
+    if (!branchPicker.branchesLoaded && !branchPicker.loadingBranches) {
       requestHostBranches(1);
       return;
     }
     renderHostBranchPanel();
-    if (branchPicker?.activeQuery) {
+    if (branchPicker?.activeQuery && !pickerShowsRequests(branchPicker)) {
       pumpBranchSearch();
     }
   }
@@ -13297,6 +13698,7 @@
   }
 
   function paintScenariosPage() {
+    mountScenarioFormPanel();
     const pageId = activePage()?.id || '';
     const cached =
       scenarioState && scenarioState.pageId === pageId
@@ -13461,10 +13863,7 @@
       formBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        const pageId = activePage()?.id;
-        if (pageId) {
-          vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
-        }
+        openScenarioSparkMenu(event.clientX, event.clientY, chip);
       });
       chipWrap.append(formBtn);
     }
@@ -13877,9 +14276,10 @@
       items.push(settingsBtn);
     } else if (!chip.hasFile) {
       const formBtn = menuAction(t('formScenario'));
+      formBtn.disabled = !!scenarioFormBusy;
       formBtn.addEventListener('click', () => {
         closeContextMenu();
-        if (pageId) {
+        if (!formBtn.disabled && pageId) {
           vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
         }
       });
@@ -14171,6 +14571,128 @@
     }
   }
 
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {ScenarioChip | ScenarioChildChip} chip
+   */
+  function openScenarioSparkMenu(x, y, chip) {
+    cancelMenuClose('context');
+    closeToolbarMenus();
+    const pageId = activePage()?.id || '';
+    const formBtn = menuAction(t('formScenario'));
+    formBtn.disabled = !!scenarioFormBusy;
+    formBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (!formBtn.disabled && pageId) {
+        vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
+      }
+    });
+    openMenuState = { kind: 'context', viewExpanded: false, ctx: { scenarioId: chip.id }, x, y };
+    const scroller = ensureMenuChrome(contextMenu).scroller;
+    scroller.replaceChildren(formBtn);
+    updateMenuScrollbar(contextMenu);
+    contextMenu.hidden = false;
+    positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  /**
+   * @param {boolean} cancel
+   */
+  function closeScenarioFormPanel(cancel) {
+    const session = scenarioFormQuestions;
+    scenarioFormQuestions = null;
+    scenarioFormPicks = {};
+    document.querySelectorAll('.scenario-form-panel-backdrop').forEach((node) => node.remove());
+    if (cancel && session) {
+      vscode.postMessage({
+        type: 'scenarioFormCancel',
+        pageId: session.pageId,
+        messageId: session.messageId,
+      });
+    }
+  }
+
+  function mountScenarioFormPanel() {
+    const existing = document.querySelector('.scenario-form-panel-backdrop');
+    const session = scenarioFormQuestions;
+    const page = activePage();
+    if (!session || page?.kind !== 'scenarios' || page.id !== session.pageId) {
+      if (existing) {
+        existing.remove();
+      }
+      return;
+    }
+    if (existing instanceof HTMLElement && existing.dataset.messageId === session.messageId) {
+      return;
+    }
+    if (existing) {
+      existing.remove();
+    }
+    const chip = pageScenarioMessages().find((item) => item.id === session.messageId);
+    const backdrop = el('div', 'link-panel-backdrop scenario-form-panel-backdrop');
+    backdrop.dataset.messageId = session.messageId;
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        closeScenarioFormPanel(true);
+      }
+    });
+    const panel = el('aside', 'link-panel scenario-form-panel');
+    panel.append(el('div', 'review-mr-people-title', chip?.title || t('formScenario')));
+    const questions = Array.isArray(session.questions) ? session.questions : [];
+    for (const question of questions) {
+      const block = el('fieldset', 'scenario-form-q');
+      const legend = el('legend', 'scenario-form-q-prompt', question.prompt || '');
+      block.append(legend);
+      const options = Array.isArray(question.options) ? question.options : [];
+      for (const option of options) {
+        const label = el('label', 'scenario-form-option');
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'scenario-form-' + question.id;
+        input.value = option.id;
+        input.checked = scenarioFormPicks[question.id] === option.id;
+        input.addEventListener('change', () => {
+          if (input.checked) {
+            scenarioFormPicks[question.id] = option.id;
+            syncRun();
+          }
+        });
+        label.append(input, el('span', '', option.label || option.id));
+        block.append(label);
+      }
+      panel.append(block);
+    }
+    const actions = el('div', 'link-panel-actions');
+    const run = el('button', 'link-panel-primary', t('formScenario'));
+    run.type = 'button';
+    const syncRun = () => {
+      run.disabled = questions.some((question) => !scenarioFormPicks[question.id]);
+    };
+    syncRun();
+    run.addEventListener('click', () => {
+      if (run.disabled) {
+        return;
+      }
+      const answers = questions.map((question) => ({
+        id: question.id,
+        optionId: scenarioFormPicks[question.id],
+      }));
+      const pageId = session.pageId;
+      const messageId = session.messageId;
+      closeScenarioFormPanel(false);
+      vscode.postMessage({ type: 'scenarioFormAnswer', pageId, messageId, answers });
+    });
+    actions.append(run);
+    panel.append(actions);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+  }
+
   function mountScenarioGroupPanel() {
     if (!openScenarioGroupPanelId) {
       document.querySelectorAll('.scenario-group-panel-backdrop').forEach((node) => node.remove());
@@ -14438,67 +14960,237 @@
       discordLabel.append(discordInput);
       panel.append(discordLabel);
     }
-    const skillInput = document.createElement('input');
-    skillInput.className = 'review-mr-title';
-    skillInput.value = opts.scenarioSkillPath || '';
-    panel.append(el('label', 'review-mr-field', t('labelScenarioSkillPath')), skillInput);
-    const modelInput = document.createElement('input');
-    modelInput.className = 'review-mr-title';
-    modelInput.value = opts.scenarioModel || '';
-    panel.append(el('label', 'review-mr-field', t('labelScenarioModel')), modelInput);
-    const thinkingLabel = el('label', 'review-mr-field');
-    const thinking = document.createElement('input');
-    thinking.type = 'checkbox';
-    thinking.checked = !!opts.scenarioPrintThinking;
-    thinkingLabel.append(thinking, document.createTextNode(' ' + t('labelScenarioPrintThinking')));
-    panel.append(thinkingLabel);
-    const toolsLabel = el('label', 'review-mr-field');
-    const tools = document.createElement('input');
-    tools.type = 'checkbox';
-    tools.checked = opts.scenarioPrintTools !== false;
-    toolsLabel.append(tools, document.createTextNode(' ' + t('labelScenarioPrintTools')));
-    panel.append(toolsLabel);
+    /**
+     * @param {string} labelKey
+     * @param {string} value
+     * @param {boolean} [model]
+     */
+    function scenarioTextField(labelKey, value, model) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title' + (model ? ' review-model-input' : '');
+      input.type = 'text';
+      input.spellcheck = false;
+      input.value = value;
+      if (model) {
+        input.autocapitalize = 'none';
+        input.autocomplete = 'off';
+        input.placeholder = 'grok-4.7-high-fast';
+        input.addEventListener('input', () => {
+          const next = input.value.toLowerCase();
+          if (next === input.value) {
+            return;
+          }
+          const start = input.selectionStart;
+          const end = input.selectionEnd;
+          input.value = next;
+          if (start !== null && end !== null) {
+            input.setSelectionRange(start, end);
+          }
+        });
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    /**
+     * @param {string} labelKey
+     * @param {boolean} checked
+     */
+    function scenarioFlag(labelKey, checked) {
+      const label = el('label', 'review-terminal-flag');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = checked;
+      label.append(input, el('span', '', t(labelKey)));
+      panel.append(label);
+      return input;
+    }
+
+    const skillInput = scenarioTextField('labelScenarioSkillPath', opts.scenarioSkillPath || '');
+    const modelInput = scenarioTextField('labelScenarioModel', opts.scenarioModel || '', true);
+    const thinking = scenarioFlag('labelScenarioPrintThinking', !!opts.scenarioPrintThinking);
+    const tools = scenarioFlag('labelScenarioPrintTools', opts.scenarioPrintTools !== false);
+
+    const skillIcons = {
+      download:
+        'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z',
+      copy:
+        'M6.99979 7V3C6.99979 2.44772 7.4475 2 7.99979 2H20.9998C21.5521 2 21.9998 2.44772 21.9998 3V16C21.9998 16.5523 21.5521 17 20.9998 17H17V20.9925C17 21.5489 16.551 22 15.9925 22H3.00728C2.45086 22 2 21.5511 2 20.9925L2.00276 8.00748C2.00288 7.45107 2.4518 7 3.01025 7H6.99979ZM8.99979 7H15.9927C16.549 7 17 7.44892 17 8.00748V15H19.9998V4H8.99979V7ZM4.00255 9L4.00021 20H15V9H4.00255Z',
+    };
+    const promptCard = el('div', 'review-doc-card');
+    const promptOpen = el('button', 'review-doc-open', t('scenarioPromptExample'));
+    promptOpen.type = 'button';
+    promptOpen.addEventListener('click', () => {
+      vscode.postMessage({ type: 'scenarioSkillFile', action: 'open' });
+    });
+    const promptIconRow = el('div', 'review-skill-icons');
+    for (const kind of ['download', 'copy']) {
+      const button = el('button', 'review-skill-icon');
+      button.type = 'button';
+      const label = t(kind === 'download' ? 'reviewSkillDownload' : 'reviewSkillCopy');
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('fill', 'currentColor');
+      path.setAttribute('d', skillIcons[kind]);
+      svg.append(path);
+      button.append(svg);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({
+          type: 'scenarioSkillFile',
+          action: kind === 'download' ? 'save' : 'copy',
+        });
+      });
+      promptIconRow.append(button);
+    }
+    promptCard.append(promptOpen, promptIconRow);
+    const promptDocs = el('div', 'review-settings-docs');
+    promptDocs.append(promptCard);
+    const promptCopied = el('p', 'review-skill-copied');
+    promptCopied.id = 'scenario-skill-copied';
+    promptCopied.hidden = true;
+    promptCopied.setAttribute('aria-live', 'polite');
+    panel.append(promptDocs, promptCopied);
+
     const error = el('div', 'review-panel-error');
     error.hidden = true;
     panel.append(error);
-    const actions = el('div', 'review-mr-actions');
-    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => closeScenarioPagePanel());
-    const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
-    submit.type = 'button';
-    submit.addEventListener('click', () => {
+
+    /**
+     * @param {boolean} report
+     */
+    function readScenarioForm(report) {
       const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const fail = (key, input) => {
+        if (report) {
+          error.textContent = t(key);
+          error.hidden = false;
+          input.focus();
+        }
+        return null;
+      };
       if (!name) {
-        nameInput.focus();
-        return;
+        return fail('profileNameEmpty', nameInput);
       }
-      setPanelBusy(panel, true);
+      if (!/^\d{5,}$/.test(channelId)) {
+        return fail(channelId ? 'projectChannelInvalid' : 'projectChannelEmpty', channelInput);
+      }
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
       const discordInput = panel.querySelector('input[type="password"]');
+      return {
+        name,
+        description: clipGroupDescriptionInput(pageDesc.input.value).trim(),
+        channelId,
+        discordToken: discordInput instanceof HTMLInputElement ? discordInput.value.trim() : '',
+        scenarioSkillPath: skillInput.value.trim(),
+        scenarioModel: modelInput.value.trim().toLowerCase(),
+        scenarioPrintThinking: thinking.checked,
+        scenarioPrintTools: tools.checked,
+      };
+    }
+
+    /**
+     * @param {NonNullable<ReturnType<typeof readScenarioForm>>} fields
+     */
+    function postScenarioForm(fields) {
       vscode.postMessage({
         type: 'scenarioSavePage',
         pageId: editing ? opts.pageId : undefined,
-        name,
-        description: pageDesc.input.value.trim() || undefined,
-        channelId: channelInput.value.trim() || undefined,
-        discordToken:
-          discordInput instanceof HTMLInputElement ? discordInput.value.trim() || undefined : undefined,
-        scenarioSkillPath: skillInput.value.trim() || undefined,
-        scenarioModel: modelInput.value.trim() || undefined,
-        scenarioPrintThinking: thinking.checked || undefined,
-        scenarioPrintTools: tools.checked ? undefined : false,
+        name: fields.name,
+        description: fields.description || undefined,
+        channelId: fields.channelId,
+        discordToken: fields.discordToken || undefined,
+        scenarioSkillPath: fields.scenarioSkillPath,
+        scenarioModel: fields.scenarioModel,
+        scenarioPrintThinking: fields.scenarioPrintThinking,
+        scenarioPrintTools: fields.scenarioPrintTools,
       });
+    }
+
+    /** Writes a valid edit form. Reports field errors only when asked. */
+    let flushScenarioEdit = () => {};
+    if (editing) {
+      const initial = readScenarioForm(false);
+      let savedSig = initial ? JSON.stringify(initial) : '';
+      /**
+       * @param {boolean} report
+       */
+      const saveEditing = (report) => {
+        const fields = readScenarioForm(report);
+        if (!fields) {
+          return false;
+        }
+        const sig = JSON.stringify(fields);
+        if (sig !== savedSig) {
+          savedSig = sig;
+          postScenarioForm(fields);
+        }
+        return true;
+      };
+      flushScenarioEdit = () => saveEditing(false);
+      for (const input of [nameInput, pageDesc.input, channelInput, skillInput, modelInput, thinking, tools]) {
+        input.addEventListener('change', () => saveEditing(true));
+      }
+      const discordLive = panel.querySelector('input[type="password"]');
+      if (discordLive instanceof HTMLInputElement) {
+        discordLive.addEventListener('change', () => saveEditing(true));
+      }
+      bindSettingsCommitKey(panel, () => {
+        if (saveEditing(true)) {
+          closeScenarioPagePanel();
+        }
+      });
+    } else {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        closeScenarioPagePanel();
+      });
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      const submitCreate = () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        const fields = readScenarioForm(true);
+        if (!fields) {
+          return;
+        }
+        setPanelBusy(panel, true);
+        postScenarioForm(fields);
+      };
+      submit.addEventListener('click', submitCreate);
+      bindSettingsCommitKey(panel, submitCreate);
+      actions.append(cancel, submit);
+      panel.append(actions);
+    }
+    mountSettingsOverlay(panel, () => {
+      if (panel.classList.contains('is-busy')) {
+        return;
+      }
+      flushScenarioEdit();
+      closeScenarioPagePanel();
     });
-    actions.append(cancel, submit);
-    panel.append(actions);
-    mountSettingsOverlay(panel, closeScenarioPagePanel);
     nameInput.focus();
   }
 
   function closeScenarioPagePanel() {
-    const panel = document.getElementById('scenario-page-panel');
-    panel?.remove();
-    document.querySelector('.settings-overlay-backdrop')?.remove();
+    removeOverlay('scenario-page-panel');
   }
 
   function paintPage() {
@@ -15090,7 +15782,9 @@
         badge.append(icon);
         chip.append(badge);
       }
-      chip.addEventListener('click', (event) => {
+      // draggable chips drop `click` in the webview (a child label is enough).
+      // A still press switches the page; a real drag still reorders.
+      trackPress(chip, (event) => {
         if (pageSkeletonKind() && page.id === uiState.activePageId) {
           event.preventDefault();
           event.stopPropagation();

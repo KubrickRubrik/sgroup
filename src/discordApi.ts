@@ -7,10 +7,10 @@ export const MR_PREFIX = 'MR_SYN3';
 export const DMR_PREFIX = 'DMR_SYN3';
 /** Review message prefix in Discord threads: `R_SYN3: Ревью N | branch | rd | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
-/** Explain («Что делаем?») message prefix: `W_SYN3: Что делаем? | branch | rl`. */
+/** Explain («Что сделано») message prefix: `W_SYN3: Что сделано | branch | rl`. */
 export const EXPLAIN_PREFIX = 'W_SYN3';
-/** Chip and file title for an explain message. */
-export const EXPLAIN_TITLE = 'Что делаем?';
+/** Chip and file title for an explain message. Older Discord lines still say `Что делаем?`. */
+export const EXPLAIN_TITLE = 'Что сделано';
 /** Default chip color for explain messages (Violet). */
 export const EXPLAIN_DEFAULT_COLOR = '#8e4ec6';
 /** Scenario group root message: `GRSCN_SYN3`. */
@@ -1141,16 +1141,17 @@ export function formatReviewDiscordBody(opts: {
 }
 
 /**
- * Discord message for an explain («Что делаем?») file attachment.
+ * Discord message for an explain («Что сделано») file attachment.
  *
  * Channel root or thread reply:
- * W_SYN3: Что делаем? | branch | rl
+ * W_SYN3: Что сделано | branch | rl
  * Branch: name
  * Model: …
  * Skill: …
  * color: #hex
  *
- * Older messages omit scope and depth. Their chip stays `Что делаем?`.
+ * Older messages say `Что делаем?` or omit scope and depth.
+ * The chip always shows `Что сделано`.
  */
 export function formatExplainDiscordBody(opts: {
   model: string;
@@ -1173,7 +1174,8 @@ export function formatExplainDiscordBody(opts: {
   ].join('\n');
 }
 
-const EXPLAIN_PILL_RE = /^Что делаем\?\s*\|\s*(branch|changes?)\s*\|\s*(rs|rl|rm|rd)\s*$/i;
+const EXPLAIN_PILL_RE =
+  /^(?:Что сделано|Что делаем\?)\s*\|\s*(branch|changes?)\s*\|\s*(rs|rl|rm|rd)\s*$/i;
 
 /** Chip label from a W_SYN3 Discord message. */
 export function parseExplainMessagePill(content: string): string | undefined {

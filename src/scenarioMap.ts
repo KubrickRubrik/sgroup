@@ -1,4 +1,3 @@
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { getSecret, SECRET_DISCORD } from './accessStore';
@@ -32,6 +31,7 @@ import {
 import { randomLinkPaletteColor } from './linkPalette';
 import { MarkerStore } from './markerStore';
 import { normalizeHex } from './palette';
+import { runScenarioAsk } from './reviewAgent';
 
 export interface ScenarioChildChip {
   id: string;
@@ -88,6 +88,80 @@ type ScenarioWindow = {
   mdById: Map<string, string>;
 };
 
+function parseScenarioQuestions(text: string): ScenarioFormQuestion[] | undefined {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+  const source = fenced?.[1] ?? text;
+  const start = source.indexOf('{');
+  const end = source.lastIndexOf('}');
+  if (start < 0 || end <= start) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return undefined;
+  }
+  const raw = (parsed as { questions?: unknown }).questions;
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > 3) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const questions: ScenarioFormQuestion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') {
+      return undefined;
+    }
+    const id = typeof (item as { id?: unknown }).id === 'string' ? (item as { id: string }).id.trim() : '';
+    const prompt =
+      typeof (item as { prompt?: unknown }).prompt === 'string'
+        ? (item as { prompt: string }).prompt.trim()
+        : '';
+    const optionsRaw = (item as { options?: unknown }).options;
+    if (!id || !prompt || seen.has(id) || !Array.isArray(optionsRaw) || optionsRaw.length < 2) {
+      return undefined;
+    }
+    seen.add(id);
+    const optionIds = new Set<string>();
+    const options: ScenarioFormOption[] = [];
+    for (const option of optionsRaw) {
+      if (!option || typeof option !== 'object') {
+        return undefined;
+      }
+      const optionId =
+        typeof (option as { id?: unknown }).id === 'string' ? (option as { id: string }).id.trim() : '';
+      const label =
+        typeof (option as { label?: unknown }).label === 'string'
+          ? (option as { label: string }).label.trim()
+          : '';
+      if (!optionId || !label || optionIds.has(optionId)) {
+        return undefined;
+      }
+      optionIds.add(optionId);
+      options.push({ id: optionId, label });
+    }
+    questions.push({ id, prompt, options });
+  }
+  return questions;
+}
+
+/** Markdown from the first heading line. Empty when that slice has no sequence diagram. */
+function scenarioDiagramFromAnswer(text: string): string | undefined {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const idx = lines.findIndex((line) => line.trimStart().startsWith('#'));
+  if (idx < 0) {
+    return undefined;
+  }
+  const md = lines.slice(idx).join('\n').trim();
+  if (!/```\s*mermaid[\s\S]*?sequenceDiagram/i.test(md)) {
+    return undefined;
+  }
+  return md;
+}
+
 function isNoise(msg: DiscordMessage): boolean {
   return isDiscordSystemNotice(msg) || isConfigMessage(msg.content);
 }
@@ -96,12 +170,25 @@ function isThreadStarter(msg: DiscordMessage): boolean {
   return msg.type === THREAD_STARTER_MESSAGE;
 }
 
-/** Quiet window: agent writes arrive as create plus several change events. */
-const SCN_WRITE_SETTLE_MS = 500;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export interface ScenarioFormOption {
+  id: string;
+  label: string;
 }
+
+export interface ScenarioFormQuestion {
+  id: string;
+  prompt: string;
+  options: ScenarioFormOption[];
+}
+
+type ScenarioFormPhase = 'questions' | 'ready' | 'diagram';
+
+type ScenarioFormSession = {
+  pageId: string;
+  messageId: string;
+  phase: ScenarioFormPhase;
+  questions?: ScenarioFormQuestion[];
+};
 
 function mdAttachment(msg: DiscordMessage): { filename: string; url: string } | undefined {
   const files = msg.attachments ?? [];
@@ -179,11 +266,7 @@ function toChip(
 export class ScenarioMapController {
   private channelId = '';
   private readonly windows = new Map<string, ScenarioWindow>();
-  private readonly watchers = new Map<string, vscode.FileSystemWatcher>();
-  private readonly pendingForm = new Map<string, { pageId: string; channelOrThreadId: string }>();
-  private readonly scnSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly scnEpoch = new Map<string, number>();
-  private readonly scnUploading = new Set<string>();
+  private formSession: ScenarioFormSession | null = null;
   private onChange?: (pageId: string, state: ScenarioPageState) => void;
 
   constructor(
@@ -242,14 +325,6 @@ export class ScenarioMapController {
 
   private async discordToken(): Promise<string> {
     return (await getSecret(this.hostSecrets, SECRET_DISCORD)) || '';
-  }
-
-  private scnDir(): string {
-    return path.join(this.cwd(), '.syn3', 'scn');
-  }
-
-  private scnPath(messageId: string): string {
-    return path.join(this.scnDir(), `${messageId}.md`);
   }
 
   async loadInitial(pageId: string): Promise<ScenarioPageState> {
@@ -785,11 +860,11 @@ export class ScenarioMapController {
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
-  /** Open chat with /scenarios and watch `.syn3/scn/<id>.md` for the finished file. */
-  async startForm(
-    pageId: string,
-    messageId: string,
-  ): Promise<{ kind: 'ok' } | { kind: 'error'; message: string }> {
+  /** Reject a second form, a locked group, a chip that already has a file, or an empty skill path. */
+  beginForm(pageId: string, messageId: string): { kind: 'ok' } | { kind: 'error'; message: string } {
+    if (this.formSession) {
+      return { kind: 'error', message: 'Scenario form is already running' };
+    }
     const found = this.findMessage(pageId, messageId);
     if (!found || found.isGroup) {
       return { kind: 'error', message: 'Scenario not found' };
@@ -800,211 +875,190 @@ export class ScenarioMapController {
     if (mdAttachment(found.msg)) {
       return { kind: 'error', message: 'Scenario already has a file' };
     }
-    const paths = this.store.activeScenarioPaths();
-    const title = parseScenarioChip(found.msg.content).title || SCENARIO_DEFAULT_TITLE;
-    const outPath = path.posix.join('.syn3', 'scn', `${messageId}.md`);
-    await fs.mkdir(this.scnDir(), { recursive: true });
-    const prompt = [
-      `/scenarios ${title}`,
-      `Follow the skill at: ${paths.skillPath}`,
-      `Write the finished Markdown only to: ${outPath}`,
-      'Do not write to docs/scenarios.',
-      'Do not put the chip title into the Markdown file.',
-      paths.printThinking
-        ? 'You may print reasoning in chat. Do not put reasoning into the Markdown file.'
-        : 'Do not print reasoning into the Markdown file.',
-      paths.printTools ? 'Tool calls are allowed.' : 'Do not call tools.',
-      paths.model ? `Preferred model: ${paths.model}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-    this.pendingForm.set(messageId, { pageId, channelOrThreadId: found.channelOrThreadId });
-    this.armWatcher(messageId);
-    try {
-      await vscode.commands.executeCommand('workbench.action.chat.open', { query: prompt });
-    } catch {
-      await vscode.env.clipboard.writeText(prompt);
-      void vscode.window.showInformationMessage(
-        'Syn3: prompt copied. Paste it into Agent chat to form the scenario.',
-      );
+    if (!this.store.activeScenarioPaths().skillPath) {
+      return { kind: 'error', message: 'Scenario skill path is not set in the active profile' };
     }
+    this.formSession = { pageId, messageId, phase: 'questions' };
     return { kind: 'ok' };
   }
 
-  private armWatcher(messageId: string): void {
-    if (this.watchers.has(messageId)) {
-      return;
+  /** First agent pass. Returns 2–3 boundary questions, or idle if the session was cancelled. */
+  async askFormQuestions(): Promise<
+    | { kind: 'questions'; pageId: string; messageId: string; questions: ScenarioFormQuestion[] }
+    | { kind: 'error'; message: string }
+    | { kind: 'idle' }
+  > {
+    const session = this.formSession;
+    if (!session || session.phase !== 'questions') {
+      return { kind: 'idle' };
     }
-    const pattern = new vscode.RelativePattern(this.cwd(), `.syn3/scn/${messageId}.md`);
-    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-    const handle = (uri: vscode.Uri) => {
-      this.scheduleScnConsume(messageId, uri.fsPath);
+    const found = this.findMessage(session.pageId, session.messageId);
+    if (!found || found.isGroup) {
+      this.formSession = null;
+      return { kind: 'error', message: 'Scenario not found' };
+    }
+    const paths = this.store.activeScenarioPaths();
+    const title = parseScenarioChip(found.msg.content).title || SCENARIO_DEFAULT_TITLE;
+    const prompt = [
+      `Follow the skill at: ${this.skillAbs()}`,
+      'Pass: questions',
+      `Chip title: ${title}`,
+      'Return only one json block of 2 or 3 boundary questions. Do not write a diagram. Do not write files.',
+    ].join('\n');
+    const agent = await runScenarioAsk({
+      cwd: this.cwd(),
+      prompt,
+      model: paths.model,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
+    });
+    if (this.formSession !== session) {
+      return { kind: 'idle' };
+    }
+    if (!agent.ok) {
+      this.formSession = null;
+      return { kind: 'error', message: agent.message };
+    }
+    const questions = parseScenarioQuestions(agent.answer);
+    if (!questions) {
+      agent.report('В ответе агента нет 2–3 вопросов.', false);
+      this.formSession = null;
+      return { kind: 'error', message: 'В ответе агента нет 2–3 вопросов' };
+    }
+    session.phase = 'ready';
+    session.questions = questions;
+    agent.report('Вопросы получены.', true);
+    return {
+      kind: 'questions',
+      pageId: session.pageId,
+      messageId: session.messageId,
+      questions,
     };
-    watcher.onDidCreate(handle);
-    watcher.onDidChange(handle);
-    this.watchers.set(messageId, watcher);
   }
 
-  /** Each create/change restarts the quiet window so only one settled copy is uploaded. */
-  private scheduleScnConsume(messageId: string, filePath: string): void {
-    if (!this.pendingForm.has(messageId)) {
+  /** Drop the session on a host failure, including a diagram pass that threw. */
+  clearForm(): void {
+    this.formSession = null;
+  }
+
+  /** Drop a session that is still waiting for answers. A running diagram pass stays. */
+  cancelForm(pageId: string, messageId: string): void {
+    const session = this.formSession;
+    if (!session || session.pageId !== pageId || session.messageId !== messageId) {
       return;
     }
-    const epoch = (this.scnEpoch.get(messageId) ?? 0) + 1;
-    this.scnEpoch.set(messageId, epoch);
-    const prev = this.scnSettleTimers.get(messageId);
-    if (prev) {
-      clearTimeout(prev);
+    if (session.phase === 'diagram') {
+      return;
     }
-    const timer = setTimeout(() => {
-      this.scnSettleTimers.delete(messageId);
-      void this.consumeScnFile(messageId, filePath, epoch);
-    }, SCN_WRITE_SETTLE_MS);
-    this.scnSettleTimers.set(messageId, timer);
+    this.formSession = null;
   }
 
-  private isScnEpoch(messageId: string, epoch: number): boolean {
-    return this.scnEpoch.get(messageId) === epoch;
-  }
-
-  private async readScnText(filePath: string): Promise<string | undefined> {
-    try {
-      return await fs.readFile(filePath, 'utf8');
-    } catch {
-      return undefined;
-    }
-  }
-
-  private async readSettledScn(
+  /** Second agent pass. Attaches the diagram markdown and recounts steep. */
+  async answerForm(
+    pageId: string,
     messageId: string,
-    filePath: string,
-    epoch: number,
-  ): Promise<'skip' | 'retry' | { md: string }> {
-    if (!this.isScnEpoch(messageId, epoch) || !this.pendingForm.has(messageId)) {
-      return 'skip';
+    answers: { id: string; optionId: string }[],
+  ): Promise<{ kind: 'ok' } | { kind: 'error'; message: string } | { kind: 'idle' }> {
+    const session = this.formSession;
+    if (
+      !session ||
+      session.pageId !== pageId ||
+      session.messageId !== messageId ||
+      session.phase !== 'ready' ||
+      !session.questions
+    ) {
+      return { kind: 'idle' };
     }
-    const first = await this.readScnText(filePath);
-    if (!this.isScnEpoch(messageId, epoch)) {
-      return 'skip';
+    const pairs: { prompt: string; label: string }[] = [];
+    for (const question of session.questions) {
+      const picked = answers.find((item) => item.id === question.id);
+      const option = question.options.find((item) => item.id === picked?.optionId);
+      if (!option) {
+        this.formSession = null;
+        return { kind: 'error', message: 'Scenario form answer is incomplete' };
+      }
+      pairs.push({ prompt: question.prompt, label: option.label });
     }
-    if (first === undefined || !first.trim() || !/```\s*mermaid/i.test(first)) {
-      return 'skip';
+    session.phase = 'diagram';
+    const found = this.findMessage(pageId, messageId);
+    if (!found || found.isGroup) {
+      this.formSession = null;
+      return { kind: 'error', message: 'Scenario not found' };
     }
-    await delay(SCN_WRITE_SETTLE_MS);
-    if (!this.isScnEpoch(messageId, epoch) || !this.pendingForm.has(messageId)) {
-      return 'skip';
+    const paths = this.store.activeScenarioPaths();
+    const title = parseScenarioChip(found.msg.content).title || SCENARIO_DEFAULT_TITLE;
+    const prompt = [
+      `Follow the skill at: ${this.skillAbs()}`,
+      'Pass: diagram',
+      `Chip title: ${title}`,
+      'Boundaries:',
+      ...pairs.map((pair) => `- ${pair.prompt}: ${pair.label}`),
+      'Answer with the diagram markdown. The first line of the answer starts with #. Do not write files. Do not ask questions.',
+    ].join('\n');
+    const agent = await runScenarioAsk({
+      cwd: this.cwd(),
+      prompt,
+      model: paths.model,
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
+    });
+    if (this.formSession !== session) {
+      return { kind: 'idle' };
     }
-    const second = await this.readScnText(filePath);
-    if (second === undefined) {
-      return 'skip';
+    if (!agent.ok) {
+      this.formSession = null;
+      return { kind: 'error', message: agent.message };
     }
-    if (second !== first) {
-      return 'retry';
+    const md = scenarioDiagramFromAnswer(agent.answer);
+    if (!md) {
+      agent.report('крепить нечего', false);
+      this.formSession = null;
+      return { kind: 'error', message: 'крепить нечего' };
     }
-    return { md: second };
+    const token = await this.discordToken();
+    if (!token) {
+      this.formSession = null;
+      return { kind: 'error', message: 'Discord bot token is missing' };
+    }
+    const latest = this.findMessage(pageId, messageId);
+    if (!latest || latest.isGroup) {
+      this.formSession = null;
+      return { kind: 'error', message: 'Scenario not found' };
+    }
+    const parsed = parseScenarioChip(latest.msg.content);
+    const body = formatScenarioDiscordBody({
+      title: parsed.title || SCENARIO_DEFAULT_TITLE,
+      date: parsed.date,
+      steep: countScenarioSteeps(md),
+      order: parsed.order,
+    });
+    const edited = await editMessageWithAttachment(
+      token,
+      latest.channelOrThreadId,
+      messageId,
+      body,
+      `${messageId}.md`,
+      Buffer.from(md, 'utf8'),
+    );
+    if (!edited.ok) {
+      agent.report(edited.message, false);
+      this.formSession = null;
+      return { kind: 'error', message: edited.message };
+    }
+    this.replaceMessage(pageId, latest, edited.value);
+    this.windows.get(pageId)?.mdById.set(messageId, md);
+    this.formSession = null;
+    agent.report('Схема прикреплена к сообщению.', true);
+    this.emit(pageId);
+    return { kind: 'ok' };
   }
 
-  private releaseScnWatcher(messageId: string): void {
-    const timer = this.scnSettleTimers.get(messageId);
-    if (timer) {
-      clearTimeout(timer);
+  private skillAbs(): string {
+    const skillPath = this.store.activeScenarioPaths().skillPath;
+    if (!skillPath) {
+      return '';
     }
-    this.scnSettleTimers.delete(messageId);
-    this.scnEpoch.delete(messageId);
-    this.watchers.get(messageId)?.dispose();
-    this.watchers.delete(messageId);
-  }
-
-  private async consumeScnFile(messageId: string, filePath: string, epoch: number): Promise<void> {
-    const pending = this.pendingForm.get(messageId);
-    if (!pending || !this.isScnEpoch(messageId, epoch)) {
-      return;
-    }
-    if (this.scnUploading.has(messageId)) {
-      if (!this.scnSettleTimers.has(messageId) && this.watchers.has(messageId)) {
-        this.scheduleScnConsume(messageId, filePath);
-      }
-      return;
-    }
-    const settled = await this.readSettledScn(messageId, filePath, epoch);
-    if (settled === 'skip') {
-      return;
-    }
-    if (settled === 'retry') {
-      this.scheduleScnConsume(messageId, filePath);
-      return;
-    }
-    if (this.scnUploading.has(messageId) || !this.isScnEpoch(messageId, epoch)) {
-      if (
-        !this.scnSettleTimers.has(messageId) &&
-        this.pendingForm.has(messageId) &&
-        this.watchers.has(messageId)
-      ) {
-        this.scheduleScnConsume(messageId, filePath);
-      }
-      return;
-    }
-    this.scnUploading.add(messageId);
-    try {
-      const still = this.pendingForm.get(messageId);
-      if (!still || !this.isScnEpoch(messageId, epoch)) {
-        return;
-      }
-      const token = await this.discordToken();
-      if (!token) {
-        return;
-      }
-      const found = this.findMessage(still.pageId, messageId);
-      if (!found) {
-        return;
-      }
-      const parsed = parseScenarioChip(found.msg.content);
-      const body = formatScenarioDiscordBody({
-        title: parsed.title || SCENARIO_DEFAULT_TITLE,
-        date: parsed.date,
-        steep: countScenarioSteeps(settled.md),
-        order: parsed.order,
-      });
-      const edited = await editMessageWithAttachment(
-        token,
-        found.channelOrThreadId,
-        messageId,
-        body,
-        path.basename(filePath),
-        Buffer.from(settled.md, 'utf8'),
-      );
-      if (!edited.ok) {
-        void vscode.window.showErrorMessage(`Syn3: ${edited.message}`);
-        return;
-      }
-      if (!this.isScnEpoch(messageId, epoch) || !this.pendingForm.has(messageId)) {
-        if (
-          !this.scnSettleTimers.has(messageId) &&
-          this.pendingForm.has(messageId) &&
-          this.watchers.has(messageId)
-        ) {
-          this.scheduleScnConsume(messageId, filePath);
-        }
-        return;
-      }
-      const latest = await this.readScnText(filePath);
-      if (latest !== settled.md) {
-        this.scheduleScnConsume(messageId, filePath);
-        return;
-      }
-      this.replaceMessage(still.pageId, found, edited.value);
-      this.windows.get(still.pageId)?.mdById.set(messageId, settled.md);
-      this.pendingForm.delete(messageId);
-      this.releaseScnWatcher(messageId);
-      try {
-        await fs.unlink(filePath);
-      } catch {
-        // Already gone.
-      }
-      this.emit(still.pageId);
-    } finally {
-      this.scnUploading.delete(messageId);
-    }
+    return path.isAbsolute(skillPath) ? skillPath : path.join(this.cwd(), skillPath);
   }
 
   private findMessage(
@@ -1087,15 +1141,6 @@ export class ScenarioMapController {
   }
 
   dispose(): void {
-    for (const timer of this.scnSettleTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.scnSettleTimers.clear();
-    this.scnEpoch.clear();
-    this.scnUploading.clear();
-    for (const watcher of this.watchers.values()) {
-      watcher.dispose();
-    }
-    this.watchers.clear();
+    this.formSession = null;
   }
 }

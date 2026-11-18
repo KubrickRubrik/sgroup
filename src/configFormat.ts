@@ -132,7 +132,7 @@ export interface ProjectProfileEntry {
   reviewSkillPath?: string;
   /** Absolute or workspace-relative path to the Neurofix skill. */
   reviewFixSkillPath?: string;
-  /** Absolute or workspace-relative path to the «Что делаем?» skill. */
+  /** Absolute or workspace-relative path to the «Что сделано» skill. */
   explainSkillPath?: string;
   reviewDirPath?: string;
   reviewModel?: string;

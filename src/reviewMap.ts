@@ -73,6 +73,7 @@ import {
   findGitlabParentBranch,
   findOpenMrByBranch,
   listGitlabBranches,
+  listGitlabOpenMrs,
   updateMergeRequest,
   type HostCompare,
 } from './gitlabApi';
@@ -83,12 +84,14 @@ import {
   findGithubParentBranch,
   findOpenPrByBranch,
   listGithubBranches,
+  listGithubOpenPrs,
   updatePullRequest,
 } from './githubApi';
 import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
 import { normalizeHex } from './palette';
 import {
   detectProviderFromRepoUrl,
+  type HostOpenRequest,
   providerMatchesRepo,
   ReviewHostProvider,
   ReviewMr,
@@ -125,7 +128,7 @@ export interface ReviewThreadMsg {
   author?: string;
   timestamp: string;
   isReview: boolean;
-  /** Thread reply W_SYN3 («Что делаем?»). */
+  /** Thread reply W_SYN3 («Что сделано»). */
   isExplain?: boolean;
   /** True when attachment parsed to a review pill with H/M/S. */
   isPill?: boolean;
@@ -153,7 +156,7 @@ export interface ReviewChip {
   isMr: boolean;
   /** Channel-root R_SYN3 (no MR). */
   isReviewRoot?: boolean;
-  /** Channel-root W_SYN3 («Что делаем?»). */
+  /** Channel-root W_SYN3 («Что сделано»). */
   isExplainRoot?: boolean;
   webUrl?: string;
   title?: string;
@@ -583,7 +586,7 @@ export type ReviewProfilePaths = {
   skillPath: string;
   /** Path to the Neurofix skill. Empty → fix runs without a skill file. */
   fixSkillPath: string;
-  /** Path to the «Что делаем?» skill. Empty → explain will not start. */
+  /** Path to the «Что сделано» skill. Empty → explain will not start. */
   explainSkillPath: string;
   dirPath: string;
   model: string;
@@ -2142,6 +2145,46 @@ export class ReviewMapController {
     return { kind: 'ready', access, branch: branchName, mr: existing.value };
   }
 
+  /** One page of open MR/PR rows for the branch picker panel. */
+  async listHostOpenRequests(
+    pageId: string,
+    page = 1,
+  ): Promise<
+    | {
+        kind: 'ok';
+        requests: HostOpenRequest[];
+        nextPage: number | undefined;
+        currentBranch: string;
+        provider: ReviewHostProvider;
+      }
+    | { kind: 'error'; message: string }
+  > {
+    const access = await this.getAccess(pageId);
+    if (!access) {
+      return { kind: 'error', message: 'Review page access is not configured' };
+    }
+    const host = await this.hostToken(access.provider);
+    if (!host) {
+      const label = access.provider === 'github' ? 'GitHub' : 'GitLab';
+      return { kind: 'error', message: `${label} token is missing` };
+    }
+    const listed =
+      access.provider === 'github'
+        ? await listGithubOpenPrs(access.repoUrl, host, page)
+        : await listGitlabOpenMrs(access.repoUrl, host, page);
+    if (!listed.ok) {
+      return { kind: 'error', message: listed.message };
+    }
+    const current = await currentBranch(this.cwd());
+    return {
+      kind: 'ok',
+      requests: listed.value.requests,
+      nextPage: listed.value.nextPage,
+      currentBranch: current.ok ? current.value : '',
+      provider: access.provider,
+    };
+  }
+
   /** One page of host branches for the branch picker panel. */
   async listHostBranches(
     pageId: string,
@@ -2880,12 +2923,53 @@ export class ReviewMapController {
    * Indexes land in `fixes:` and `bullet:` after the worktree changes
    * or the agent prints `SYN3_NEUROFIX_OK`.
    */
+  /**
+   * True when this review belongs to a branch other than the checkout.
+   * Neurofix writes the working copy, so it stays on the checked-out branch.
+   * A review with no branch line is not treated as foreign.
+   */
+  async neurofixNeedsCheckout(pageId: string, messageId: string): Promise<boolean> {
+    const win = this.windows.get(pageId);
+    if (!win) {
+      return false;
+    }
+    const branch = this.reviewSubjectBranch(win, messageId);
+    if (!branch) {
+      return false;
+    }
+    const checkout = await currentBranch(this.cwd());
+    if (!checkout.ok) {
+      return true;
+    }
+    return branch.toLocaleLowerCase() !== checkout.value.trim().toLocaleLowerCase();
+  }
+
+  /** Branch the review was made for: its own `Branch:` line, or the parent chip's. */
+  private reviewSubjectBranch(win: ReviewWindow, messageId: string): string | undefined {
+    const located = this.findReviewMessage(win, messageId);
+    if (!located) {
+      return undefined;
+    }
+    const own = parseReviewBranch(located.found.content);
+    if (own) {
+      return own;
+    }
+    if (located.kind !== 'thread') {
+      return undefined;
+    }
+    const parent = win.messages.find((item) => item.thread?.id === located.channelId);
+    return parent ? parseReviewBranch(parent.content) : undefined;
+  }
+
   async runNeuroFix(
     pageId: string,
     messageId: string,
     scope: NeuroFixScope,
     itemIndex?: number,
   ): Promise<{ ok: true; state: ReviewPageState } | { ok: false; message: string; discord?: boolean }> {
+    if (await this.neurofixNeedsCheckout(pageId, messageId)) {
+      return { ok: false, message: 'neurofixForeignBranch', discord: true };
+    }
     const paths = this.profilePaths();
     const fail = async (message: string) => {
       await runNeuroFixSkill({ cwd: this.cwd(), model: paths.fixModel, prompt: '', failMessage: message });
@@ -3693,7 +3777,7 @@ export class ReviewMapController {
   }
 
   /**
-   * Start «Что делаем?» under an MR or root-review chip.
+   * Start «Что сделано» under an MR or root-review chip.
    * Posts into that parent's thread.
    */
   async startOrSendExplain(
@@ -3832,7 +3916,7 @@ export class ReviewMapController {
     }
   }
 
-  /** Root «Что делаем?» on the current checkout (Create menu). */
+  /** Root «Что сделано» on the current checkout (Create menu). */
   async startRootExplain(
     pageId: string,
     kind: ReviewKind,

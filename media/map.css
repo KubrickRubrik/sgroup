@@ -312,6 +312,13 @@ html::-webkit-scrollbar {
   white-space: nowrap;
 }
 
+.syn3-neurofix-list-item-main.is-muted,
+.syn3-neurofix-list-item-main.is-muted:hover {
+  color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground, #8b8b8b));
+  cursor: default;
+  opacity: 0.38;
+}
+
 .syn3-neurofix-list-open {
   align-items: center;
   background: transparent;
@@ -4251,6 +4258,30 @@ button.review-neurofix-btn:hover {
   opacity: 1;
 }
 
+button.review-neurofix-btn.is-muted,
+button.review-neurofix-btn.is-muted:hover {
+  color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground, #8b8b8b));
+  cursor: default;
+  opacity: 0.38;
+}
+
+.syn3-menu-item.is-muted {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.syn3-menu-item.is-muted:hover {
+  background: transparent;
+}
+
+.syn3-menu-item.is-muted[data-menu-action='toggleNeuroFix'] {
+  cursor: pointer;
+}
+
+.syn3-menu-item.is-muted[data-menu-action='toggleNeuroFix']:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
 .review-ico {
   display: block;
   flex: 0 0 auto;
@@ -5018,6 +5049,33 @@ button.review-neurofix-btn:hover {
   font-size: 0.9em;
 }
 
+.host-branch-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.host-branch-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  flex: 1 1 0;
+  font: inherit;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.host-branch-tab:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+  color: inherit;
+}
+
+.host-branch-tab.is-selected {
+  background: var(--vscode-list-activeSelectionBackground, rgba(127, 127, 127, 0.2));
+  color: inherit;
+}
+
 .host-branch-search {
   width: 100%;
 }
@@ -5055,7 +5113,25 @@ button.review-neurofix-btn:hover {
   border-color: var(--vscode-focusBorder, transparent);
 }
 
+.host-branch-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .host-branch-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-branch-row-meta {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5957,6 +6033,35 @@ button.review-doc-card:hover {
 
 .scenario-form-btn:hover {
   color: var(--vscode-textLink-activeForeground, #4ec9b0);
+}
+
+.scenario-form-panel {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.scenario-form-q {
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.scenario-form-q-prompt {
+  font-weight: 600;
+  padding: 0;
+}
+
+.scenario-form-option {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.scenario-form-option span {
+  min-width: 0;
 }
 
 .scenario-rename-input {

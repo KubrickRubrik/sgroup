@@ -208,7 +208,7 @@ export interface StyleProfile {
   reviewSkillPath?: string;
   /** Absolute or workspace-relative path to the Neurofix skill. */
   reviewFixSkillPath?: string;
-  /** Absolute or workspace-relative path to the «Что делаем?» skill. */
+  /** Absolute or workspace-relative path to the «Что сделано» skill. */
   explainSkillPath?: string;
   /** Absolute or workspace-relative directory for temporary review files. */
   reviewDirPath?: string;
@@ -260,7 +260,7 @@ export interface Appearance {
   fontFolder: number;
   /** File row scale. */
   fontFile: number;
-  /** Review panel and «Что делаем» body scale. */
+  /** Review panel and «Что сделано» body scale. */
   fontReview: number;
   /** Multiplier applied to the map font scales and the review panel. */
   fontScale: number;
@@ -1724,7 +1724,7 @@ export class MarkerStore implements vscode.Disposable {
       this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
     const skillPath = (profile?.scenarioSkillPath ?? '').trim();
     return {
-      skillPath: skillPath || '.cursor/skills/scenarios',
+      skillPath,
       model: (profile?.scenarioModel ?? '').trim().toLowerCase(),
       printThinking: profile?.scenarioPrintThinking === true,
       printTools: profile?.scenarioPrintTools !== false,

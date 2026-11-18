@@ -1,5 +1,5 @@
 import { normalizeRepoUrl } from './accessStore';
-import { ReviewMr } from './reviewHost';
+import { hostOpenRequest, ReviewMr, type HostOpenRequestPage } from './reviewHost';
 
 /** @deprecated Prefer ReviewMr — kept as alias for call sites. */
 export type GitlabMr = ReviewMr;
@@ -292,6 +292,33 @@ export type HostCompare = {
   commitLog: string;
   diffText: string;
 };
+
+/** One page of open merge requests, newest update first. Drafts stay in `state=opened`. */
+export async function listGitlabOpenMrs(
+  repoUrl: string,
+  token: string,
+  page = 1,
+  perPage = 30,
+): Promise<GitlabResult<HostOpenRequestPage>> {
+  const loc = hostAndProject(repoUrl);
+  if (!loc) {
+    return { ok: false, message: 'Invalid GitLab repository URL' };
+  }
+  const route =
+    `/projects/${encodePath(loc.projectPath)}/merge_requests` +
+    `?state=opened&order_by=updated_at&sort=desc&page=${page}&per_page=${perPage}`;
+  const result = await gitlabFetchRaw(loc.host, token, 'GET', route);
+  if (!result.ok) {
+    return result;
+  }
+  const requests = Array.isArray(result.value.body)
+    ? result.value.body.flatMap((item) => {
+        const mr = asMr(item);
+        return mr ? [hostOpenRequest(mr)] : [];
+      })
+    : [];
+  return { ok: true, value: { requests, nextPage: result.value.nextPage } };
+}
 
 /** One page of repository branches, newest commit first (`updated_desc`). */
 export async function listGitlabBranches(

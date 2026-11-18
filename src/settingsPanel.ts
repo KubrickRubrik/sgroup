@@ -1348,7 +1348,7 @@ export class SettingsPanel implements vscode.Disposable {
         </span>
       </div>
       <div class="row text-row">
-        <label for="explainSkillPath" data-i18n="labelExplainSkillPath">«What are we doing?» skill path</label>
+        <label for="explainSkillPath" data-i18n="labelExplainSkillPath">«What was done» skill path</label>
         <span class="path-field">
           <input id="explainSkillPath" type="text" spellcheck="false">
           <button type="button" id="browse-explain-skill" class="path-browse" data-i18n-aria="browseProject" data-i18n-title="browseProject">…</button>

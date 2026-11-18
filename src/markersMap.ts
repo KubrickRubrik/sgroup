@@ -453,6 +453,12 @@ type IncomingMessage =
       requestId: string;
     }
   | {
+      type: 'reviewListOpenRequests';
+      pageId: string;
+      page?: number;
+      requestId: string;
+    }
+  | {
       type: 'reviewResolveParent';
       pageId: string;
       branch: string;
@@ -552,6 +558,7 @@ type IncomingMessage =
       scope: string;
       itemIndex?: number;
     }
+  | { type: 'reviewNeurofixDenied' }
   | { type: 'listProjectDir'; seq: number; rel?: string }
   | {
       type: 'discordGateSave';
@@ -575,6 +582,7 @@ type IncomingMessage =
       scenarioPrintThinking?: boolean;
       scenarioPrintTools?: boolean;
     }
+  | { type: 'scenarioSkillFile'; action: 'open' | 'copy' | 'save' }
   | { type: 'scenarioCreate'; pageId: string; groupId?: string }
   | { type: 'scenarioCreateGroup'; pageId: string }
   | { type: 'scenarioRename'; pageId: string; messageId: string; title: string }
@@ -598,6 +606,13 @@ type IncomingMessage =
       copy?: boolean;
     }
   | { type: 'scenarioForm'; pageId: string; messageId: string }
+  | {
+      type: 'scenarioFormAnswer';
+      pageId: string;
+      messageId: string;
+      answers: { id: string; optionId: string }[];
+    }
+  | { type: 'scenarioFormCancel'; pageId: string; messageId: string }
   | { type: 'scenarioReload'; pageId: string };
 
 interface DirListingEntry {
@@ -3086,6 +3101,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    if (message.type === 'reviewListOpenRequests') {
+      const result = await this.review.listHostOpenRequests(
+        message.pageId,
+        typeof message.page === 'number' ? message.page : 1,
+      );
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
+      await webview.postMessage({
+        type: 'reviewOpenRequests',
+        requestId: message.requestId,
+        ok: result.kind === 'ok',
+        requests: result.kind === 'ok' ? result.requests : [],
+        nextPage: result.kind === 'ok' ? result.nextPage : undefined,
+        currentBranch: result.kind === 'ok' ? result.currentBranch : '',
+        provider: result.kind === 'ok' ? result.provider : undefined,
+        message: result.kind === 'error' ? result.message : undefined,
+      });
+      return;
+    }
     if (message.type === 'reviewResolveParent') {
       const result = await this.review.resolveHostParent(message.pageId, message.branch);
       if (result.kind === 'error') {
@@ -3289,6 +3324,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.createOrSaveScenarioPage(webview, message);
       return;
     }
+    if (message.type === 'scenarioSkillFile') {
+      await this.onScenarioSkillFile(webview, message.action);
+      return;
+    }
     if (message.type === 'scenarioCreate') {
       const result = await this.scenarios.createScenario(message.pageId, message.groupId);
       if (result.kind === 'error') {
@@ -3360,10 +3399,56 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'scenarioForm') {
-      const result = await this.scenarios.startForm(message.pageId, message.messageId);
-      if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      const begun = this.scenarios.beginForm(message.pageId, message.messageId);
+      if (begun.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${begun.message}`);
+        return;
       }
+      try {
+        await webview.postMessage({
+          type: 'scenarioFormBusy',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
+        const asked = await this.scenarios.askFormQuestions();
+        if (asked.kind === 'questions') {
+          await webview.postMessage({
+            type: 'scenarioQuestions',
+            pageId: asked.pageId,
+            messageId: asked.messageId,
+            questions: asked.questions,
+          });
+          return;
+        }
+        if (asked.kind === 'error') {
+          void vscode.window.showErrorMessage(`Syn3: ${asked.message}`);
+        }
+      } catch (error) {
+        this.scenarios.clearForm();
+        const text = error instanceof Error ? error.message : String(error);
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      }
+      await webview.postMessage({ type: 'scenarioFormIdle' });
+      return;
+    }
+    if (message.type === 'scenarioFormCancel') {
+      this.scenarios.cancelForm(message.pageId, message.messageId);
+      await webview.postMessage({ type: 'scenarioFormIdle' });
+      return;
+    }
+    if (message.type === 'scenarioFormAnswer') {
+      const answers = Array.isArray(message.answers) ? message.answers : [];
+      try {
+        const result = await this.scenarios.answerForm(message.pageId, message.messageId, answers);
+        if (result.kind === 'error') {
+          void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        }
+      } catch (error) {
+        this.scenarios.clearForm();
+        const text = error instanceof Error ? error.message : String(error);
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      }
+      await webview.postMessage({ type: 'scenarioFormIdle' });
       return;
     }
     if (message.type === 'scenarioReload') {
@@ -3399,6 +3484,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    if (message.type === 'reviewNeurofixDenied') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'neurofixForeignBranch')}`);
+      return;
+    }
     if (message.type === 'reviewNeurofix') {
       const scope = normalizeNeuroFixScope(message.scope);
       const itemIndex =
@@ -3412,6 +3502,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           messageId: message.messageId,
         });
       if (!scope || (itemIndex !== undefined && scope === 'all')) {
+        await idle();
+        return;
+      }
+      if (await this.review.neurofixNeedsCheckout(message.pageId, message.messageId)) {
+        const locale = normalizeLocale(this.store.appearance.language);
+        void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'neurofixForeignBranch')}`);
         await idle();
         return;
       }
@@ -3441,7 +3537,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       );
       if (result.kind === 'error') {
         if (result.discord) {
-          void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+          const locale = normalizeLocale(this.store.appearance.language);
+          const text =
+            result.message === 'neurofixForeignBranch'
+              ? t(locale, 'neurofixForeignBranch')
+              : result.message;
+          void vscode.window.showErrorMessage(`Syn3: ${text}`);
         }
         return;
       }
@@ -4189,9 +4290,64 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
   }
 
+  private scenarioSkillUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.extensionUri, '.cursor', 'skills', 'scenarios', 'SKILL.md');
+  }
+
+  private async readScenarioSkill(): Promise<string | undefined> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this.scenarioSkillUri());
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      const locale = normalizeLocale(this.store.appearance.language);
+      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
+      return undefined;
+    }
+  }
+
+  private async onScenarioSkillFile(
+    webview: vscode.Webview,
+    action: 'open' | 'copy' | 'save',
+  ): Promise<void> {
+    if (action !== 'open' && action !== 'copy' && action !== 'save') {
+      return;
+    }
+    if (action === 'open') {
+      await this.openInstruction('scenarios/SKILL.md', this.scenarioSkillUri());
+      return;
+    }
+    const text = await this.readScenarioSkill();
+    if (text === undefined) {
+      return;
+    }
+    if (action === 'copy') {
+      await vscode.env.clipboard.writeText(text);
+      await webview.postMessage({ type: 'scenarioSkillCopied' });
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const defaultUri = folder
+      ? vscode.Uri.joinPath(folder, '.cursor', 'skills', 'scenarios', 'SKILL.md')
+      : vscode.Uri.file('SKILL.md');
+    const locale = normalizeLocale(this.store.appearance.language);
+    const target = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { Markdown: ['md'] },
+      saveLabel: t(locale, 'reviewSkillDownload'),
+    });
+    if (!target) {
+      return;
+    }
+    const slash = target.path.lastIndexOf('/');
+    if (slash > 0) {
+      await vscode.workspace.fs.createDirectory(target.with({ path: target.path.slice(0, slash) }));
+    }
+    await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
+  }
+
   /** Opens a docs markdown file as a rendered page in an editor tab, outside the map column. */
-  private async openInstruction(fileName: string): Promise<void> {
-    const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
+  private async openInstruction(fileName: string, source?: vscode.Uri): Promise<void> {
+    const uri = source ?? vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
     const column = this.instructionColumn();
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
@@ -5918,11 +6074,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       scenarioPrintTools: message.scenarioPrintTools,
     });
     if (message.pageId) {
-      await this.store.setPageMeta(message.pageId, name, message.description || '');
-      await this.store.setCatalogChannels({ scenarios: channelId });
-      this.scenarios.bindChannel(channelId);
-      await webview.postMessage({ type: 'scenarioPageDone' });
-      await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
+      const page = this.store.page(message.pageId);
+      const nextDesc = message.description || '';
+      if ((page?.name || '') !== name || (page?.description || '') !== nextDesc) {
+        await this.store.setPageMeta(message.pageId, name, nextDesc);
+      }
+      const prevChannel = (this.store.catalogChannels().scenarios || '').trim();
+      if (prevChannel !== channelId) {
+        await this.store.setCatalogChannels({ scenarios: channelId });
+        this.scenarios.bindChannel(channelId);
+        await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
+      }
       return;
     }
     if (this.store.pages().length >= MAX_PAGES || this.store.hasPageKind('scenarios')) {
