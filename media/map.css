@@ -37,6 +37,83 @@ html::-webkit-scrollbar {
   width: 4px;
 }
 
+/* Panels and lists: native bar hidden, 4px overlay from bindThinScroll. */
+.syn3-thin-scroll,
+.host-branch-list,
+.review-create-page-panel,
+.profile-settings-panel,
+.discord-gate-panel,
+.project-create-panel,
+.review-mr-people,
+.review-file-body,
+.review-path-nav-list,
+.link-panel,
+.color-panel,
+.dir-popover-list,
+.toolbar-profile-list,
+.syn3-neurofix-list,
+.debug-column pre,
+.debug-diff-scroll,
+textarea.review-mr-title,
+.note-input .note-code {
+  scrollbar-width: none;
+}
+
+.syn3-thin-scroll::-webkit-scrollbar,
+.host-branch-list::-webkit-scrollbar,
+.review-create-page-panel::-webkit-scrollbar,
+.profile-settings-panel::-webkit-scrollbar,
+.discord-gate-panel::-webkit-scrollbar,
+.project-create-panel::-webkit-scrollbar,
+.review-mr-people::-webkit-scrollbar,
+.review-file-body::-webkit-scrollbar,
+.review-path-nav-list::-webkit-scrollbar,
+.link-panel::-webkit-scrollbar,
+.color-panel::-webkit-scrollbar,
+.dir-popover-list::-webkit-scrollbar,
+.toolbar-profile-list::-webkit-scrollbar,
+.syn3-neurofix-list::-webkit-scrollbar,
+.debug-column pre::-webkit-scrollbar,
+.debug-diff-scroll::-webkit-scrollbar,
+textarea.review-mr-title::-webkit-scrollbar,
+.note-input .note-code::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+.syn3-overlay-scroll {
+  pointer-events: none;
+  position: fixed;
+  width: 4px;
+  z-index: 40;
+}
+
+.syn3-overlay-scroll[hidden] {
+  display: none;
+}
+
+.syn3-overlay-scroll-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.55));
+  border-radius: 2px;
+  position: absolute;
+  right: 0;
+  width: 4px;
+}
+
+.syn3-overlay-scroll.is-x {
+  height: 4px;
+  width: auto;
+}
+
+.syn3-overlay-scroll.is-x .syn3-overlay-scroll-thumb {
+  bottom: 0;
+  height: 4px;
+  right: auto;
+  top: 0;
+  width: auto;
+}
+
 *,
 *::before,
 *::after {
@@ -268,6 +345,44 @@ html::-webkit-scrollbar {
   font-size: 11px;
   letter-spacing: 0.02em;
   padding: 4px 12px 6px;
+}
+
+.syn3-neurofix-list-hint {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 0 12px 6px;
+}
+
+.syn3-neurofix-list-item.is-selected {
+  background: var(--vscode-list-activeSelectionBackground, rgba(255, 255, 255, 0.08));
+}
+
+.syn3-neurofix-list-launch {
+  align-self: stretch;
+  background: var(--vscode-button-background, #0e639c);
+  border: 0;
+  border-radius: 4px;
+  box-shadow: 0 0 0 8px var(--vscode-menu-background, var(--vscode-sideBar-background, #252526));
+  color: var(--vscode-button-foreground, #fff);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  margin: 8px 8px 2px;
+  padding: 7px 12px;
+  position: sticky;
+  bottom: 6px;
+  text-align: center;
+  z-index: 1;
+}
+
+.syn3-neurofix-list-launch:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.syn3-neurofix-list-launch:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 1px;
 }
 
 .syn3-neurofix-list-group {
@@ -4028,23 +4143,100 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   align-items: center;
   color: var(--vscode-descriptionForeground);
   display: flex;
+  flex: 0 0 12px;
   font-size: 10px;
-  gap: 8px;
-  line-height: 1.2;
+  gap: 0;
+  height: 12px;
+  line-height: 12px;
+  max-height: 12px;
   max-width: 100%;
+  min-height: 12px;
   min-width: 0;
-  opacity: 0.75;
+  overflow: visible;
 }
 
 .review-stamp-date {
   flex: 0 0 auto;
+  opacity: 0.75;
 }
 
 .review-stamp-branch {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-size: 10px;
+  gap: 3px;
+  height: 12px;
+  line-height: 12px;
+  margin-left: 8px;
+  max-width: 480px;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.75;
+  transform-origin: left center;
+  transition:
+    font-size 180ms ease,
+    max-width 240ms ease,
+    opacity 240ms ease,
+    margin-left 240ms ease;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.review-stamp-branch-ico {
+  display: block;
+  flex: 0 0 auto;
+  height: 10px;
+  width: 10px;
+}
+
+.review-stamp-branch-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.review-stamp-branch:hover {
+  font-size: 12px;
+  overflow: visible;
+}
+
+.review-stamp > .review-stamp-branch:first-child {
+  margin-left: 0;
+}
+
+.review-stamp-branch.is-own {
+  color: var(--vscode-foreground);
+  opacity: 1;
+}
+
+.review-stamp-branch.is-reveal {
+  margin-left: 0;
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.review-stamp-branch.is-reveal.is-shown {
+  margin-left: 8px;
+  max-width: 480px;
+  opacity: 0.75;
+  pointer-events: auto;
+}
+
+.review-stamp-branch.is-own.is-reveal.is-shown {
+  opacity: 1;
+}
+
+.review-stamp > .review-stamp-branch.is-reveal.is-shown:first-child {
+  margin-left: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-stamp-branch {
+    transition: none;
+  }
 }
 
 .review-mr-head {
@@ -4101,14 +4293,23 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .review-reply-node.is-fix > .review-body {
-  align-items: stretch;
+  align-items: flex-start;
   max-width: 100%;
   width: max-content;
 }
 
 .review-reply-node.is-fix > .review-body > .review-stamp {
-  min-width: max-content;
+  overflow: visible;
+  position: relative;
   white-space: nowrap;
+  width: max-content;
+}
+
+/* Branch hangs off the date and does not set the chip width. */
+.review-reply-node.is-fix .review-stamp-branch {
+  left: 100%;
+  position: absolute;
+  top: 0;
 }
 
 .review-chip.is-fix {
@@ -4116,7 +4317,9 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   background: color-mix(in srgb, #52be37 18%, #121214);
   border-color: #52be37;
   color: #52be37;
-  width: 100%;
+  justify-content: center;
+  max-width: none;
+  width: auto;
 }
 
 .review-chip-badge,
@@ -4424,16 +4627,24 @@ button.review-neurofix-btn.is-muted:hover {
 
 .review-fix-line.is-busy {
   align-items: center;
-  align-self: flex-start;
+  align-self: stretch;
   display: flex;
-  gap: 8px;
-  width: max-content;
+  position: relative;
+  width: auto;
 }
 
 .review-fix-line.is-busy > .review-chip.is-fix {
   align-self: center;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   width: auto;
+}
+
+.review-fix-line.is-busy > .review-fix-loader {
+  left: 100%;
+  margin-left: 8px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .review-fix-loader {
@@ -4464,9 +4675,50 @@ button.review-neurofix-btn.is-muted:hover {
   opacity: 1;
 }
 
-.review-load-edge:disabled {
+.review-load-node > .review-body {
+  align-items: flex-start;
+}
+
+/* Yellow of the chat Switch button. Fill is a dark mix, border and icon stay solid yellow. */
+.review-load-chip {
+  --review-load-yellow: var(
+    --composer-mode-plan-text,
+    var(--cursor-text-yellow-primary, var(--vscode-charts-yellow, #cca700))
+  );
+  align-items: center;
+  align-self: flex-start;
+  background: color-mix(in srgb, var(--review-load-yellow) 16%, #121214);
+  border: 1px solid var(--review-load-yellow);
+  border-radius: 8px;
+  box-sizing: border-box;
+  color: var(--review-load-yellow);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 13px;
+  gap: 8px;
+  height: 22px;
+  justify-content: center;
+  line-height: 16px;
+  min-width: 72px;
+  padding: 0 12px;
+}
+
+.review-load-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--review-load-yellow) 28%, #121214);
+}
+
+.review-load-chip:disabled {
   cursor: default;
   opacity: 0.45;
+}
+
+.review-load-chip-ico {
+  display: block;
+  flex: 0 0 auto;
+  height: 16px;
+  width: 16px;
 }
 
 @keyframes review-skel-shimmer {
@@ -4882,7 +5134,6 @@ button.review-neurofix-btn.is-muted:hover {
   outline: 1px solid var(--vscode-focusBorder, #3794ff);
 }
 
-.review-load-edge,
 .review-btn {
   align-self: center;
   background: transparent;

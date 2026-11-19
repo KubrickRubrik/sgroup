@@ -58,11 +58,56 @@ export function instructionPageHtml(markdown: string): string {
   .review-level-medium { background: #d68b42; }
   .review-level-low { background: #8b9396; }
   th { background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.15)); }
+  html, body { scrollbar-width: none; }
+  html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; height: 0; width: 0; }
+  .syn3-overlay-scroll {
+    pointer-events: none;
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 4px;
+    z-index: 40;
+  }
+  .syn3-overlay-scroll[hidden] { display: none; }
+  .syn3-overlay-scroll-thumb {
+    background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.55));
+    border-radius: 2px;
+    position: absolute;
+    right: 0;
+    width: 4px;
+  }
 </style>
 </head>
 <body>
 <main>${body}</main>
 <script>
+  (function () {
+    const scroller = document.scrollingElement || document.documentElement;
+    const bar = document.createElement('div');
+    bar.className = 'syn3-overlay-scroll';
+    bar.hidden = true;
+    const thumb = document.createElement('div');
+    thumb.className = 'syn3-overlay-scroll-thumb';
+    bar.append(thumb);
+    document.body.append(bar);
+    function placeBar() {
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      if (max <= 1) {
+        bar.hidden = true;
+        return;
+      }
+      bar.hidden = false;
+      const height = scroller.clientHeight;
+      bar.style.height = height + 'px';
+      const thumbHeight = Math.max(24, (scroller.clientHeight / scroller.scrollHeight) * height);
+      const travel = Math.max(0, height - thumbHeight);
+      thumb.style.height = thumbHeight + 'px';
+      thumb.style.transform = 'translateY(' + (scroller.scrollTop / max) * travel + 'px)';
+    }
+    placeBar();
+    window.addEventListener('scroll', placeBar, { passive: true });
+    window.addEventListener('resize', placeBar);
+  })();
   const vscode = acquireVsCodeApi();
   document.addEventListener('click', (event) => {
     const link = event.target instanceof Element ? event.target.closest('a') : null;

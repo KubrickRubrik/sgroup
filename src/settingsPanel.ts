@@ -479,6 +479,48 @@ export class SettingsPanel implements vscode.Disposable {
       font-size: var(--vscode-font-size);
       margin: 0;
       padding: 0;
+      scrollbar-width: none;
+    }
+    html::-webkit-scrollbar,
+    body::-webkit-scrollbar,
+    .syn3-thin-scroll::-webkit-scrollbar,
+    .profile-list::-webkit-scrollbar,
+    .path-nav-list::-webkit-scrollbar {
+      display: none;
+      height: 0;
+      width: 0;
+    }
+    .syn3-thin-scroll,
+    .profile-list,
+    .path-nav-list {
+      scrollbar-width: none;
+    }
+    .syn3-overlay-scroll {
+      pointer-events: none;
+      position: fixed;
+      width: 4px;
+      z-index: 40;
+    }
+    .syn3-overlay-scroll[hidden] {
+      display: none;
+    }
+    .syn3-overlay-scroll-thumb {
+      background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.55));
+      border-radius: 2px;
+      position: absolute;
+      right: 0;
+      width: 4px;
+    }
+    .syn3-overlay-scroll.is-x {
+      height: 4px;
+      width: auto;
+    }
+    .syn3-overlay-scroll.is-x .syn3-overlay-scroll-thumb {
+      bottom: 0;
+      height: 4px;
+      right: auto;
+      top: 0;
+      width: auto;
     }
     main {
       box-sizing: border-box;
@@ -2046,6 +2088,253 @@ export class SettingsPanel implements vscode.Disposable {
       }
     });
 
+    const thinScrollSelector = '.profile-list, .path-nav-list';
+    const thinScrolls = new Map();
+    let thinScrollFrame = 0;
+    let thinScrollRestack = false;
+
+    function scheduleThinScroll(restack) {
+      if (restack) {
+        thinScrollRestack = true;
+      }
+      if (thinScrollFrame) {
+        return;
+      }
+      thinScrollFrame = requestAnimationFrame(() => {
+        thinScrollFrame = 0;
+        const restackNow = thinScrollRestack;
+        thinScrollRestack = false;
+        for (const entry of thinScrolls.values()) {
+          placeThinScroll(entry, restackNow);
+        }
+      });
+    }
+
+    function overlayScrollZ(node) {
+      let z = 40;
+      let current = node;
+      while (current && current !== document.body) {
+        const value = Number.parseInt(getComputedStyle(current).zIndex, 10);
+        if (!Number.isNaN(value)) {
+          z = Math.max(z, value);
+        }
+        current = current.parentElement;
+      }
+      return String(z + 1);
+    }
+
+    function thinScrollShown(node) {
+      if (!node.isConnected) {
+        return false;
+      }
+      let current = node;
+      while (current && current !== document.body) {
+        if (current.hidden) {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return true;
+    }
+
+    function placeThinScroll(entry, restack) {
+      const node = entry.el;
+      if (!node.isConnected) {
+        releaseThinScroll(node);
+        return;
+      }
+      const doc = entry.doc;
+      const shown = doc || thinScrollShown(node);
+      const rect = doc ? null : node.getBoundingClientRect();
+      const maxY = node.scrollHeight - node.clientHeight;
+      const maxX = node.scrollWidth - node.clientWidth;
+      const key = [
+        shown ? 1 : 0,
+        doc ? 0 : Math.round(rect.top),
+        doc ? 0 : Math.round(rect.left),
+        doc ? node.clientWidth : Math.round(rect.right),
+        doc ? node.clientHeight : Math.round(rect.bottom),
+        node.scrollTop,
+        node.scrollLeft,
+        node.scrollHeight,
+        node.scrollWidth,
+        node.clientHeight,
+        node.clientWidth,
+      ].join(':');
+      if (!restack && key === entry.key) {
+        return;
+      }
+      entry.key = key;
+      if (restack || !entry.z) {
+        if (doc) {
+          entry.z = '40';
+        } else {
+          const style = getComputedStyle(node);
+          entry.borderTop = Number.parseFloat(style.borderTopWidth) || 0;
+          entry.borderRight = Number.parseFloat(style.borderRightWidth) || 0;
+          entry.borderBottom = Number.parseFloat(style.borderBottomWidth) || 0;
+          entry.borderLeft = Number.parseFloat(style.borderLeftWidth) || 0;
+          entry.z = overlayScrollZ(node);
+        }
+      }
+      if (!shown || (!doc && (rect.width < 1 || rect.height < 1))) {
+        entry.vBar.hidden = true;
+        entry.hBar.hidden = true;
+        return;
+      }
+      const inset = doc ? 0 : 2;
+      const gap = maxX > 1 && maxY > 1 ? 4 : 0;
+      const trackTop = doc ? inset : rect.top + entry.borderTop + inset;
+      const trackHeight = Math.max(0, node.clientHeight - inset * 2 - gap);
+      const trackLeft = doc ? inset : rect.left + entry.borderLeft + inset;
+      const trackWidth = Math.max(0, node.clientWidth - inset * 2 - gap);
+      const minThumb = doc ? 24 : 16;
+      const rightEdge = doc ? node.clientWidth : rect.right - entry.borderRight;
+      const bottomEdge = doc ? node.clientHeight : rect.bottom - entry.borderBottom;
+      if (maxY <= 1 || trackHeight < 8) {
+        entry.vBar.hidden = true;
+      } else {
+        entry.vBar.hidden = false;
+        entry.vBar.style.zIndex = entry.z;
+        entry.vBar.style.top = trackTop + 'px';
+        entry.vBar.style.height = trackHeight + 'px';
+        entry.vBar.style.left = rightEdge - 4 + 'px';
+        const thumbHeight = Math.max(minThumb, Math.min(trackHeight, (node.clientHeight / node.scrollHeight) * trackHeight));
+        const travel = Math.max(0, trackHeight - thumbHeight);
+        entry.vThumb.style.height = thumbHeight + 'px';
+        entry.vThumb.style.transform = 'translateY(' + (node.scrollTop / maxY) * travel + 'px)';
+      }
+      if (maxX <= 1 || trackWidth < 8) {
+        entry.hBar.hidden = true;
+      } else {
+        entry.hBar.hidden = false;
+        entry.hBar.style.zIndex = entry.z;
+        entry.hBar.style.left = trackLeft + 'px';
+        entry.hBar.style.width = trackWidth + 'px';
+        entry.hBar.style.top = bottomEdge - 4 + 'px';
+        const thumbWidth = Math.max(minThumb, Math.min(trackWidth, (node.clientWidth / node.scrollWidth) * trackWidth));
+        const travel = Math.max(0, trackWidth - thumbWidth);
+        entry.hThumb.style.width = thumbWidth + 'px';
+        entry.hThumb.style.transform = 'translateX(' + (node.scrollLeft / maxX) * travel + 'px)';
+      }
+    }
+
+    function releaseThinScroll(node) {
+      const entry = thinScrolls.get(node);
+      if (!entry || entry.doc) {
+        return;
+      }
+      entry.vBar.remove();
+      entry.hBar.remove();
+      thinScrolls.delete(node);
+    }
+
+    function bindThinScroll(node, doc) {
+      if (!node || thinScrolls.has(node)) {
+        return;
+      }
+      node.classList.add('syn3-thin-scroll');
+      const vBar = document.createElement('div');
+      vBar.className = 'syn3-overlay-scroll';
+      vBar.hidden = true;
+      const vThumb = document.createElement('div');
+      vThumb.className = 'syn3-overlay-scroll-thumb';
+      vBar.append(vThumb);
+      const hBar = document.createElement('div');
+      hBar.className = 'syn3-overlay-scroll is-x';
+      hBar.hidden = true;
+      const hThumb = document.createElement('div');
+      hThumb.className = 'syn3-overlay-scroll-thumb';
+      hBar.append(hThumb);
+      document.body.append(vBar, hBar);
+      const entry = {
+        el: node,
+        doc: !!doc,
+        vBar,
+        vThumb,
+        hBar,
+        hThumb,
+        key: '',
+        z: '',
+        borderTop: 0,
+        borderRight: 0,
+        borderBottom: 0,
+        borderLeft: 0,
+      };
+      thinScrolls.set(node, entry);
+      placeThinScroll(entry, true);
+    }
+
+    function mountThinScroll() {
+      bindThinScroll(document.scrollingElement || document.documentElement, true);
+      for (const found of document.querySelectorAll(thinScrollSelector)) {
+        if (found instanceof HTMLElement) {
+          bindThinScroll(found, false);
+        }
+      }
+      new MutationObserver((records) => {
+        let restack = false;
+        for (const record of records) {
+          const target = record.target;
+          if (
+            target instanceof HTMLElement &&
+            (target.classList.contains('syn3-overlay-scroll') ||
+              target.classList.contains('syn3-overlay-scroll-thumb'))
+          ) {
+            continue;
+          }
+          if (record.type === 'attributes') {
+            restack = true;
+          }
+          for (const added of record.addedNodes) {
+            if (!(added instanceof Element)) {
+              continue;
+            }
+            if (added instanceof HTMLElement && added.matches(thinScrollSelector)) {
+              bindThinScroll(added, false);
+            }
+            for (const found of added.querySelectorAll(thinScrollSelector)) {
+              if (found instanceof HTMLElement) {
+                bindThinScroll(found, false);
+              }
+            }
+          }
+          for (const removed of record.removedNodes) {
+            if (!(removed instanceof Element)) {
+              continue;
+            }
+            if (removed instanceof HTMLElement) {
+              releaseThinScroll(removed);
+            }
+            for (const found of removed.querySelectorAll(thinScrollSelector)) {
+              if (found instanceof HTMLElement) {
+                releaseThinScroll(found);
+              }
+            }
+          }
+        }
+        scheduleThinScroll(restack);
+      }).observe(document.body, {
+        attributeFilter: ['hidden', 'class', 'style'],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+      document.addEventListener(
+        'input',
+        (event) => {
+          const target = event.target;
+          if (target instanceof HTMLElement && thinScrolls.has(target)) {
+            scheduleThinScroll(false);
+          }
+        },
+        true,
+      );
+      window.addEventListener('scroll', () => scheduleThinScroll(false), { passive: true, capture: true });
+      window.addEventListener('resize', () => scheduleThinScroll(true));
+    }
+
+    mountThinScroll();
     vscode.postMessage({ type: 'ready' });
   </script>
 </body>

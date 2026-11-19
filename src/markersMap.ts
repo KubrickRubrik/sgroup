@@ -36,7 +36,14 @@ import {
   type SetupChannelKind,
 } from './discordSetup';
 import { ReviewDepth, ReviewKind } from './reviewPending';
-import { normalizeNeuroFixScope, ReviewLoadEdge, ReviewMapController, ReviewPageState } from './reviewMap';
+import {
+  normalizeFixPicks,
+  normalizeNeuroFixScope,
+  normalizeRereviewSelection,
+  ReviewLoadEdge,
+  ReviewMapController,
+  ReviewPageState,
+} from './reviewMap';
 import { ScenarioMapController, ScenarioPageState } from './scenarioMap';
 import {
   createRepositoryTokenKey,
@@ -228,7 +235,13 @@ type IncomingMessage =
   | { type: 'openExternal'; url: string }
   | { type: 'previewLink'; url: string; requestId: string }
   | { type: 'clipboardRead'; requestId: string }
-  | { type: 'clipboardWrite'; text: string; languageId?: string; label?: string }
+  | {
+      type: 'clipboardWrite';
+      text: string;
+      languageId?: string;
+      label?: string;
+      notice?: 'branchCopied';
+    }
   | { type: 'highlightCode'; requestId: string; text: string; languageId: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
@@ -557,6 +570,13 @@ type IncomingMessage =
       messageId: string;
       scope: string;
       itemIndex?: number;
+      picks?: { H?: number[]; M?: number[]; L?: number[] };
+    }
+  | {
+      type: 'reviewRereview';
+      pageId: string;
+      messageId: string;
+      selection: { H?: number[] | 'all'; M?: number[] | 'all'; L?: number[] | 'all' };
     }
   | { type: 'reviewNeurofixDenied' }
   | { type: 'listProjectDir'; seq: number; rel?: string }
@@ -2912,6 +2932,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           message.direction === 'newer' ? 'newer' : 'older',
         ),
       );
+      this.toastReviewEdgeNotice(message.pageId);
       return;
     }
     if (message.type === 'reviewExpandPlain') {
@@ -3031,6 +3052,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         () => this.review.retryDiscordPost(message.pageId, mr),
       );
       await this.handleReviewMrResult(webview, message.pageId, result);
+      return;
+    }
+    if (message.type === 'reviewRereview') {
+      const selection = normalizeRereviewSelection(message.selection);
+      if (!selection) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(
+          `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
+        );
+        return;
+      }
+      const parentId = this.review.threadParentId(message.pageId, message.messageId);
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginReviewSkeleton(message.pageId, parentId),
+        () => this.review.endReviewSkeleton(message.pageId, parentId),
+        () => this.review.startRereview(message.pageId, message.messageId, selection),
+      );
+      await this.handleReviewFileResult(webview, message.pageId, parentId, result);
       return;
     }
     if (message.type === 'reviewStart') {
@@ -3490,7 +3532,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewNeurofix') {
-      const scope = normalizeNeuroFixScope(message.scope);
+      const picks = normalizeFixPicks(message.picks);
+      const scope = normalizeNeuroFixScope(message.scope) || (picks ? 'all' : undefined);
       const itemIndex =
         typeof message.itemIndex === 'number' && Number.isInteger(message.itemIndex)
           ? message.itemIndex
@@ -3501,7 +3544,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           pageId: message.pageId,
           messageId: message.messageId,
         });
-      if (!scope || (itemIndex !== undefined && scope === 'all')) {
+      if (!scope || (!picks && itemIndex !== undefined && scope === 'all')) {
         await idle();
         return;
       }
@@ -3528,6 +3571,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             message.messageId,
             scope,
             itemIndex,
+            picks,
           );
           if (!ran.ok) {
             return { kind: 'error' as const, message: ran.message, discord: ran.discord === true };
@@ -3628,6 +3672,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'clipboardWrite') {
       await vscode.env.clipboard.writeText(message.text);
+      if (message.notice === 'branchCopied' && message.text) {
+        const locale = normalizeLocale(this.store.appearance.language);
+        void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'branchCopied')}`);
+      }
       if (message.languageId && message.label && message.text) {
         this.languages.setStamp({
           text: message.text,
@@ -6835,6 +6883,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await load();
     } finally {
       await this.pushReviewState(webview, this.review.finishLoad(pageId));
+      if (edge !== 'initial') {
+        this.toastReviewEdgeNotice(pageId);
+      }
+    }
+  }
+
+  private toastReviewEdgeNotice(pageId: string): void {
+    const message = this.review.takeEdgeNotice(pageId);
+    if (message) {
+      void vscode.window.showErrorMessage(`Syn3: ${message}`);
     }
   }
 

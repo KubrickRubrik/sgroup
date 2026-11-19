@@ -21,18 +21,25 @@ import {
   findMrMessage,
   formatExplainDiscordBody,
   formatMrDiscordBody,
+  formatRereviewDiscordBody,
   formatReviewDiscordBody,
   getChannelMessage,
   isConfigMessage,
   isDiscordSystemNotice,
   isExplainMessage,
   isMrMessage,
+  isRereviewMessage,
+  isReviewFamilyMessage,
   isReviewMessage,
   listChannelMessages,
   listThreadMessages,
   parseDiscordLock,
   parseExplainMessagePill,
   parseMrChip,
+  parseOpenLine,
+  parseRereviewMessagePill,
+  parseRereviewSelection,
+  formatRereviewSelection,
   parseReviewAttachment,
   parseReviewBranch,
   parseReviewColor,
@@ -52,7 +59,11 @@ import {
   replaceMrDiscordStatus,
   replaceReviewDiscordStatus,
   ReviewChipStatus,
+  ReviewDepthToken,
+  ReviewFixBullets,
   ReviewFixState,
+  ReviewScopeToken,
+  RereviewSelection,
   writeReviewFixes,
   sortMessagesAsc,
   THREAD_STARTER_MESSAGE,
@@ -101,11 +112,15 @@ import {
   hasNeuroFixSuccessMarker,
   NEUROFIX_OK_LINE,
   parseReviewFixGroups,
+  rereviewOpenIndexes,
   reviewFixRows,
+  RereviewPromptItem,
   runExplainSkill,
   runNeuroFixSkill,
   runReviewSkill,
+  splitFixBullet,
   writeExplainFile,
+  writeRereviewFile,
   writeReviewFile,
 } from './reviewAgent';
 import {
@@ -134,8 +149,12 @@ export interface ReviewThreadMsg {
   isPill?: boolean;
   /** Label for the review pill, e.g. `Ревью 1 | branch | rd | H:4 | M:4 | L:5`. */
   pillLabel?: string;
-  /** `fixes:` / `bullet:` on this R_SYN3 message. Absent until the line is written. */
+  /** Thread reply RR_SYN3. */
+  isRereview?: boolean;
+  /** `fixes:` / `bullet:` on this R_SYN3 or RR_SYN3 message. Absent until the line is written. */
   fixes?: ReviewFixState;
+  /** `open:` indexes on an RR_SYN3 message. Absent on a normal review. */
+  open?: ReviewFixBullets;
   /** Empty when Discord `status` is `-` or missing. */
   status?: ReviewChipStatus;
   /** Chip color from `color:` on an explain reply. */
@@ -286,29 +305,34 @@ function reviewAttachment(msg: DiscordMessage): { filename: string; url: string 
 function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
   const file = reviewAttachment(msg);
   const explain = isExplainMessage(msg.content);
+  const rereview = isRereviewMessage(msg.content);
+  const review = isReviewMessage(msg.content);
   return {
     id: msg.id,
     content: msg.content,
     author: msg.author,
     timestamp: msg.timestamp,
-    isReview: isReviewMessage(msg.content),
+    isReview: review,
+    isRereview: rereview,
     isExplain: explain,
-    status: isReviewMessage(msg.content) ? parseReviewStatus(msg.content) : undefined,
+    status: review || rereview ? parseReviewStatus(msg.content) : undefined,
     color: explain ? parseReviewColor(msg.content) || EXPLAIN_DEFAULT_COLOR : undefined,
     branch: explain ? parseReviewBranch(msg.content) : undefined,
     hasFile: !!file,
     filename: file?.filename,
-    fixes: isReviewMessage(msg.content) ? parseReviewFixes(msg.content) : undefined,
+    fixes: review || rereview ? parseReviewFixes(msg.content) : undefined,
+    open: rereview ? parseOpenLine(msg.content) : undefined,
     contentMissing: msg.contentMissing,
   };
 }
 
-/** Messages shown on the map. */
+/** Visible channel messages per load. System notices and config rows do not count. */
 const CHANNEL_VISIBLE = 5;
-/** Extra message fetched on a side to know if a load button is needed (no total from Discord). */
-const CHANNEL_PROBE = 1;
-/** One-sided fetch: visible page + one probe. */
-const CHANNEL_FETCH_SIDE = CHANNEL_VISIBLE + CHANNEL_PROBE;
+/**
+ * One Discord fetch. Thread-created notices sit beside each root, so a short
+ * limit of `CHANNEL_VISIBLE + 1` was showing only half a page.
+ */
+const CHANNEL_SCAN = 100;
 /** Around-target fetch: 4 before + target + 4 after. The 4th on each side is only a probe. */
 const JUMP_SIDE = 3;
 const JUMP_FETCH = JUMP_SIDE + 1 + 1 + JUMP_SIDE + 1;
@@ -488,64 +512,39 @@ function applyShownSync(
 }
 
 /**
- * Tip of the channel: newest messages. Fetch visible+1; drop the oldest as older-probe.
- * Nothing newer exists at the tip.
+ * `CHANNEL_VISIBLE` real channel messages from a scan.
+ * `older` keeps the newest slice (closest to the tip or the open window).
+ * `newer` keeps the oldest slice. `short` means Discord returned the end of history.
  */
-function windowFromChannelTip(fetchedAsc: DiscordMessage[]): Pick<
-  ReviewWindow,
-  'messages' | 'canLoadOlder' | 'canLoadNewer'
-> {
-  const sorted = sortMessagesAsc(fetchedAsc);
-  const visible = sorted.filter((msg) => !isReviewChannelNoise(msg));
-  if (sorted.length > CHANNEL_VISIBLE) {
-    return {
-      messages: visible.slice(-CHANNEL_VISIBLE),
-      canLoadOlder: true,
-      canLoadNewer: false,
-    };
-  }
+function visibleChannelPage(
+  batchAsc: DiscordMessage[],
+  side: 'older' | 'newer',
+  short: boolean,
+): { toAdd: DiscordMessage[]; more: boolean } {
+  const visible = sortMessagesAsc(batchAsc).filter(isVisibleChannel);
+  const overflow = visible.length > CHANNEL_VISIBLE;
+  const toAdd = overflow
+    ? side === 'newer'
+      ? visible.slice(0, CHANNEL_VISIBLE)
+      : visible.slice(-CHANNEL_VISIBLE)
+    : visible;
+  return { toAdd, more: toAdd.length > 0 && (overflow || !short) };
+}
+
+/**
+ * Tip of the channel: newest visible messages. Nothing newer exists at the tip.
+ * `short` means this fetch already reached the oldest row Discord has.
+ */
+function windowFromChannelTip(
+  fetchedAsc: DiscordMessage[],
+  short = false,
+): Pick<ReviewWindow, 'messages' | 'canLoadOlder' | 'canLoadNewer'> {
+  const page = visibleChannelPage(fetchedAsc, 'older', short);
   return {
-    messages: visible,
-    canLoadOlder: false,
+    messages: page.toAdd,
+    canLoadOlder: page.more,
     canLoadNewer: false,
   };
-}
-
-/**
- * Older batch fetched with `before` (already sorted asc, excluding known ids).
- * Keep the newest `CHANNEL_VISIBLE` (closest to the open window); an extra oldest
- * item is the probe that more history exists.
- */
-function takeOlderPage(batchAsc: DiscordMessage[]): {
-  toAdd: DiscordMessage[];
-  canLoadOlder: boolean;
-} {
-  const visible = batchAsc.filter((msg) => !isReviewChannelNoise(msg));
-  if (batchAsc.length > CHANNEL_VISIBLE) {
-    return {
-      toAdd: visible.slice(-CHANNEL_VISIBLE),
-      canLoadOlder: true,
-    };
-  }
-  return { toAdd: visible, canLoadOlder: false };
-}
-
-/**
- * Newer batch fetched with `after`. Keep the oldest `CHANNEL_VISIBLE` (closest to
- * the open window); an extra newest item is the probe.
- */
-function takeNewerPage(batchAsc: DiscordMessage[]): {
-  toAdd: DiscordMessage[];
-  canLoadNewer: boolean;
-} {
-  const visible = batchAsc.filter((msg) => !isReviewChannelNoise(msg));
-  if (batchAsc.length > CHANNEL_VISIBLE) {
-    return {
-      toAdd: visible.slice(0, CHANNEL_VISIBLE),
-      canLoadNewer: true,
-    };
-  }
-  return { toAdd: visible, canLoadNewer: false };
 }
 
 /**
@@ -559,7 +558,7 @@ function windowAroundMessage(
   const sorted = sortMessagesAsc(fetchedAsc);
   const idx = sorted.findIndex((m) => m.id === messageId);
   if (idx < 0) {
-    return windowFromChannelTip(sorted);
+    return windowFromChannelTip(sorted, sorted.length < JUMP_FETCH);
   }
   const beforeAll = sorted.slice(0, idx).filter(isVisibleChannel);
   const afterAll = sorted.slice(idx + 1).filter(isVisibleChannel);
@@ -608,6 +607,54 @@ export function normalizeNeuroFixScope(scope: string): NeuroFixScope | undefined
   return undefined;
 }
 
+/** 1-based indexes from a Shift selection. Empty input is absent. */
+export function normalizeFixPicks(raw: unknown): ReviewFixBullets | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const src = raw as Record<string, unknown>;
+  const bullets = emptyFixBullets();
+  for (const level of ['H', 'M', 'L'] as const) {
+    const list = src[level];
+    if (!Array.isArray(list)) {
+      continue;
+    }
+    bullets[level] = [...new Set(list.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))].sort(
+      (a, b) => a - b,
+    );
+  }
+  if (!bullets.H.length && !bullets.M.length && !bullets.L.length) {
+    return undefined;
+  }
+  return bullets;
+}
+
+/** Menu payload: `{ H: 'all' }` or `{ L: [1, 2] }`. */
+export function normalizeRereviewSelection(raw: unknown): RereviewSelection | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const src = raw as Record<string, unknown>;
+  const selection: RereviewSelection = {};
+  for (const level of ['H', 'M', 'L'] as const) {
+    const value = src[level];
+    if (value === 'all') {
+      selection[level] = 'all';
+      continue;
+    }
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    const nums = [...new Set(value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))].sort(
+      (a, b) => a - b,
+    );
+    if (nums.length) {
+      selection[level] = nums;
+    }
+  }
+  return formatRereviewSelection(selection) ? selection : undefined;
+}
+
 export type ReviewProfileContext = ReviewProfilePaths & {
   profileId: string;
   profileName: string;
@@ -628,6 +675,8 @@ export class ReviewMapController {
   /** Channel fetch the map should show as skeletons. Depth covers overlapping loads. */
   private readonly loadEdge = new Map<string, { edge: ReviewLoadEdge; depth: number }>();
   private readonly errors = new Map<string, string>();
+  /** One-shot Discord failure for a До/После load. Does not replace the map. */
+  private readonly edgeNotice = new Map<string, string>();
   /** MR chip placeholder for a page, while git and Discord are in flight. */
   private readonly mrSkeleton = new Map<string, { title: string; draft: boolean }>();
   /** Root review placeholder for a page, while the agent and Discord post are in flight. */
@@ -1077,6 +1126,21 @@ export class ReviewMapController {
     }
   }
 
+  /** Record a До/После failure, including a dropped network, without touching the page error. */
+  private noteEdgeFailure(pageId: string, result: DiscordError): void {
+    this.edgeNotice.set(pageId, result.message || 'ошибка синхронизации с discord');
+  }
+
+  /** Read and clear the latest До/После failure for an IDE notification. */
+  takeEdgeNotice(pageId: string): string | undefined {
+    const message = this.edgeNotice.get(pageId);
+    if (!message) {
+      return undefined;
+    }
+    this.edgeNotice.delete(pageId);
+    return message;
+  }
+
   async loadInitial(pageId: string, channelOverride?: string): Promise<ReviewPageState> {
     this.loading.add(pageId);
     this.errors.delete(pageId);
@@ -1090,14 +1154,14 @@ export class ReviewMapController {
         this.errors.set(pageId, 'Discord bot token is missing');
         this.windows.delete(pageId);
       } else {
-        // Tip: visible + 1 older probe. No newer probe — we are at the channel tip.
+        // Newest visible roots. System notices in the same fetch do not take a slot.
         const result = await listChannelMessages(token, channel, {
-          limit: CHANNEL_FETCH_SIDE,
+          limit: CHANNEL_SCAN,
         });
         if (!result.ok) {
           this.noteChannelError(pageId, result, true);
         } else {
-          const sliced = windowFromChannelTip(result.value);
+          const sliced = windowFromChannelTip(result.value, result.value.length < CHANNEL_SCAN);
           const win: ReviewWindow = {
             ...sliced,
             threads: new Map<string, ThreadBucket>(),
@@ -1127,6 +1191,11 @@ export class ReviewMapController {
           color: parseReviewColor(msg.content) || EXPLAIN_DEFAULT_COLOR,
           branch: parseReviewBranch(msg.content),
         });
+        continue;
+      }
+      const rereviewPill = parseRereviewMessagePill(msg.content);
+      if (rereviewPill) {
+        this.replyMeta.set(msg.id, { isPill: true, pillLabel: rereviewPill });
         continue;
       }
       const pillLabel = parseReviewMessagePill(msg.content);
@@ -1187,6 +1256,7 @@ export class ReviewMapController {
     if (!win || !channel || !token || win.messages.length === 0) {
       return this.snapshot(pageId);
     }
+    this.edgeNotice.delete(pageId);
     this.loading.add(pageId);
     this.errors.delete(pageId);
     try {
@@ -1196,16 +1266,17 @@ export class ReviewMapController {
         const span = spanBeforeGap(win.messages, win.gapBeforeId);
         const edge = direction === 'older' ? win.messages[0] : span[span.length - 1] ?? win.messages[win.messages.length - 1];
         const result = await listChannelMessages(token, channel, {
-          limit: CHANNEL_FETCH_SIDE,
+          limit: CHANNEL_SCAN,
           ...(direction === 'older' ? { before: edge.id } : { after: edge.id }),
         });
         if (!result.ok) {
-          this.noteChannelError(pageId, result, false);
+          this.noteEdgeFailure(pageId, result);
         } else {
           const known = new Set(win.messages.map((m) => m.id));
           const batch = sortMessagesAsc(result.value.filter((m) => !known.has(m.id)));
+          const short = result.value.length < CHANNEL_SCAN;
           if (direction === 'older') {
-            const { toAdd, canLoadOlder } = takeOlderPage(batch);
+            const { toAdd, more: canLoadOlder } = visibleChannelPage(batch, 'older', short);
             const tipId = win.gapBeforeId;
             const tip = tipId ? win.messages.find((msg) => msg.id === tipId) : undefined;
             const rest = tip ? win.messages.filter((msg) => msg.id !== tipId) : win.messages;
@@ -1213,7 +1284,7 @@ export class ReviewMapController {
             win.canLoadOlder = canLoadOlder;
             this.capChannel(win, 'newest');
           } else {
-            const { toAdd, canLoadNewer } = takeNewerPage(batch);
+            const { toAdd, more: canLoadNewer } = visibleChannelPage(batch, 'newer', short);
             win.messages = sortMessagesAsc([...win.messages, ...toAdd]);
             win.canLoadNewer = canLoadNewer;
             this.capChannel(win, 'oldest');
@@ -1237,9 +1308,10 @@ export class ReviewMapController {
     if (!win || !token) {
       return this.snapshot(pageId);
     }
+    this.edgeNotice.delete(pageId);
     const parent = win.messages.find((m) => m.id === messageId);
     const threadId = parent?.thread?.id;
-    if (!parent || !threadId || parseDiscordLock(parent.content)) {
+    if (!parent || !threadId) {
       return this.snapshot(pageId);
     }
     this.loading.add(pageId);
@@ -1265,7 +1337,7 @@ export class ReviewMapController {
           after: edge?.id,
         });
         if (!result.ok) {
-          this.noteChannelError(pageId, result, false);
+          this.noteEdgeFailure(pageId, result);
         } else {
           const known = new Set(entry.replies.map((msg) => msg.id));
           const real = sortMessagesAsc(result.value).filter(
@@ -1285,7 +1357,7 @@ export class ReviewMapController {
           before,
         });
         if (!result.ok) {
-          this.noteChannelError(pageId, result, false);
+          this.noteEdgeFailure(pageId, result);
         } else {
           const page = takeThreadPage(
             sortMessagesAsc(result.value),
@@ -1555,11 +1627,11 @@ export class ReviewMapController {
     const span = spanBeforeGap(win.messages, tipId);
     const edge = span[span.length - 1];
     const result = await listChannelMessages(token, channel, {
-      limit: CHANNEL_FETCH_SIDE,
+      limit: CHANNEL_SCAN,
       ...(edge ? { after: edge.id } : { before: tipId }),
     });
     if (!result.ok) {
-      this.noteChannelError(pageId, result, false);
+      this.noteEdgeFailure(pageId, result);
       return;
     }
     const known = new Set(win.messages.map((msg) => msg.id));
@@ -1569,7 +1641,7 @@ export class ReviewMapController {
     const toAdd = beforeTip.slice(0, CHANNEL_VISIBLE);
     const moreBefore = beforeTip.length > CHANNEL_VISIBLE;
     const sawTipOrPast = fresh.some((msg) => !snowflakeLess(msg.id, tipId));
-    const short = result.value.length < CHANNEL_FETCH_SIDE;
+    const short = result.value.length < CHANNEL_SCAN;
     const tip = win.messages.find((msg) => msg.id === tipId);
     const withoutTip = win.messages.filter((msg) => msg.id !== tipId);
     win.messages = sortMessagesAsc([...withoutTip, ...toAdd]);
@@ -1608,7 +1680,7 @@ export class ReviewMapController {
       ...(edge ? { after: edge.id } : { before: tipId }),
     });
     if (!result.ok) {
-      this.noteChannelError(pageId, result, false);
+      this.noteEdgeFailure(pageId, result);
       return;
     }
     const known = new Set(entry.replies.map((msg) => msg.id));
@@ -1646,11 +1718,15 @@ export class ReviewMapController {
     edge: { before?: string; after?: string },
     visible: (msg: DiscordMessage) => boolean,
   ): Promise<boolean | undefined> {
-    const result = await listChannelMessages(token, channelId, { ...edge, limit: 5 });
+    const result = await listChannelMessages(token, channelId, { ...edge, limit: CHANNEL_SCAN });
     if (!result.ok) {
       return undefined;
     }
-    return result.value.some(visible);
+    if (result.value.some(visible)) {
+      return true;
+    }
+    // A full page of notices is not proof that history ended.
+    return result.value.length < CHANNEL_SCAN ? false : undefined;
   }
 
   /** A failed tick must not replace a window that is already on screen. */
@@ -1730,14 +1806,16 @@ export class ReviewMapController {
     if (tip && span.length > 0) {
       const between = await listChannelMessages(token, channelId, {
         after: span[span.length - 1].id,
-        limit: 5,
+        limit: CHANNEL_SCAN,
       });
       if (!between.ok) {
         return;
       }
       const real = between.value.filter(isVisibleChannel);
       const hole = real.filter((msg) => snowflakeLess(msg.id, tip.id));
-      if (hole.length === 0) {
+      const sawTip = between.value.some((msg) => !snowflakeLess(msg.id, tip.id));
+      const short = between.value.length < CHANNEL_SCAN;
+      if (hole.length === 0 && (sawTip || short)) {
         win.gapBeforeId = undefined;
         win.messages = sortMessagesAsc(win.messages);
         win.canLoadNewer = real.some((msg) => snowflakeLess(tip.id, msg.id));
@@ -2693,7 +2771,7 @@ export class ReviewMapController {
       return { kind: 'error', message: 'Review message not found on the map' };
     }
     const { found, channelId } = located;
-    if (!isReviewMessage(found.content)) {
+    if (!isReviewMessage(found.content) && !isRereviewMessage(found.content)) {
       return { kind: 'error', message: 'Select an R_SYN3 chip' };
     }
     if (parseDiscordLock(found.content)) {
@@ -2966,6 +3044,7 @@ export class ReviewMapController {
     messageId: string,
     scope: NeuroFixScope,
     itemIndex?: number,
+    picks?: ReviewFixBullets,
   ): Promise<{ ok: true; state: ReviewPageState } | { ok: false; message: string; discord?: boolean }> {
     if (await this.neurofixNeedsCheckout(pageId, messageId)) {
       return { ok: false, message: 'neurofixForeignBranch', discord: true };
@@ -2986,6 +3065,8 @@ export class ReviewMapController {
     const win = this.windows.get(pageId);
     const located = win ? this.findReviewMessage(win, messageId) : undefined;
     const fixed = located ? parseReviewFixes(located.found.content)?.bullets ?? emptyFixBullets() : emptyFixBullets();
+    const open =
+      located && isRereviewMessage(located.found.content) ? parseOpenLine(located.found.content) : undefined;
     const picked = emptyFixBullets();
     const sections: string[] = [];
     const take = (level: 'H' | 'M' | 'L', indexes: number[]) => {
@@ -2996,6 +3077,9 @@ export class ReviewMapController {
         if (!item || fixed[level].includes(number)) {
           continue;
         }
+        if (open && !open[level].includes(number)) {
+          continue;
+        }
         picked[level].push(number);
         lines.push(`- ${item}`);
       }
@@ -3003,7 +3087,12 @@ export class ReviewMapController {
         sections.push([level, ...lines].join('\n'));
       }
     };
-    if (typeof itemIndex === 'number') {
+    const pickedAny = picks && (picks.H.length > 0 || picks.M.length > 0 || picks.L.length > 0);
+    if (pickedAny && picks) {
+      for (const letter of ['H', 'M', 'L'] as const) {
+        take(letter, picks[letter].map((number) => number - 1));
+      }
+    } else if (typeof itemIndex === 'number') {
       if (scope === 'all') {
         return fail('Нет замечаний для выбранного scope');
       }
@@ -3019,8 +3108,12 @@ export class ReviewMapController {
     }
     const levelName = (level: 'H' | 'M' | 'L') =>
       level === 'H' ? 'High' : level === 'M' ? 'Medium' : 'Low';
-    const scopeLabel =
-      typeof itemIndex === 'number' && scope !== 'all'
+    const scopeLabel = pickedAny
+      ? ['H', 'M', 'L']
+          .filter((level) => picked[level as 'H' | 'M' | 'L'].length > 0)
+          .map((level) => `${level}:${picked[level as 'H' | 'M' | 'L'].join(', ')}`)
+          .join(' | ')
+      : typeof itemIndex === 'number' && scope !== 'all'
         ? `${levelName(scope)} #${itemIndex + 1}`
         : scope === 'all'
           ? 'H, M и L'
@@ -3088,7 +3181,7 @@ export class ReviewMapController {
       return { ok: false, message: 'Review page is not ready' };
     }
     const located = this.findReviewMessage(win, messageId);
-    if (!located || !isReviewMessage(located.found.content)) {
+    if (!located || !isReviewFamilyMessage(located.found.content)) {
       return { ok: false, message: 'Review message not found on the map' };
     }
     const access = located.kind === 'channel' ? await this.getAccess(pageId) : undefined;
@@ -3243,11 +3336,11 @@ export class ReviewMapController {
     if (threadId) {
       const entry = win.threads.get(threadId);
       if (entry) {
-        reviewCount = entry.replies.filter((r) => isReviewMessage(r.content)).length;
+        reviewCount = entry.replies.filter((r) => isReviewFamilyMessage(r.content)).length;
       } else {
         const listed = await listThreadMessages(token, threadId, { limit: 100 });
         if (listed.ok) {
-          reviewCount = listed.value.filter((r) => isReviewMessage(r.content)).length;
+          reviewCount = listed.value.filter((r) => isReviewFamilyMessage(r.content)).length;
         }
       }
     }
@@ -3440,11 +3533,11 @@ export class ReviewMapController {
         const win = this.windows.get(pageId);
         const entry = win?.threads.get(threadId);
         if (entry) {
-          reviewCount = entry.replies.filter((r) => isReviewMessage(r.content)).length;
+          reviewCount = entry.replies.filter((r) => isReviewFamilyMessage(r.content)).length;
         } else {
           const listed = await listThreadMessages(token, threadId, { limit: 100 });
           if (listed.ok) {
-            reviewCount = listed.value.filter((r) => isReviewMessage(r.content)).length;
+            reviewCount = listed.value.filter((r) => isReviewFamilyMessage(r.content)).length;
           }
         }
       }
@@ -3516,6 +3609,247 @@ export class ReviewMapController {
         agent.report(sent.message, false);
       }
       return sent;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agent.report(message, false);
+      return { kind: 'error', message };
+    }
+  }
+
+  /** Channel message whose thread shows the skeleton for this review or one of its replies. */
+  threadParentId(pageId: string, messageId: string): string {
+    const win = this.windows.get(pageId);
+    if (!win) {
+      return messageId;
+    }
+    const located = this.findReviewMessage(win, messageId);
+    if (!located || located.kind === 'channel') {
+      return messageId;
+    }
+    const parent = win.messages.find((item) => item.thread?.id === located.channelId);
+    return parent?.id || messageId;
+  }
+
+  private async countFamilyReplies(
+    token: string,
+    win: ReviewWindow,
+    threadId: string | undefined,
+  ): Promise<number> {
+    if (!threadId) {
+      return 0;
+    }
+    const entry = win.threads.get(threadId);
+    if (entry) {
+      return entry.replies.filter((item) => isReviewFamilyMessage(item.content)).length;
+    }
+    const listed = await listThreadMessages(token, threadId, { limit: 100 });
+    if (!listed.ok) {
+      return 0;
+    }
+    return listed.value.filter((item) => isReviewFamilyMessage(item.content)).length;
+  }
+
+  private rereviewItems(
+    selection: RereviewSelection,
+    groups: { H: string[]; M: string[]; L: string[] },
+  ): RereviewPromptItem[] {
+    const items: RereviewPromptItem[] = [];
+    for (const level of ['H', 'M', 'L'] as const) {
+      const pick = selection[level];
+      if (!pick) {
+        continue;
+      }
+      const indexes = pick === 'all' ? groups[level].map((_, index) => index + 1) : pick;
+      for (const index of indexes) {
+        const text = groups[level][index - 1];
+        if (!text) {
+          continue;
+        }
+        items.push({ level, index, text, where: splitFixBullet(text).where });
+      }
+    }
+    return items;
+  }
+
+  /**
+   * Re-check selected bullets of an existing review.
+   * Posts RR_SYN3 at the end of the same thread. Scope and depth stay on the parent chip.
+   */
+  async startRereview(
+    pageId: string,
+    messageId: string,
+    selection: RereviewSelection,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'fileFail'; message: string }
+    | { kind: 'error'; message: string }
+  > {
+    const formatted = formatRereviewSelection(parseRereviewSelection(formatRereviewSelection(selection)) || {});
+    if (!formatted) {
+      return { kind: 'error', message: 'Не выбраны пункты реревью' };
+    }
+    const win = this.windows.get(pageId);
+    const access = await this.getAccess(pageId);
+    const token = await this.discordToken();
+    if (!win || !access || !token) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
+    const located = this.findReviewMessage(win, messageId);
+    if (!located || !isReviewMessage(located.found.content)) {
+      return { kind: 'error', message: 'Select an R_SYN3 chip' };
+    }
+    const read = await this.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      return { kind: 'error', message: read.message };
+    }
+    const groups = parseReviewFixGroups(read.text);
+    if (!groups.ok) {
+      return { kind: 'error', message: groups.message };
+    }
+    const fileMeta = parseReviewAttachment(read.text);
+    const scope: ReviewScopeToken = fileMeta.scope || 'branch';
+    const depthToken: ReviewDepthToken = fileMeta.depth || 'rm';
+    const parentNumber = fileMeta.reviewNumber || 1;
+    const canonical = parseRereviewSelection(formatted);
+    const items = canonical ? this.rereviewItems(canonical, groups.groups) : [];
+    if (!items.length) {
+      return { kind: 'error', message: 'Не выбраны пункты реревью' };
+    }
+
+    const channelParentId = this.threadParentId(pageId, messageId);
+    const channelParent = win.messages.find((item) => item.id === channelParentId);
+    if (!channelParent) {
+      return { kind: 'error', message: 'Review message not found on the map' };
+    }
+    const branchName =
+      parseReviewBranch(channelParent.content) || parseReviewBranch(located.found.content) || '';
+    const checkout = await currentBranch(this.cwd());
+    const same =
+      !!branchName &&
+      checkout.ok &&
+      branchName.toLocaleLowerCase() === checkout.value.trim().toLocaleLowerCase();
+    const channelIsRoot = isReviewMessage(channelParent.content);
+    const inheritedKind: ReviewKind = scope === 'branch' ? 'branch' : 'changes';
+    const kind: ReviewKind = same ? inheritedKind : 'branch';
+    let hostDiff: string | undefined;
+    let baseBranch = '';
+    if (!same) {
+      if (!branchName) {
+        return { kind: 'error', message: 'Branch name is empty' };
+      }
+      const host = await this.hostToken(access.provider);
+      if (!host) {
+        return {
+          kind: 'error',
+          message: `Missing access or ${access.provider === 'github' ? 'GitHub' : 'GitLab'} token`,
+        };
+      }
+      const parent = await this.resolveHostParent(pageId, branchName);
+      if (parent.kind === 'error') {
+        return parent;
+      }
+      baseBranch = parent.parent;
+      const compared = await this.compareHostBranches(access, host, baseBranch, branchName);
+      if (!compared.ok) {
+        return { kind: 'error', message: compared.message };
+      }
+      hostDiff = this.formatHostDiff(compared.value);
+    }
+
+    const paths = this.profilePaths();
+    if (!paths.skillPath) {
+      return { kind: 'error', message: 'Review skill path is not set in the active profile' };
+    }
+    if (!paths.dirPath) {
+      return { kind: 'error', message: 'Review directory path is not set in the active profile' };
+    }
+    const reviewCount = await this.countFamilyReplies(token, win, channelParent.thread?.id);
+    const reviewNumber = channelIsRoot ? reviewCount + 2 : reviewCount + 1;
+    const dirAbs = path.isAbsolute(paths.dirPath) ? paths.dirPath : path.join(this.cwd(), paths.dirPath);
+    const skillAbs = path.isAbsolute(paths.skillPath)
+      ? paths.skillPath
+      : path.join(this.cwd(), paths.skillPath);
+    const isMrParent = isMrMessage(channelParent.content);
+    const mrParsed = isMrParent ? parseMrChip(channelParent.content) : undefined;
+    const title = mrParsed?.title || branchName || 'Review';
+    const depth: ReviewDepth =
+      depthToken === 'rd' ? 'deep' : depthToken === 'rl' || depthToken === 'rs' ? 'shallow' : 'medium';
+
+    const agent = await runReviewSkill({
+      cwd: this.cwd(),
+      skillPath: skillAbs,
+      model: paths.model,
+      kind,
+      depth,
+      reviewNumber,
+      title,
+      webUrl: mrParsed?.webUrl,
+      branch: branchName,
+      baseBranch,
+      hostDiff,
+      rereview: { parentNumber, selection: formatted, items },
+      printThinking: paths.printThinking,
+      printTools: paths.printTools,
+    });
+    if (!agent.ok) {
+      return { kind: 'error', message: agent.message };
+    }
+
+    const mrLine = mrParsed?.webUrl
+      ? (() => {
+          const match = mrParsed.webUrl.match(/\/(?:merge_requests|pull)\/(\d+)/);
+          return [match ? match[1] : '', title, mrParsed.webUrl].filter(Boolean).join(' ');
+        })()
+      : `Branch: ${branchName || title}`;
+    let filePath = '';
+    try {
+      filePath = await writeRereviewFile({
+        dirPath: dirAbs,
+        reviewNumber,
+        parentNumber,
+        mrLine,
+        scope,
+        depth: depthToken,
+        selection: formatted,
+        body: agent.body,
+      });
+      const writtenText = await fs.readFile(filePath, 'utf8');
+      const written = parseReviewFixGroups(writtenText);
+      const open = written.ok ? rereviewOpenIndexes(written.groups) : emptyFixBullets();
+      const thread = await ensureThread(token, access.channelId, channelParent, 'reviews');
+      if (!thread.ok) {
+        return { kind: 'error', message: thread.message };
+      }
+      const content = formatRereviewDiscordBody({
+        reviewNumber,
+        parentNumber,
+        scope,
+        depth: depthToken,
+        selection: formatted,
+        open,
+        model: paths.model,
+        skillPath: paths.skillPath,
+      });
+      const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
+      if (!posted.ok) {
+        return { kind: 'error', message: posted.message };
+      }
+      await deleteReviewFile(filePath);
+      const postedCount =
+        typeof thread.value.messageCount === 'number' ? thread.value.messageCount + 1 : undefined;
+      channelParent.thread = { id: thread.value.id, messageCount: postedCount };
+      const idx = win.messages.findIndex((item) => item.id === channelParent.id);
+      if (idx >= 0) {
+        win.messages[idx] = {
+          ...win.messages[idx],
+          thread: { id: thread.value.id, messageCount: postedCount },
+          hasThread: true,
+        };
+      }
+      this.placeThreadPost(win, thread.value.id, posted.value, postedCount);
+      await this.enrichReplies(token, [posted.value]);
+      agent.report('Сообщение опубликовано в треде.', true);
+      return { kind: 'state', state: this.snapshot(pageId) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       agent.report(message, false);

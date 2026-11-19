@@ -7,6 +7,8 @@ export const MR_PREFIX = 'MR_SYN3';
 export const DMR_PREFIX = 'DMR_SYN3';
 /** Review message prefix in Discord threads: `R_SYN3: Ревью N | branch | rd | H:…`. */
 export const REVIEW_PREFIX = 'R_SYN3';
+/** Re-review message prefix: `RR_SYN3: Реревью N на Ревью K | branch | rd | L:1, 2`. */
+export const REREVIEW_PREFIX = 'RR_SYN3';
 /** Explain («Что сделано») message prefix: `W_SYN3: Что сделано | branch | rl`. */
 export const EXPLAIN_PREFIX = 'W_SYN3';
 /** Chip and file title for an explain message. Older Discord lines still say `Что делаем?`. */
@@ -128,6 +130,9 @@ export function parseReviewSeverityLine(line: string): ParsedReviewSeverity | un
 
 const MR_HEAD_RE = /^\(?((?:MR_SYN3|DMR_SYN3))\)?:\s*(.*)$/;
 const REVIEW_HEAD_RE = /^\(?R_SYN3\)?:\s*(.*)$/;
+const REREVIEW_HEAD_RE = /^\(?RR_SYN3\)?:\s*(.*)$/;
+/** One selected level: `L:1, 2` or `H:all`. */
+const REREVIEW_PART_RE = /^([HML]):\s*(all|\d+(?:\s*,\s*\d+)*)\s*$/i;
 const EXPLAIN_HEAD_RE = /^\(?W_SYN3\)?:\s*(.*)$/;
 const SCENARIO_GROUP_HEAD_RE = /^\(?GRSCN_SYN3\)?\s*$/i;
 const SCENARIO_HEAD_RE = /^\(?SCN_SYN3\)?\s*$/i;
@@ -408,6 +413,105 @@ export function isDraftMrMessage(content: string): boolean {
 export function isReviewMessage(content: string): boolean {
   const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
   return REVIEW_HEAD_RE.test(head);
+}
+
+export function isRereviewMessage(content: string): boolean {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return REREVIEW_HEAD_RE.test(head);
+}
+
+/** `R_SYN3` or `RR_SYN3`. Both take the next review number in a thread. */
+export function isReviewFamilyMessage(content: string): boolean {
+  return isReviewMessage(content) || isRereviewMessage(content);
+}
+
+/** Chosen items for a re-review. `all` is every bullet of that level. */
+export type RereviewPick = number[] | 'all';
+export type RereviewSelection = Partial<Record<ReviewLevel, RereviewPick>>;
+
+/** Chip and file tail. Empty levels are omitted. Indexes use a space after the comma. */
+export function formatRereviewSelection(selection: RereviewSelection): string {
+  const parts: string[] = [];
+  for (const level of ['H', 'M', 'L'] as const) {
+    const pick = selection[level];
+    if (!pick || (Array.isArray(pick) && pick.length === 0)) {
+      continue;
+    }
+    if (pick === 'all') {
+      parts.push(`${level}:all`);
+      continue;
+    }
+    const nums = [...new Set(pick)].filter((item) => Number.isInteger(item) && item > 0).sort((a, b) => a - b);
+    if (nums.length) {
+      parts.push(`${level}:${nums.join(', ')}`);
+    }
+  }
+  return parts.join(' | ');
+}
+
+/** `L:1, 2`, `H:all | L:1`, or the same text after `branch | rd |`. */
+export function parseRereviewSelection(raw: string): RereviewSelection | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '-') {
+    return undefined;
+  }
+  const prefix = REVIEW_SCOPE_PREFIX_RE.exec(trimmed);
+  const rest = (prefix ? trimmed.slice(prefix[0].length) : trimmed).trim();
+  const parts = rest.split('|').map((item) => item.trim()).filter(Boolean);
+  if (!parts.length) {
+    return undefined;
+  }
+  const selection: RereviewSelection = {};
+  for (const part of parts) {
+    const match = REREVIEW_PART_RE.exec(part);
+    const level = match ? reviewLevel(match[1]) : undefined;
+    if (!match || !level || selection[level]) {
+      return undefined;
+    }
+    if (match[2].toLowerCase() === 'all') {
+      selection[level] = 'all';
+      continue;
+    }
+    const nums = match[2]
+      .split(',')
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item > 0);
+    if (!nums.length) {
+      return undefined;
+    }
+    selection[level] = [...new Set(nums)].sort((a, b) => a - b);
+  }
+  return selection;
+}
+
+export function formatOpenValue(bullets: ReviewFixBullets): string {
+  const selection: RereviewSelection = {};
+  for (const level of ['H', 'M', 'L'] as const) {
+    if (bullets[level].length) {
+      selection[level] = bullets[level];
+    }
+  }
+  return formatRereviewSelection(selection) || '-';
+}
+
+/** `open:` indexes whose «Что чинить» is not «исправлено». `-` and a missing line are empty. */
+export function parseOpenLine(content: string): ReviewFixBullets {
+  const bullets = emptyFixBullets();
+  const raw = metaLineValue(content, 'open');
+  if (!raw || raw === '-') {
+    return bullets;
+  }
+  const parsed = parseRereviewSelection(raw);
+  if (!parsed) {
+    return bullets;
+  }
+  for (const level of ['H', 'M', 'L'] as const) {
+    const pick = parsed[level];
+    if (Array.isArray(pick)) {
+      bullets[level] = pick;
+    }
+  }
+  return bullets;
 }
 
 export function isExplainMessage(content: string): boolean {
@@ -1141,6 +1245,39 @@ export function formatReviewDiscordBody(opts: {
 }
 
 /**
+ * Thread reply that re-checks selected bullets of an existing review.
+ *
+ * RR_SYN3: Реревью N на Ревью K | branch | rd | L:1, 2
+ * Model: …
+ * Skill: …
+ * open: L:1, 2
+ * status: -
+ *
+ * No `fixes:` until a neurofix runs. `open: -` means every selected row is «исправлено».
+ */
+export function formatRereviewDiscordBody(opts: {
+  reviewNumber: number;
+  parentNumber: number;
+  scope: ReviewScopeToken;
+  depth: ReviewDepthToken;
+  selection: string;
+  open: ReviewFixBullets;
+  model: string;
+  skillPath: string;
+}): string {
+  const model = opts.model.trim() || '—';
+  const skill = opts.skillPath.trim() || '—';
+  const selection = opts.selection.trim();
+  return [
+    `${REREVIEW_PREFIX}: Реревью ${opts.reviewNumber} на Ревью ${opts.parentNumber} | ${opts.scope} | ${opts.depth} | ${selection}`,
+    `Model: ${model}`,
+    `Skill: ${skill}`,
+    `open: ${formatOpenValue(opts.open)}`,
+    'status: -',
+  ].join('\n');
+}
+
+/**
  * Discord message for an explain («Что сделано») file attachment.
  *
  * Channel root or thread reply:
@@ -1269,6 +1406,36 @@ export function parseReviewMessagePill(content: string): string | undefined {
     return undefined;
   }
   return `Ревью ${plain[1]} | ${normalizeSeverityMatch(sev)}`;
+}
+
+/** Pill label from the first line of an RR_SYN3 message. */
+export function parseRereviewMessagePill(content: string): string | undefined {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  const match = REREVIEW_HEAD_RE.exec(head);
+  if (!match) {
+    return undefined;
+  }
+  const rest = (match[1] || '').trim().replace(/\s+/g, ' ');
+  const scoped =
+    /^(?:Реревью|Rereview)\s+(\d+)\s+на\s+(?:Ревью|Review)\s+(\d+)\s*\|\s*(branch|changes?)\s*\|\s*(rs|rl|rm|rd)\s*\|\s*(.+)$/i.exec(
+      rest,
+    );
+  if (!scoped) {
+    return undefined;
+  }
+  const scope = normalizeReviewScopeToken(scoped[3]);
+  const selection = parseRereviewSelection(scoped[5]);
+  const formatted = selection ? formatRereviewSelection(selection) : '';
+  if (!scope || !formatted) {
+    return undefined;
+  }
+  return `Реревью ${scoped[1]} на Ревью ${scoped[2]} | ${scope} | ${scoped[4].toLowerCase()} | ${formatted}`;
+}
+
+/** Parent review number from a re-review pill, e.g. `Реревью 4 на Ревью 1 | …`. */
+export function parseRereviewParentNumber(pill: string): number | undefined {
+  const match = /на\s+(?:Ревью|Review)\s+(\d+)/i.exec(pill);
+  return match ? Number(match[1]) : undefined;
 }
 
 export type ScenarioGroupStatus = 'open' | 'lock';

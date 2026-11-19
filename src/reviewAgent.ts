@@ -3,10 +3,12 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+  emptyFixBullets,
   EXPLAIN_TITLE,
   findSeverityLine,
   formatReviewScopeLine,
   formatSeverityLine,
+  parseRereviewSelection,
   parseReviewSeverityLine,
   REVIEW_SEVERITY_RE,
   reviewLevel,
@@ -26,25 +28,13 @@ export type ReviewFixGroups = {
   groups: { H: string[]; M: string[]; L: string[] };
 };
 
-/** Parse review attachment body into H/M/L groups. Legacy S headers map to L. */
-export function parseReviewFixGroups(
-  text: string,
-): { ok: true; counts: ReviewFixGroups['counts']; groups: ReviewFixGroups['groups'] } | { ok: false; message: string } {
-  const lines = text.split(/\r?\n/);
-  const parsedLine = parseReviewSeverityLine((lines[2] || '').trim());
-  const sevMatch = parsedLine?.severity.match(REVIEW_SEVERITY_RE);
-  if (!parsedLine || !sevMatch) {
-    return { ok: false, message: 'В файле ревью нет строки H:N | M:N | L:N' };
-  }
-  const counts = {
-    H: Number(sevMatch[1]),
-    M: Number(sevMatch[2]),
-    L: Number(sevMatch[4]),
-  };
+function collectReviewGroups(
+  lines: string[],
+): { ok: true; groups: ReviewFixGroups['groups'] } | { ok: false; message: string } {
   const groups: ReviewFixGroups['groups'] = { H: [], M: [], L: [] };
   const seen = new Set<ReviewLevel>();
   let current: ReviewLevel | undefined;
-  for (const raw of lines.slice(3)) {
+  for (const raw of lines) {
     const trimmed = raw.trim();
     if (!trimmed) {
       continue;
@@ -67,24 +57,87 @@ export function parseReviewFixGroups(
         return { ok: false, message: 'Пункт ревью вне группы H/M/L' };
       }
       groups[current].push(trimmed.replace(/^-\s+/, '').trim());
-      continue;
-    }
-    // Ignore non-bullet prose after severity.
-  }
-  for (const letter of ['H', 'M', 'L'] as const) {
-    const expected = counts[letter];
-    const actual = groups[letter].length;
-    if (expected === 0 && actual === 0) {
-      continue;
-    }
-    if (expected !== actual) {
-      return {
-        ok: false,
-        message: `Группа ${letter}: в строке severity ${expected}, в теле ${actual}`,
-      };
     }
   }
-  return { ok: true, counts, groups };
+  return { ok: true, groups };
+}
+
+/** Parse review attachment body into H/M/L groups. Legacy S headers map to L. */
+export function parseReviewFixGroups(
+  text: string,
+): { ok: true; counts: ReviewFixGroups['counts']; groups: ReviewFixGroups['groups'] } | { ok: false; message: string } {
+  const lines = text.split(/\r?\n/);
+  const header = (lines[2] || '').trim();
+  const parsedLine = parseReviewSeverityLine(header);
+  const sevMatch = parsedLine?.severity.match(REVIEW_SEVERITY_RE);
+  const collected = collectReviewGroups(lines.slice(3));
+  if (!collected.ok) {
+    return collected;
+  }
+  // A re-review file keeps the chosen indexes on line 3. `H:1 | M:1 | L:1`
+  // looks like a count line, and a new defect must not fail that check.
+  const rereviewFile = /^(?:Реревью|Rereview)\b/i.test((lines[0] || '').trim());
+  if (rereviewFile) {
+    if (!parseRereviewSelection(header)) {
+      return { ok: false, message: 'В файле реревью нет выбранных пунктов' };
+    }
+    return {
+      ok: true,
+      counts: {
+        H: collected.groups.H.length,
+        M: collected.groups.M.length,
+        L: collected.groups.L.length,
+      },
+      groups: collected.groups,
+    };
+  }
+  if (parsedLine && sevMatch) {
+    const counts = {
+      H: Number(sevMatch[1]),
+      M: Number(sevMatch[2]),
+      L: Number(sevMatch[4]),
+    };
+    for (const letter of ['H', 'M', 'L'] as const) {
+      const expected = counts[letter];
+      const actual = collected.groups[letter].length;
+      if (expected === 0 && actual === 0) {
+        continue;
+      }
+      if (expected !== actual) {
+        return {
+          ok: false,
+          message: `Группа ${letter}: в строке severity ${expected}, в теле ${actual}`,
+        };
+      }
+    }
+    return { ok: true, counts, groups: collected.groups };
+  }
+  if (parseRereviewSelection(header)) {
+    return {
+      ok: true,
+      counts: {
+        H: collected.groups.H.length,
+        M: collected.groups.M.length,
+        L: collected.groups.L.length,
+      },
+      groups: collected.groups,
+    };
+  }
+  return { ok: false, message: 'В файле ревью нет строки H:N | M:N | L:N' };
+}
+
+/** Indexes whose «Что чинить» is not exactly «исправлено». */
+export function rereviewOpenIndexes(groups: ReviewFixGroups['groups']): ReviewFixBullets {
+  const bullets = emptyFixBullets();
+  for (const level of ['H', 'M', 'L'] as const) {
+    groups[level].forEach((text, index) => {
+      const fix = splitFixBullet(text).fix.replace(/\.+$/g, '').trim().toLowerCase();
+      if (fix !== 'исправлено') {
+        bullets[level].push(index + 1);
+      }
+    });
+  }
+  return bullets;
 }
 
 export type ReviewFixRow = {
@@ -164,6 +217,13 @@ async function resolveAgentBin(): Promise<{ bin: string; prefix: string[] } | un
   return undefined;
 }
 
+export type RereviewPromptItem = {
+  level: ReviewLevel;
+  index: number;
+  text: string;
+  where: string;
+};
+
 function buildPrompt(opts: {
   skillPath: string;
   kind: ReviewKind;
@@ -174,6 +234,11 @@ function buildPrompt(opts: {
   branch?: string;
   baseBranch?: string;
   hostDiff?: string;
+  rereview?: {
+    parentNumber: number;
+    selection: string;
+    items: RereviewPromptItem[];
+  };
 }): string {
   const kindLabel = opts.kind === 'branch' ? 'ревью ветки' : 'ревью изменений';
   const command = reviewDepthCommand(opts.depth);
@@ -205,13 +270,57 @@ function buildPrompt(opts: {
       '--- end host-diff ---',
     );
   }
+  if (opts.rereview) {
+    const itemLines = opts.rereview.items.map((item) => {
+      const where = item.where.trim();
+      return where
+        ? `${item.level}:${item.index}. ${item.text}\nГде: ${where}`
+        : `${item.level}:${item.index}. ${item.text}`;
+    });
+    lines.push(
+      'Проверяются только эти пункты. Не ищи дефекты вне них.',
+      `Selection: ${opts.rereview.selection}`,
+      'Это ревью родительского Ревью ' + String(opts.rereview.parentNumber) + '.',
+      'Первая строка ответа — ровно строка Selection, без слова Selection и без branch, changes, rl, rm, rd.',
+      'Новую поломку в первую строку не включай. Добавь её отдельным пунктом H, M или L в группах и в таблице.',
+      '«Что сломано» сохрани. Если пункт исправлен, в «Что чинить» напиши ровно: исправлено',
+      'Если нет — поясни, что ещё чинить. «Где» сохрани или дополни.',
+      'На чужой ветке пути «Где» ищи внутри host-diff. Локальное дерево не открывай, если в запуске есть host-diff.',
+      '',
+      'Пункты:',
+      itemLines.join('\n\n'),
+    );
+  }
   lines.push(
     'Answer in ask mode. Put the severity line first in the form exactly:',
-    'H:N | M:N | L:N',
+    opts.rereview ? opts.rereview.selection : 'H:N | M:N | L:N',
     'Do not write branch, changes, rl, rm, or rd on that line. Syn3 adds them.',
     'Then write the H/M/L groups with bullets, then the readable review block.',
   );
   return lines.join('\n');
+}
+
+/** Drop a leading severity or selection line. The caller writes the canonical header. */
+function stripRereviewMarker(stdout: string): string {
+  const lines = stdout.split(/\r?\n/);
+  let started = false;
+  const body: string[] = [];
+  for (const line of lines) {
+    if (!started) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const bare = trimmed.replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
+      if (findSeverityLine(trimmed) || parseRereviewSelection(bare)) {
+        started = true;
+        continue;
+      }
+      started = true;
+    }
+    body.push(line);
+  }
+  return body.join('\n').trim();
 }
 
 type AgentStream = {
@@ -431,6 +540,11 @@ export async function runReviewSkill(opts: {
   branch?: string;
   baseBranch?: string;
   hostDiff?: string;
+  rereview?: {
+    parentNumber: number;
+    selection: string;
+    items: RereviewPromptItem[];
+  };
   /** Print `thinking` deltas. Off by default; reasoning is not part of the saved review. */
   printThinking?: boolean;
   /** Print tool start and finish. On unless the profile stores false. */
@@ -541,13 +655,26 @@ export async function runReviewSkill(opts: {
         emitStreamLine(stream, stream.buf, emit, print);
       }
       emit(`\r\n[exit ${code ?? '?'}]\r\n`);
-      const parsed = reviewBody(pickAnswer(stream));
+      const answer = pickAnswer(stream);
+      if (opts.rereview) {
+        const body = stripRereviewMarker(answer);
+        if (!body) {
+          const message = closed ? 'Review agent cancelled' : 'В ответе агента нет текста реревью';
+          emit(`\r\n${message}\r\n`);
+          finish({ ok: false, message });
+          return;
+        }
+        emit('реревью собрано, публикую в тред\r\n');
+        finish({ ok: true, severity: opts.rereview.selection, body, report });
+        return;
+      }
+      const parsed = reviewBody(answer);
       if (parsed) {
         emit('ревью собрано, публикую в тред\r\n');
         finish({ ok: true, ...parsed, report });
         return;
       }
-      const stdout = pickAnswer(stream);
+      const stdout = answer;
       const message =
         !stdout && closed
           ? 'Review agent cancelled'
@@ -893,6 +1020,30 @@ export async function writeReviewFile(opts: {
     `Ревью ${opts.reviewNumber}`,
     opts.mrLine,
     formatReviewScopeLine(reviewScopeToken(opts.kind), reviewDepthToken(opts.depth), counts),
+    opts.body,
+    '',
+  ].join('\n');
+  await fs.writeFile(fsPath, text, 'utf8');
+  return fsPath;
+}
+
+export async function writeRereviewFile(opts: {
+  dirPath: string;
+  reviewNumber: number;
+  parentNumber: number;
+  mrLine: string;
+  scope: 'branch' | 'changes';
+  depth: 'rs' | 'rl' | 'rm' | 'rd';
+  selection: string;
+  body: string;
+}): Promise<string> {
+  await fs.mkdir(opts.dirPath, { recursive: true });
+  const name = `rereview-${opts.reviewNumber}-${Date.now()}.md`;
+  const fsPath = path.join(opts.dirPath, name);
+  const text = [
+    `Реревью ${opts.reviewNumber} на Ревью ${opts.parentNumber}`,
+    opts.mrLine,
+    `${opts.scope} | ${opts.depth} | ${opts.selection}`,
     opts.body,
     '',
   ].join('\n');

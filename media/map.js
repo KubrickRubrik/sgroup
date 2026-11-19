@@ -86,7 +86,7 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, rereviewExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   /**
    * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка» / «Что сделано → другая ветка».
@@ -1101,6 +1101,13 @@
   /** @type {{ pageId: string, edge: 'initial' | 'older' | 'newer' } | null} */
   let reviewLoadPending = null;
   /**
+   * Optimistic thread-load slot until a settled snapshot arrives.
+   * `armed` flips on the next turn so a reviewState already in the queue
+   * does not put the chip back before this load's own snapshot.
+   * @type {{ pageId: string, messageId: string, direction: 'older' | 'newer', armed: boolean } | null}
+   */
+  let reviewThreadLoadPending = null;
+  /**
    * MR chip drawn before the host snapshot. Cleared once that snapshot carries
    * the same title. A newer skeletonSeq from another operation leaves it up.
    * @type {{ pageId: string, title: string, draft: boolean } | null}
@@ -1140,6 +1147,12 @@
   let reviewSkelShown = '';
   /** Pages that already sent reviewLoad while the snapshot was still missing. */
   const reviewAutoLoad = new Set();
+  /** Initial channel load should land on the newest rows once the list is painted. */
+  let reviewScrollToEnd = false;
+  /** Page slide must not put back the previous offset after that glide. */
+  let reviewPinEnd = false;
+  /** Bumps cancel an in-flight glide to the end of the review list. */
+  let reviewScrollAnim = 0;
   /** Pages that already sent scenarioReload while the snapshot was still missing. */
   const scenarioAutoLoad = new Set();
   /** Settled review snapshots, so switching back does not refetch. */
@@ -1337,6 +1350,15 @@
         (reviewState.loadingEdge || !reviewState.loading)
       ) {
         reviewLoadPending = null;
+      }
+      if (
+        reviewThreadLoadPending &&
+        reviewThreadLoadPending.armed &&
+        reviewState &&
+        reviewThreadLoadPending.pageId === reviewState.pageId &&
+        !reviewState.loading
+      ) {
+        reviewThreadLoadPending = null;
       }
       if (activePage()?.kind === 'review') {
         paintReviewPage();
@@ -2592,7 +2614,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, explain?: string, explainDepth?: string, explainRoot?: boolean, reviewEdit?: string, neuroFix?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, explain?: string, explainDepth?: string, explainRoot?: boolean, reviewEdit?: string, neuroFix?: string, rereview?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -2629,6 +2651,9 @@
     if (attrs.neuroFix) {
       button.dataset.neuroFix = attrs.neuroFix;
     }
+    if (attrs.rereview) {
+      button.dataset.rereview = attrs.rereview;
+    }
     if (attrs.pageId) {
       button.dataset.pageId = attrs.pageId;
     }
@@ -2660,6 +2685,7 @@
     ignoreContextLeave = true;
     clearReviewDepthMenu();
     clearNeuroFixMenu();
+    clearRereviewMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
     const chrome = ensureMenuChrome(contextMenu);
@@ -2765,6 +2791,7 @@
       explainScope: '',
       reviewStatusExpanded: false,
       neurofixExpanded: false,
+      rereviewExpanded: false,
       ctx,
       x,
       y,
@@ -2809,6 +2836,8 @@
   let reviewDepthMenu = null;
   /** @type {HTMLElement | null} */
   let neuroFixMenu = null;
+  /** @type {HTMLElement | null} */
+  let rereviewMenu = null;
 
   function clearReviewDepthMenu() {
     reviewDepthMenu?.remove();
@@ -2818,6 +2847,66 @@
   function clearNeuroFixMenu() {
     neuroFixMenu?.remove();
     neuroFixMenu = null;
+  }
+
+  function clearRereviewMenu() {
+    rereviewMenu?.remove();
+    rereviewMenu = null;
+  }
+
+  /** Total H/M/L on the source review pill, including bullets already fixed. */
+  function sourceSeverityCounts(node) {
+    return parsePillSeverityCounts(node && node.pillLabel);
+  }
+
+  /** @param {{ open?: { H?: number[], M?: number[], L?: number[] } } | null | undefined} node */
+  function reviewOpenBullets(node) {
+    const open = node && node.open;
+    return {
+      H: Array.isArray(open && open.H) ? open.H : [],
+      M: Array.isArray(open && open.M) ? open.M : [],
+      L: Array.isArray(open && open.L) ? open.L : [],
+    };
+  }
+
+  /** Open re-review rows that neurofix has not recorded yet. */
+  function rereviewRemainingCounts(node) {
+    const open = reviewOpenBullets(node);
+    const fixed = reviewFixBullets(node);
+    const left = (letter) => open[letter].filter((index) => !fixed[letter].includes(index));
+    return {
+      H: left('H').length,
+      M: left('M').length,
+      L: left('L').length,
+    };
+  }
+
+  function reviewThreadParentId(messageId) {
+    const messages = reviewState?.messages || [];
+    if (messages.some((item) => item.id === messageId)) {
+      return messageId;
+    }
+    for (const msg of messages) {
+      if ((msg.replies || []).some((item) => item.id === messageId)) {
+        return msg.id;
+      }
+    }
+    return messageId;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H?: number[] | 'all', M?: number[] | 'all', L?: number[] | 'all' }} selection
+   */
+  function postRereview(pageId, messageId, selection) {
+    beginLocalReviewSkeleton(pageId, reviewThreadParentId(messageId));
+    vscode.postMessage({
+      type: 'reviewRereview',
+      pageId,
+      messageId,
+      selection,
+    });
   }
 
   /**
@@ -2911,6 +3000,96 @@
     });
     document.body.append(fly);
     neuroFixMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * Re-review row. Click opens High / Medium / Low / All / List.
+   * @param {HTMLElement} scroller
+   * @param {boolean} expanded
+   */
+  function appendRereviewRow(scroller, expanded) {
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleRereview';
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = t('rereview');
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    scroller.append(row);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H: number, M: number, L: number }} counts
+   */
+  function mountRereviewMenu(pageId, messageId, counts) {
+    clearRereviewMenu();
+    if (!(contextMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = contextMenu.querySelector('[data-menu-action="toggleRereview"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
+    const items = [
+      { scope: 'H', label: t('rereviewHigh'), show: counts.H > 0 },
+      { scope: 'M', label: t('rereviewMedium'), show: counts.M > 0 },
+      { scope: 'L', label: t('rereviewLow'), show: counts.L > 0 },
+      {
+        scope: 'all',
+        label: t('rereviewAll'),
+        show: counts.H > 0 || counts.M > 0 || counts.L > 0,
+      },
+    ];
+    for (const item of items) {
+      if (!item.show) {
+        continue;
+      }
+      const choice = menuActionChoice(item.label, {
+        rereview: item.scope,
+        pageId,
+        messageId,
+      });
+      fly.append(choice);
+    }
+    const listBtn = menuAction(t('rereviewList'));
+    listBtn.dataset.menuAction = 'rereviewList';
+    listBtn.dataset.pageId = pageId;
+    listBtn.dataset.messageId = messageId;
+    fly.append(listBtn);
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    rereviewMenu = fly;
     const anchorRect = anchor.getBoundingClientRect();
     const menuRect = contextMenu.getBoundingClientRect();
     const flyWidth = fly.offsetWidth || 196;
@@ -3196,9 +3375,21 @@
       const reply = findReviewReply(messageId);
       const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
       const source = reply || chip;
-      const counts = remainingSeverityCounts(parsePillSeverityCounts(source?.pillLabel), source);
+      const counts = source?.isRereview
+        ? rereviewRemainingCounts(source)
+        : remainingSeverityCounts(parsePillSeverityCounts(source?.pillLabel), source);
       if (counts && counts.H + counts.M + counts.L > 0) {
         mountNeuroFixMenu(pageId, messageId, counts);
+      }
+    }
+    if (openMenuState.rereviewExpanded && openMenuState.ctx) {
+      const pageId = String(openMenuState.ctx.reviewPageId || '');
+      const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const counts = sourceSeverityCounts(reply || chip);
+      if (counts && counts.H + counts.M + counts.L > 0) {
+        mountRereviewMenu(pageId, messageId, counts);
       }
     }
   }
@@ -3215,6 +3406,7 @@
     cancelMenuClose('context');
     clearReviewDepthMenu();
     clearNeuroFixMenu();
+    clearRereviewMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
     if (section === 'reviewMr') {
@@ -3388,6 +3580,10 @@
       if (counts && counts.H + counts.M + counts.L > 0) {
         appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
       }
+      const rereviewCounts = sourceSeverityCounts(chip);
+      if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
+        appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+      }
       scroller.append(
         menuActionChoice(t('menuChangeColor'), {
           reviewEdit: 'color',
@@ -3481,9 +3677,15 @@
         },
         { plain: true },
       );
-      const counts = remainingSeverityCounts(parsePillSeverityCounts(reply?.pillLabel), reply);
-      if (counts && counts.H + counts.M + counts.L > 0) {
-        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
+      if (!reply?.isRereview) {
+        const counts = remainingSeverityCounts(parsePillSeverityCounts(reply?.pillLabel), reply);
+        if (counts && counts.H + counts.M + counts.L > 0) {
+          appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
+        }
+        const rereviewCounts = sourceSeverityCounts(reply);
+        if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
+          appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+        }
       }
       scroller.append(
         menuActionChoice(t('menuDelete'), {
@@ -3504,10 +3706,9 @@
       );
       const source = reply || rootChip;
       const blocked = reviewNeurofixBlocked(messageId);
-      const counts = remainingSeverityCounts(
-        parsePillSeverityCounts(source?.pillLabel),
-        source,
-      );
+      const counts = source?.isRereview
+        ? rereviewRemainingCounts(source)
+        : remainingSeverityCounts(parsePillSeverityCounts(source?.pillLabel), source);
       if (counts) {
         /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
         const items = [
@@ -3545,6 +3746,12 @@
             muteNeurofixAction(listBtn);
           }
           scroller.append(listBtn);
+        }
+      }
+      if (!source?.isRereview) {
+        const rereviewCounts = sourceSeverityCounts(source);
+        if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
+          appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
         }
       }
       updateMenuScrollbar(contextMenu);
@@ -4077,9 +4284,47 @@
           openMenuState.reviewExpanded = false;
           openMenuState.reviewScope = '';
           openMenuState.reviewStatusExpanded = false;
+          openMenuState.rereviewExpanded = false;
         }
         rerenderContextMenu();
       }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleRereview') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.rereviewExpanded = !openMenuState.rereviewExpanded;
+        if (openMenuState.rereviewExpanded) {
+          openMenuState.neurofixExpanded = false;
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.reviewStatusExpanded = false;
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.rereview) {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const scope = button.dataset.rereview;
+      const selection = scope === 'all' ? { H: 'all', M: 'all', L: 'all' } : { [scope]: 'all' };
+      closeContextMenu();
+      postRereview(pageId, messageId, selection);
+      return;
+    }
+
+    if (button.dataset.menuAction === 'rereviewList') {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const menuRect = contextMenu.getBoundingClientRect();
+      const flyRect = rereviewMenu?.getBoundingClientRect();
+      const left = Number.isFinite(menuRect.left) ? menuRect.left : 0;
+      const top = Number.isFinite(menuRect.top) ? menuRect.top : 0;
+      const width = flyRect && flyRect.width > menuRect.width ? flyRect.width : menuRect.width;
+      closeContextMenu();
+      openNeuroFixListPanel({ pageId, messageId, left, top, width, mode: 'rereview' });
       return;
     }
 
@@ -5015,6 +5260,17 @@
 
   /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number } } } | null | undefined} node */
   function reviewFixLabel(node) {
+    const bullets = reviewFixBullets(node);
+    const parts = [];
+    for (const letter of ['H', 'M', 'L']) {
+      const nums = bullets[letter];
+      if (nums.length) {
+        parts.push(`${letter}:${nums.join(', ')}`);
+      }
+    }
+    if (parts.length) {
+      return parts.join(' | ');
+    }
     const counts = node && node.fixes && node.fixes.counts;
     if (!counts) {
       return '';
@@ -5022,7 +5278,11 @@
     const h = Number(counts.H) || 0;
     const m = Number(counts.M) || 0;
     const l = Number(counts.L) || 0;
-    return `H:${h} | M:${m} | L:${l}`;
+    const legacy = [];
+    if (h) legacy.push(`H:${h}`);
+    if (m) legacy.push(`M:${m}`);
+    if (l) legacy.push(`L:${l}`);
+    return legacy.join(' | ');
   }
 
   /**
@@ -5767,7 +6027,10 @@
       stage.style.height = '';
       stage.classList.remove('is-sliding');
       flushDeferredRender();
-      if (entityAlignPending() && !isFolding) {
+      if (reviewPinEnd) {
+        reviewPinEnd = false;
+        animateReviewListToEnd(++reviewScrollAnim);
+      } else if (entityAlignPending() && !isFolding) {
         applyEntityFlash(true);
       } else if (!entityAlignPending()) {
         applyDocScroll(restoredScroll);
@@ -7303,49 +7566,219 @@
     return (linked ? linked[1] : value).trim();
   }
 
-  /**
-   * Temporary: also show the branch when it is the current checkout.
-   * Set to false to hide a name that matches checkout again.
-   */
-  const SHOW_CHECKOUT_BRANCH = true;
+  /** Checkout branch stays on screen this long after the pointer leaves. */
+  const CHECKOUT_BRANCH_HIDE_MS = 2000;
+  /** Nested branch appears only after the pointer has stayed this long. */
+  const CHECKOUT_BRANCH_SHOW_MS = 500;
+
+  /** @type {Set<string>} */
+  const checkoutBranchShown = new Set();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const checkoutBranchHideTimers = new Map();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const checkoutBranchShowTimers = new Map();
 
   /**
-   * Branch name for the stamp. Hidden when it matches the current checkout,
-   * unless SHOW_CHECKOUT_BRANCH is on.
+   * Own `Branch:` line, or the parent chip when a thread pill has none.
    * @param {string | undefined} branch
-   * @param {string | undefined} checkout
+   * @param {string | undefined} [fallback]
    */
-  function stampBranchLabel(branch, checkout) {
-    const name = reviewBranchLabel(branch);
-    if (!name) {
-      return '';
+  function stampBranchName(branch, fallback) {
+    return reviewBranchLabel(branch) || reviewBranchLabel(fallback);
+  }
+
+  /**
+   * @param {string} revealId
+   */
+  function checkoutBranchNodes(revealId) {
+    return document.querySelectorAll(
+      `[data-branch-reveal="${revealId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`,
+    );
+  }
+
+  /**
+   * @param {string} revealId
+   * @param {boolean} shown
+   */
+  function applyCheckoutBranchShown(revealId, shown) {
+    checkoutBranchNodes(revealId).forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.classList.toggle('is-shown', shown);
+      }
+    });
+  }
+
+  /** @param {string} revealId */
+  function cancelCheckoutBranchShow(revealId) {
+    const pending = checkoutBranchShowTimers.get(revealId);
+    if (pending) {
+      clearTimeout(pending);
+      checkoutBranchShowTimers.delete(revealId);
     }
-    if (SHOW_CHECKOUT_BRANCH) {
-      return name;
+  }
+
+  /** @param {string} revealId */
+  function showCheckoutBranch(revealId) {
+    if (!revealId) {
+      return;
     }
-    const current = String(checkout || '').trim();
-    if (current && name.toLocaleLowerCase() === current.toLocaleLowerCase()) {
-      return '';
+    const pending = checkoutBranchHideTimers.get(revealId);
+    if (pending) {
+      clearTimeout(pending);
+      checkoutBranchHideTimers.delete(revealId);
     }
-    return name;
+    cancelCheckoutBranchShow(revealId);
+    checkoutBranchShown.add(revealId);
+    applyCheckoutBranchShown(revealId, true);
+  }
+
+  /**
+   * Show after the pointer has stayed. A label that is already up stays up.
+   * @param {string} revealId
+   */
+  function scheduleShowCheckoutBranch(revealId) {
+    if (!revealId) {
+      return;
+    }
+    const hiding = checkoutBranchHideTimers.get(revealId);
+    if (hiding) {
+      clearTimeout(hiding);
+      checkoutBranchHideTimers.delete(revealId);
+    }
+    if (checkoutBranchShown.has(revealId) || checkoutBranchShowTimers.has(revealId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      checkoutBranchShowTimers.delete(revealId);
+      showCheckoutBranch(revealId);
+    }, CHECKOUT_BRANCH_SHOW_MS);
+    checkoutBranchShowTimers.set(revealId, timer);
+  }
+
+  /** @param {string} revealId */
+  function scheduleHideCheckoutBranch(revealId) {
+    if (!revealId) {
+      return;
+    }
+    cancelCheckoutBranchShow(revealId);
+    const pending = checkoutBranchHideTimers.get(revealId);
+    if (pending) {
+      clearTimeout(pending);
+    }
+    if (!checkoutBranchShown.has(revealId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      checkoutBranchHideTimers.delete(revealId);
+      checkoutBranchShown.delete(revealId);
+      applyCheckoutBranchShown(revealId, false);
+    }, CHECKOUT_BRANCH_HIDE_MS);
+    checkoutBranchHideTimers.set(revealId, timer);
+  }
+
+  /** @param {string} revealId */
+  function branchHoverSelector(revealId) {
+    const safe = revealId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `[data-branch-hover="${safe}"]`;
+  }
+
+  /**
+   * Pointer on the chip or on the branch name keeps a checkout label up.
+   * Moving between those two does not start the hide timer.
+   * @param {HTMLElement} target
+   * @param {string} revealId
+   */
+  function bindCheckoutBranchHover(target, revealId) {
+    if (!revealId) {
+      return;
+    }
+    target.dataset.branchHover = revealId;
+    target.addEventListener('pointerenter', () => scheduleShowCheckoutBranch(revealId));
+    target.addEventListener('pointerleave', (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Element && next.closest(branchHoverSelector(revealId))) {
+        return;
+      }
+      scheduleHideCheckoutBranch(revealId);
+    });
   }
 
   /**
    * Date, and the branch name to its right.
+   * A revealed name stays hidden until the pointer is on the chip.
+   * `own` is the checkout branch and is drawn in the brighter text color.
    * @param {string} dateText
    * @param {string} [branchText]
+   * @param {{ own?: boolean, reveal?: boolean, revealId?: string }} [opts]
    */
-  function renderReviewStamp(dateText, branchText) {
+  function renderReviewStamp(dateText, branchText, opts) {
     const stamp = el('div', 'review-stamp');
     if (dateText) {
       stamp.append(el('span', 'review-stamp-date', dateText));
     }
     if (branchText) {
-      const branch = el('span', 'review-stamp-branch', branchText);
+      const own = !!opts?.own;
+      const reveal = !!opts?.reveal;
+      const revealId = reveal ? opts?.revealId || '' : '';
+      const shown = !!revealId && checkoutBranchShown.has(revealId);
+      const branch = el(
+        'span',
+        'review-stamp-branch' +
+          (own ? ' is-own' : '') +
+          (reveal ? ' is-reveal' : '') +
+          (shown ? ' is-shown' : ''),
+      );
+      branch.append(reviewBranchIcon(), el('span', 'review-stamp-branch-name', branchText));
       branch.title = branchText;
+      if (revealId) {
+        branch.dataset.branchReveal = revealId;
+        bindCheckoutBranchHover(branch, revealId);
+      }
+      branch.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (reveal && !branch.classList.contains('is-shown')) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'clipboardWrite',
+          text: branchText,
+          notice: 'branchCopied',
+        });
+      });
       stamp.append(branch);
     }
     return stamp;
+  }
+
+  /**
+   * @param {string} rawBranch
+   * @param {string} revealId
+   */
+  function reviewStampOpts(rawBranch, revealId) {
+    const name = reviewBranchLabel(rawBranch);
+    const checkout = reviewBranchMatchesCheckout(name);
+    return {
+      name,
+      checkout,
+      revealId: checkout ? revealId : '',
+    };
+  }
+
+  /** Path from assets/git-branch-fill.svg — sits before a stamp branch name. */
+  function reviewBranchIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-stamp-branch-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M7.10508 15.2101C8.21506 15.6501 9 16.7334 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V11.9996C7.83566 11.3719 8.87439 11 10 11H14C15.3835 11 16.5482 10.0635 16.8949 8.78991C15.7849 8.34988 15 7.26661 15 6C15 4.34315 16.3431 3 18 3C19.6569 3 21 4.34315 21 6C21 7.3332 20.1303 8.46329 18.9274 8.85392C18.5222 11.2085 16.4703 13 14 13H10C8.61653 13 7.45179 13.9365 7.10508 15.2101Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
   }
 
   /** Paths from assets/sparkling-2-fill.svg — Neurofix trigger next to review pill. */
@@ -7562,12 +7995,24 @@
     return '';
   }
 
+  /** @param {string} pageId */
+  function reviewLoadsBusy(pageId) {
+    const painted = reviewPaintEdge(pageId);
+    if (painted === 'older' || painted === 'newer' || painted === 'initial') {
+      return true;
+    }
+    return !!(reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId);
+  }
+
   /**
    * @param {string} pageId
    * @param {'initial' | 'older' | 'newer'} edge
    */
   function requestReviewChannelLoad(pageId, edge) {
     if (reviewPaintEdge(pageId)) {
+      return;
+    }
+    if (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId) {
       return;
     }
     reviewLoadPending = { pageId, edge };
@@ -7826,7 +8271,8 @@
     row.append(
       linkElbow(reviewElbowMid({ leadingGap, hasStamp: true, contentHalf: 20 }), ''),
     );
-    const stamp = renderReviewStamp('', stampBranchLabel(pending.branch, reviewState?.checkout));
+    const branchOpts = reviewStampOpts(pending.branch, '');
+    const stamp = renderReviewStamp('', branchOpts.name, { own: branchOpts.checkout });
     const dateBar = reviewSkeletonBar('72px', 0);
     dateBar.classList.add('review-stamp-date');
     stamp.prepend(dateBar);
@@ -7860,7 +8306,11 @@
     );
     const body = el('div', 'review-body');
     if (withStamp) {
-      const stamp = renderReviewStamp('', stampBranchLabel(opts?.branch, reviewState?.checkout));
+      const branchOpts = reviewStampOpts(opts?.branch, '');
+      const stamp = renderReviewStamp('', branchOpts.name, {
+        own: branchOpts.checkout,
+        reveal: true,
+      });
       const dateBar = reviewSkeletonBar('72px', 0);
       dateBar.classList.add('review-stamp-date');
       stamp.prepend(dateBar);
@@ -7903,10 +8353,102 @@
     return row;
   }
 
-  /** Three plain parents, each with three plain replies. */
-  function renderReviewSkeletonTree() {
-    const tree = el('div', 'review-tree review-skel');
-    tree.setAttribute('aria-hidden', 'true');
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number] | null | undefined} msg
+   */
+  function reviewMessageColor(msg) {
+    if (!msg) {
+      return '';
+    }
+    return (
+      msg.color || (msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? '#8e4ec6' : '#6e6e6e')
+    );
+  }
+
+  const REVIEW_ARROW_UP =
+    'M12 4.83582L5.79291 11.0429L7.20712 12.4571L12 7.66424L16.7929 12.4571L18.2071 11.0429L12 4.83582ZM12 10.4857L5.79291 16.6928L7.20712 18.107L12 13.3141L16.7929 18.107L18.2071 16.6928L12 10.4857Z';
+  const REVIEW_ARROW_DOWN =
+    'M12 19.1642L18.2071 12.9571L16.7929 11.5429L12 16.3358L7.20711 11.5429L5.79289 12.9571L12 19.1642ZM12 13.5143L18.2071 7.30722L16.7929 5.89301L12 10.6859L7.20711 5.89301L5.79289 7.30722L12 13.5143Z';
+
+  /** @param {'older' | 'newer'} direction */
+  function reviewArrowIcon(direction) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-load-chip-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', direction === 'older' ? REVIEW_ARROW_UP : REVIEW_ARROW_DOWN);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {'channel' | 'thread'} where
+   * @param {'older' | 'newer'} direction
+   * @param {{ leadingGap: boolean, nextColor: string, spineColor: string, label: string, disabled: boolean, onClick: () => void }} opts
+   */
+  function renderReviewLoadChip(where, direction, opts) {
+    const row = el(
+      'div',
+      (where === 'channel' ? 'review-node' : 'review-reply-node') +
+        (opts.leadingGap ? ' has-gap' : '') +
+        ' review-load-node',
+    );
+    row.style.setProperty('--link-color', opts.spineColor || '#6e6e6e');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: opts.leadingGap, hasStamp: false, contentHalf: 11 }),
+        opts.nextColor || '',
+      ),
+    );
+    const button = el('button', 'review-load-chip');
+    button.type = 'button';
+    button.setAttribute('aria-label', opts.label);
+    button.disabled = !!opts.disabled;
+    button.append(reviewArrowIcon(direction));
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
+      opts.onClick();
+    });
+    const body = el('div', 'review-body');
+    body.append(button);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Gray parent row from the channel pack, without its child thread.
+   * @param {string} nextColor
+   */
+  function renderReviewThreadLoadSkeleton(nextColor) {
+    const row = el('div', 'review-reply-node has-gap is-skel');
+    row.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+    row.setAttribute('aria-busy', 'true');
+    row.setAttribute('aria-hidden', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 12 }),
+        nextColor || '',
+      ),
+    );
+    const body = el('div', 'review-body');
+    body.append(reviewSkeletonPlain('168px', 0, false));
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Three plain parents, each with three plain replies, appended into an existing tree.
+   * @param {HTMLElement} host
+   * @param {boolean} leadingGapFirst
+   * @param {string} continueColor stem under the last parent, when a real node follows
+   */
+  function appendReviewSkeletonPack(host, leadingGapFirst, continueColor) {
     const parentWidths = ['168px', '124px', '148px'];
     const childWidths = [
       ['96px', '72px', '88px'],
@@ -7914,10 +8456,17 @@
       ['104px', '76px', '92px'],
     ];
     for (let parent = 0; parent < REVIEW_SKELETON_PARENTS; parent += 1) {
-      const leadingGap = parent > 0;
-      const row = el('div', 'review-node is-plain' + (leadingGap ? ' has-gap' : ''));
+      const leadingGap = parent === 0 ? leadingGapFirst : true;
+      const isLast = parent === REVIEW_SKELETON_PARENTS - 1;
+      const row = el(
+        'div',
+        'review-node is-plain is-skel' +
+          (leadingGap ? ' has-gap' : '') +
+          (parent === 0 ? ' review-skel' : ''),
+      );
       row.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
-      const nextColor = parent < REVIEW_SKELETON_PARENTS - 1 ? REVIEW_SKEL_COLOR : '';
+      row.setAttribute('aria-hidden', 'true');
+      const nextColor = isLast ? continueColor || '' : REVIEW_SKEL_COLOR;
       row.append(
         linkElbow(
           reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 12 }),
@@ -7929,7 +8478,7 @@
       const children = el('div', 'review-children');
       const slide = el('div', 'review-children-slide');
       for (let child = 0; child < REVIEW_SKELETON_CHILDREN; child += 1) {
-        const reply = el('div', 'review-reply-node has-gap');
+        const reply = el('div', 'review-reply-node has-gap is-skel');
         reply.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
         const childNext = child < REVIEW_SKELETON_CHILDREN - 1 ? REVIEW_SKEL_COLOR : '';
         reply.append(
@@ -7948,8 +8497,15 @@
       children.append(slide);
       body.append(children);
       row.append(body);
-      tree.append(row);
+      host.append(row);
     }
+  }
+
+  /** Three plain parents, each with three plain replies. */
+  function renderReviewSkeletonTree() {
+    const tree = el('div', 'review-tree review-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    appendReviewSkeletonPack(tree, false, '');
     return tree;
   }
 
@@ -7998,18 +8554,82 @@
     }
   }
 
+  /** CSS `ease`: cubic-bezier(0.25, 0.1, 0.25, 1). */
+  function reviewScrollEase(t) {
+    const x1 = 0.25;
+    const y1 = 0.1;
+    const x2 = 0.25;
+    const y2 = 1;
+    const cx = 3 * x1;
+    const bx = 3 * (x2 - x1) - cx;
+    const ax = 1 - cx - bx;
+    const cy = 3 * y1;
+    const by = 3 * (y2 - y1) - cy;
+    const ay = 1 - cy - by;
+    const sampleX = (u) => ((ax * u + bx) * u + cx) * u;
+    const sampleY = (u) => ((ay * u + by) * u + cy) * u;
+    const sampleDX = (u) => (3 * ax * u + 2 * bx) * u + cx;
+    let u = t;
+    for (let i = 0; i < 6; i += 1) {
+      const dx = sampleDX(u);
+      const delta = sampleX(u) - t;
+      if (Math.abs(delta) < 1e-4 || Math.abs(dx) < 1e-6) {
+        break;
+      }
+      u = Math.min(1, Math.max(0, u - delta / dx));
+    }
+    return sampleY(u);
+  }
+
   /**
-   * @param {string} pageId
-   * @param {boolean} busy
+   * Glide from wherever the list just appeared to the newest rows.
+   * @param {number} token
    */
-  function reviewNewerButton(pageId, busy) {
-    const newer = el('button', 'review-load-edge', t('reviewLoadNewer'));
-    newer.type = 'button';
-    newer.disabled = busy;
-    newer.addEventListener('click', () => {
-      requestReviewChannelLoad(pageId, 'newer');
+  function animateReviewListToEnd(token) {
+    const node = docScroller();
+    const from = node.scrollTop || 0;
+    const to = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (to - from < 1) {
+      return;
+    }
+    const gen = ++scrollTrackGen;
+    suppressScrollTrack = true;
+    const start = performance.now();
+    const duration = 200;
+    const step = (now) => {
+      if (token !== reviewScrollAnim || scrollTrackGen !== gen) {
+        return;
+      }
+      const t = Math.min(1, (now - start) / duration);
+      const eased = reviewScrollEase(t);
+      const top = from + (to - from) * eased;
+      node.scrollTop = top;
+      heldScroll = top;
+      if (t < 1) {
+        requestAnimationFrame(step);
+        return;
+      }
+      node.scrollTop = to;
+      heldScroll = to;
+      releaseScrollTrack(gen);
+    };
+    step(performance.now());
+  }
+
+  /** List stays where it painted. The glide starts on the next frame. */
+  function scrollReviewListToEnd() {
+    reviewPinEnd = true;
+    const token = ++reviewScrollAnim;
+    requestAnimationFrame(() => {
+      if (token !== reviewScrollAnim) {
+        return;
+      }
+      if (isSliding) {
+        return;
+      }
+      reviewPinEnd = false;
+      animateReviewListToEnd(token);
     });
-    return newer;
   }
 
   function paintReviewPage() {
@@ -8075,13 +8695,15 @@
       pendingReviewId ||
       pendingExplainRoot ||
       pendingExplainId ||
-      pendingNeurofixId
+      pendingNeurofixId ||
+      (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId)
     ) {
       root.setAttribute('aria-busy', 'true');
     } else {
       root.removeAttribute('aria-busy');
     }
     if (edge === 'initial') {
+      reviewScrollToEnd = true;
       root.append(renderReviewSkeletonTree());
       if (
         pageId &&
@@ -8107,12 +8729,14 @@
       });
       box.append(retry);
       root.append(box);
+      reviewScrollToEnd = false;
       if (keepScroll) {
         applyDocScroll(keepScroll);
       }
       return;
     }
     if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
+      reviewScrollToEnd = false;
       if (!pendingMr && !pendingRoot && !pendingExplainRoot) {
         root.append(el('div', 'empty', t('reviewEmpty')));
         return;
@@ -8151,38 +8775,56 @@
       warn.append(actions);
       root.append(warn);
     }
-    const busy = edge === 'older' || edge === 'newer';
-    if (reviewState.canLoadOlder && edge !== 'older') {
-      const older = el('button', 'review-load-edge', t('reviewLoadOlder'));
-      older.type = 'button';
-      older.disabled = busy;
-      older.addEventListener('click', () => {
-        requestReviewChannelLoad(pageId, 'older');
-      });
-      root.append(older);
-    }
-    if (edge === 'older') {
-      root.append(renderReviewSkeletonTree());
-    }
-    const tree = el('div', 'review-tree');
     const messages = reviewState.messages;
     const gapId = reviewState.gapBeforeMessageId || '';
+    const showOlderSkel = edge === 'older';
+    const showOlderChip = !!(reviewState.canLoadOlder && edge !== 'older');
+    const tree = el('div', 'review-tree');
+    const first = messages[0];
+    const firstColor = reviewMessageColor(first) || '#6e6e6e';
+    const firstIsNewerGap = !!(gapId && first && first.id === gapId && edge === 'newer');
+    if (showOlderSkel) {
+      appendReviewSkeletonPack(tree, false, firstIsNewerGap ? REVIEW_SKEL_COLOR : firstColor);
+    } else if (showOlderChip) {
+      tree.append(
+        renderReviewLoadChip('channel', 'older', {
+          leadingGap: false,
+          nextColor: firstIsNewerGap ? REVIEW_SKEL_COLOR : firstColor,
+          spineColor: firstColor,
+          label: t('reviewLoadOlder'),
+          disabled: reviewLoadsBusy(pageId),
+          onClick: () => requestReviewChannelLoad(pageId, 'older'),
+        }),
+      );
+    }
+    let preceded = showOlderSkel || showOlderChip;
     messages.forEach((msg, index) => {
       if (gapId && msg.id === gapId) {
+        const spine = reviewMessageColor(msg) || '#6e6e6e';
         if (edge === 'newer') {
-          tree.append(renderReviewSkeletonTree());
+          appendReviewSkeletonPack(tree, true, spine);
         } else if (reviewState.canLoadNewer) {
-          tree.append(reviewNewerButton(pageId, busy));
+          tree.append(
+            renderReviewLoadChip('channel', 'newer', {
+              leadingGap: true,
+              nextColor: spine,
+              spineColor: spine,
+              label: t('reviewLoadNewer'),
+              disabled: reviewLoadsBusy(pageId),
+              onClick: () => requestReviewChannelLoad(pageId, 'newer'),
+            }),
+          );
         }
+        preceded = true;
       }
       const next = messages[index + 1];
       const nextColor = next
-        ? next.color ||
-          (next.isMr || next.isReviewRoot || next.isExplainRoot ? '#8e4ec6' : '#6e6e6e')
+        ? reviewMessageColor(next)
         : pendingMr || pendingRoot || pendingExplainRoot
           ? '#8e4ec6'
           : '';
-      tree.append(renderReviewNode(msg, pageId, index > 0, nextColor));
+      tree.append(renderReviewNode(msg, pageId, index > 0 || preceded, nextColor));
+      preceded = true;
     });
     if (pendingMr) {
       tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
@@ -8191,17 +8833,37 @@
     } else if (pendingExplainRoot) {
       tree.append(renderReviewRootSkeleton(pendingExplainRoot, messages.length > 0));
     }
+    if (!gapId && (edge === 'newer' || reviewState.canLoadNewer)) {
+      const last = messages[messages.length - 1];
+      const spine =
+        reviewMessageColor(last) ||
+        (pendingMr || pendingRoot || pendingExplainRoot ? '#8e4ec6' : '#6e6e6e');
+      const leadingGap = tree.childElementCount > 0;
+      if (edge === 'newer') {
+        appendReviewSkeletonPack(tree, leadingGap, '');
+      } else {
+        tree.append(
+          renderReviewLoadChip('channel', 'newer', {
+            leadingGap,
+            nextColor: '',
+            spineColor: spine,
+            label: t('reviewLoadNewer'),
+            disabled: reviewLoadsBusy(pageId),
+            onClick: () => requestReviewChannelLoad(pageId, 'newer'),
+          }),
+        );
+      }
+    }
     root.append(tree);
-    if (edge === 'newer' && !gapId) {
-      root.append(renderReviewSkeletonTree());
-    }
-    if (reviewState.canLoadNewer && !gapId && edge !== 'newer') {
-      root.append(reviewNewerButton(pageId, busy));
-    }
-    if (keepScroll) {
+    const pinEnd = reviewScrollToEnd && !edge && !reviewState.focusMessageId;
+    if (pinEnd) {
+      reviewScrollToEnd = false;
+      scrollReviewListToEnd();
+    } else if (keepScroll) {
       applyDocScroll(keepScroll);
     }
     if (reviewState.focusMessageId) {
+      reviewScrollToEnd = false;
       const focused = root.querySelector('[data-review-id="' + reviewState.focusMessageId + '"]');
       if (focused instanceof HTMLElement) {
         focused.classList.add('is-focus');
@@ -8209,6 +8871,7 @@
         vscode.postMessage({ type: 'reviewClearFocus', pageId });
       }
     } else if (edge === 'older' || edge === 'newer') {
+      reviewScrollToEnd = false;
       const skel = root.querySelector('.review-skel');
       if (skel instanceof HTMLElement) {
         skel.scrollIntoView({ block: 'nearest' });
@@ -8253,6 +8916,9 @@
       state.contentBlocked ? '1' : '0',
       state.canLoadOlder ? '1' : '0',
       state.canLoadNewer ? '1' : '0',
+      reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId
+        ? reviewThreadLoadPending.messageId + ':' + reviewThreadLoadPending.direction
+        : '',
       state.gapBeforeMessageId || '',
       state.focusMessageId || '',
       state.checkout || '',
@@ -8435,7 +9101,15 @@
     const plainOpen =
       !msg.isMr && !msg.isReviewRoot && !msg.isExplainRoot && reviewPlainExpanded.has(msg.id);
     const stampDate = formatReviewStamp(msg.timestamp);
-    const stampBranch = stampBranchLabel(msg.branch, reviewState?.checkout);
+    const isChipRow = !!(msg.isMr || msg.isReviewRoot || msg.isExplainRoot);
+    const alwaysBranch = !!(msg.isMr || msg.isReviewRoot);
+    const branchOpts = reviewStampOpts(msg.branch, isChipRow ? 'msg:' + msg.id : '');
+    const revealBranch = isChipRow && !alwaysBranch && !!branchOpts.name;
+    const stampBranch =
+      branchOpts.name && (alwaysBranch || revealBranch || !branchOpts.checkout)
+        ? branchOpts.name
+        : '';
+    const branchRevealId = revealBranch ? 'msg:' + msg.id : '';
     const hasStamp = !!(stampDate || stampBranch);
     const row = el(
       'div',
@@ -8466,7 +9140,13 @@
 
     const body = el('div', 'review-body');
     if (hasStamp) {
-      const stamp = stampBranch ? renderReviewStamp(stampDate, stampBranch) : el('div', 'review-stamp', stampDate);
+      const stamp = stampBranch
+        ? renderReviewStamp(stampDate, stampBranch, {
+            own: branchOpts.checkout,
+            reveal: revealBranch,
+            revealId: branchRevealId,
+          })
+        : el('div', 'review-stamp', stampDate);
       if (msg.isReviewRoot) {
         stamp.addEventListener('contextmenu', (event) => {
           event.preventDefault();
@@ -8487,6 +9167,7 @@
       const chipWrap = el('div', 'review-chip-wrap');
       const chip = el('button', 'review-chip is-mr-pill');
       chip.type = 'button';
+      bindCheckoutBranchHover(chip, branchRevealId);
       chip.append(msg.status === 'closed' ? reviewClosedIcon() : reviewPrIcon());
       chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
       if (canFold) {
@@ -8573,6 +9254,7 @@
       const chipWrap = el('div', 'review-chip-wrap');
       const chip = el('button', 'review-chip is-review-pill');
       chip.type = 'button';
+      bindCheckoutBranchHover(chip, branchRevealId);
       chip.append(reviewStatusIcon(msg.reviewStatus));
       const rootLabel = el('span', 'review-chip-label');
       setReviewPillText(rootLabel, msg.pillLabel || t('reviewFileTitle'));
@@ -8617,6 +9299,7 @@
       const chipWrap = el('div', 'review-chip-wrap');
       const chip = el('button', 'review-chip is-review-pill is-explain-pill');
       chip.type = 'button';
+      bindCheckoutBranchHover(chip, branchRevealId);
       const explainLabel = el('span', 'review-chip-label');
       setReviewPillText(explainLabel, msg.pillLabel || t('explainFileTitle'));
       chip.append(explainLabel);
@@ -8711,32 +9394,65 @@
   }
 
   /**
-   * @param {NonNullable<ReviewState['messages']>[number]} msg
    * @param {string} pageId
-   * @param {boolean} allowPills
-   * @param {boolean} [withReviewSkeleton]
+   * @param {string} messageId
+   * @param {'older' | 'newer'} direction
    */
+  function requestReviewThreadLoad(pageId, messageId, direction) {
+    if (reviewPaintEdge(pageId)) {
+      return;
+    }
+    if (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId) {
+      return;
+    }
+    const pending = { pageId, messageId, direction, armed: false };
+    reviewThreadLoadPending = pending;
+    vscode.postMessage({
+      type: 'reviewLoadThread',
+      pageId,
+      messageId,
+      direction,
+    });
+    paintReviewPage();
+    setTimeout(() => {
+      if (reviewThreadLoadPending === pending) {
+        reviewThreadLoadPending.armed = true;
+      }
+    }, 0);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {'older' | 'newer'} direction
+   */
+  function reviewThreadLoadActive(pageId, messageId, direction) {
+    return !!(
+      reviewThreadLoadPending &&
+      reviewThreadLoadPending.pageId === pageId &&
+      reviewThreadLoadPending.messageId === messageId &&
+      reviewThreadLoadPending.direction === direction
+    );
+  }
+
   /**
    * @param {NonNullable<ReviewState['messages']>[number]} msg
    * @param {string} pageId
+   * @param {'older' | 'newer'} direction
+   * @param {string} color
    */
-  function reviewThreadNewerButton(msg, pageId) {
-    const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadNewer'));
-    more.type = 'button';
-    more.disabled = !!msg.locked;
-    more.addEventListener('click', () => {
-      if (msg.locked) {
-        flashReviewLock(msg.id);
-        return;
-      }
-      vscode.postMessage({
-        type: 'reviewLoadThread',
-        pageId,
-        messageId: msg.id,
-        direction: 'newer',
-      });
+  function renderReviewThreadLoadRow(msg, pageId, direction, color) {
+    if (reviewThreadLoadActive(pageId, msg.id, direction)) {
+      return renderReviewThreadLoadSkeleton(color);
+    }
+    return renderReviewLoadChip('thread', direction, {
+      leadingGap: true,
+      nextColor: color,
+      spineColor: color,
+      label: direction === 'older' ? t('reviewLoadMoreThread') : t('reviewLoadNewer'),
+      disabled: reviewLoadsBusy(pageId),
+      onClick: () => requestReviewThreadLoad(pageId, msg.id, direction),
     });
-    return more;
   }
 
   function renderReviewThread(msg, pageId, allowPills, withReviewSkeleton) {
@@ -8749,40 +9465,42 @@
     const pendingFix = activePendingNeurofixId(pageId) === msg.id;
     if (reviewHasFixes(msg) || pendingFix) {
       const replies = msg.replies || [];
-      const hasNext = replies.length > 0 || showSkeleton || !!msg.repliesHasMore;
+      const hasNext =
+        replies.length > 0 || showSkeleton || !!msg.repliesHasMore || !!msg.repliesHasNewer;
       if (reviewHasFixes(msg)) {
-        slide.append(renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : '', pendingFix));
+        slide.append(
+          renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : '', pendingFix, msg.branch),
+        );
       } else if (pendingFix) {
         slide.append(renderReviewFixSkeleton(hasNext ? color : ''));
       }
     }
     if (msg.repliesHasMore) {
-      const more = el('button', 'review-load-edge review-load-thread', t('reviewLoadMoreThread'));
-      more.type = 'button';
-      more.disabled = !!msg.locked;
-      more.addEventListener('click', () => {
-        if (msg.locked) {
-          flashReviewLock(msg.id);
-          return;
-        }
-        vscode.postMessage({ type: 'reviewLoadThread', pageId, messageId: msg.id });
-      });
-      slide.append(more);
+      slide.append(renderReviewThreadLoadRow(msg, pageId, 'older', color));
     }
     const replies = msg.replies || [];
     const gapReplyId = msg.gapBeforeReplyId || '';
+    const tailNewer = !!msg.repliesHasNewer && !gapReplyId;
     for (let index = 0; index < replies.length; index += 1) {
       if (gapReplyId && replies[index].id === gapReplyId && msg.repliesHasNewer) {
-        slide.append(reviewThreadNewerButton(msg, pageId));
+        slide.append(renderReviewThreadLoadRow(msg, pageId, 'newer', color));
       }
       const next = replies[index + 1];
-      const hasNext = !!next || showSkeleton;
+      const hasNext = !!next || showSkeleton || tailNewer;
       slide.append(
-        renderReviewReply(replies[index], color, allowPills, true, hasNext ? color : '', pageId),
+        renderReviewReply(
+          replies[index],
+          color,
+          allowPills,
+          true,
+          hasNext ? color : '',
+          pageId,
+          msg.branch,
+        ),
       );
     }
     if (msg.repliesHasNewer && !gapReplyId) {
-      slide.append(reviewThreadNewerButton(msg, pageId));
+      slide.append(renderReviewThreadLoadRow(msg, pageId, 'newer', color));
     }
     if (showSkeleton) {
       slide.append(
@@ -8804,15 +9522,17 @@
    * @param {boolean} leadingGap
    * @param {string} nextColor stem below this turn (hidden on :last-child via CSS)
    * @param {string} [pageId]
+   * @param {string} [parentBranch]
    */
-  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId) {
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch) {
     const isExplain = !!reply.isExplain;
     const stampDate = formatReviewStamp(reply.timestamp);
-    const stampBranch = isExplain
-      ? stampBranchLabel(reply.branch, reviewState?.checkout)
-      : '';
-    const hasStamp = !!(stampDate || stampBranch);
     const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
+    const branchOpts = isPill
+      ? reviewStampOpts(stampBranchName(reply.branch, parentBranch), 'reply:' + reply.id)
+      : { name: '', checkout: false, revealId: '' };
+    const stampBranch = branchOpts.name;
+    const hasStamp = !!(stampDate || stampBranch);
     const replyColor = isExplain ? reply.color || '#8e4ec6' : color;
     const row = el(
       'div',
@@ -8834,7 +9554,11 @@
     if (hasStamp) {
       body.append(
         stampBranch
-          ? renderReviewStamp(stampDate, stampBranch)
+          ? renderReviewStamp(stampDate, stampBranch, {
+              own: branchOpts.checkout,
+              reveal: true,
+              revealId: 'reply:' + reply.id,
+            })
           : el('div', 'review-stamp', stampDate),
       );
     }
@@ -8843,6 +9567,7 @@
     if (isExplain && isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill is-explain-pill');
+      bindCheckoutBranchHover(chip, stampBranch ? 'reply:' + reply.id : '');
       const explainLabel = el('span', 'review-chip-label');
       setReviewPillText(explainLabel, reply.pillLabel || t('explainFileTitle'));
       chip.append(explainLabel);
@@ -8861,6 +9586,7 @@
     } else if (isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill');
+      bindCheckoutBranchHover(chip, stampBranch ? 'reply:' + reply.id : '');
       chip.append(reviewStatusIcon(reply.status));
       const replyLabel = el('span', 'review-chip-label');
       setReviewPillText(replyLabel, reply.pillLabel || '');
@@ -8876,7 +9602,9 @@
         openReviewFileView(pageId || '', reply);
       });
       wrap.append(chip);
-      wrap.append(reviewNeurofixButton(pageId || '', reply.id));
+      if (!reply.isRereview || rereviewRemainingCounts(reply).H + rereviewRemainingCounts(reply).M + rereviewRemainingCounts(reply).L > 0) {
+        wrap.append(reviewNeurofixButton(pageId || '', reply.id));
+      }
       body.append(wrap);
     } else {
       const plain = el('div', 'review-plain is-child');
@@ -8904,7 +9632,16 @@
       const clip = el('div', 'review-children-clip');
       const slide = el('div', 'review-children-slide');
       if (reviewHasFixes(reply)) {
-        slide.append(renderReviewFixNode(pageId, reply.id, reply, '', pendingFix));
+        slide.append(
+          renderReviewFixNode(
+            pageId,
+            reply.id,
+            reply,
+            '',
+            pendingFix,
+            stampBranchName(reply.branch, parentBranch),
+          ),
+        );
       } else if (pendingFix) {
         slide.append(renderReviewFixSkeleton(''));
       }
@@ -8922,24 +9659,36 @@
    * @param {{ fixes?: { at?: string } }} source
    * @param {string} nextColor
    * @param {boolean} [busy] neurofix is running against this chip
+   * @param {string} [branchRaw]
    */
-  function renderReviewFixNode(pageId, messageId, source, nextColor, busy) {
+  function renderReviewFixNode(pageId, messageId, source, nextColor, busy, branchRaw) {
     const stampDate = (source.fixes && source.fixes.at) || '';
+    const branchOpts = reviewStampOpts(branchRaw, 'fix:' + messageId);
+    const hasStamp = !!(stampDate || branchOpts.name);
     const row = el('div', 'review-reply-node is-fix has-gap');
     row.dataset.reviewFixFor = messageId;
     row.style.setProperty('--link-color', '#52be37');
     row.append(
       linkElbow(
-        reviewElbowMid({ leadingGap: true, hasStamp: !!stampDate, contentHalf: 17 }),
+        reviewElbowMid({ leadingGap: true, hasStamp, contentHalf: 17 }),
         nextColor,
       ),
     );
     const body = el('div', 'review-body');
-    if (stampDate) {
-      body.append(el('div', 'review-stamp', stampDate));
+    if (hasStamp) {
+      body.append(
+        branchOpts.name
+          ? renderReviewStamp(stampDate, branchOpts.name, {
+              own: branchOpts.checkout,
+              reveal: true,
+              revealId: 'fix:' + messageId,
+            })
+          : el('div', 'review-stamp', stampDate),
+      );
     }
     const chip = el('button', 'review-chip is-review-pill is-fix');
     chip.type = 'button';
+    bindCheckoutBranchHover(chip, branchOpts.name ? 'fix:' + messageId : '');
     const label = el('span', 'review-chip-label');
     setReviewPillText(label, reviewFixLabel(source));
     chip.append(label);
@@ -9513,13 +10262,13 @@
     if (value === 'rs' || value === 'rl') {
       return 'rs';
     }
-    if (/^h:\s*\d+$/.test(value)) {
+    if (/^h:\s*(?:all|\d+(?:\s*,\s*\d+)*)$/.test(value)) {
       return 'high';
     }
-    if (/^m:\s*\d+$/.test(value)) {
+    if (/^m:\s*(?:all|\d+(?:\s*,\s*\d+)*)$/.test(value)) {
       return 'medium';
     }
-    if (/^[ls]:\s*\d+$/.test(value)) {
+    if (/^[ls]:\s*(?:all|\d+(?:\s*,\s*\d+)*)$/.test(value)) {
       return 'low';
     }
     return '';
@@ -9539,15 +10288,24 @@
     const severityRaw = (lines[2] || '')
       .trim()
       .replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
-    const sevMatch = severityRaw.match(/^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i);
-    if (!sevMatch) {
+    const rereviewFile = /^(?:Реревью|Rereview)\b/i.test((lines[0] || '').trim());
+    const selectionShape = /^([HML]:(?:all|\d+(?:\s*,\s*\d+)*)(?:\s*\|\s*[HML]:(?:all|\d+(?:\s*,\s*\d+)*))*)$/i.test(
+      severityRaw,
+    );
+    const sevMatch = rereviewFile
+      ? null
+      : severityRaw.match(/^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i);
+    const selectionLine = rereviewFile ? selectionShape : !sevMatch && selectionShape;
+    if (!sevMatch && !selectionLine) {
       return { ok: false, message: t('neurofixListParseFail') };
     }
-    const counts = {
-      H: Number(sevMatch[1]),
-      M: Number(sevMatch[2]),
-      L: Number(sevMatch[4]),
-    };
+    const counts = sevMatch
+      ? {
+          H: Number(sevMatch[1]),
+          M: Number(sevMatch[2]),
+          L: Number(sevMatch[4]),
+        }
+      : null;
     /** @type {{ H: string[], M: string[], L: string[] }} */
     const groups = { H: [], M: [], L: [] };
     /** @type {Set<'H' | 'M' | 'L'>} */
@@ -9581,21 +10339,28 @@
         continue;
       }
     }
-    for (const letter of /** @type {Array<'H' | 'M' | 'L'>} */ (['H', 'M', 'L'])) {
-      const expected = counts[letter];
-      const actual = groups[letter].length;
-      if (expected === 0 && actual === 0) {
-        continue;
-      }
-      if (expected !== actual) {
-        return { ok: false, message: t('neurofixListParseFail') };
+    const resolved = counts || {
+      H: groups.H.length,
+      M: groups.M.length,
+      L: groups.L.length,
+    };
+    if (counts) {
+      for (const letter of /** @type {Array<'H' | 'M' | 'L'>} */ (['H', 'M', 'L'])) {
+        const expected = counts[letter];
+        const actual = groups[letter].length;
+        if (expected === 0 && actual === 0) {
+          continue;
+        }
+        if (expected !== actual) {
+          return { ok: false, message: t('neurofixListParseFail') };
+        }
       }
     }
-    return { ok: true, counts, groups };
+    return { ok: true, counts: resolved, groups };
   }
 
   /**
-   * @param {{ pageId: string, messageId: string, left: number, top: number, width: number }} opts
+   * @param {{ pageId: string, messageId: string, left: number, top: number, width: number, mode?: 'neurofix' | 'rereview' }} opts
    */
   function openNeuroFixListPanel(opts) {
     closeNeuroFixListPanel();
@@ -9606,6 +10371,8 @@
       left: opts.left,
       top: opts.top,
       width: Math.max(opts.width || 240, 240),
+      mode: opts.mode === 'rereview' ? 'rereview' : 'neurofix',
+      selected: { H: [], M: [], L: [] },
       status: cached ? 'ready' : 'loading',
       error: '',
       entered: false,
@@ -9705,24 +10472,29 @@
       const source =
         findReviewReply(messageId) ||
         (reviewState?.messages || []).find((item) => item.id === messageId);
+      const rereviewMode = neuroFixListPanel.mode === 'rereview';
       const bullets = reviewFixBullets(source);
+      const open = reviewOpenBullets(source);
       const fixedBy = {
-        H: new Set(bullets.H),
-        M: new Set(bullets.M),
-        L: new Set(bullets.L),
+        H: new Set(rereviewMode ? [] : bullets.H),
+        M: new Set(rereviewMode ? [] : bullets.M),
+        L: new Set(rereviewMode ? [] : bullets.L),
       };
+      const limitToOpen = !rereviewMode && !!source?.isRereview;
       const remaining = {
-        H: counts.H - fixedBy.H.size,
-        M: counts.M - fixedBy.M.size,
-        L: counts.L - fixedBy.L.size,
+        H: Math.max(0, counts.H - fixedBy.H.size),
+        M: Math.max(0, counts.M - fixedBy.M.size),
+        L: Math.max(0, counts.L - fixedBy.L.size),
       };
       panel.append(
         el(
           'div',
           'syn3-neurofix-list-counts',
-          `H:${Math.max(0, remaining.H)} | M:${Math.max(0, remaining.M)} | L:${Math.max(0, remaining.L)}`,
+          `H:${remaining.H} | M:${remaining.M} | L:${remaining.L}`,
         ),
       );
+      panel.append(el('div', 'syn3-neurofix-list-hint', t('rereviewShiftHint')));
+      const selected = neuroFixListPanel.selected || { H: [], M: [], L: [] };
       /** @type {Array<{ letter: 'H' | 'M' | 'L', label: string }>} */
       const groupMeta = [
         { letter: 'H', label: 'High' },
@@ -9734,36 +10506,67 @@
         if (!items.length) {
           continue;
         }
-        const visible = items.some((_, index) => !fixedBy[group.letter].has(index + 1));
+        const visible = items.some((_, index) => {
+          const number = index + 1;
+          if (fixedBy[group.letter].has(number)) {
+            return false;
+          }
+          if (limitToOpen && !open[group.letter].includes(number)) {
+            return false;
+          }
+          return true;
+        });
         if (!visible) {
           continue;
         }
         panel.append(el('div', 'syn3-neurofix-list-group', group.label));
         for (let index = 0; index < items.length; index += 1) {
-          if (fixedBy[group.letter].has(index + 1)) {
+          const number = index + 1;
+          if (fixedBy[group.letter].has(number)) {
+            continue;
+          }
+          if (limitToOpen && !open[group.letter].includes(number)) {
             continue;
           }
           const full = items[index];
           const short =
             full.length > 80 ? full.slice(0, 80).replace(/\s+\S*$/, '').trimEnd() + '…' : full;
           const row = document.createElement('div');
-          row.className = 'syn3-neurofix-list-item';
+          row.className =
+            'syn3-neurofix-list-item' +
+            (selected[group.letter].includes(number) ? ' is-selected' : '');
           row.setAttribute('role', 'menuitem');
           const main = document.createElement('button');
           main.type = 'button';
           main.className = 'syn3-neurofix-list-item-main';
           main.textContent = `${index + 1}. ${short}`;
           main.title = full;
-          if (reviewNeurofixBlocked(messageId)) {
+          if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
             muteNeurofixAction(main);
           }
           main.addEventListener('click', (event) => {
             event.preventDefault();
-            if (reviewNeurofixBlocked(messageId)) {
+            if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
               denyForeignNeurofix();
               return;
             }
+            if (event.shiftKey) {
+              const bucket = selected[group.letter];
+              const at = bucket.indexOf(number);
+              if (at >= 0) {
+                bucket.splice(at, 1);
+              } else {
+                bucket.push(number);
+              }
+              neuroFixListPanel.selected = selected;
+              mountNeuroFixListPanel(parsed);
+              return;
+            }
             closeNeuroFixListPanel();
+            if (rereviewMode) {
+              postRereview(pageId, messageId, { [group.letter]: [number] });
+              return;
+            }
             beginLocalNeurofixSkeleton(pageId, messageId);
             vscode.postMessage({
               type: 'reviewNeurofix',
@@ -9791,6 +10594,39 @@
           row.append(main, openBtn);
           panel.append(row);
         }
+      }
+      const pickedCount = selected.H.length + selected.M.length + selected.L.length;
+      if (pickedCount > 0) {
+        const launch = document.createElement('button');
+        launch.type = 'button';
+        launch.className = 'syn3-neurofix-list-launch';
+        launch.textContent = t('rereviewLaunch');
+        launch.addEventListener('click', (event) => {
+          event.preventDefault();
+          if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
+            denyForeignNeurofix();
+            return;
+          }
+          const picks = {
+            H: selected.H.slice(),
+            M: selected.M.slice(),
+            L: selected.L.slice(),
+          };
+          closeNeuroFixListPanel();
+          if (rereviewMode) {
+            postRereview(pageId, messageId, picks);
+            return;
+          }
+          beginLocalNeurofixSkeleton(pageId, messageId);
+          vscode.postMessage({
+            type: 'reviewNeurofix',
+            pageId,
+            messageId,
+            scope: 'all',
+            picks,
+          });
+        });
+        panel.append(launch);
       }
     }
 
@@ -24319,6 +25155,293 @@
     return node;
   }
 
+  /**
+   * 4px overlay for every scroller that is not the map window, a menu, or the link preview.
+   * Those three already paint their own bar. Native scrollbars stay hidden in map.css.
+   */
+  const THIN_SCROLL_SELECTOR = [
+    '.host-branch-list',
+    '.review-create-page-panel',
+    '.profile-settings-panel',
+    '.discord-gate-panel',
+    '.project-create-panel',
+    '.review-mr-people',
+    '.review-file-body',
+    '.review-path-nav-list',
+    '.link-panel',
+    '.color-panel',
+    '.dir-popover-list',
+    '.toolbar-profile-list',
+    '.syn3-neurofix-list',
+    '.debug-column pre',
+    '.debug-diff-scroll',
+    'textarea.review-mr-title',
+    '.note-input .note-code',
+  ].join(',');
+
+  /**
+   * @typedef {{
+   *   el: HTMLElement,
+   *   vBar: HTMLElement,
+   *   vThumb: HTMLElement,
+   *   hBar: HTMLElement,
+   *   hThumb: HTMLElement,
+   *   key: string,
+   *   z: string,
+   *   borderTop: number,
+   *   borderRight: number,
+   *   borderBottom: number,
+   *   borderLeft: number,
+   * }} ThinScrollEntry
+   */
+
+  /** @type {Map<HTMLElement, ThinScrollEntry>} */
+  const thinScrolls = new Map();
+  let thinScrollFrame = 0;
+  let thinScrollRestack = false;
+
+  /** @param {boolean} [restack] */
+  function scheduleThinScroll(restack) {
+    if (restack) {
+      thinScrollRestack = true;
+    }
+    if (thinScrollFrame) {
+      return;
+    }
+    thinScrollFrame = requestAnimationFrame(() => {
+      thinScrollFrame = 0;
+      const restackNow = thinScrollRestack;
+      thinScrollRestack = false;
+      for (const entry of thinScrolls.values()) {
+        placeThinScroll(entry, restackNow);
+      }
+    });
+  }
+
+  /** @param {HTMLElement} node */
+  function overlayScrollZ(node) {
+    let z = 40;
+    let current = /** @type {HTMLElement | null} */ (node);
+    while (current && current !== document.body) {
+      const value = Number.parseInt(getComputedStyle(current).zIndex, 10);
+      if (!Number.isNaN(value)) {
+        z = Math.max(z, value);
+      }
+      current = current.parentElement;
+    }
+    return String(z + 1);
+  }
+
+  /** @param {HTMLElement} node */
+  function thinScrollShown(node) {
+    if (!node.isConnected) {
+      return false;
+    }
+    let current = /** @type {HTMLElement | null} */ (node);
+    while (current && current !== document.body) {
+      if (current.hidden) {
+        return false;
+      }
+      current = current.parentElement;
+    }
+    return true;
+  }
+
+  /**
+   * @param {ThinScrollEntry} entry
+   * @param {boolean} restack
+   */
+  function placeThinScroll(entry, restack) {
+    const node = entry.el;
+    if (!node.isConnected) {
+      releaseThinScroll(node);
+      return;
+    }
+    const shown = thinScrollShown(node);
+    const rect = node.getBoundingClientRect();
+    const maxY = node.scrollHeight - node.clientHeight;
+    const maxX = node.scrollWidth - node.clientWidth;
+    const key = [
+      shown ? 1 : 0,
+      Math.round(rect.top),
+      Math.round(rect.left),
+      Math.round(rect.right),
+      Math.round(rect.bottom),
+      node.scrollTop,
+      node.scrollLeft,
+      node.scrollHeight,
+      node.scrollWidth,
+      node.clientHeight,
+      node.clientWidth,
+    ].join(':');
+    if (!restack && key === entry.key) {
+      return;
+    }
+    entry.key = key;
+    if (restack || !entry.z) {
+      const style = getComputedStyle(node);
+      entry.borderTop = Number.parseFloat(style.borderTopWidth) || 0;
+      entry.borderRight = Number.parseFloat(style.borderRightWidth) || 0;
+      entry.borderBottom = Number.parseFloat(style.borderBottomWidth) || 0;
+      entry.borderLeft = Number.parseFloat(style.borderLeftWidth) || 0;
+      entry.z = overlayScrollZ(node);
+    }
+    if (!shown || rect.width < 1 || rect.height < 1) {
+      entry.vBar.hidden = true;
+      entry.hBar.hidden = true;
+      return;
+    }
+    const inset = 2;
+    const gap = maxX > 1 && maxY > 1 ? 4 : 0;
+    const trackTop = rect.top + entry.borderTop + inset;
+    const trackHeight = Math.max(0, node.clientHeight - inset * 2 - gap);
+    const trackLeft = rect.left + entry.borderLeft + inset;
+    const trackWidth = Math.max(0, node.clientWidth - inset * 2 - gap);
+    if (maxY <= 1 || trackHeight < 8) {
+      entry.vBar.hidden = true;
+    } else {
+      entry.vBar.hidden = false;
+      entry.vBar.style.zIndex = entry.z;
+      entry.vBar.style.top = trackTop + 'px';
+      entry.vBar.style.height = trackHeight + 'px';
+      entry.vBar.style.left = rect.right - entry.borderRight - 4 + 'px';
+      const thumbHeight = Math.max(16, Math.min(trackHeight, (node.clientHeight / node.scrollHeight) * trackHeight));
+      const travel = Math.max(0, trackHeight - thumbHeight);
+      entry.vThumb.style.height = thumbHeight + 'px';
+      entry.vThumb.style.transform = 'translateY(' + (node.scrollTop / maxY) * travel + 'px)';
+    }
+    if (maxX <= 1 || trackWidth < 8) {
+      entry.hBar.hidden = true;
+    } else {
+      entry.hBar.hidden = false;
+      entry.hBar.style.zIndex = entry.z;
+      entry.hBar.style.left = trackLeft + 'px';
+      entry.hBar.style.width = trackWidth + 'px';
+      entry.hBar.style.top = rect.bottom - entry.borderBottom - 4 + 'px';
+      const thumbWidth = Math.max(16, Math.min(trackWidth, (node.clientWidth / node.scrollWidth) * trackWidth));
+      const travel = Math.max(0, trackWidth - thumbWidth);
+      entry.hThumb.style.width = thumbWidth + 'px';
+      entry.hThumb.style.transform = 'translateX(' + (node.scrollLeft / maxX) * travel + 'px)';
+    }
+  }
+
+  /** @param {HTMLElement} node */
+  function releaseThinScroll(node) {
+    const entry = thinScrolls.get(node);
+    if (!entry) {
+      return;
+    }
+    entry.vBar.remove();
+    entry.hBar.remove();
+    thinScrolls.delete(node);
+  }
+
+  /** @param {HTMLElement} node */
+  function bindThinScroll(node) {
+    if (thinScrolls.has(node) || node === document.documentElement || node === document.body) {
+      return;
+    }
+    node.classList.add('syn3-thin-scroll');
+    const vBar = el('div', 'syn3-overlay-scroll');
+    vBar.hidden = true;
+    const vThumb = el('div', 'syn3-overlay-scroll-thumb');
+    vBar.append(vThumb);
+    const hBar = el('div', 'syn3-overlay-scroll is-x');
+    hBar.hidden = true;
+    const hThumb = el('div', 'syn3-overlay-scroll-thumb');
+    hBar.append(hThumb);
+    document.body.append(vBar, hBar);
+    const entry = {
+      el: node,
+      vBar,
+      vThumb,
+      hBar,
+      hThumb,
+      key: '',
+      z: '',
+      borderTop: 0,
+      borderRight: 0,
+      borderBottom: 0,
+      borderLeft: 0,
+    };
+    thinScrolls.set(node, entry);
+    placeThinScroll(entry, true);
+  }
+
+  /** @param {Node} node */
+  function scanThinScroll(node) {
+    if (!(node instanceof Element)) {
+      return;
+    }
+    if (node instanceof HTMLElement && node.matches(THIN_SCROLL_SELECTOR)) {
+      bindThinScroll(node);
+    }
+    for (const found of node.querySelectorAll(THIN_SCROLL_SELECTOR)) {
+      if (found instanceof HTMLElement) {
+        bindThinScroll(found);
+      }
+    }
+  }
+
+  /** @param {Node} node */
+  function forgetThinScroll(node) {
+    if (!(node instanceof Element)) {
+      return;
+    }
+    if (node instanceof HTMLElement) {
+      releaseThinScroll(node);
+    }
+    for (const found of node.querySelectorAll(THIN_SCROLL_SELECTOR)) {
+      if (found instanceof HTMLElement) {
+        releaseThinScroll(found);
+      }
+    }
+  }
+
+  function mountThinScroll() {
+    scanThinScroll(document.body);
+    new MutationObserver((records) => {
+      let restack = false;
+      for (const record of records) {
+        const target = record.target;
+        if (
+          target instanceof HTMLElement &&
+          (target.classList.contains('syn3-overlay-scroll') ||
+            target.classList.contains('syn3-overlay-scroll-thumb'))
+        ) {
+          continue;
+        }
+        if (record.type === 'attributes') {
+          restack = true;
+        }
+        for (const added of record.addedNodes) {
+          scanThinScroll(added);
+        }
+        for (const removed of record.removedNodes) {
+          forgetThinScroll(removed);
+        }
+      }
+      scheduleThinScroll(restack);
+    }).observe(document.body, {
+      attributeFilter: ['hidden', 'class', 'style'],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    document.addEventListener(
+      'input',
+      (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && thinScrolls.has(target)) {
+          scheduleThinScroll(false);
+        }
+      },
+      true,
+    );
+    window.addEventListener('scroll', () => scheduleThinScroll(false), { passive: true, capture: true });
+    window.addEventListener('resize', () => scheduleThinScroll(true));
+  }
+
   const scrollbar = el('div', 'syn3-scrollbar');
   const scrollbarThumb = el('div', 'syn3-scrollbar-thumb');
   scrollbar.hidden = true;
@@ -24495,6 +25618,7 @@
     });
   }
   onViewportResize();
+  mountThinScroll();
 
   // HTML5 DnD blocks native wheel scrolling in the webview; scroll the map by hand.
   window.addEventListener(
