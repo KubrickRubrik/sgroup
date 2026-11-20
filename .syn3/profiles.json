@@ -16,7 +16,6 @@
       "explainSkillPath": ".cursor/skills/explain-skill/SKILL.md",
       "reviewDirPath": ".syn3/review",
       "reviewModel": "grok-4.7-high",
-      "reviewFixModel": "grok-4.7-high",
       "reviewPrintThinking": true,
       "githubNick": "KubrickRubrik"
     }

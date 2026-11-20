@@ -50,6 +50,7 @@ About **5 questions in a round** is a comfortable size, not a hard cap. There is
 
 3. **Grill** with project-grounded questions (one round at a time):
    - Prefer questions that reference real files, APIs, types, UX flows, or patterns in *this* repo
+   - A file, function, type, or command in the question is markdown code: wrap it in backticks. Several lines go in a fenced block, with a blank line before and after
    - Avoid generic checklists that ignore the codebase
    - One concern per question
    - **Questions live only in one `AskQuestion` call.** Do not write them again as a numbered list in the message. The message is the mirror, then the form — so a long round does not push the form down the chat

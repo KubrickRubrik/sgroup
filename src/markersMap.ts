@@ -411,12 +411,13 @@ type IncomingMessage =
     }
   | { type: 'setAppearance'; appearance: Partial<Appearance> }
   | { type: 'reviewLoad'; pageId: string; force?: boolean }
+  | { type: 'reviewSetFilters'; pageId: string; checkout: boolean; general: boolean; discussions: boolean }
   | { type: 'reviewLoadOlder'; pageId: string }
   | { type: 'reviewLoadNewer'; pageId: string }
   | { type: 'reviewLoadThread'; pageId: string; messageId: string; direction?: 'older' | 'newer' }
   | { type: 'reviewExpandPlain'; pageId: string; messageId: string }
   | { type: 'reviewOpenPromptExample' }
-  | { type: 'reviewSkillFile'; which: 'review' | 'explain'; action: 'open' | 'copy' | 'save' }
+  | { type: 'reviewSkillFile'; which: 'review' | 'explain' | 'study'; action: 'open' | 'copy' | 'save' }
   | { type: 'reviewClearFocus'; pageId: string }
   | {
       type: 'reviewCreateMr';
@@ -558,6 +559,7 @@ type IncomingMessage =
       reviewSkillPath?: string;
       reviewFixSkillPath?: string;
       explainSkillPath?: string;
+      studySkillPath?: string;
       reviewDirPath?: string;
       reviewModel?: string;
       reviewFixModel?: string;
@@ -574,6 +576,12 @@ type IncomingMessage =
     }
   | {
       type: 'reviewRereview';
+      pageId: string;
+      messageId: string;
+      selection: { H?: number[] | 'all'; M?: number[] | 'all'; L?: number[] | 'all' };
+    }
+  | {
+      type: 'reviewStudy';
       pageId: string;
       messageId: string;
       selection: { H?: number[] | 'all'; M?: number[] | 'all'; L?: number[] | 'all' };
@@ -1042,6 +1050,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           repositoryTokenKey: this.store.repositoryTokenKey(this.store.activeProfileId) || '',
         };
       },
+      () => ({
+        ...this.store.reviewMapFilters(),
+        checkoutName: this.checkoutName,
+      }),
     );
     this.scenarios = new ScenarioMapController(store, this.hostSecrets, () => store.root.fsPath);
     this.scenarios.setChangeHandler((pageId, state) => {
@@ -2911,6 +2923,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       return;
     }
+    if (message.type === 'reviewSetFilters') {
+      await this.store.setReviewMapFilters({
+        checkout: message.checkout === true,
+        general: message.general !== false,
+        discussions: message.discussions !== false,
+      });
+      await this.reloadReviewPage(webview, message.pageId);
+      return;
+    }
     if (message.type === 'reviewLoadOlder') {
       await this.runReviewChannelLoad(webview, message.pageId, 'older', () =>
         this.review.loadOlder(message.pageId),
@@ -3071,6 +3092,27 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         () => this.review.beginReviewSkeleton(message.pageId, parentId),
         () => this.review.endReviewSkeleton(message.pageId, parentId),
         () => this.review.startRereview(message.pageId, message.messageId, selection),
+      );
+      await this.handleReviewFileResult(webview, message.pageId, parentId, result);
+      return;
+    }
+    if (message.type === 'reviewStudy') {
+      const selection = normalizeRereviewSelection(message.selection);
+      if (!selection) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        void vscode.window.showErrorMessage(
+          `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
+        );
+        return;
+      }
+      const parentId = this.review.threadParentId(message.pageId, message.messageId);
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginReviewSkeleton(message.pageId, parentId),
+        () => this.review.endReviewSkeleton(message.pageId, parentId),
+        () => this.review.startStudy(message.pageId, message.messageId, selection),
       );
       await this.handleReviewFileResult(webview, message.pageId, parentId, result);
       return;
@@ -3518,6 +3560,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         reviewSkillPath: message.reviewSkillPath,
         reviewFixSkillPath: message.reviewFixSkillPath,
         explainSkillPath: message.explainSkillPath,
+        studySkillPath: message.studySkillPath,
         reviewDirPath: message.reviewDirPath,
         reviewModel: message.reviewModel,
         reviewFixModel: message.reviewFixModel,
@@ -4258,13 +4301,37 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  private skillDocName(which: 'review' | 'explain'): { file: string; saveAs: string } {
-    return which === 'explain'
-      ? { file: 'explain-skill.md', saveAs: 'explain-skill.md' }
-      : { file: 'review-prompt-template.md', saveAs: 'review-prompt-template.md' };
+  private skillDocName(which: 'review' | 'explain' | 'study'): { file: string; folder: string } {
+    if (which === 'explain') {
+      return { file: 'explain-skill.md', folder: 'explain' };
+    }
+    if (which === 'study') {
+      return { file: 'study-skill.md', folder: 'study' };
+    }
+    return { file: 'review-prompt-template.md', folder: 'review' };
   }
 
-  private async readSkillDoc(which: 'review' | 'explain'): Promise<string | undefined> {
+  /** User picks a directory. The skill folder and SKILL.md are created inside it. */
+  private async saveSkillIntoFolder(folderName: string, text: string): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      openLabel: t(locale, 'reviewSkillDownload'),
+      title: t(locale, 'reviewSkillDownload'),
+    });
+    const parent = picked?.[0];
+    if (!parent) {
+      return;
+    }
+    const dir = vscode.Uri.joinPath(parent, folderName);
+    await vscode.workspace.fs.createDirectory(dir);
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'SKILL.md'), Buffer.from(text, 'utf8'));
+  }
+
+  private async readSkillDoc(which: 'review' | 'explain' | 'study'): Promise<string | undefined> {
     const { file } = this.skillDocName(which);
     const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', file);
     try {
@@ -4301,10 +4368,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private async onReviewSkillFile(
     webview: vscode.Webview,
-    which: 'review' | 'explain',
+    which: 'review' | 'explain' | 'study',
     action: 'open' | 'copy' | 'save',
   ): Promise<void> {
-    if (which !== 'review' && which !== 'explain') {
+    if (which !== 'review' && which !== 'explain' && which !== 'study') {
       return;
     }
     if (action === 'open') {
@@ -4323,19 +4390,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (action !== 'save') {
       return;
     }
-    const { saveAs } = this.skillDocName(which);
-    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-    const defaultUri = folder ? vscode.Uri.joinPath(folder, saveAs) : vscode.Uri.file(saveAs);
-    const locale = normalizeLocale(this.store.appearance.language);
-    const target = await vscode.window.showSaveDialog({
-      defaultUri,
-      filters: { Markdown: ['md'] },
-      saveLabel: t(locale, 'reviewSkillDownload'),
-    });
-    if (!target) {
-      return;
-    }
-    await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
+    await this.saveSkillIntoFolder(this.skillDocName(which).folder, text);
   }
 
   private scenarioSkillUri(): vscode.Uri {
@@ -4373,24 +4428,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await webview.postMessage({ type: 'scenarioSkillCopied' });
       return;
     }
-    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-    const defaultUri = folder
-      ? vscode.Uri.joinPath(folder, '.cursor', 'skills', 'scenarios', 'SKILL.md')
-      : vscode.Uri.file('SKILL.md');
-    const locale = normalizeLocale(this.store.appearance.language);
-    const target = await vscode.window.showSaveDialog({
-      defaultUri,
-      filters: { Markdown: ['md'] },
-      saveLabel: t(locale, 'reviewSkillDownload'),
-    });
-    if (!target) {
-      return;
-    }
-    const slash = target.path.lastIndexOf('/');
-    if (slash > 0) {
-      await vscode.workspace.fs.createDirectory(target.with({ path: target.path.slice(0, slash) }));
-    }
-    await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
+    await this.saveSkillIntoFolder('scenarios', text);
   }
 
   /** Opens a docs markdown file as a rendered page in an editor tab, outside the map column. */
@@ -6498,6 +6536,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       reviewSkillPath: paths.skillPath,
       reviewFixSkillPath: paths.fixSkillPath,
       explainSkillPath: paths.explainSkillPath,
+      studySkillPath: paths.studySkillPath,
       reviewDirPath: paths.dirPath,
       reviewModel: paths.model,
       reviewFixModel: paths.fixModel,
@@ -6682,7 +6721,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     this.checkoutGen += 1;
     this.checkoutName = next;
-    void this.pushCheckoutToOpenReviews();
+    if (this.store.reviewMapFilters().checkout) {
+      void this.reloadOpenReviewsForCheckout();
+    } else {
+      void this.pushCheckoutToOpenReviews();
+    }
   }
 
   private async pushCheckoutToOpenReviews(): Promise<void> {
@@ -6732,8 +6775,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
    */
   private async reloadReviewOnProjectChange(): Promise<void> {
     const projectId = this.store.activeProjectId() ?? '';
+    const profileId = this.store.activeProfileId;
     const channel = (this.store.catalogChannels().review || '').trim();
-    const key = `${projectId}\n${channel}`;
+    const key = `${projectId}\n${profileId}\n${channel}`;
     if (key === this.reviewProjectKey) {
       return;
     }
@@ -6751,7 +6795,41 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (this.store.page(pageId)?.kind !== 'review') {
         continue;
       }
-      await this.showReviewPage(webview, pageId);
+      this.review.armReset(pageId);
+      try {
+        await this.showReviewPage(webview, pageId);
+      } finally {
+        this.review.clearReset(pageId);
+      }
+    }
+  }
+
+  /** Drop the loaded window and read the channel again. Closes file panels. */
+  private async reloadReviewPage(webview: vscode.Webview, pageId: string): Promise<void> {
+    this.review.armReset(pageId);
+    this.review.dropWindow(pageId);
+    try {
+      await this.runReviewChannelLoad(webview, pageId, 'initial', () => this.review.loadInitial(pageId));
+    } finally {
+      this.review.clearReset(pageId);
+    }
+  }
+
+  /** Checkout filter is on and git moved: same full reload as a filter click. */
+  private async reloadOpenReviewsForCheckout(): Promise<void> {
+    const gen = this.checkoutGen;
+    for (const webview of this.webviews) {
+      if (gen !== this.checkoutGen) {
+        return;
+      }
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      const pageId = this.pageIdFor(webview);
+      if (this.store.page(pageId)?.kind !== 'review') {
+        continue;
+      }
+      await this.reloadReviewPage(webview, pageId);
     }
   }
 
@@ -7384,6 +7462,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         </div>
       </div>
     </div>
+  </div>
+  <div id="review-filters" class="review-filters" hidden>
+    <button id="review-filter-checkout" class="history-btn review-filter" type="button" aria-pressed="false">checkout</button>
+    <button id="review-filter-general" class="history-btn review-filter" type="button" aria-pressed="true">Общие</button>
+    <button id="review-filter-discussions" class="history-btn review-filter" type="button" aria-pressed="true">Обсуждения</button>
   </div>
   <div id="pager" class="pager" hidden>
     <div class="pager-history">

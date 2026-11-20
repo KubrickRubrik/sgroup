@@ -18,6 +18,8 @@ import {
   normalizeProjectChannels,
   packProjectChannels,
   packProjectRepo,
+  adoptReviewModel,
+  normalizeReviewMapFilters,
   pageFilePath,
   BASE_PATH,
   PAGES_DIR,
@@ -412,17 +414,32 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(typeof source.explainSkillPath === 'string' && source.explainSkillPath.trim()
       ? { explainSkillPath: source.explainSkillPath.trim() }
       : {}),
+    ...(typeof source.studySkillPath === 'string' && source.studySkillPath.trim()
+      ? { studySkillPath: source.studySkillPath.trim() }
+      : {}),
     ...(typeof source.reviewDirPath === 'string' && source.reviewDirPath.trim()
       ? { reviewDirPath: source.reviewDirPath.trim() }
       : {}),
-    ...(typeof source.reviewModel === 'string' && source.reviewModel.trim()
-      ? { reviewModel: source.reviewModel.trim().toLowerCase() }
-      : {}),
-    ...(typeof source.reviewFixModel === 'string' && source.reviewFixModel.trim()
-      ? { reviewFixModel: source.reviewFixModel.trim().toLowerCase() }
+    ...(adoptReviewModel(
+      typeof source.reviewModel === 'string' ? source.reviewModel : undefined,
+      typeof source.reviewFixModel === 'string' ? source.reviewFixModel : undefined,
+    )
+      ? {
+          reviewModel: adoptReviewModel(
+            typeof source.reviewModel === 'string' ? source.reviewModel : undefined,
+            typeof source.reviewFixModel === 'string' ? source.reviewFixModel : undefined,
+          ),
+        }
       : {}),
     ...(source.reviewPrintThinking === true ? { reviewPrintThinking: true } : {}),
     ...(source.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+    ...(() => {
+      const filters = normalizeReviewMapFilters(
+        (source as { map_filters?: unknown; mapFilters?: unknown }).map_filters ??
+          (source as { mapFilters?: unknown }).mapFilters,
+      );
+      return filters ? { mapFilters: filters } : {};
+    })(),
   };
 }
 
@@ -1058,6 +1075,7 @@ export function packProfileEntry(opts: {
   profile: StyleProfile;
   style: ProfileStyle;
   pageLayouts?: Record<string, PageLayoutPrefs>;
+  mapFilters?: ProjectProfileEntry['mapFilters'];
   version: number;
   repositoryTokenKey?: string;
 }): ProjectProfileEntry {
@@ -1076,15 +1094,18 @@ export function packProfileEntry(opts: {
     ...(opts.profile.reviewSkillPath ? { reviewSkillPath: opts.profile.reviewSkillPath } : {}),
     ...(opts.profile.reviewFixSkillPath ? { reviewFixSkillPath: opts.profile.reviewFixSkillPath } : {}),
     ...(opts.profile.explainSkillPath ? { explainSkillPath: opts.profile.explainSkillPath } : {}),
+    ...(opts.profile.studySkillPath ? { studySkillPath: opts.profile.studySkillPath } : {}),
     ...(opts.profile.reviewDirPath ? { reviewDirPath: opts.profile.reviewDirPath } : {}),
-    ...(opts.profile.reviewModel ? { reviewModel: opts.profile.reviewModel } : {}),
-    ...(opts.profile.reviewFixModel ? { reviewFixModel: opts.profile.reviewFixModel } : {}),
+    ...(adoptReviewModel(opts.profile.reviewModel, opts.profile.reviewFixModel)
+      ? { reviewModel: adoptReviewModel(opts.profile.reviewModel, opts.profile.reviewFixModel) }
+      : {}),
     ...(opts.profile.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(opts.profile.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(opts.profile.scenarioSkillPath ? { scenarioSkillPath: opts.profile.scenarioSkillPath } : {}),
     ...(opts.profile.scenarioModel ? { scenarioModel: opts.profile.scenarioModel } : {}),
     ...(opts.profile.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
     ...(opts.profile.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
+    ...(opts.mapFilters ? { mapFilters: opts.mapFilters } : {}),
   };
 }
 
@@ -1121,9 +1142,11 @@ export function unpackProfilesFromBase(
       ...(data?.reviewSkillPath ? { reviewSkillPath: data.reviewSkillPath } : {}),
       ...(data?.reviewFixSkillPath ? { reviewFixSkillPath: data.reviewFixSkillPath } : {}),
       ...(data?.explainSkillPath ? { explainSkillPath: data.explainSkillPath } : {}),
+      ...(data?.studySkillPath ? { studySkillPath: data.studySkillPath } : {}),
       ...(data?.reviewDirPath ? { reviewDirPath: data.reviewDirPath } : {}),
-      ...(data?.reviewModel ? { reviewModel: data.reviewModel } : {}),
-      ...(data?.reviewFixModel ? { reviewFixModel: data.reviewFixModel } : {}),
+      ...(adoptReviewModel(data?.reviewModel, data?.reviewFixModel)
+        ? { reviewModel: adoptReviewModel(data?.reviewModel, data?.reviewFixModel) }
+        : {}),
       ...(data?.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
       ...(data?.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
       ...(data?.scenarioSkillPath ? { scenarioSkillPath: data.scenarioSkillPath } : {}),
@@ -1345,11 +1368,14 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
     ...(entry.reviewSkillPath ? { reviewSkillPath: entry.reviewSkillPath } : {}),
     ...(entry.reviewFixSkillPath ? { reviewFixSkillPath: entry.reviewFixSkillPath } : {}),
     ...(entry.explainSkillPath ? { explainSkillPath: entry.explainSkillPath } : {}),
+    ...(entry.studySkillPath ? { studySkillPath: entry.studySkillPath } : {}),
     ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
-    ...(entry.reviewModel ? { reviewModel: entry.reviewModel } : {}),
-    ...(entry.reviewFixModel ? { reviewFixModel: entry.reviewFixModel } : {}),
+    ...(adoptReviewModel(entry.reviewModel, entry.reviewFixModel)
+      ? { reviewModel: adoptReviewModel(entry.reviewModel, entry.reviewFixModel) }
+      : {}),
     ...(entry.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(entry.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+    ...(entry.mapFilters ? { map_filters: entry.mapFilters } : {}),
   };
 }
 

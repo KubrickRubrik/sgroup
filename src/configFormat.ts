@@ -15,6 +15,18 @@ export const NOTES_CONFIG_PREFIX = 'NOTES_SYN3';
 export const LINKS_CONFIG_PREFIX = 'LINKS_SYN3';
 export const REVIEW_CONFIG_PREFIX = 'REVIEW_SYN3';
 
+/**
+ * Map agent model. A filled review model wins.
+ * An older fix-only model is copied when the map model is empty.
+ */
+export function adoptReviewModel(model?: string, fixModel?: string): string {
+  const review = (model ?? '').trim().toLowerCase();
+  if (review) {
+    return review;
+  }
+  return (fixModel ?? '').trim().toLowerCase();
+}
+
 /** @deprecated Use BASE_CONFIG_PREFIX. Kept for a few call-site renames. */
 export const PROFILE_CONFIG_PREFIX = BASE_CONFIG_PREFIX;
 
@@ -108,6 +120,74 @@ export interface PageLayoutPrefs {
 }
 
 /**
+ * Review-map filter deviations inside `map_filters.review`.
+ * Absent `checkout` is off. Absent `general` and `discussions` are on.
+ */
+export interface ReviewMapFilterReview {
+  checkout?: boolean;
+  general?: boolean;
+  discussions?: boolean;
+}
+
+/** Wire and memory shape: `map_filters: { review: { ... } }`. */
+export interface ReviewMapFilters {
+  review?: ReviewMapFilterReview;
+}
+
+/** Flags the map actually applies. Missing storage uses the defaults. */
+export interface ReviewMapFilterFlags {
+  checkout: boolean;
+  general: boolean;
+  discussions: boolean;
+}
+
+export function resolveReviewMapFilters(raw: ReviewMapFilters | undefined): ReviewMapFilterFlags {
+  const review = raw?.review;
+  return {
+    checkout: review?.checkout === true,
+    general: review?.general !== false,
+    discussions: review?.discussions !== false,
+  };
+}
+
+/** Only values that differ from the defaults. Empty means the key can be omitted. */
+export function packReviewMapFilters(flags: ReviewMapFilterFlags): ReviewMapFilters | undefined {
+  const review: ReviewMapFilterReview = {};
+  if (flags.checkout) {
+    review.checkout = true;
+  }
+  if (!flags.general) {
+    review.general = false;
+  }
+  if (!flags.discussions) {
+    review.discussions = false;
+  }
+  return Object.keys(review).length > 0 ? { review } : undefined;
+}
+
+export function normalizeReviewMapFilters(raw: unknown): ReviewMapFilters | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const reviewRaw = (raw as { review?: unknown }).review;
+  if (!reviewRaw || typeof reviewRaw !== 'object' || Array.isArray(reviewRaw)) {
+    return undefined;
+  }
+  const review = reviewRaw as { checkout?: unknown; general?: unknown; discussions?: unknown };
+  const next: ReviewMapFilterReview = {};
+  if (review.checkout === true) {
+    next.checkout = true;
+  }
+  if (review.general === false) {
+    next.general = false;
+  }
+  if (review.discussions === false) {
+    next.discussions = false;
+  }
+  return Object.keys(next).length > 0 ? { review: next } : undefined;
+}
+
+/**
  * Root profile in BASE (memory): identity, machine binds, active project.
  * Styles, nicks, review paths and token refs live under the project profiling.
  */
@@ -134,6 +214,8 @@ export interface ProjectProfileEntry {
   reviewFixSkillPath?: string;
   /** Absolute or workspace-relative path to the «Что сделано» skill. */
   explainSkillPath?: string;
+  /** Absolute or workspace-relative path to the «Изучено» skill. */
+  studySkillPath?: string;
   reviewDirPath?: string;
   reviewModel?: string;
   reviewFixModel?: string;
@@ -149,6 +231,8 @@ export interface ProjectProfileEntry {
   scenarioPrintThinking?: boolean;
   /** Allow tool calls in the scenarios chat. Absent means on; false forbids them. */
   scenarioPrintTools?: boolean;
+  /** Review map filters. Absent means checkout off, «Общие» and «Обсуждения» on. */
+  mapFilters?: ReviewMapFilters;
 }
 
 /** One project inside the base snapshot (memory keeps Records by id). */

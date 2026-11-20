@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import {
   emptyFixBullets,
   EXPLAIN_TITLE,
+  formatStudyChipLabel,
   findSeverityLine,
   formatReviewScopeLine,
   formatSeverityLine,
@@ -142,6 +143,8 @@ export function rereviewOpenIndexes(groups: ReviewFixGroups['groups']): ReviewFi
 
 export type ReviewFixRow = {
   level: 'High' | 'Medium' | 'Low';
+  /** 1-based index of the bullet inside its H, M or L group. */
+  index: number;
   broken: string;
   fix: string;
   where: string;
@@ -183,7 +186,7 @@ export function reviewFixRows(groups: ReviewFixGroups['groups'], bullets: Review
         continue;
       }
       const cells = splitFixBullet(text);
-      rows.push({ level: FIX_ROW_LEVEL[level], ...cells });
+      rows.push({ level: FIX_ROW_LEVEL[level], index, ...cells });
     }
   }
   return rows;
@@ -227,7 +230,8 @@ export type RereviewPromptItem = {
 function buildPrompt(opts: {
   skillPath: string;
   kind: ReviewKind;
-  depth: ReviewDepth;
+  /** Omitted for «Изучено»: that run has no `/rl`, `/rm`, or `/rd`. */
+  depth?: ReviewDepth;
   reviewNumber: number;
   title: string;
   webUrl?: string;
@@ -239,13 +243,19 @@ function buildPrompt(opts: {
     selection: string;
     items: RereviewPromptItem[];
   };
+  study?: {
+    parentNumber: number;
+    selection: string;
+    items: RereviewPromptItem[];
+    /** Checkout is the review branch, so files from «Где» may be opened. */
+    readWhere: boolean;
+  };
 }): string {
   const kindLabel = opts.kind === 'branch' ? 'ревью ветки' : 'ревью изменений';
-  const command = reviewDepthCommand(opts.depth);
-  const lines = [
-    `Follow the skill at: ${opts.skillPath}`,
-    command,
-  ];
+  const lines = [`Follow the skill at: ${opts.skillPath}`];
+  if (!opts.study) {
+    lines.push(reviewDepthCommand(opts.depth ?? 'medium'));
+  }
   if (opts.webUrl) {
     lines.push(
       `Task: ${kindLabel} for merge request.`,
@@ -285,18 +295,49 @@ function buildPrompt(opts: {
       'Новую поломку в первую строку не включай. Добавь её отдельным пунктом H, M или L в группах и в таблице.',
       '«Что сломано» сохрани. Если пункт исправлен, в «Что чинить» напиши ровно: исправлено',
       'Если нет — поясни, что ещё чинить. «Где» сохрани или дополни.',
+      'В колонке «Уровень» номер тот же, что у пункта: второй High — H-2, не новый отсчёт с 1.',
       'На чужой ветке пути «Где» ищи внутри host-diff. Локальное дерево не открывай, если в запуске есть host-diff.',
       '',
       'Пункты:',
       itemLines.join('\n\n'),
     );
   }
-  lines.push(
-    'Answer in ask mode. Put the severity line first in the form exactly:',
-    opts.rereview ? opts.rereview.selection : 'H:N | M:N | L:N',
-    'Do not write branch, changes, rl, rm, or rd on that line. Syn3 adds them.',
-    'Then write the H/M/L groups with bullets, then the readable review block.',
-  );
+  if (opts.study) {
+    const itemLines = opts.study.items.map((item) => {
+      const where = item.where.trim();
+      return where
+        ? `${item.level}:${item.index}. ${item.text}\nГде: ${where}`
+        : `${item.level}:${item.index}. ${item.text}`;
+    });
+    lines.push(
+      'Разбираются только эти пункты. Не ищи дефекты вне них.',
+      `Selection: ${opts.study.selection}`,
+      'Это разбор родительского Ревью ' + String(opts.study.parentNumber) + '.',
+      'Не пиши строку счётчиков H:N | M:N | L:N и не пиши таблицу.',
+      'Команды глубины нет. Не пиши /rl, /rm, /rd и не выбирай глубину.',
+      'Каждый пункт начинается с якоря вида H:1 или L:4. Дальше кейс воспроизведения, примеры и контекст.',
+      'Якорь — первая строка пункта.',
+      opts.study.readWhere
+        ? 'Можно открывать файлы из строк «Где».'
+        : 'На чужой ветке пути «Где» ищи внутри host-diff. Локальное дерево не открывай.',
+      '',
+      'Пункты:',
+      itemLines.join('\n\n'),
+    );
+  }
+  if (opts.study) {
+    lines.push('Answer in ask mode. Do not write a severity count line. Syn3 writes the chip line.');
+  } else {
+    lines.push(
+      'Answer in ask mode. Put the severity line first in the form exactly:',
+      opts.rereview ? opts.rereview.selection : 'H:N | M:N | L:N',
+      'Do not write branch, changes, rl, rm, or rd on that line. Syn3 adds them.',
+      'Then write the H/M/L groups with bullets, then the readable review block.',
+      opts.rereview
+        ? 'Level cells keep the item number: H-2, M-1. Do not restart at 1.'
+        : 'Level cells are the letter and the 1-based index inside that group: H-1, M-1, M-2.',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -313,6 +354,35 @@ function stripRereviewMarker(stdout: string): string {
       }
       const bare = trimmed.replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
       if (findSeverityLine(trimmed) || parseRereviewSelection(bare)) {
+        started = true;
+        continue;
+      }
+      started = true;
+    }
+    body.push(line);
+  }
+  return body.join('\n').trim();
+}
+
+/** Drop a leading chip line, severity line, or an echoed Selection. Keep `H:1` anchors. */
+function stripStudyMarker(stdout: string, selection: string): string {
+  const lines = stdout.split(/\r?\n/);
+  let started = false;
+  const body: string[] = [];
+  const sel = selection.trim();
+  for (const line of lines) {
+    if (!started) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const bare = trimmed.replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
+      const echoed =
+        findSeverityLine(trimmed) ||
+        bare === sel ||
+        /^Selection:/i.test(trimmed) ||
+        /^(?:Изучено|Studied)\b/i.test(trimmed);
+      if (echoed) {
         started = true;
         continue;
       }
@@ -533,7 +603,8 @@ export async function runReviewSkill(opts: {
   skillPath: string;
   model?: string;
   kind: ReviewKind;
-  depth: ReviewDepth;
+  /** Omitted for «Изучено»: that run has no depth command. */
+  depth?: ReviewDepth;
   reviewNumber: number;
   title: string;
   webUrl?: string;
@@ -544,6 +615,12 @@ export async function runReviewSkill(opts: {
     parentNumber: number;
     selection: string;
     items: RereviewPromptItem[];
+  };
+  study?: {
+    parentNumber: number;
+    selection: string;
+    items: RereviewPromptItem[];
+    readWhere: boolean;
   };
   /** Print `thinking` deltas. Off by default; reasoning is not part of the saved review. */
   printThinking?: boolean;
@@ -666,6 +743,18 @@ export async function runReviewSkill(opts: {
         }
         emit('реревью собрано, публикую в тред\r\n');
         finish({ ok: true, severity: opts.rereview.selection, body, report });
+        return;
+      }
+      if (opts.study) {
+        const body = stripStudyMarker(answer, opts.study.selection);
+        if (!body) {
+          const message = closed ? 'Review agent cancelled' : 'В ответе агента нет текста изучено';
+          emit(`\r\n${message}\r\n`);
+          finish({ ok: false, message });
+          return;
+        }
+        emit('изучено собрано, публикую в тред\r\n');
+        finish({ ok: true, severity: opts.study.selection, body, report });
         return;
       }
       const parsed = reviewBody(answer);
@@ -1045,6 +1134,30 @@ export async function writeRereviewFile(opts: {
     opts.mrLine,
     `${opts.scope} | ${opts.depth} | ${opts.selection}`,
     opts.body,
+    '',
+  ].join('\n');
+  await fs.writeFile(fsPath, text, 'utf8');
+  return fsPath;
+}
+
+export async function writeStudyFile(opts: {
+  dirPath: string;
+  parentNumber: number;
+  scope: 'branch' | 'changes';
+  selection: string;
+  body: string;
+}): Promise<string> {
+  await fs.mkdir(opts.dirPath, { recursive: true });
+  const name = `study-${opts.parentNumber}-${Date.now()}.md`;
+  const fsPath = path.join(opts.dirPath, name);
+  const text = [
+    formatStudyChipLabel({
+      parentNumber: opts.parentNumber,
+      scope: opts.scope,
+      selection: opts.selection,
+    }),
+    '',
+    opts.body.trim(),
     '',
   ].join('\n');
   await fs.writeFile(fsPath, text, 'utf8');

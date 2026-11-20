@@ -33,6 +33,10 @@
   const toolbarCreateWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-create'));
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarReviewTab = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-review-tab'));
+  const reviewFilters = /** @type {HTMLElement | null} */ (document.getElementById('review-filters'));
+  const reviewFilterCheckout = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-checkout'));
+  const reviewFilterGeneral = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-general'));
+  const reviewFilterDiscussions = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-discussions'));
   const reviewFilePane = /** @type {HTMLElement | null} */ (document.getElementById('review-file'));
   const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
   const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
@@ -86,7 +90,7 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, rereviewExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, rereviewExpanded?: boolean, studyExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
   /**
    * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка» / «Что сделано → другая ветка».
@@ -274,6 +278,10 @@
   }
 
   const toolbarPanelsWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-panels'));
+
+  reviewFilterCheckout?.addEventListener('click', () => postReviewFilter('checkout'));
+  reviewFilterGeneral?.addEventListener('click', () => postReviewFilter('general'));
+  reviewFilterDiscussions?.addEventListener('click', () => postReviewFilter('discussions'));
 
   toolbarView?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -1025,6 +1033,8 @@
    *   gapBeforeMessageId?: string,
    *   focusMessageId?: string,
    *   checkout?: string,
+   *   filters?: { checkout: boolean, general: boolean, discussions: boolean },
+   *   resetView?: boolean,
    *   pendingMr?: { title: string, draft?: boolean },
    *   pendingRoot?: { branch: string },
    *   pendingReviewId?: string,
@@ -1242,6 +1252,8 @@
       error: '',
       skeletonSeq: incoming.skeletonSeq,
       checkout: typeof incoming.checkout === 'string' ? incoming.checkout : kept.checkout,
+      filters: incoming.filters || kept.filters,
+      resetView: incoming.resetView === true,
       pendingMr: incoming.pendingMr || kept.pendingMr,
       pendingRoot: incoming.pendingRoot || kept.pendingRoot,
       pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
@@ -1291,6 +1303,12 @@
         return;
       }
       reviewState = incoming;
+      if (incoming && incoming.resetView) {
+        closeReviewFileView();
+        closeExplainFileView();
+        closeReviewFixesView();
+      }
+      syncReviewFilters();
       if (reviewState && reviewState.pageId) {
         if (incomingSeq > (reviewSkeletonSeq.get(reviewState.pageId) || 0)) {
           reviewSkeletonSeq.set(reviewState.pageId, incomingSeq);
@@ -1591,6 +1609,7 @@
         reviewSkillPath: typeof message.reviewSkillPath === 'string' ? message.reviewSkillPath : '',
         reviewFixSkillPath: typeof message.reviewFixSkillPath === 'string' ? message.reviewFixSkillPath : '',
         explainSkillPath: typeof message.explainSkillPath === 'string' ? message.explainSkillPath : '',
+        studySkillPath: typeof message.studySkillPath === 'string' ? message.studySkillPath : '',
         reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
         reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
         reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
@@ -2614,7 +2633,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, explain?: string, explainDepth?: string, explainRoot?: boolean, reviewEdit?: string, neuroFix?: string, rereview?: string, pageId?: string, messageId?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, explain?: string, explainDepth?: string, explainRoot?: boolean, reviewEdit?: string, neuroFix?: string, rereview?: string, study?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -2654,6 +2673,9 @@
     if (attrs.rereview) {
       button.dataset.rereview = attrs.rereview;
     }
+    if (attrs.study) {
+      button.dataset.study = attrs.study;
+    }
     if (attrs.pageId) {
       button.dataset.pageId = attrs.pageId;
     }
@@ -2686,6 +2708,7 @@
     clearReviewDepthMenu();
     clearNeuroFixMenu();
     clearRereviewMenu();
+    clearStudyMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
     const chrome = ensureMenuChrome(contextMenu);
@@ -2792,6 +2815,7 @@
       reviewStatusExpanded: false,
       neurofixExpanded: false,
       rereviewExpanded: false,
+      studyExpanded: false,
       ctx,
       x,
       y,
@@ -2838,6 +2862,8 @@
   let neuroFixMenu = null;
   /** @type {HTMLElement | null} */
   let rereviewMenu = null;
+  /** @type {HTMLElement | null} */
+  let studyMenu = null;
 
   function clearReviewDepthMenu() {
     reviewDepthMenu?.remove();
@@ -2852,6 +2878,11 @@
   function clearRereviewMenu() {
     rereviewMenu?.remove();
     rereviewMenu = null;
+  }
+
+  function clearStudyMenu() {
+    studyMenu?.remove();
+    studyMenu = null;
   }
 
   /** Total H/M/L on the source review pill, including bullets already fixed. */
@@ -2903,6 +2934,21 @@
     beginLocalReviewSkeleton(pageId, reviewThreadParentId(messageId));
     vscode.postMessage({
       type: 'reviewRereview',
+      pageId,
+      messageId,
+      selection,
+    });
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H?: number[] | 'all', M?: number[] | 'all', L?: number[] | 'all' }} selection
+   */
+  function postStudy(pageId, messageId, selection) {
+    beginLocalReviewSkeleton(pageId, reviewThreadParentId(messageId));
+    vscode.postMessage({
+      type: 'reviewStudy',
       pageId,
       messageId,
       selection,
@@ -3090,6 +3136,97 @@
     });
     document.body.append(fly);
     rereviewMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * Study row. Click opens High / Medium / Low / All / List.
+   * @param {HTMLElement} scroller
+   * @param {boolean} expanded
+   */
+  function appendStudyRow(scroller, expanded) {
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleStudy';
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = t('study');
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    scroller.append(row);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H: number, M: number, L: number }} counts
+   */
+  function mountStudyMenu(pageId, messageId, counts) {
+    clearStudyMenu();
+    if (!(contextMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = contextMenu.querySelector('[data-menu-action="toggleStudy"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
+    const items = [
+      { scope: 'H', label: t('studyHigh'), show: counts.H > 0 },
+      { scope: 'M', label: t('studyMedium'), show: counts.M > 0 },
+      { scope: 'L', label: t('studyLow'), show: counts.L > 0 },
+      {
+        scope: 'all',
+        label: t('studyAll'),
+        show: counts.H > 0 || counts.M > 0 || counts.L > 0,
+      },
+    ];
+    for (const item of items) {
+      if (!item.show) {
+        continue;
+      }
+      fly.append(
+        menuActionChoice(item.label, {
+          study: item.scope,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    const listBtn = menuAction(t('studyList'));
+    listBtn.dataset.menuAction = 'studyList';
+    listBtn.dataset.pageId = pageId;
+    listBtn.dataset.messageId = messageId;
+    fly.append(listBtn);
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    studyMenu = fly;
     const anchorRect = anchor.getBoundingClientRect();
     const menuRect = contextMenu.getBoundingClientRect();
     const flyWidth = fly.offsetWidth || 196;
@@ -3392,6 +3529,16 @@
         mountRereviewMenu(pageId, messageId, counts);
       }
     }
+    if (openMenuState.studyExpanded && openMenuState.ctx) {
+      const pageId = String(openMenuState.ctx.reviewPageId || '');
+      const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const counts = sourceSeverityCounts(reply || chip);
+      if (counts && counts.H + counts.M + counts.L > 0) {
+        mountStudyMenu(pageId, messageId, counts);
+      }
+    }
   }
 
   function renderContextMenu() {
@@ -3407,6 +3554,7 @@
     clearReviewDepthMenu();
     clearNeuroFixMenu();
     clearRereviewMenu();
+    clearStudyMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
     if (section === 'reviewMr') {
@@ -3583,6 +3731,7 @@
       const rereviewCounts = sourceSeverityCounts(chip);
       if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
         appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+        appendStudyRow(scroller, !!openMenuState.studyExpanded);
       }
       scroller.append(
         menuActionChoice(t('menuChangeColor'), {
@@ -3677,7 +3826,7 @@
         },
         { plain: true },
       );
-      if (!reply?.isRereview) {
+      if (!reply?.isRereview && !reply?.isStudy) {
         const counts = remainingSeverityCounts(parsePillSeverityCounts(reply?.pillLabel), reply);
         if (counts && counts.H + counts.M + counts.L > 0) {
           appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
@@ -3685,6 +3834,7 @@
         const rereviewCounts = sourceSeverityCounts(reply);
         if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
           appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+          appendStudyRow(scroller, !!openMenuState.studyExpanded);
         }
       }
       scroller.append(
@@ -3748,10 +3898,11 @@
           scroller.append(listBtn);
         }
       }
-      if (!source?.isRereview) {
+      if (!source?.isRereview && !source?.isStudy) {
         const rereviewCounts = sourceSeverityCounts(source);
         if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
           appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+          appendStudyRow(scroller, !!openMenuState.studyExpanded);
         }
       }
       updateMenuScrollbar(contextMenu);
@@ -4285,6 +4436,7 @@
           openMenuState.reviewScope = '';
           openMenuState.reviewStatusExpanded = false;
           openMenuState.rereviewExpanded = false;
+          openMenuState.studyExpanded = false;
         }
         rerenderContextMenu();
       }
@@ -4299,6 +4451,7 @@
           openMenuState.reviewExpanded = false;
           openMenuState.reviewScope = '';
           openMenuState.reviewStatusExpanded = false;
+          openMenuState.studyExpanded = false;
         }
         rerenderContextMenu();
       }
@@ -4312,6 +4465,44 @@
       const selection = scope === 'all' ? { H: 'all', M: 'all', L: 'all' } : { [scope]: 'all' };
       closeContextMenu();
       postRereview(pageId, messageId, selection);
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleStudy') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.studyExpanded = !openMenuState.studyExpanded;
+        if (openMenuState.studyExpanded) {
+          openMenuState.neurofixExpanded = false;
+          openMenuState.rereviewExpanded = false;
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.reviewStatusExpanded = false;
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.study) {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const scope = button.dataset.study;
+      const selection = scope === 'all' ? { H: 'all', M: 'all', L: 'all' } : { [scope]: 'all' };
+      closeContextMenu();
+      postStudy(pageId, messageId, selection);
+      return;
+    }
+
+    if (button.dataset.menuAction === 'studyList') {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const menuRect = contextMenu.getBoundingClientRect();
+      const flyRect = studyMenu?.getBoundingClientRect();
+      const left = Number.isFinite(menuRect.left) ? menuRect.left : 0;
+      const top = Number.isFinite(menuRect.top) ? menuRect.top : 0;
+      const width = flyRect && flyRect.width > menuRect.width ? flyRect.width : menuRect.width;
+      closeContextMenu();
+      openNeuroFixListPanel({ pageId, messageId, left, top, width, mode: 'study' });
       return;
     }
 
@@ -9589,7 +9780,21 @@
       bindCheckoutBranchHover(chip, stampBranch ? 'reply:' + reply.id : '');
       chip.append(reviewStatusIcon(reply.status));
       const replyLabel = el('span', 'review-chip-label');
-      setReviewPillText(replyLabel, reply.pillLabel || '');
+      const replyPill = reply.isRereview
+        ? normalizeRereviewPill(reply.pillLabel || '')
+        : reply.pillLabel || '';
+      const parentJump =
+        reply.isRereview || reply.isStudy ? rereviewParentJump(reply.id, replyPill) : 0;
+      setReviewPillText(
+        replyLabel,
+        replyPill,
+        parentJump
+          ? {
+              jumpNumber: parentJump,
+              onReviewJump: () => revealParentReview(reply.id, parentJump),
+            }
+          : undefined,
+      );
       chip.append(replyLabel);
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
@@ -9602,7 +9807,14 @@
         openReviewFileView(pageId || '', reply);
       });
       wrap.append(chip);
-      if (!reply.isRereview || rereviewRemainingCounts(reply).H + rereviewRemainingCounts(reply).M + rereviewRemainingCounts(reply).L > 0) {
+      if (
+        !reply.isStudy &&
+        (!reply.isRereview ||
+          rereviewRemainingCounts(reply).H +
+            rereviewRemainingCounts(reply).M +
+            rereviewRemainingCounts(reply).L >
+            0)
+      ) {
         wrap.append(reviewNeurofixButton(pageId || '', reply.id));
       }
       body.append(wrap);
@@ -9726,10 +9938,13 @@
       return;
     }
     const cached = reviewFileCache.get(reply.id);
+    const replyPill = reply.isRereview
+      ? normalizeRereviewPill(reply.pillLabel || '')
+      : reply.pillLabel || '';
     reviewFileView = {
       pageId,
       messageId: reply.id,
-      title: reply.pillLabel || reply.filename || t('reviewFileTitle'),
+      title: replyPill || reply.filename || t('reviewFileTitle'),
       filename: (cached && cached.filename) || reply.filename || '',
       status: cached ? 'ready' : reply.hasFile === false ? 'error' : 'loading',
       text: cached ? cached.text : '',
@@ -10181,20 +10396,12 @@
   function reviewNeurofixButton(pageId, messageId) {
     const side = el('button', 'review-side review-neurofix-btn');
     side.type = 'button';
-    const blocked = reviewNeurofixBlocked(messageId);
-    side.title = blocked ? t('neurofixForeignBranch') : t('neurofix');
+    side.title = t('neurofix');
     side.setAttribute('aria-label', side.title);
-    if (blocked) {
-      side.classList.add('is-muted');
-    }
     side.append(reviewSparkleIcon());
     side.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (reviewNeurofixBlocked(messageId)) {
-        denyForeignNeurofix();
-        return;
-      }
       openNeuroFixMenu(event.clientX, event.clientY, pageId, messageId);
     });
     return side;
@@ -10216,17 +10423,20 @@
    */
   /**
    * Chip label. Review: `Ревью N | branch|changes | rl|rm|rd | H:n | M:n | L:n`.
+   * Re-review: `Реревью N | Ревью K | branch|changes | rl|rm|rd | L:1, 2`.
    * Explain: `Что сделано | branch|changes | rl|rm|rd`. Older explain chips are the title alone.
    * Severity, scope and depth each get their own color. `rs` and `rl` share the shallow color.
    * @param {HTMLElement} node
    * @param {string} label
+   * @param {{ jumpNumber?: number, onReviewJump?: (number: number) => void }} [opts]
    */
-  function setReviewPillText(node, label) {
+  function setReviewPillText(node, label, opts) {
     const text = String(label || '');
     node.replaceChildren();
     const chunks = text.split(/\s*\|\s*/);
     const anyTone = chunks.some((chunk) => reviewPillTone(chunk.trim()));
-    if (!anyTone) {
+    const jumpNumber = opts && opts.jumpNumber;
+    if (!anyTone && !jumpNumber) {
       node.textContent = text;
       return;
     }
@@ -10235,6 +10445,23 @@
         node.append(document.createTextNode(' | '));
       }
       const shown = chunk.trim();
+      const parentJump = /^(?:Ревью|Review)\s+(\d+)$/i.exec(shown);
+      if (
+        parentJump &&
+        jumpNumber &&
+        Number(parentJump[1]) === jumpNumber &&
+        opts.onReviewJump
+      ) {
+        const jump = el('button', 'review-pill-jump', shown);
+        jump.type = 'button';
+        jump.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          opts.onReviewJump(jumpNumber);
+        });
+        node.append(jump);
+        return;
+      }
       const tone = reviewPillTone(shown);
       if (!tone) {
         node.append(document.createTextNode(shown));
@@ -10242,6 +10469,133 @@
       }
       node.append(el('span', 'review-pill-bit review-pill-' + tone, shown));
     });
+  }
+
+  /**
+   * Chip text. Stored messages still say `Реревью N на Ревью K`.
+   * @param {string} label
+   */
+  function normalizeRereviewPill(label) {
+    return String(label || '').replace(
+      /^((?:Реревью|Rereview)\s+\d+)\s+на\s+((?:Ревью|Review)\s+\d+)\b/i,
+      '$1 | $2',
+    );
+  }
+
+  /** @param {string | undefined} label */
+  function reviewChipNumber(label) {
+    const head = String(label || '').split(/\s*\|\s*/)[0].trim();
+    const match = /^(?:Ревью|Review)\s+(\d+)$/i.exec(head);
+    return match ? Number(match[1]) : 0;
+  }
+
+  /**
+   * Review already painted in the same thread: a sibling reply, or the channel root
+   * when that root is the numbered review.
+   * @param {string} fromReplyId
+   * @param {number} number
+   * @returns {{ parentId: string, kind: 'root' | 'reply', id: string } | null}
+   */
+  function loadedReviewTarget(fromReplyId, number) {
+    if (!number) {
+      return null;
+    }
+    const parent = (reviewState?.messages || []).find((msg) =>
+      (msg.replies || []).some((item) => item.id === fromReplyId),
+    );
+    if (!parent) {
+      return null;
+    }
+    if (parent.isReviewRoot && reviewChipNumber(parent.pillLabel) === number) {
+      return { parentId: parent.id, kind: 'root', id: parent.id };
+    }
+    const found = (parent.replies || []).find((item) => {
+      if (!item.isPill || item.isRereview || item.isExplain) {
+        return false;
+      }
+      return reviewChipNumber(item.pillLabel) === number;
+    });
+    if (!found) {
+      return null;
+    }
+    return { parentId: parent.id, kind: 'reply', id: found.id };
+  }
+
+  /**
+   * Parent number from `Реревью N | Ревью K | …` when that review is already in the thread.
+   * @param {string} replyId
+   * @param {string} label
+   */
+  function rereviewParentJump(replyId, label) {
+    const chunks = String(label || '').split(/\s*\|\s*/);
+    for (const chunk of chunks) {
+      const match = /^(?:Ревью|Review)\s+(\d+)$/i.exec(chunk.trim());
+      if (!match) {
+        continue;
+      }
+      const number = Number(match[1]);
+      if (loadedReviewTarget(replyId, number)) {
+        return number;
+      }
+    }
+    return 0;
+  }
+
+  /** @type {number} */
+  let reviewChipFlashTimer = 0;
+
+  /**
+   * @param {string} fromReplyId
+   * @param {number} number
+   */
+  function revealParentReview(fromReplyId, number) {
+    const target = loadedReviewTarget(fromReplyId, number);
+    if (!target) {
+      return;
+    }
+    const collapsed = target.kind === 'reply' && reviewCollapsed.has(target.parentId);
+    if (collapsed) {
+      reviewCollapsed.delete(target.parentId);
+      syncReviewCollapsed();
+    }
+    const run = () => {
+      const selector =
+        target.kind === 'root'
+          ? '.review-node[data-review-id="' + CSS.escape(target.id) + '"]'
+          : '[data-review-reply-id="' + CSS.escape(target.id) + '"]';
+      const node = root.querySelector(selector);
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      flashReviewChipBorder(
+        node.querySelector(':scope > .review-body > .review-chip-wrap > .review-chip'),
+      );
+    };
+    if (collapsed) {
+      window.setTimeout(run, 340);
+    } else {
+      run();
+    }
+  }
+
+  /** @param {Element | null} chip */
+  function flashReviewChipBorder(chip) {
+    if (!(chip instanceof HTMLElement)) {
+      return;
+    }
+    root.querySelectorAll('.review-chip.is-rereview-flash').forEach((node) => {
+      if (node !== chip) {
+        node.classList.remove('is-rereview-flash');
+      }
+    });
+    chip.classList.remove('is-rereview-flash');
+    void chip.offsetWidth;
+    chip.classList.add('is-rereview-flash');
+    window.clearTimeout(reviewChipFlashTimer);
+    reviewChipFlashTimer = window.setTimeout(() => {
+      chip.classList.remove('is-rereview-flash');
+    }, 2000);
   }
 
   /** @param {string} token */
@@ -10360,7 +10714,7 @@
   }
 
   /**
-   * @param {{ pageId: string, messageId: string, left: number, top: number, width: number, mode?: 'neurofix' | 'rereview' }} opts
+   * @param {{ pageId: string, messageId: string, left: number, top: number, width: number, mode?: 'neurofix' | 'rereview' | 'study' }} opts
    */
   function openNeuroFixListPanel(opts) {
     closeNeuroFixListPanel();
@@ -10371,7 +10725,7 @@
       left: opts.left,
       top: opts.top,
       width: Math.max(opts.width || 240, 240),
-      mode: opts.mode === 'rereview' ? 'rereview' : 'neurofix',
+      mode: opts.mode === 'rereview' ? 'rereview' : opts.mode === 'study' ? 'study' : 'neurofix',
       selected: { H: [], M: [], L: [] },
       status: cached ? 'ready' : 'loading',
       error: '',
@@ -10472,7 +10826,8 @@
       const source =
         findReviewReply(messageId) ||
         (reviewState?.messages || []).find((item) => item.id === messageId);
-      const rereviewMode = neuroFixListPanel.mode === 'rereview';
+      const rereviewMode = neuroFixListPanel.mode === 'rereview' || neuroFixListPanel.mode === 'study';
+      const studyMode = neuroFixListPanel.mode === 'study';
       const bullets = reviewFixBullets(source);
       const open = reviewOpenBullets(source);
       const fixedBy = {
@@ -10564,7 +10919,12 @@
             }
             closeNeuroFixListPanel();
             if (rereviewMode) {
-              postRereview(pageId, messageId, { [group.letter]: [number] });
+              const selection = { [group.letter]: [number] };
+              if (studyMode) {
+                postStudy(pageId, messageId, selection);
+              } else {
+                postRereview(pageId, messageId, selection);
+              }
               return;
             }
             beginLocalNeurofixSkeleton(pageId, messageId);
@@ -10600,7 +10960,7 @@
         const launch = document.createElement('button');
         launch.type = 'button';
         launch.className = 'syn3-neurofix-list-launch';
-        launch.textContent = t('rereviewLaunch');
+        launch.textContent = t(studyMode ? 'studyLaunch' : 'rereviewLaunch');
         launch.addEventListener('click', (event) => {
           event.preventDefault();
           if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
@@ -10614,7 +10974,11 @@
           };
           closeNeuroFixListPanel();
           if (rereviewMode) {
-            postRereview(pageId, messageId, picks);
+            if (studyMode) {
+              postStudy(pageId, messageId, picks);
+            } else {
+              postRereview(pageId, messageId, picks);
+            }
             return;
           }
           beginLocalNeurofixSkeleton(pageId, messageId);
@@ -12759,6 +13123,7 @@
    *   reviewSkillPath?: string,
    *   reviewFixSkillPath?: string,
    *   explainSkillPath?: string,
+   *   studySkillPath?: string,
    *   reviewDirPath?: string,
    *   reviewModel?: string,
    *   reviewFixModel?: string,
@@ -12923,11 +13288,11 @@
     /** @type {HTMLInputElement | null} */
     let explainSkillInput = null;
     /** @type {HTMLInputElement | null} */
+    let studySkillInput = null;
+    /** @type {HTMLInputElement | null} */
     let dirInput = null;
     /** @type {HTMLInputElement | null} */
     let modelInput = null;
-    /** @type {HTMLInputElement | null} */
-    let fixModelInput = null;
     /** @type {HTMLInputElement | null} */
     let printThinkingInput = null;
     /** @type {HTMLInputElement | null} */
@@ -12938,7 +13303,7 @@
       /**
        * @param {string} labelKey
        * @param {string} value
-       * @param {'skill' | 'fix' | 'explain' | 'dir' | 'model'} kind
+       * @param {'skill' | 'fix' | 'explain' | 'study' | 'dir' | 'model'} kind
        */
       function reviewAgentField(labelKey, value, kind) {
         const label = el('label', 'review-mr-field', t(labelKey));
@@ -12986,13 +13351,13 @@
         opts.explainSkillPath || '',
         'explain',
       );
+      studySkillInput = reviewAgentField(
+        'labelStudySkillPath',
+        opts.studySkillPath || '',
+        'study',
+      );
       dirInput = reviewAgentField('labelReviewDirPath', opts.reviewDirPath || '', 'dir');
       modelInput = reviewAgentField('labelReviewModel', (opts.reviewModel || '').toLowerCase(), 'model');
-      fixModelInput = reviewAgentField(
-        'labelReviewFixModel',
-        (opts.reviewFixModel || '').toLowerCase(),
-        'model',
-      );
 
       /**
        * @param {string} labelKey
@@ -13020,10 +13385,10 @@
           fixSkillInput instanceof HTMLInputElement ? fixSkillInput.value.trim() : '';
         const explainSkillPath =
           explainSkillInput instanceof HTMLInputElement ? explainSkillInput.value.trim() : '';
+        const studySkillPath =
+          studySkillInput instanceof HTMLInputElement ? studySkillInput.value.trim() : '';
         const reviewDirPath = dirInput.value.trim();
         const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
-        const reviewFixModel =
-          fixModelInput instanceof HTMLInputElement ? fixModelInput.value.trim().toLowerCase() : '';
         const reviewPrintThinking =
           printThinkingInput instanceof HTMLInputElement && printThinkingInput.checked;
         const reviewPrintTools = !(printToolsInput instanceof HTMLInputElement) || printToolsInput.checked;
@@ -13031,9 +13396,9 @@
           reviewSkillPath === (opts.reviewSkillPath || '') &&
           reviewFixSkillPath === (opts.reviewFixSkillPath || '') &&
           explainSkillPath === (opts.explainSkillPath || '') &&
+          studySkillPath === (opts.studySkillPath || '') &&
           reviewDirPath === (opts.reviewDirPath || '') &&
           reviewModel === (opts.reviewModel || '').toLowerCase() &&
-          reviewFixModel === (opts.reviewFixModel || '').toLowerCase() &&
           reviewPrintThinking === (opts.reviewPrintThinking === true) &&
           reviewPrintTools === (opts.reviewPrintTools !== false)
         ) {
@@ -13042,9 +13407,9 @@
         opts.reviewSkillPath = reviewSkillPath;
         opts.reviewFixSkillPath = reviewFixSkillPath;
         opts.explainSkillPath = explainSkillPath;
+        opts.studySkillPath = studySkillPath;
         opts.reviewDirPath = reviewDirPath;
         opts.reviewModel = reviewModel;
-        opts.reviewFixModel = reviewFixModel;
         opts.reviewPrintThinking = reviewPrintThinking;
         opts.reviewPrintTools = reviewPrintTools;
         vscode.postMessage({
@@ -13052,16 +13417,16 @@
           reviewSkillPath,
           reviewFixSkillPath,
           explainSkillPath,
+          studySkillPath,
           reviewDirPath,
           reviewModel,
-          reviewFixModel,
           reviewPrintThinking,
           reviewPrintTools,
         });
       }
 
       flushReviewAgentFields = saveReviewPaths;
-      for (const input of [skillInput, fixSkillInput, explainSkillInput, dirInput, modelInput, fixModelInput, printThinkingInput, printToolsInput]) {
+      for (const input of [skillInput, fixSkillInput, explainSkillInput, studySkillInput, dirInput, modelInput, printThinkingInput, printToolsInput]) {
         input.addEventListener('change', () => saveReviewPaths());
       }
 
@@ -13164,7 +13529,7 @@
       }
 
       /**
-       * @param {'skill' | 'fix' | 'explain' | 'dir'} kind
+       * @param {'skill' | 'fix' | 'explain' | 'study' | 'dir'} kind
        * @param {HTMLInputElement} input
        */
       function openReviewPathNav(kind, input) {
@@ -13174,6 +13539,8 @@
             ? 'labelReviewDirPath'
             : kind === 'explain'
               ? 'labelExplainSkillPath'
+              : kind === 'study'
+                ? 'labelStudySkillPath'
               : kind === 'fix'
                 ? 'labelReviewFixSkillPath'
                 : 'labelReviewSkillPath',
@@ -13336,7 +13703,7 @@
 
     /**
      * Skill sample: the label opens the doc, the icons save or copy it.
-     * @param {'review' | 'explain'} which
+     * @param {'review' | 'explain' | 'study'} which
      * @param {string} label
      */
     function reviewSkillCard(which, label) {
@@ -13375,6 +13742,7 @@
         howTo,
         reviewSkillCard('review', t('reviewPromptExampleShort')),
         reviewSkillCard('explain', t('explainMenu')),
+        reviewSkillCard('study', t('studyPromptExample')),
       );
       panel.append(docs);
       const whyWrap = el('div', 'review-skill-why-wrap');
@@ -16029,8 +16397,58 @@
     removeOverlay('scenario-page-panel');
   }
 
+  function currentReviewFilters() {
+    const filters = reviewState && reviewState.filters;
+    return {
+      checkout: !!(filters && filters.checkout),
+      general: !filters || filters.general !== false,
+      discussions: !filters || filters.discussions !== false,
+    };
+  }
+
+  /** @param {HTMLButtonElement | null} button @param {boolean} on */
+  function setReviewFilterPressed(button, on) {
+    if (!button) {
+      return;
+    }
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  function syncReviewFilters() {
+    const onReview = activePage()?.kind === 'review';
+    if (reviewFilters) {
+      reviewFilters.hidden = !onReview;
+    }
+    const flags = currentReviewFilters();
+    setReviewFilterPressed(reviewFilterCheckout, flags.checkout);
+    setReviewFilterPressed(reviewFilterGeneral, flags.general);
+    setReviewFilterPressed(reviewFilterDiscussions, flags.discussions);
+  }
+
+  /** @param {'checkout' | 'general' | 'discussions'} key */
+  function postReviewFilter(key) {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || reviewState?.loading) {
+      return;
+    }
+    const flags = currentReviewFilters();
+    flags[key] = !flags[key];
+    setReviewFilterPressed(
+      key === 'checkout' ? reviewFilterCheckout : key === 'general' ? reviewFilterGeneral : reviewFilterDiscussions,
+      flags[key],
+    );
+    vscode.postMessage({
+      type: 'reviewSetFilters',
+      pageId: page.id,
+      checkout: flags.checkout,
+      general: flags.general,
+      discussions: flags.discussions,
+    });
+  }
+
   function paintPage() {
     syncToolbarView();
+    syncReviewFilters();
     removeLinkPanelBackdrop();
     hideGroupDescTip();
     if (isProblemsPageOpen()) {

@@ -151,6 +151,26 @@ textarea.review-mr-title::-webkit-scrollbar,
   padding: 4px 10px 4px 8px;
 }
 
+.review-filters {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  padding: 4px 10px 0 8px;
+}
+
+.review-filters[hidden] {
+  display: none;
+}
+
+.review-filter {
+  border-radius: 999px;
+  font-size: 12px;
+  height: auto;
+  line-height: 1.2;
+  padding: 2px 10px;
+  width: auto;
+}
+
 /* Grows on the first row so the right section stays at the end while it fits.
    When the section does not fit, it wraps as one item onto the next row. */
 .toolbar-spacer {
@@ -4362,6 +4382,40 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   color: #5aa2ff;
 }
 
+.review-pill-jump {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  margin: 0;
+  padding: 0;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+
+.review-pill-jump:hover {
+  color: #fff;
+}
+
+@keyframes review-chip-rereview-flash {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--link-color, #8e4ec6) 38%, transparent);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    border-color: color-mix(in srgb, #fff 22%, var(--link-color, #8e4ec6));
+    box-shadow: 0 0 0 1px color-mix(in srgb, #fff 22%, var(--link-color, #8e4ec6));
+  }
+}
+
+.review-chip.is-rereview-flash {
+  animation: review-chip-rereview-flash 0.5s ease-in-out 4;
+}
+
 .review-ico-closed {
   color: #e5484d;
 }
@@ -4736,9 +4790,15 @@ button.review-neurofix-btn.is-muted:hover {
   .review-fix-loader .review-ico,
   .review-children,
   .review-children-slide,
-  .review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide {
+  .review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide,
+  .review-chip.is-rereview-flash {
     animation: none;
     transition: none;
+  }
+
+  .review-chip.is-rereview-flash {
+    border-color: color-mix(in srgb, #fff 22%, var(--link-color, #8e4ec6));
+    box-shadow: 0 0 0 1px color-mix(in srgb, #fff 22%, var(--link-color, #8e4ec6));
   }
 }
 
@@ -4899,6 +4959,35 @@ button.review-neurofix-btn.is-muted:hover {
   padding: 0.1em 0.35em;
 }
 
+.explain-md pre.md-code {
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.2));
+  border-radius: 4px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  line-height: 1.45;
+  margin: 0.8em 0 1em;
+  padding: 10px 12px;
+  white-space: normal;
+}
+
+.explain-md pre.md-code code {
+  background: none;
+  border-radius: 0;
+  display: block;
+  font-size: inherit;
+  padding: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.explain-md .md-code-lang {
+  color: var(--vscode-descriptionForeground);
+  display: block;
+  font-family: var(--vscode-font-family, var(--vscode-markdown-font-family, sans-serif));
+  font-size: 0.85em;
+  margin-bottom: 6px;
+}
+
 .explain-md ul,
 .explain-md ol {
   margin: 0.4em 0 0.8em;
@@ -5036,6 +5125,18 @@ button.review-neurofix-btn.is-muted:hover {
   vertical-align: middle;
   white-space: nowrap;
   width: 1%;
+}
+
+.review-file-body .explain-md td.review-fixed {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.review-fixed-ico {
+  display: inline-block;
+  height: 30px;
+  vertical-align: middle;
+  width: 30px;
 }
 
 .review-level-mark {

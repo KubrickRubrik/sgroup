@@ -40,6 +40,7 @@ import {
   type ProjectPageEntry,
   type ProjectRepo,
   BASE_PATH,
+  adoptReviewModel,
   configSyncFlags,
   emptyBaseConfig,
   emptyProject,
@@ -47,6 +48,9 @@ import {
   isLegacyBaseRaw,
   packProjectChannels,
   packProjectRepo,
+  packReviewMapFilters,
+  resolveReviewMapFilters,
+  type ReviewMapFilterFlags,
   pageKindToConfigKind,
   parseConfigHeader,
   resolveProjectChannel,
@@ -210,11 +214,13 @@ export interface StyleProfile {
   reviewFixSkillPath?: string;
   /** Absolute or workspace-relative path to the «Что сделано» skill. */
   explainSkillPath?: string;
+  /** Absolute or workspace-relative path to the «Изучено» skill. */
+  studySkillPath?: string;
   /** Absolute or workspace-relative directory for temporary review files. */
   reviewDirPath?: string;
-  /** Optional Cursor Agent `--model` value. Empty → CLI default. */
+  /** Optional Cursor Agent `--model` for the map. Empty → CLI default. */
   reviewModel?: string;
-  /** Optional Cursor Agent `--model` for Neurofix. Empty → CLI default. */
+  /** Legacy Neurofix model. Read once into `reviewModel` when that field is empty, then dropped. */
   reviewFixModel?: string;
   /** Print model reasoning in the review/neurofix terminal. */
   reviewPrintThinking?: boolean;
@@ -245,6 +251,7 @@ export interface StyleProfileInfo {
   reviewSkillPath: string;
   reviewFixSkillPath: string;
   explainSkillPath: string;
+  studySkillPath: string;
   reviewDirPath: string;
   reviewModel: string;
   reviewFixModel: string;
@@ -1680,9 +1687,10 @@ export class MarkerStore implements vscode.Disposable {
       reviewSkillPath: p.reviewSkillPath ?? '',
       reviewFixSkillPath: p.reviewFixSkillPath ?? '',
       explainSkillPath: p.explainSkillPath ?? '',
+      studySkillPath: p.studySkillPath ?? '',
       reviewDirPath: p.reviewDirPath ?? '',
-      reviewModel: p.reviewModel ?? '',
-      reviewFixModel: p.reviewFixModel ?? '',
+      reviewModel: adoptReviewModel(p.reviewModel, p.reviewFixModel),
+      reviewFixModel: '',
     }));
   }
 
@@ -1691,6 +1699,7 @@ export class MarkerStore implements vscode.Disposable {
     skillPath: string;
     fixSkillPath: string;
     explainSkillPath: string;
+    studySkillPath: string;
     dirPath: string;
     model: string;
     fixModel: string;
@@ -1704,9 +1713,10 @@ export class MarkerStore implements vscode.Disposable {
       skillPath: (profile?.reviewSkillPath ?? '').trim(),
       fixSkillPath: (profile?.reviewFixSkillPath ?? '').trim(),
       explainSkillPath: (profile?.explainSkillPath ?? '').trim(),
+      studySkillPath: (profile?.studySkillPath ?? '').trim(),
       dirPath: (profile?.reviewDirPath ?? '').trim(),
-      model: (profile?.reviewModel ?? '').trim().toLowerCase(),
-      fixModel: (profile?.reviewFixModel ?? '').trim().toLowerCase(),
+      model: adoptReviewModel(profile?.reviewModel, profile?.reviewFixModel),
+      fixModel: '',
       printThinking: profile?.reviewPrintThinking === true,
       printTools: profile?.reviewPrintTools !== false,
     };
@@ -1773,6 +1783,7 @@ export class MarkerStore implements vscode.Disposable {
     reviewSkillPath?: string;
     reviewFixSkillPath?: string;
     explainSkillPath?: string;
+    studySkillPath?: string;
     reviewDirPath?: string;
     reviewModel?: string;
     reviewFixModel?: string;
@@ -1794,15 +1805,21 @@ export class MarkerStore implements vscode.Disposable {
       if (partial.explainSkillPath !== undefined) {
         profile.explainSkillPath = partial.explainSkillPath.trim();
       }
+      if (partial.studySkillPath !== undefined) {
+        profile.studySkillPath = partial.studySkillPath.trim();
+      }
       if (partial.reviewDirPath !== undefined) {
         profile.reviewDirPath = partial.reviewDirPath.trim();
       }
       if (partial.reviewModel !== undefined) {
         profile.reviewModel = partial.reviewModel.trim().toLowerCase();
+      } else if (!profile.reviewModel?.trim()) {
+        const fix = (partial.reviewFixModel ?? profile.reviewFixModel ?? '').trim().toLowerCase();
+        if (fix) {
+          profile.reviewModel = fix;
+        }
       }
-      if (partial.reviewFixModel !== undefined) {
-        profile.reviewFixModel = partial.reviewFixModel.trim().toLowerCase();
-      }
+      delete profile.reviewFixModel;
       if (partial.reviewPrintThinking !== undefined) {
         if (partial.reviewPrintThinking) {
           profile.reviewPrintThinking = true;
@@ -1820,6 +1837,34 @@ export class MarkerStore implements vscode.Disposable {
       // profiles.json is a cache. The map reads these fields back from the
       // active project's profiling in base.json after any catalog reload.
       await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
+  }
+
+  /** Review map filters for the active profile inside the active project. */
+  reviewMapFilters(): ReviewMapFilterFlags {
+    const id = this.activeProfileId;
+    return resolveReviewMapFilters(this.activeProject()?.profiles[id]?.mapFilters);
+  }
+
+  /** Remember review map filters. Only deviations from the defaults are stored. */
+  async setReviewMapFilters(flags: ReviewMapFilterFlags): Promise<void> {
+    await this.enqueue(async () => {
+      const project = this.ensureActiveProject();
+      const id = this.ensureActiveProfileId();
+      const profile = project?.profiles[id];
+      if (!project || !profile) {
+        return;
+      }
+      const packed = packReviewMapFilters(flags);
+      if (packed) {
+        profile.mapFilters = packed;
+      } else {
+        delete profile.mapFilters;
+      }
+      profile.version = (profile.version || 1) + 1;
+      this.profileDirty = true;
       await this.persistBaseOnly();
       this.changeEmitter.fire();
     });
@@ -6743,9 +6788,11 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.reviewSkillPath ? { reviewSkillPath: p.reviewSkillPath } : {}),
           ...(p.reviewFixSkillPath ? { reviewFixSkillPath: p.reviewFixSkillPath } : {}),
           ...(p.explainSkillPath ? { explainSkillPath: p.explainSkillPath } : {}),
+          ...(p.studySkillPath ? { studySkillPath: p.studySkillPath } : {}),
           ...(p.reviewDirPath ? { reviewDirPath: p.reviewDirPath } : {}),
-          ...(p.reviewModel ? { reviewModel: p.reviewModel } : {}),
-          ...(p.reviewFixModel ? { reviewFixModel: p.reviewFixModel } : {}),
+          ...(adoptReviewModel(p.reviewModel, p.reviewFixModel)
+            ? { reviewModel: adoptReviewModel(p.reviewModel, p.reviewFixModel) }
+            : {}),
           ...(p.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
           ...(p.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
           ...(p.scenarioSkillPath ? { scenarioSkillPath: p.scenarioSkillPath } : {}),
@@ -8041,6 +8088,7 @@ export class MarkerStore implements vscode.Disposable {
         profile,
         style,
         pageLayouts: prev?.pageLayouts,
+        mapFilters: prev?.mapFilters,
         version,
       });
     }
@@ -9244,6 +9292,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewSkillPath?: unknown;
         reviewFixSkillPath?: unknown;
         explainSkillPath?: unknown;
+        studySkillPath?: unknown;
         reviewDirPath?: unknown;
         reviewModel?: unknown;
         reviewFixModel?: unknown;
@@ -9267,12 +9316,14 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         typeof item.reviewFixSkillPath === 'string' ? item.reviewFixSkillPath.trim() : undefined;
       const explainSkillPath =
         typeof item.explainSkillPath === 'string' ? item.explainSkillPath.trim() : undefined;
+      const studySkillPath =
+        typeof item.studySkillPath === 'string' ? item.studySkillPath.trim() : undefined;
       const reviewDirPath =
         typeof item.reviewDirPath === 'string' ? item.reviewDirPath.trim() : undefined;
-      const reviewModel =
-        typeof item.reviewModel === 'string' ? item.reviewModel.trim() : undefined;
-      const reviewFixModel =
-        typeof item.reviewFixModel === 'string' ? item.reviewFixModel.trim() : undefined;
+      const reviewModel = adoptReviewModel(
+        typeof item.reviewModel === 'string' ? item.reviewModel : undefined,
+        typeof item.reviewFixModel === 'string' ? item.reviewFixModel : undefined,
+      );
       const reviewPrintThinking = item.reviewPrintThinking === true ? true : undefined;
       const reviewPrintTools = item.reviewPrintTools === false ? false : undefined;
       const scenarioSkillPath =
@@ -9292,9 +9343,9 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewSkillPath ? { reviewSkillPath } : {}),
           ...(reviewFixSkillPath ? { reviewFixSkillPath } : {}),
           ...(explainSkillPath ? { explainSkillPath } : {}),
+          ...(studySkillPath ? { studySkillPath } : {}),
           ...(reviewDirPath ? { reviewDirPath } : {}),
           ...(reviewModel ? { reviewModel } : {}),
-          ...(reviewFixModel ? { reviewFixModel } : {}),
           ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
           ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
           ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
@@ -9322,9 +9373,9 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewSkillPath ? { reviewSkillPath } : {}),
         ...(reviewFixSkillPath ? { reviewFixSkillPath } : {}),
         ...(explainSkillPath ? { explainSkillPath } : {}),
+        ...(studySkillPath ? { studySkillPath } : {}),
         ...(reviewDirPath ? { reviewDirPath } : {}),
         ...(reviewModel ? { reviewModel } : {}),
-        ...(reviewFixModel ? { reviewFixModel } : {}),
         ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
         ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
         ...(scenarioSkillPath ? { scenarioSkillPath } : {}),

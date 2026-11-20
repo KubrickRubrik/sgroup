@@ -11,6 +11,10 @@ export const REVIEW_PREFIX = 'R_SYN3';
 export const REREVIEW_PREFIX = 'RR_SYN3';
 /** Explain («Что сделано») message prefix: `W_SYN3: Что сделано | branch | rl`. */
 export const EXPLAIN_PREFIX = 'W_SYN3';
+/** Study («Изучено») message prefix: `Z_SYN3: Изучено | Ревью N | branch | H:1, 2`. */
+export const STUDY_PREFIX = 'Z_SYN3';
+/** Chip and file title for a study message. */
+export const STUDY_TITLE = 'Изучено';
 /** Chip and file title for an explain message. Older Discord lines still say `Что делаем?`. */
 export const EXPLAIN_TITLE = 'Что сделано';
 /** Default chip color for explain messages (Violet). */
@@ -134,6 +138,7 @@ const REREVIEW_HEAD_RE = /^\(?RR_SYN3\)?:\s*(.*)$/;
 /** One selected level: `L:1, 2` or `H:all`. */
 const REREVIEW_PART_RE = /^([HML]):\s*(all|\d+(?:\s*,\s*\d+)*)\s*$/i;
 const EXPLAIN_HEAD_RE = /^\(?W_SYN3\)?:\s*(.*)$/;
+const STUDY_HEAD_RE = /^\(?Z_SYN3\)?:\s*(.*)$/;
 const SCENARIO_GROUP_HEAD_RE = /^\(?GRSCN_SYN3\)?\s*$/i;
 const SCENARIO_HEAD_RE = /^\(?SCN_SYN3\)?\s*$/i;
 const MD_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/;
@@ -420,7 +425,12 @@ export function isRereviewMessage(content: string): boolean {
   return REREVIEW_HEAD_RE.test(head);
 }
 
-/** `R_SYN3` or `RR_SYN3`. Both take the next review number in a thread. */
+export function isStudyMessage(content: string): boolean {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return STUDY_HEAD_RE.test(head);
+}
+
+/** `R_SYN3` or `RR_SYN3`. Both take the next review number in a thread. Study does not. */
 export function isReviewFamilyMessage(content: string): boolean {
   return isReviewMessage(content) || isRereviewMessage(content);
 }
@@ -1277,6 +1287,40 @@ export function formatRereviewDiscordBody(opts: {
   ].join('\n');
 }
 
+/** Chip and file first line. No study number and no depth token. */
+export function formatStudyChipLabel(opts: {
+  parentNumber: number;
+  scope: ReviewScopeToken;
+  selection: string;
+}): string {
+  return `${STUDY_TITLE} | Ревью ${opts.parentNumber} | ${opts.scope} | ${opts.selection.trim()}`;
+}
+
+/**
+ * Thread reply that explains selected bullets of an existing review.
+ *
+ * Z_SYN3: Изучено | Ревью K | branch | L:1, 2
+ * Model: …
+ * Skill: …
+ *
+ * No `fixes:` and no `open:`. The file is free text, not a review table.
+ */
+export function formatStudyDiscordBody(opts: {
+  parentNumber: number;
+  scope: ReviewScopeToken;
+  selection: string;
+  model: string;
+  skillPath: string;
+}): string {
+  const model = opts.model.trim() || '—';
+  const skill = opts.skillPath.trim() || '—';
+  return [
+    `${STUDY_PREFIX}: ${formatStudyChipLabel(opts)}`,
+    `Model: ${model}`,
+    `Skill: ${skill}`,
+  ].join('\n');
+}
+
 /**
  * Discord message for an explain («Что сделано») file attachment.
  *
@@ -1429,13 +1473,52 @@ export function parseRereviewMessagePill(content: string): string | undefined {
   if (!scope || !formatted) {
     return undefined;
   }
-  return `Реревью ${scoped[1]} на Ревью ${scoped[2]} | ${scope} | ${scoped[4].toLowerCase()} | ${formatted}`;
+  return `Реревью ${scoped[1]} | Ревью ${scoped[2]} | ${scope} | ${scoped[4].toLowerCase()} | ${formatted}`;
 }
 
-/** Parent review number from a re-review pill, e.g. `Реревью 4 на Ревью 1 | …`. */
+/** Pill label from the first line of a Z_SYN3 message. */
+export function parseStudyMessagePill(content: string): string | undefined {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  const match = STUDY_HEAD_RE.exec(head);
+  if (!match) {
+    return undefined;
+  }
+  const rest = (match[1] || '').trim().replace(/\s+/g, ' ');
+  const parts = rest.split(/\s*\|\s*/);
+  if (parts.length < 4) {
+    return undefined;
+  }
+  if (!/^(?:Изучено|Studied)$/i.test(parts[0].trim())) {
+    return undefined;
+  }
+  const parent = /^(?:Ревью|Review)\s+(\d+)$/i.exec(parts[1].trim());
+  const scope = normalizeReviewScopeToken(parts[2]);
+  if (!parent || !scope) {
+    return undefined;
+  }
+  const selection = parseRereviewSelection(parts.slice(3).join(' | '));
+  const formatted = selection ? formatRereviewSelection(selection) : '';
+  if (!formatted) {
+    return undefined;
+  }
+  return formatStudyChipLabel({
+    parentNumber: Number(parent[1]),
+    scope,
+    selection: formatted,
+  });
+}
+
+/**
+ * Parent review number from a re-review pill.
+ * Chip: `Реревью 4 | Ревью 1 | …`. Older pills: `Реревью 4 на Ревью 1 | …`.
+ */
 export function parseRereviewParentNumber(pill: string): number | undefined {
-  const match = /на\s+(?:Ревью|Review)\s+(\d+)/i.exec(pill);
-  return match ? Number(match[1]) : undefined;
+  const piped = /^(?:Реревью|Rereview)\s+\d+\s*\|\s*(?:Ревью|Review)\s+(\d+)\b/i.exec(pill.trim());
+  if (piped) {
+    return Number(piped[1]);
+  }
+  const legacy = /на\s+(?:Ревью|Review)\s+(\d+)\b/i.exec(pill);
+  return legacy ? Number(legacy[1]) : undefined;
 }
 
 export type ScenarioGroupStatus = 'open' | 'lock';

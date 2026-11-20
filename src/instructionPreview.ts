@@ -41,6 +41,32 @@ export function instructionPageHtml(markdown: string): string {
     padding: 0.1em 0.35em;
     border-radius: 3px;
   }
+  pre.md-code {
+    background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.2));
+    border-radius: 4px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.92em;
+    line-height: 1.45;
+    margin: 0.8em 0 1em;
+    padding: 10px 12px;
+    white-space: normal;
+  }
+  pre.md-code code {
+    background: none;
+    border-radius: 0;
+    display: block;
+    font-size: inherit;
+    padding: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .md-code-lang {
+    color: var(--vscode-descriptionForeground);
+    display: block;
+    font-family: var(--vscode-font-family, sans-serif);
+    font-size: 0.85em;
+    margin-bottom: 6px;
+  }
   ul, ol { margin: 0.4em 0 0.8em; padding-left: 1.4em; }
   li { margin: 0.25em 0; }
   li > ul, li > ol { margin: 0.2em 0 0.3em; }
@@ -130,6 +156,12 @@ export function markdownToHtml(markdown: string): string {
       index += 1;
       continue;
     }
+    if (isFenceOpen(line)) {
+      const fence = readFence(lines, index);
+      blocks.push(fence.html);
+      index = fence.next;
+      continue;
+    }
     if (line.startsWith('|')) {
       const table = readTable(lines, index);
       blocks.push(table.html);
@@ -160,7 +192,41 @@ export function markdownToHtml(markdown: string): string {
 }
 
 function isBlockStart(line: string): boolean {
-  return line.startsWith('|') || /^(#{1,3})\s+/.test(line) || isListLine(line);
+  return line.startsWith('|') || /^(#{1,3})\s+/.test(line) || isListLine(line) || isFenceOpen(line);
+}
+
+/** Opening fence: three or more backticks or tildes, optional language. */
+function isFenceOpen(line: string): boolean {
+  return /^ {0,3}(`{3,}|~{3,})/.test(line);
+}
+
+/**
+ * Fenced code stays literal text. A longer fence can wrap a shorter one,
+ * the same way CommonMark does.
+ */
+function readFence(lines: string[], start: number): { html: string; next: number } {
+  const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(lines[start]);
+  if (!open) {
+    return { html: `<p>${renderInline(lines[start].trim())}</p>`, next: start + 1 };
+  }
+  const tick = open[1][0];
+  const size = open[1].length;
+  const lang = (open[2].trim().split(/\s+/)[0] ?? '').replace(/[^A-Za-z0-9_+.#-]/g, '');
+  const body: string[] = [];
+  let index = start + 1;
+  const close = new RegExp(`^ {0,3}\\${tick}{${size},}\\s*$`);
+  while (index < lines.length && !close.test(lines[index])) {
+    body.push(lines[index]);
+    index += 1;
+  }
+  if (index < lines.length) {
+    index += 1;
+  }
+  const label = lang ? `<span class="md-code-lang">${escapeHtml(lang)}</span>` : '';
+  return {
+    html: `<pre class="md-code">${label}<code>${escapeHtml(body.join('\n'))}</code></pre>`,
+    next: index,
+  };
 }
 
 function isListLine(line: string): boolean {
@@ -228,13 +294,21 @@ function readTable(lines: string[], start: number): { html: string; next: number
   }
   const levelCol = rows[0].findIndex((cell) => cell.trim().toLowerCase() === 'уровень');
   const whereCol = rows[0].findIndex((cell) => cell.trim().toLowerCase() === 'где');
+  const fixCol = rows[0].findIndex((cell) => {
+    const name = cell.trim().toLowerCase();
+    return name === 'что чинить' || name === 'фикс';
+  });
+  const levelCounts: Record<'H' | 'M' | 'L', number> = { H: 0, M: 0, L: 0 };
   const head = rows[0].map((cell) => `<th>${renderInline(cell)}</th>`).join('');
   const body = rows
     .slice(1)
     .map((row) => {
       const cells = row.map((cell, index) => {
         if (index === levelCol) {
-          return reviewLevelCell(cell);
+          return reviewLevelCell(cell, levelCounts);
+        }
+        if (index === fixCol) {
+          return reviewFixCell(cell);
         }
         if (index === whereCol) {
           return `<td>${renderWhere(cell)}</td>`;
@@ -247,33 +321,95 @@ function readTable(lines: string[], start: number): { html: string; next: number
   return { html: `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`, next: index };
 }
 
-type ReviewLevel = { tone: 'high' | 'medium' | 'low'; label: string };
+type ReviewLevel = {
+  tone: 'high' | 'medium' | 'low';
+  letter: 'H' | 'M' | 'L';
+  /** Set when the cell already has a number, as in `H-2`. */
+  index?: number;
+};
 
-/** Column «Уровень»: a colored dot and one letter, H, M or L. */
+/** Column «Уровень»: a colored dot and `H-1`, `M-2`, `L-3`. Bare `H` is numbered by row order. */
 function reviewLevel(cell: string): ReviewLevel | undefined {
-  const value = cell.trim().toLowerCase();
+  const value = cell.trim();
+  const numbered = /^([hmls])\s*[-–—]\s*(\d+)$/i.exec(value);
+  if (numbered) {
+    const letter = levelLetter(numbered[1]);
+    const index = Number(numbered[2]);
+    if (letter && index > 0) {
+      return { tone: levelTone(letter), letter, index };
+    }
+  }
+  const letter = levelLetter(value);
+  return letter ? { tone: levelTone(letter), letter } : undefined;
+}
+
+function levelLetter(raw: string): 'H' | 'M' | 'L' | undefined {
+  const value = raw.trim().toLowerCase();
   if (value === 'h' || value === 'high') {
-    return { tone: 'high', label: 'H' };
+    return 'H';
   }
   if (value === 'm' || value === 'medium') {
-    return { tone: 'medium', label: 'M' };
+    return 'M';
   }
   if (value === 'l' || value === 'low' || value === 's' || value === 'simple') {
-    return { tone: 'low', label: 'L' };
+    return 'L';
   }
   return undefined;
 }
 
-function reviewLevelCell(cell: string): string {
+function levelTone(letter: 'H' | 'M' | 'L'): ReviewLevel['tone'] {
+  if (letter === 'H') {
+    return 'high';
+  }
+  if (letter === 'M') {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function reviewLevelCell(cell: string, counts?: Record<'H' | 'M' | 'L', number>): string {
   const level = reviewLevel(cell);
   if (!level) {
     return `<td>${renderInline(cell)}</td>`;
   }
+  const index = level.index ?? (counts ? ++counts[level.letter] : undefined);
+  const label = index ? `${level.letter}-${index}` : level.letter;
   return (
     `<td class="review-level"><span class="review-level-mark">` +
     `<span class="review-level-dot review-level-${level.tone}" aria-hidden="true"></span>` +
-    `${level.label}</span></td>`
+    `${label}</span></td>`
   );
+}
+
+/** «Что чинить» is exactly «исправлено»: a green double-check instead of the word. */
+function isReviewFixedMark(cell: string): boolean {
+  const value = cell
+    .trim()
+    .replace(/^`+|`+$/g, '')
+    .replace(/^\*\*|\*\*$/g, '')
+    .replace(/\.+$/g, '')
+    .trim()
+    .toLowerCase();
+  return value === 'исправлено';
+}
+
+/** Path from assets/check-double-fill.svg. */
+const CHECK_DOUBLE_FILL =
+  'M11.602 13.7599L13.014 15.1719L21.4795 6.7063L22.8938 8.12051L13.014 18.0003L6.65 11.6363L8.06421 10.2221L10.189 12.3469L11.602 13.7599ZM11.6037 10.9322L16.5563 5.97949L17.9666 7.38977L13.014 12.3424L11.6037 10.9322ZM8.77698 16.5873L7.36396 18.0003L1 11.6363L2.41421 10.2221L3.82723 11.6352L3.82604 11.6363L8.77698 16.5873Z';
+
+function reviewFixedCell(): string {
+  return (
+    `<td class="review-fixed">` +
+    `<svg class="review-fixed-ico" width="30" height="30" viewBox="0 0 24 24" role="img" aria-label="Исправлено">` +
+    `<path fill="#8fd14f" d="${CHECK_DOUBLE_FILL}"></path></svg></td>`
+  );
+}
+
+function reviewFixCell(cell: string): string {
+  if (isReviewFixedMark(cell)) {
+    return reviewFixedCell();
+  }
+  return `<td>${renderInline(cell)}</td>`;
 }
 
 function lineIndent(line: string): number {
@@ -539,14 +675,16 @@ function insertReviewSummary(html: string, summary: string): string {
 /** Green-chip panel: the fixed bullets only, four columns, file paths stay links. */
 export function reviewFixTableHtml(rows: ReviewFixRow[]): string {
   const body = rows
-    .map(
-      (row) =>
-        `<tr>${reviewLevelCell(row.level)}<td>${renderInline(row.broken)}</td>` +
-        `<td>${renderInline(row.fix)}</td><td>${renderWhere(row.where)}</td></tr>`,
-    )
+    .map((row) => {
+      const letter = row.level === 'High' ? 'H' : row.level === 'Medium' ? 'M' : 'L';
+      return (
+        `<tr>${reviewLevelCell(`${letter}-${row.index}`)}<td>${renderInline(row.broken)}</td>` +
+        `${reviewFixCell(row.fix)}<td>${renderWhere(row.where)}</td></tr>`
+      );
+    })
     .join('');
   return (
-    `<table><thead><tr><th>Уровень</th><th>Что сломано</th><th>Что чинить</th><th>Где</th></tr></thead>` +
+    `<table><thead><tr><th>Уровень</th><th>Что сломано</th><th>Фикс</th><th>Где</th></tr></thead>` +
     `<tbody>${body}</tbody></table>`
   );
 }
