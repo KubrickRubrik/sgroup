@@ -5,6 +5,7 @@ import type {
   PageKind,
   PanelOpenState,
 } from './markerStore';
+import type { ReviewThemeId } from './reviewThemes';
 
 /** Discord config message kinds (attachment + header). */
 export type ConfigMessageKind = 'BASE' | 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
@@ -110,6 +111,8 @@ export interface ProjectPageEntry {
   name: string;
   kind: PageKind;
   description?: string;
+  /** Review-map chip theme. Absent means Проводник. */
+  reviewTheme?: ReviewThemeId;
   order: number;
 }
 

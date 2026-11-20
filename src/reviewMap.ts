@@ -15,31 +15,34 @@ import {
   DiscordError,
   DiscordMessage,
   editChannelMessage,
+  editMessageFiles,
   ensureThread,
-  EXPLAIN_DEFAULT_COLOR,
   EXPLAIN_TITLE,
   findMrMessage,
   formatExplainDiscordBody,
   formatMrDiscordBody,
-  formatRereviewDiscordBody,
-  formatStudyDiscordBody,
   formatReviewDiscordBody,
   getChannelMessage,
   isConfigMessage,
   isDiscordSystemNotice,
   isExplainMessage,
+  isLevelNoteFilename,
   isMrMessage,
   isRereviewMessage,
   isReviewFamilyMessage,
   isReviewMessage,
   isStudyMessage,
   listChannelMessages,
+  reviewMessageRole,
   listThreadMessages,
   parseDiscordLock,
   parseExplainMessagePill,
+  parseFixRunCount,
+  parseLevelNote,
   parseMrChip,
   parseOpenLine,
   parseRereviewMessagePill,
+  parseRereviewParentNumber,
   parseStudyMessagePill,
   parseRereviewSelection,
   formatRereviewSelection,
@@ -49,6 +52,10 @@ import {
   parseReviewMessagePill,
   parseReviewFixes,
   deleteChannelMessage,
+  levelNoteFilename,
+  replaceDiscordMetaLine,
+  writeFixRunCount,
+  writeLevelNote,
   emptyFixBullets,
   formatFixStamp,
   formatSeverityLine,
@@ -58,6 +65,7 @@ import {
   postMessageWithFile,
   replaceDiscordLock,
   replaceMrDiscordColor,
+  themeColorContent,
   replaceMrDiscordHead,
   replaceMrDiscordStatus,
   replaceReviewDiscordStatus,
@@ -70,6 +78,9 @@ import {
   writeReviewFixes,
   sortMessagesAsc,
   THREAD_STARTER_MESSAGE,
+  type LevelNoteKind,
+  type LevelNoteSet,
+  type ReviewLevel,
 } from './discordApi';
 import { ExplainPendingStore } from './explainPending';
 import {
@@ -101,7 +112,13 @@ import {
   listGithubOpenPrs,
   updatePullRequest,
 } from './githubApi';
-import { LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
+import {
+  normalizeReviewTheme,
+  reviewThemeColor,
+  REVIEW_THEME_DEFAULT,
+  type ReviewStoredRole,
+  type ReviewThemeId,
+} from './reviewThemes';
 import { normalizeHex } from './palette';
 import {
   detectProviderFromRepoUrl,
@@ -112,20 +129,20 @@ import {
 } from './reviewHost';
 import {
   deleteReviewFile,
+  appendLevelLegacy,
   hasNeuroFixSuccessMarker,
   NEUROFIX_OK_LINE,
   parseReviewFixGroups,
-  rereviewOpenIndexes,
   reviewFixRows,
   RereviewPromptItem,
   runExplainSkill,
   runNeuroFixSkill,
   runReviewSkill,
   splitFixBullet,
+  splitLevelItemBodies,
+  stitchLevelFile,
   writeExplainFile,
-  writeRereviewFile,
   writeReviewFile,
-  writeStudyFile,
 } from './reviewAgent';
 import {
   isPendingBranchKey,
@@ -159,6 +176,12 @@ export interface ReviewThreadMsg {
   isStudy?: boolean;
   /** `fixes:` / `bullet:` on this R_SYN3 or RR_SYN3 message. Absent until the line is written. */
   fixes?: ReviewFixState;
+  /** `fix-n:` run counter. Absent on older messages, so the chip keeps the item list only. */
+  fixN?: number;
+  /** `rereview-n:` and `rereview:` level files on this review. */
+  rereviewNote?: LevelNoteSet;
+  /** `study-n:` and `study:` level files on this review. */
+  studyNote?: LevelNoteSet;
   /** `open:` indexes on an RR_SYN3 message. Absent on a normal review. */
   open?: ReviewFixBullets;
   /** Empty when Discord `status` is `-` or missing. */
@@ -191,6 +214,12 @@ export interface ReviewChip {
   pillLabel?: string;
   /** `fixes:` / `bullet:` on a root R_SYN3 message. */
   fixes?: ReviewFixState;
+  /** `fix-n:` run counter on a root review. */
+  fixN?: number;
+  /** Level files of a rereview written on this root review. */
+  rereviewNote?: LevelNoteSet;
+  /** Level files of a study written on this root review. */
+  studyNote?: LevelNoteSet;
   /** `status: closed` on the Discord MR message. Missing line stays open. */
   status?: 'open' | 'closed';
   /** `status:` on a root R_SYN3 message. */
@@ -263,8 +292,17 @@ export interface ReviewFilterContext {
   checkoutName: string;
 }
 
+function chipThemeHex(content: string, theme: ReviewThemeId): string | undefined {
+  const role = reviewMessageRole(content);
+  if (!role) {
+    return undefined;
+  }
+  return parseReviewColor(content) || reviewThemeColor(theme, role);
+}
+
 function toChip(
   msg: DiscordMessage,
+  theme: ReviewThemeId,
   replies: ReviewThreadMsg[] = [],
   repliesHasMore = false,
   repliesLoaded = false,
@@ -289,11 +327,7 @@ function toChip(
         ? parseReviewBranch(msg.content)
         : undefined,
     draft: parsed.draft,
-    color:
-      parsed.color ||
-      (isReviewRoot || isExplainRoot ? parseReviewColor(msg.content) : undefined) ||
-      (isExplainRoot ? EXPLAIN_DEFAULT_COLOR : undefined) ||
-      (isMr ? LINK_PALETTE_DEFAULT : undefined),
+    color: chipThemeHex(msg.content, theme),
     pillLabel: isReviewRoot
       ? parseReviewMessagePill(msg.content)
       : isExplainRoot
@@ -306,6 +340,9 @@ function toChip(
     locked: parseDiscordLock(msg.content),
     branch: parseReviewBranch(msg.content),
     fixes: isReviewRoot ? parseReviewFixes(msg.content) : undefined,
+    fixN: isReviewRoot ? parseFixRunCount(msg.content) : undefined,
+    rereviewNote: isReviewRoot ? parseLevelNote(msg.content, 'rereview') : undefined,
+    studyNote: isReviewRoot ? parseLevelNote(msg.content, 'study') : undefined,
     threadId: msg.thread?.id,
     hasThread: !!msg.thread?.id || !!msg.hasThread,
     replies,
@@ -317,10 +354,16 @@ function toChip(
 
 function reviewAttachment(msg: DiscordMessage): { filename: string; url: string } | undefined {
   const files = msg.attachments ?? [];
-  return files.find((file) => /\.(md|markdown|txt)$/i.test(file.filename)) ?? files[0];
+  const source = files.find(
+    (file) => /\.(md|markdown|txt)$/i.test(file.filename) && !isLevelNoteFilename(file.filename),
+  );
+  if (source) {
+    return source;
+  }
+  return files.find((file) => !isLevelNoteFilename(file.filename));
 }
 
-function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
+function toReplyBase(msg: DiscordMessage, theme: ReviewThemeId): ReviewThreadMsg {
   const file = reviewAttachment(msg);
   const explain = isExplainMessage(msg.content);
   const rereview = isRereviewMessage(msg.content);
@@ -336,11 +379,14 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
     isStudy: study,
     isExplain: explain,
     status: review || rereview ? parseReviewStatus(msg.content) : undefined,
-    color: explain ? parseReviewColor(msg.content) || EXPLAIN_DEFAULT_COLOR : undefined,
+    color: chipThemeHex(msg.content, theme),
     branch: explain ? parseReviewBranch(msg.content) : undefined,
     hasFile: !!file,
     filename: file?.filename,
     fixes: review || rereview ? parseReviewFixes(msg.content) : undefined,
+    fixN: review ? parseFixRunCount(msg.content) : undefined,
+    rereviewNote: review ? parseLevelNote(msg.content, 'rereview') : undefined,
+    studyNote: review ? parseLevelNote(msg.content, 'study') : undefined,
     open: rereview ? parseOpenLine(msg.content) : undefined,
     contentMissing: msg.contentMissing,
   };
@@ -716,6 +762,8 @@ export class ReviewMapController {
   private readonly neurofixSkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
   private readonly skeletonSeq = new Map<string, number>();
+  /** Bumps when a theme repaint starts, so an older Discord walk stops. */
+  private readonly themePaintGen = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
   private readonly replyMeta = new Map<
     string,
@@ -760,10 +808,163 @@ export class ReviewMapController {
       discussions: true,
       checkoutName: '',
     }),
+    private readonly themeFor: (pageId: string) => ReviewThemeId = () => REVIEW_THEME_DEFAULT,
   ) {
     this.access = new AccessStore(root);
     this.pending = new ReviewPendingStore(root);
     this.explainPending = new ExplainPendingStore(root);
+  }
+
+  private themeId(pageId: string): ReviewThemeId {
+    return normalizeReviewTheme(this.themeFor(pageId));
+  }
+
+  private roleColor(pageId: string, role: 'mr' | 'review' | 'rereview' | 'explain' | 'study'): string {
+    return reviewThemeColor(this.themeId(pageId), role);
+  }
+
+  /**
+   * Paint the active theme onto loaded chips, then walk Discord and store `them_color`.
+   * Legacy `color:` lines are dropped. The map snapshot already uses the theme.
+   */
+  async syncThemeColors(pageId: string): Promise<void> {
+    const theme = this.themeId(pageId);
+    const colorOf = (role: ReviewStoredRole) => reviewThemeColor(theme, role);
+    const gen = (this.themePaintGen.get(pageId) ?? 0) + 1;
+    this.themePaintGen.set(pageId, gen);
+    const channelId = await this.listingChannel(pageId);
+    const jobs: { channelId: string; messageId: string; content: string }[] = [];
+    const seen = new Set<string>();
+    const take = (targetChannel: string, msg: DiscordMessage) => {
+      const role = reviewMessageRole(msg.content);
+      if (!role) {
+        return;
+      }
+      const next = themeColorContent(msg.content, colorOf(role));
+      seen.add(msg.id);
+      if (!next) {
+        return;
+      }
+      msg.content = next;
+      const meta = this.replyMeta.get(msg.id);
+      if (meta) {
+        meta.color = colorOf(role);
+      }
+      if (targetChannel) {
+        jobs.push({ channelId: targetChannel, messageId: msg.id, content: next });
+      }
+    };
+    const win = this.windows.get(pageId);
+    if (win) {
+      for (const msg of win.messages) {
+        take(channelId, msg);
+      }
+      for (const [threadId, bucket] of win.threads) {
+        for (const msg of bucket.replies) {
+          take(threadId, msg);
+        }
+      }
+    }
+    if (channelId) {
+      void this.persistThemeColors(pageId, gen, colorOf, channelId, jobs, seen);
+    }
+  }
+
+  private async persistThemeColors(
+    pageId: string,
+    gen: number,
+    colorOf: (role: ReviewStoredRole) => string,
+    channelId: string,
+    jobs: { channelId: string; messageId: string; content: string }[],
+    seen: Set<string>,
+  ): Promise<void> {
+    const token = await this.discordToken();
+    if (!token) {
+      return;
+    }
+    const current = () => this.themePaintGen.get(pageId) === gen;
+    const paint = async (target: string, messageId: string, content: string) => {
+      if (!current()) {
+        return;
+      }
+      await editChannelMessage(token, target, messageId, content);
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+    };
+    for (const job of jobs) {
+      if (!current()) {
+        return;
+      }
+      await paint(job.channelId, job.messageId, job.content);
+    }
+    let before: string | undefined;
+    for (let page = 0; page < 8 && current(); page += 1) {
+      const batch = await listChannelMessages(token, channelId, { limit: 100, before });
+      if (!batch.ok || batch.value.length === 0) {
+        return;
+      }
+      for (const msg of batch.value) {
+        if (!current()) {
+          return;
+        }
+        if (!seen.has(msg.id)) {
+          const role = reviewMessageRole(msg.content);
+          const next = role ? themeColorContent(msg.content, colorOf(role)) : undefined;
+          if (next) {
+            seen.add(msg.id);
+            await paint(channelId, msg.id, next);
+          }
+        }
+        const threadId = msg.thread?.id;
+        if (threadId) {
+          await this.paintThreadTheme(pageId, gen, token, threadId, colorOf, seen);
+        }
+      }
+      if (batch.value.length < 100) {
+        return;
+      }
+      before = batch.value[0]?.id;
+      if (!before) {
+        return;
+      }
+    }
+  }
+
+  private async paintThreadTheme(
+    pageId: string,
+    gen: number,
+    token: string,
+    threadId: string,
+    colorOf: (role: ReviewStoredRole) => string,
+    seen: Set<string>,
+  ): Promise<void> {
+    const current = () => this.themePaintGen.get(pageId) === gen;
+    let before: string | undefined;
+    for (let page = 0; page < 3 && current(); page += 1) {
+      const batch = await listThreadMessages(token, threadId, { limit: 100, before });
+      if (!batch.ok || batch.value.length === 0) {
+        return;
+      }
+      for (const msg of batch.value) {
+        if (!current() || seen.has(msg.id)) {
+          continue;
+        }
+        const role = reviewMessageRole(msg.content);
+        const next = role ? themeColorContent(msg.content, colorOf(role)) : undefined;
+        if (!next) {
+          continue;
+        }
+        seen.add(msg.id);
+        await editChannelMessage(token, threadId, msg.id, next);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+      }
+      if (batch.value.length < 100) {
+        return;
+      }
+      before = batch.value[0]?.id;
+      if (!before) {
+        return;
+      }
+    }
   }
 
   private profilePaths(): ReviewProfilePaths {
@@ -1074,7 +1275,7 @@ export class ReviewMapController {
     const messages = win.messages.filter((m) => this.channelRootPasses(m, filterCtx)).map((m) => {
       const thread = m.thread?.id ? win.threads.get(m.thread.id) : undefined;
       const replies = (thread?.replies ?? []).filter((r) => this.threadReplyPasses(r, filterCtx)).map((r) => {
-        const base = toReplyBase(r);
+        const base = toReplyBase(r, this.themeId(pageId));
         const meta = this.replyMeta.get(r.id);
         if (!meta) {
           return base;
@@ -1084,13 +1285,13 @@ export class ReviewMapController {
           isPill: meta.isPill,
           pillLabel: meta.pillLabel,
           isExplain: meta.isExplain || base.isExplain,
-          color: meta.color || base.color,
+          color: base.color,
           branch: meta.branch || base.branch,
         };
       });
       const loaded = !!thread;
       const hasMore = threadHasMore(m, thread);
-      const chip = toChip(m, replies, hasMore, loaded);
+      const chip = toChip(m, this.themeId(pageId), replies, hasMore, loaded);
       if (thread?.canLoadNewer) {
         chip.repliesHasNewer = true;
       }
@@ -1435,7 +1636,7 @@ export class ReviewMapController {
           isPill: true,
           pillLabel: explainPill,
           isExplain: true,
-          color: parseReviewColor(msg.content) || EXPLAIN_DEFAULT_COLOR,
+          color: parseReviewColor(msg.content),
           branch: parseReviewBranch(msg.content),
         });
         continue;
@@ -2455,6 +2656,7 @@ export class ReviewMapController {
   }
 
   private async postMrToDiscord(
+    pageId: string,
     access: ReviewPageAccess,
     mr: ReviewMr,
   ): Promise<{ ok: true; message: DiscordMessage } | { ok: false; message: string }> {
@@ -2466,7 +2668,7 @@ export class ReviewMapController {
       webUrl: mr.web_url,
       title: mr.title,
       draft: mr.draft,
-      color: randomLinkPaletteColor(),
+      color: this.roleColor(pageId, 'mr'),
       provider: access.provider,
       iid: mr.iid,
       sourceBranch: mr.source_branch,
@@ -2577,7 +2779,7 @@ export class ReviewMapController {
     if (found.value) {
       return { kind: 'notice', code: 'alreadyInChannel', provider: looked.access.provider };
     }
-    const posted = await this.postMrToDiscord(looked.access, looked.mr);
+    const posted = await this.postMrToDiscord(pageId, looked.access, looked.mr);
     if (!posted.ok) {
       return { kind: 'discordFail', mr: looked.mr, message: posted.message };
     }
@@ -2776,7 +2978,7 @@ export class ReviewMapController {
       return { kind: 'state', state: jumped };
     }
 
-    const posted = await this.postMrToDiscord(access, mr);
+    const posted = await this.postMrToDiscord(pageId, access, mr);
     if (!posted.ok) {
       return { kind: 'discordFail', mr, message: posted.message };
     }
@@ -2860,7 +3062,7 @@ export class ReviewMapController {
     // Refresh MR/PR data then post.
     const fresh = await this.findOpenByBranch(access, host, mr.source_branch);
     const target = fresh.ok && fresh.value ? fresh.value : mr;
-    const posted = await this.postMrToDiscord(access, target);
+    const posted = await this.postMrToDiscord(pageId, access, target);
     if (!posted.ok) {
       return { kind: 'discordFail', mr: target, message: posted.message };
     }
@@ -3015,7 +3217,7 @@ export class ReviewMapController {
     if (!color) {
       return { kind: 'error', message: 'Color is not a hex value' };
     }
-    const current = parseReviewColor(message.content) || EXPLAIN_DEFAULT_COLOR;
+    const current = parseReviewColor(message.content) || '';
     if (current.toLowerCase() === color) {
       return { kind: 'state', state: this.snapshot(pageId) };
     }
@@ -3354,12 +3556,45 @@ export class ReviewMapController {
     return { ok: true, filename: value.filename, text: value.text };
   }
 
+  /** Download named attachments of one review, in the given order, joined for the preview. */
+  async readNamedAttachments(
+    pageId: string,
+    messageId: string,
+    filenames: string[],
+  ): Promise<{ ok: true; filename: string; text: string } | { ok: false; message: string }> {
+    const win = this.windows.get(pageId);
+    const token = await this.discordToken();
+    if (!win || !token) {
+      return { ok: false, message: 'Review page is not ready' };
+    }
+    const located = this.findReviewMessage(win, messageId);
+    if (!located) {
+      return { ok: false, message: 'Review message not found on the map' };
+    }
+    const parts: string[] = [];
+    for (const filename of filenames) {
+      const attachment = located.found.attachments?.find((file) => file.filename === filename);
+      if (!attachment) {
+        return { ok: false, message: `Файл ${filename} не прикреплён` };
+      }
+      const downloaded = await fetchAttachmentText(token, attachment.url);
+      if (!downloaded.ok) {
+        return { ok: false, message: downloaded.message || `Could not download ${filename}` };
+      }
+      parts.push(downloaded.value.trim());
+    }
+    return { ok: true, filename: filenames.join(', '), text: parts.join('\n\n') };
+  }
+
   /** Write the cached attachment to a temp markdown file and open its preview. */
   async openReviewAttachmentTab(
     pageId: string,
     messageId: string,
+    filenames?: string[],
   ): Promise<{ ok: true } | { ok: false; message: string }> {
-    const read = await this.readReviewAttachment(pageId, messageId);
+    const read = filenames?.length
+      ? await this.readNamedAttachments(pageId, messageId, filenames)
+      : await this.readReviewAttachment(pageId, messageId);
     if (!read.ok) {
       return read;
     }
@@ -3598,12 +3833,13 @@ export class ReviewMapController {
       at: formatFixStamp(),
       bullets,
     };
-    const edited = await editChannelMessage(
-      token,
-      editChannel,
-      located.found.id,
-      writeReviewFixes(located.found.content, next),
-    );
+    const paths = this.profilePaths();
+    const prevN = parseFixRunCount(located.found.content) ?? 0;
+    let content = writeReviewFixes(located.found.content, next);
+    content = writeFixRunCount(content, prevN + 1);
+    content = replaceDiscordMetaLine(content, 'Model', paths.model.trim() || '—');
+    content = replaceDiscordMetaLine(content, 'Skill', paths.fixSkillPath.trim() || '—');
+    const edited = await editChannelMessage(token, editChannel, located.found.id, content);
     if (!edited.ok) {
       return { ok: false, message: edited.message };
     }
@@ -3873,7 +4109,7 @@ export class ReviewMapController {
           threadParent = found.value;
           await this.appendPostedMessage(pageId, access.channelId, found.value);
         } else {
-          const posted = await this.postMrToDiscord(access, mr);
+          const posted = await this.postMrToDiscord(pageId, access, mr);
           if (!posted.ok) {
             return { kind: 'error', message: posted.message };
           }
@@ -4070,9 +4306,109 @@ export class ReviewMapController {
     return items;
   }
 
+  private stampRunMeta(content: string, model: string, skillPath: string): string {
+    let next = replaceDiscordMetaLine(content, 'Model', model.trim() || '—');
+    next = replaceDiscordMetaLine(next, 'Skill', skillPath.trim() || '—');
+    return next;
+  }
+
+  /** Download one level file already attached to this review. Missing file is an empty previous. */
+  private async readLevelFile(
+    token: string,
+    message: DiscordMessage,
+    filename: string,
+  ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
+    const attachment = message.attachments?.find((file) => file.filename === filename);
+    if (!attachment) {
+      return { ok: true, text: '' };
+    }
+    const downloaded = await fetchAttachmentText(token, attachment.url);
+    if (!downloaded.ok) {
+      return { ok: false, message: downloaded.message || `Could not download ${filename}` };
+    }
+    return { ok: true, text: downloaded.value };
+  }
+
+  /**
+   * Stitch this run into the level files and bump the counter by one.
+   * The agent text is already split per item.
+   */
+  private async buildLevelUploads(
+    token: string,
+    message: DiscordMessage,
+    kind: LevelNoteKind,
+    updates: Array<{ level: ReviewLevel; index: number; body: string }>,
+  ): Promise<
+    | { ok: true; note: LevelNoteSet; files: Array<{ filename: string; text: string }> }
+    | { ok: false; message: string }
+  > {
+    const current = parseLevelNote(message.content, kind) ?? { n: 0, files: [] };
+    const nextFiles = current.files.map((file) => ({ ...file, indexes: [...file.indexes] }));
+    const uploads: Array<{ filename: string; text: string }> = [];
+    const levels = [...new Set(updates.map((item) => item.level))];
+    for (const level of levels) {
+      const filename = levelNoteFilename(kind, level);
+      const levelUpdates = updates.filter((item) => item.level === level);
+      let slot = nextFiles.find((file) => file.level === level);
+      if (!slot) {
+        slot = { level, indexes: [], filename };
+        nextFiles.push(slot);
+      }
+      slot.filename = filename;
+      slot.indexes = [...new Set([...slot.indexes, ...levelUpdates.map((item) => item.index)])]
+        .filter((item) => item > 0)
+        .sort((a, b) => a - b);
+      const previous = await this.readLevelFile(token, message, filename);
+      if (!previous.ok) {
+        return previous;
+      }
+      uploads.push({
+        filename,
+        text: stitchLevelFile({
+          level,
+          indexes: slot.indexes,
+          previous: previous.text,
+          updates: levelUpdates,
+        }),
+      });
+    }
+    return { ok: true, note: { n: current.n + 1, files: nextFiles }, files: uploads };
+  }
+
+  /** One Discord edit: new level files in, replaced level ids out, the review file kept. */
+  private async patchReviewLevelFiles(
+    win: ReviewWindow,
+    located:
+      | { kind: 'channel'; found: DiscordMessage; channelId: string }
+      | { kind: 'thread'; found: DiscordMessage; channelId: string },
+    token: string,
+    channelId: string,
+    content: string,
+    uploads: Array<{ filename: string; text: string }>,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const replaced = new Set(uploads.map((file) => file.filename));
+    const keepIds = (located.found.attachments ?? [])
+      .filter((file) => !replaced.has(file.filename))
+      .map((file) => file.id);
+    const edited = await editMessageFiles(
+      token,
+      channelId,
+      located.found.id,
+      content,
+      keepIds,
+      uploads.map((file) => ({ filename: file.filename, bytes: Buffer.from(file.text, 'utf8') })),
+    );
+    if (!edited.ok) {
+      return { ok: false, message: edited.message };
+    }
+    this.rememberEditedReview(win, located, edited.value);
+    this.fileCache.delete(located.found.id);
+    return { ok: true };
+  }
+
   /**
    * Re-check selected bullets of an existing review.
-   * Posts RR_SYN3 at the end of the same thread. Scope and depth stay on the parent chip.
+   * Writes the level files onto this R_SYN3 message. Scope and depth stay on the parent chip.
    */
   async startRereview(
     pageId: string,
@@ -4127,7 +4463,6 @@ export class ReviewMapController {
       !!branchName &&
       checkout.ok &&
       branchName.toLocaleLowerCase() === checkout.value.trim().toLocaleLowerCase();
-    const channelIsRoot = isReviewMessage(channelParent.content);
     const inheritedKind: ReviewKind = scope === 'branch' ? 'branch' : 'changes';
     const kind: ReviewKind = same ? inheritedKind : 'branch';
     let hostDiff: string | undefined;
@@ -4162,9 +4497,6 @@ export class ReviewMapController {
     if (!paths.dirPath) {
       return { kind: 'error', message: 'Review directory path is not set in the active profile' };
     }
-    const reviewCount = await this.countFamilyReplies(token, win, channelParent.thread?.id);
-    const reviewNumber = channelIsRoot ? reviewCount + 2 : reviewCount + 1;
-    const dirAbs = path.isAbsolute(paths.dirPath) ? paths.dirPath : path.join(this.cwd(), paths.dirPath);
     const skillAbs = path.isAbsolute(paths.skillPath)
       ? paths.skillPath
       : path.join(this.cwd(), paths.skillPath);
@@ -4180,7 +4512,7 @@ export class ReviewMapController {
       model: paths.model,
       kind,
       depth,
-      reviewNumber,
+      reviewNumber: parentNumber,
       title,
       webUrl: mrParsed?.webUrl,
       branch: branchName,
@@ -4194,71 +4526,44 @@ export class ReviewMapController {
       return { kind: 'error', message: agent.message };
     }
 
-    const mrLine = mrParsed?.webUrl
-      ? (() => {
-          const match = mrParsed.webUrl.match(/\/(?:merge_requests|pull)\/(\d+)/);
-          return [match ? match[1] : '', title, mrParsed.webUrl].filter(Boolean).join(' ');
-        })()
-      : `Branch: ${branchName || title}`;
-    let filePath = '';
-    try {
-      filePath = await writeRereviewFile({
-        dirPath: dirAbs,
-        reviewNumber,
-        parentNumber,
-        mrLine,
-        scope,
-        depth: depthToken,
-        selection: formatted,
-        body: agent.body,
-      });
-      const writtenText = await fs.readFile(filePath, 'utf8');
-      const written = parseReviewFixGroups(writtenText);
-      const open = written.ok ? rereviewOpenIndexes(written.groups) : emptyFixBullets();
-      const thread = await ensureThread(token, access.channelId, channelParent, 'reviews');
-      if (!thread.ok) {
-        return { kind: 'error', message: thread.message };
-      }
-      const content = formatRereviewDiscordBody({
-        reviewNumber,
-        parentNumber,
-        scope,
-        depth: depthToken,
-        selection: formatted,
-        open,
-        model: paths.model,
-        skillPath: paths.skillPath,
-      });
-      const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
-      if (!posted.ok) {
-        return { kind: 'error', message: posted.message };
-      }
-      await deleteReviewFile(filePath);
-      const postedCount =
-        typeof thread.value.messageCount === 'number' ? thread.value.messageCount + 1 : undefined;
-      channelParent.thread = { id: thread.value.id, messageCount: postedCount };
-      const idx = win.messages.findIndex((item) => item.id === channelParent.id);
-      if (idx >= 0) {
-        win.messages[idx] = {
-          ...win.messages[idx],
-          thread: { id: thread.value.id, messageCount: postedCount },
-          hasThread: true,
-        };
-      }
-      this.placeThreadPost(win, thread.value.id, posted.value, postedCount);
-      await this.enrichReplies(token, [posted.value]);
-      agent.report('Сообщение опубликовано в треде.', true);
-      return { kind: 'state', state: this.snapshot(pageId) };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      agent.report(message, false);
-      return { kind: 'error', message };
+    const split = splitLevelItemBodies(
+      agent.body,
+      items.map((item) => ({ level: item.level, index: item.index })),
+    );
+    if (!split.ok) {
+      agent.report(split.message, false);
+      return { kind: 'error', message: split.message };
     }
+    const built = await this.buildLevelUploads(token, located.found, 'rereview', split.bodies);
+    if (!built.ok) {
+      agent.report(built.message, false);
+      return { kind: 'error', message: built.message };
+    }
+    const editChannel = located.kind === 'channel' ? access.channelId : located.channelId;
+    const content = this.stampRunMeta(
+      writeLevelNote(located.found.content, 'rereview', built.note),
+      paths.model,
+      paths.skillPath,
+    );
+    const patched = await this.patchReviewLevelFiles(
+      win,
+      located,
+      token,
+      editChannel,
+      content,
+      built.files,
+    );
+    if (!patched.ok) {
+      agent.report(patched.message, false);
+      return { kind: 'error', message: patched.message };
+    }
+    agent.report('Реревью записано в ревью.', true);
+    return { kind: 'state', state: this.snapshot(pageId) };
   }
 
   /**
    * Explain selected bullets of an existing review in plain language.
-   * Posts Z_SYN3 at the end of the same thread. No depth command and no depth token on the chip.
+   * Writes the level files onto this R_SYN3 message. No depth command and no depth token.
    */
   async startStudy(
     pageId: string,
@@ -4346,7 +4651,6 @@ export class ReviewMapController {
     if (!paths.dirPath) {
       return { kind: 'error', message: 'Review directory path is not set in the active profile' };
     }
-    const dirAbs = path.isAbsolute(paths.dirPath) ? paths.dirPath : path.join(this.cwd(), paths.dirPath);
     const skillAbs = path.isAbsolute(paths.studySkillPath)
       ? paths.studySkillPath
       : path.join(this.cwd(), paths.studySkillPath);
@@ -4373,51 +4677,267 @@ export class ReviewMapController {
       return { kind: 'error', message: agent.message };
     }
 
-    let filePath = '';
-    try {
-      filePath = await writeStudyFile({
-        dirPath: dirAbs,
-        parentNumber,
-        scope,
-        selection: formatted,
-        body: agent.body,
-      });
-      const thread = await ensureThread(token, access.channelId, channelParent, 'reviews');
-      if (!thread.ok) {
-        return { kind: 'error', message: thread.message };
-      }
-      const content = formatStudyDiscordBody({
-        parentNumber,
-        scope,
-        selection: formatted,
-        model: paths.model,
-        skillPath: paths.studySkillPath,
-      });
-      const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
-      if (!posted.ok) {
-        return { kind: 'error', message: posted.message };
-      }
-      await deleteReviewFile(filePath);
-      const postedCount =
-        typeof thread.value.messageCount === 'number' ? thread.value.messageCount + 1 : undefined;
-      channelParent.thread = { id: thread.value.id, messageCount: postedCount };
-      const idx = win.messages.findIndex((item) => item.id === channelParent.id);
-      if (idx >= 0) {
-        win.messages[idx] = {
-          ...win.messages[idx],
-          thread: { id: thread.value.id, messageCount: postedCount },
-          hasThread: true,
-        };
-      }
-      this.placeThreadPost(win, thread.value.id, posted.value, postedCount);
-      await this.enrichReplies(token, [posted.value]);
-      agent.report('Сообщение опубликовано в треде.', true);
-      return { kind: 'state', state: this.snapshot(pageId) };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      agent.report(message, false);
-      return { kind: 'error', message };
+    const split = splitLevelItemBodies(
+      agent.body,
+      items.map((item) => ({ level: item.level, index: item.index })),
+    );
+    if (!split.ok) {
+      agent.report(split.message, false);
+      return { kind: 'error', message: split.message };
     }
+    const built = await this.buildLevelUploads(token, located.found, 'study', split.bodies);
+    if (!built.ok) {
+      agent.report(built.message, false);
+      return { kind: 'error', message: built.message };
+    }
+    const editChannel = located.kind === 'channel' ? access.channelId : located.channelId;
+    const content = this.stampRunMeta(
+      writeLevelNote(located.found.content, 'study', built.note),
+      paths.model,
+      paths.studySkillPath,
+    );
+    const patched = await this.patchReviewLevelFiles(
+      win,
+      located,
+      token,
+      editChannel,
+      content,
+      built.files,
+    );
+    if (!patched.ok) {
+      agent.report(patched.message, false);
+      return { kind: 'error', message: patched.message };
+    }
+    agent.report('Изучено записано в ревью.', true);
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  private selectionTail(pill: string, skip: number): RereviewSelection | undefined {
+    const parts = pill.split(/\s*\|\s*/);
+    if (parts.length <= skip) {
+      return undefined;
+    }
+    return parseRereviewSelection(parts.slice(skip).join(' | '));
+  }
+
+  private expandNoteIndexes(
+    selection: RereviewSelection,
+    groups: { H: string[]; M: string[]; L: string[] },
+  ): Record<ReviewLevel, number[]> {
+    const indexes: Record<ReviewLevel, number[]> = { H: [], M: [], L: [] };
+    for (const level of ['H', 'M', 'L'] as const) {
+      const pick = selection[level];
+      if (!pick) {
+        continue;
+      }
+      indexes[level] = pick === 'all' ? groups[level].map((_, index) => index + 1) : [...pick];
+    }
+    return indexes;
+  }
+
+  private async listWholeThread(
+    token: string,
+    threadId: string,
+  ): Promise<{ ok: true; value: DiscordMessage[] } | { ok: false; message: string }> {
+    const all: DiscordMessage[] = [];
+    let before: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const batch = await listThreadMessages(token, threadId, { limit: 100, before });
+      if (!batch.ok) {
+        return { ok: false, message: batch.message };
+      }
+      if (!batch.value.length) {
+        break;
+      }
+      all.push(...batch.value);
+      if (batch.value.length < 100) {
+        break;
+      }
+      before = batch.value[batch.value.length - 1]?.id;
+      if (!before) {
+        break;
+      }
+    }
+    return { ok: true, value: all };
+  }
+
+  /**
+   * Move this review's RR_SYN3 and Z_SYN3 onto the parent message.
+   * A failed delete leaves the old message; the parent edit is not rolled back.
+   */
+  async migrateReviewNotes(
+    pageId: string,
+    messageId: string,
+  ): Promise<
+    | { kind: 'state'; state: ReviewPageState }
+    | { kind: 'error'; message: string; state?: ReviewPageState }
+  > {
+    const win = this.windows.get(pageId);
+    const access = await this.getAccess(pageId);
+    const token = await this.discordToken();
+    if (!win || !access || !token) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
+    const located = this.findReviewMessage(win, messageId);
+    if (!located || !isReviewMessage(located.found.content)) {
+      return { kind: 'error', message: 'Select an R_SYN3 chip' };
+    }
+    const pill = parseReviewMessagePill(located.found.content);
+    const pillNumber = pill && /^(?:Ревью|Review)\s+(\d+)/i.exec(pill);
+    let reviewNumber = pillNumber ? Number(pillNumber[1]) : undefined;
+    const groupsRead = await this.readReviewAttachment(pageId, messageId);
+    const groups = groupsRead.ok ? parseReviewFixGroups(groupsRead.text) : undefined;
+    if (!reviewNumber && groupsRead.ok) {
+      reviewNumber = parseReviewAttachment(groupsRead.text).reviewNumber;
+    }
+    if (!reviewNumber) {
+      return { kind: 'error', message: 'У ревью нет номера' };
+    }
+    const groupLists = groups?.ok ? groups.groups : { H: [], M: [], L: [] };
+    const threadId = located.kind === 'thread' ? located.channelId : located.found.thread?.id;
+    if (!threadId) {
+      return { kind: 'error', message: 'В треде нет реревью и изучено' };
+    }
+    const listed = await this.listWholeThread(token, threadId);
+    if (!listed.ok) {
+      return { kind: 'error', message: listed.message };
+    }
+    type NoteRow = { msg: DiscordMessage; selection: RereviewSelection };
+    const rereviews: NoteRow[] = [];
+    const studies: NoteRow[] = [];
+    for (const msg of listed.value) {
+      if (isRereviewMessage(msg.content)) {
+        const label = parseRereviewMessagePill(msg.content);
+        const selection = label ? this.selectionTail(label, 4) : undefined;
+        if (!label || parseRereviewParentNumber(label) !== reviewNumber || !selection) {
+          continue;
+        }
+        rereviews.push({ msg, selection });
+        continue;
+      }
+      if (isStudyMessage(msg.content)) {
+        const label = parseStudyMessagePill(msg.content);
+        const parent = label && /(?:Ревью|Review)\s+(\d+)/i.exec(label);
+        const selection = label ? this.selectionTail(label, 3) : undefined;
+        if (!parent || Number(parent[1]) !== reviewNumber || !selection) {
+          continue;
+        }
+        studies.push({ msg, selection });
+      }
+    }
+    if (!rereviews.length && !studies.length) {
+      return { kind: 'error', message: 'Нечего переносить' };
+    }
+    const byTime = (a: NoteRow, b: NoteRow) => Date.parse(a.msg.timestamp) - Date.parse(b.msg.timestamp);
+    rereviews.sort(byTime);
+    studies.sort(byTime);
+    let content = located.found.content;
+    const uploads: Array<{ filename: string; text: string }> = [];
+    const folded: DiscordMessage[] = [];
+    const fold = async (
+      kind: LevelNoteKind,
+      rows: NoteRow[],
+    ): Promise<{ ok: true } | { ok: false; message: string }> => {
+      const buckets: Record<ReviewLevel, { indexes: number[]; blocks: string[] }> = {
+        H: { indexes: [], blocks: [] },
+        M: { indexes: [], blocks: [] },
+        L: { indexes: [], blocks: [] },
+      };
+      const used: DiscordMessage[] = [];
+      for (const row of rows) {
+        const file = reviewAttachment(row.msg);
+        if (!file) {
+          return { ok: false, message: 'У старого сообщения нет файла' };
+        }
+        const downloaded = await fetchAttachmentText(token, file.url);
+        if (!downloaded.ok) {
+          return { ok: false, message: downloaded.message || 'Could not download the review file' };
+        }
+        const indexes = this.expandNoteIndexes(row.selection, groupLists);
+        const touched = (['H', 'M', 'L'] as const).filter((level) => indexes[level].length > 0);
+        if (!touched.length) {
+          continue;
+        }
+        for (const level of touched) {
+          buckets[level].indexes.push(...indexes[level]);
+          buckets[level].blocks.push(downloaded.value.trim());
+        }
+        used.push(row.msg);
+      }
+      if (!used.length) {
+        return { ok: true };
+      }
+      const existing = parseLevelNote(content, kind);
+      const nextFiles = (existing?.files ?? []).map((file) => ({ ...file, indexes: [...file.indexes] }));
+      for (const level of ['H', 'M', 'L'] as const) {
+        if (!buckets[level].indexes.length) {
+          continue;
+        }
+        const filename = levelNoteFilename(kind, level);
+        const previous = await this.readLevelFile(token, located.found, filename);
+        if (!previous.ok) {
+          return previous;
+        }
+        const indexes = [...new Set(buckets[level].indexes)].filter((item) => item > 0).sort((a, b) => a - b);
+        const text = appendLevelLegacy({
+          level,
+          previous: previous.text,
+          indexes,
+          block: buckets[level].blocks.join('\n\n'),
+        });
+        uploads.push({ filename, text });
+        const slot = nextFiles.find((file) => file.level === level);
+        const merged = [...new Set([...(slot?.indexes ?? []), ...indexes])].sort((a, b) => a - b);
+        if (slot) {
+          slot.indexes = merged;
+          slot.filename = filename;
+        } else {
+          nextFiles.push({ level, indexes: merged, filename });
+        }
+      }
+      content = writeLevelNote(content, kind, { n: used.length, files: nextFiles });
+      folded.push(...used);
+      return { ok: true };
+    };
+    if (rereviews.length) {
+      const moved = await fold('rereview', rereviews);
+      if (!moved.ok) {
+        return { kind: 'error', message: moved.message };
+      }
+    }
+    if (studies.length) {
+      const moved = await fold('study', studies);
+      if (!moved.ok) {
+        return { kind: 'error', message: moved.message };
+      }
+    }
+    if (!folded.length) {
+      return { kind: 'error', message: 'Нечего переносить' };
+    }
+    const editChannel = located.kind === 'channel' ? access.channelId : located.channelId;
+    const patched = await this.patchReviewLevelFiles(win, located, token, editChannel, content, uploads);
+    if (!patched.ok) {
+      return { kind: 'error', message: patched.message };
+    }
+    const failures: string[] = [];
+    for (const msg of folded) {
+      const deleted = await deleteChannelMessage(token, threadId, msg.id);
+      if (!deleted.ok) {
+        failures.push(deleted.message);
+        continue;
+      }
+      const bucket = win.threads.get(threadId);
+      if (bucket) {
+        bucket.replies = bucket.replies.filter((item) => item.id !== msg.id);
+      }
+      this.replyMeta.delete(msg.id);
+      this.fileCache.delete(msg.id);
+    }
+    const state = this.snapshot(pageId);
+    if (failures.length) {
+      return { kind: 'error', message: failures[0], state };
+    }
+    return { kind: 'state', state };
   }
 
   /**
@@ -4593,6 +5113,7 @@ export class ReviewMapController {
       depth: depthToken,
       model: paths.model,
       skillPath: paths.skillPath,
+      color: this.roleColor(pageId, 'review'),
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
@@ -4661,7 +5182,7 @@ export class ReviewMapController {
       model: paths.model,
       skillPath: paths.skillPath,
       branch,
-      color: randomLinkPaletteColor(),
+      color: this.roleColor(pageId, 'review'),
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);
     if (!posted.ok) {
@@ -4977,7 +5498,7 @@ export class ReviewMapController {
           threadParent = found.value;
           await this.appendPostedMessage(pageId, access.channelId, found.value);
         } else {
-          const posted = await this.postMrToDiscord(access, mr);
+          const posted = await this.postMrToDiscord(pageId, access, mr);
           if (!posted.ok) {
             return { kind: 'error', message: posted.message };
           }
@@ -5142,7 +5663,7 @@ export class ReviewMapController {
       branch,
       scope: reviewScopeToken(pending?.kind ?? 'changes'),
       depth: reviewDepthToken(pending?.depth ?? 'medium'),
-      color: EXPLAIN_DEFAULT_COLOR,
+      color: this.roleColor(pageId, 'explain'),
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
@@ -5191,7 +5712,7 @@ export class ReviewMapController {
       branch,
       scope: reviewScopeToken(pending?.kind ?? 'branch'),
       depth: reviewDepthToken(pending?.depth ?? 'medium'),
-      color: EXPLAIN_DEFAULT_COLOR,
+      color: this.roleColor(pageId, 'explain'),
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);
     if (!posted.ok) {

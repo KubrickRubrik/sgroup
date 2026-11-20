@@ -40,6 +40,7 @@ import type {
   StyleProfile,
   SurfaceCollapsed,
 } from './markerStore';
+import { normalizeReviewTheme } from './reviewThemes';
 import type { Syn3Locale } from './i18n';
 
 const GENERAL_PROFILE_ID = 'general';
@@ -242,6 +243,7 @@ export function projectPageEntryFromPage(page: PageDef, version = 1): ProjectPag
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
+    ...(page.reviewTheme ? { reviewTheme: page.reviewTheme } : {}),
   };
 }
 
@@ -499,6 +501,9 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
     kind,
     order: typeof source.order === 'number' && Number.isFinite(source.order) ? source.order : index,
     ...(description ? { description } : {}),
+    ...(normalizeReviewTheme(source.reviewTheme) !== 'explorer'
+      ? { reviewTheme: normalizeReviewTheme(source.reviewTheme) }
+      : {}),
   };
 }
 
@@ -1255,6 +1260,7 @@ export function assembleSplitWorkspace(
         groupsLayout: layout.groupsLayout,
         collapsed: emptyCollapsedLocal(),
         ...(meta.description ? { description: meta.description } : {}),
+        ...(meta.reviewTheme ? { reviewTheme: meta.reviewTheme } : {}),
       };
       if (file.cloud) {
         pageCloud[pageId] = file.cloud;
@@ -1347,6 +1353,7 @@ function packWirePageEntry(page: ProjectPageEntry): Record<string, unknown> {
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
+    ...(page.reviewTheme ? { reviewTheme: page.reviewTheme } : {}),
   };
 }
 

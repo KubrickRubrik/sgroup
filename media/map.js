@@ -435,6 +435,7 @@
       type: 'reviewOpenFileTab',
       pageId: reviewFileView.pageId,
       messageId: reviewFileView.messageId,
+      filenames: reviewFileView.levelNote ? reviewFileView.filenames : undefined,
     });
   });
   reviewFileClose?.addEventListener('click', () => {
@@ -1303,6 +1304,7 @@
         return;
       }
       reviewState = incoming;
+      reviewThemeId = normalizeReviewTheme(incoming && incoming.theme);
       if (incoming && incoming.resetView) {
         closeReviewFileView();
         closeExplainFileView();
@@ -1615,6 +1617,7 @@
         reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
         reviewPrintThinking: message.reviewPrintThinking === true,
         reviewPrintTools: message.reviewPrintTools !== false,
+        reviewTheme: typeof message.reviewTheme === 'string' ? message.reviewTheme : '',
       });
     } else if (message.type === 'pageCloudBusy') {
       pageCloudBusy = message.busy === true;
@@ -3741,6 +3744,13 @@
         }),
       );
       scroller.append(
+        menuActionChoice(t('reviewMigrate'), {
+          reviewEdit: 'migrate',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
         menuActionChoice(t('menuDelete'), {
           reviewEdit: 'delete',
           pageId,
@@ -3756,7 +3766,7 @@
       );
       if (chip?.locked) {
         scroller.querySelectorAll('button').forEach((button) => {
-          if (button.dataset.reviewEdit === 'lock') {
+          if (button.dataset.reviewEdit === 'lock' || button.dataset.reviewEdit === 'migrate') {
             return;
           }
           if (
@@ -3836,6 +3846,15 @@
           appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
           appendStudyRow(scroller, !!openMenuState.studyExpanded);
         }
+      }
+      if (!reply?.isRereview && !reply?.isStudy) {
+        scroller.append(
+          menuActionChoice(t('reviewMigrate'), {
+            reviewEdit: 'migrate',
+            pageId,
+            messageId,
+          }),
+        );
       }
       scroller.append(
         menuActionChoice(t('menuDelete'), {
@@ -4622,6 +4641,14 @@
             locked: parent.locked !== true,
           });
         }
+        return;
+      }
+      if (button.dataset.reviewEdit === 'migrate') {
+        vscode.postMessage({
+          type: 'reviewMigrate',
+          pageId,
+          messageId,
+        });
         return;
       }
       if (parent?.locked) {
@@ -5459,8 +5486,10 @@
         parts.push(`${letter}:${nums.join(', ')}`);
       }
     }
-    if (parts.length) {
-      return parts.join(' | ');
+    const items = parts.length ? parts.join(' | ') : '';
+    const run = Number(node && node.fixN) || 0;
+    if (items) {
+      return run > 0 ? `${t('fixChip')} ${run} | ${items}` : items;
     }
     const counts = node && node.fixes && node.fixes.counts;
     if (!counts) {
@@ -5473,7 +5502,14 @@
     if (h) legacy.push(`H:${h}`);
     if (m) legacy.push(`M:${m}`);
     if (l) legacy.push(`L:${l}`);
-    return legacy.join(' | ');
+    const legacyItems = legacy.join(' | ');
+    if (run > 0 && legacyItems) {
+      return `${t('fixChip')} ${run} | ${legacyItems}`;
+    }
+    if (run > 0) {
+      return `${t('fixChip')} ${run}`;
+    }
+    return legacyItems;
   }
 
   /**
@@ -5511,7 +5547,9 @@
         msg.hasThread ||
         msg.threadId ||
         (msg.replies && msg.replies.length) ||
-        reviewHasFixes(msg)
+        reviewHasFixes(msg) ||
+        levelNoteFiles(msg.rereviewNote).length > 0 ||
+        levelNoteFiles(msg.studyNote).length > 0
       );
     }
     if (msg.isExplainRoot) {
@@ -8164,6 +8202,56 @@
   const REVIEW_SKELETON_PARENTS = 3;
   const REVIEW_SKELETON_CHILDREN = 3;
   const REVIEW_SKEL_COLOR = '#6e6e6e';
+  /** Keep in sync with src/reviewThemes.ts. Order: MR, review, rereview, neurofix, explain, study. */
+  const REVIEW_THEME_IDS = ['roles', 'syntax', 'explorer', 'rolesNear'];
+  const REVIEW_THEME_DEFAULT = 'explorer';
+  const REVIEW_THEME_ROLES = ['mr', 'review', 'rereview', 'neurofix', 'explain', 'study'];
+  const REVIEW_THEME_COLORS = {
+    roles: ['#9aa3ab', '#7d92a6', '#6480af', '#6aa67c', '#9678aa', '#6aa8b4'],
+    syntax: ['#9c9894', '#868e96', '#7a96ae', '#81b88b', '#c586c0', '#4ec9b0'],
+    explorer: ['#9a9690', '#8090a0', '#6a7d9e', '#81b88b', '#c586c0', '#5b93c4'],
+    rolesNear: ['#9aa3ab', '#7d92a6', '#6d8aa8', '#6aa67c', '#9678aa', '#6aa8b4'],
+  };
+  const REVIEW_STACK_PATH =
+    'M20.0835 15.1999L21.2856 15.9212C21.5224 16.0633 21.5991 16.3704 21.4571 16.6072C21.4148 16.6776 21.356 16.7365 21.2856 16.7787L12.5146 22.0412C12.198 22.2313 11.8023 22.2313 11.4857 22.0412L2.71475 16.7787C2.47796 16.6366 2.40118 16.3295 2.54325 16.0927C2.58548 16.0223 2.64437 15.9634 2.71475 15.9212L3.91684 15.1999L12.0002 20.0499L20.0835 15.1999ZM20.0835 10.4999L21.2856 11.2212C21.5224 11.3633 21.5991 11.6704 21.4571 11.9072C21.4148 11.9776 21.356 12.0365 21.2856 12.0787L12.0002 17.6499L2.71475 12.0787C2.47796 11.9366 2.40118 11.6295 2.54325 11.3927C2.58548 11.3223 2.64437 11.2634 2.71475 11.2212L3.91684 10.4999L12.0002 15.3499L20.0835 10.4999ZM12.5146 1.30864L21.2856 6.5712C21.5224 6.71327 21.5991 7.0204 21.4571 7.25719C21.4148 7.32757 21.356 7.38647 21.2856 7.42869L12.0002 12.9999L2.71475 7.42869C2.47796 7.28662 2.40118 6.97949 2.54325 6.7427C2.58548 6.67232 2.64437 6.61343 2.71475 6.5712L11.4857 1.30864C11.8023 1.11864 12.198 1.11864 12.5146 1.30864ZM12.0002 3.33233L5.88747 6.99995L12.0002 10.6676L18.1129 6.99995L12.0002 3.33233Z';
+  let reviewThemeId = REVIEW_THEME_DEFAULT;
+
+  /** @param {unknown} value */
+  function normalizeReviewTheme(value) {
+    return REVIEW_THEME_IDS.includes(/** @type {string} */ (value)) ? value : REVIEW_THEME_DEFAULT;
+  }
+
+  /** @param {'mr' | 'review' | 'rereview' | 'neurofix' | 'explain' | 'study'} role */
+  function reviewRoleColor(role) {
+    const colors = REVIEW_THEME_COLORS[reviewThemeId] || REVIEW_THEME_COLORS.explorer;
+    const index = REVIEW_THEME_ROLES.indexOf(role);
+    return colors[index] || colors[1];
+  }
+
+  /**
+   * @param {{ isMr?: boolean, isReviewRoot?: boolean, isExplainRoot?: boolean, isExplain?: boolean, isRereview?: boolean, isStudy?: boolean } | null | undefined} msg
+   */
+  function reviewChipFallback(msg) {
+    if (!msg) {
+      return '';
+    }
+    if (msg.isMr) {
+      return reviewRoleColor('mr');
+    }
+    if (msg.isExplainRoot || msg.isExplain) {
+      return reviewRoleColor('explain');
+    }
+    if (msg.isRereview) {
+      return reviewRoleColor('rereview');
+    }
+    if (msg.isStudy) {
+      return reviewRoleColor('study');
+    }
+    if (msg.isReviewRoot) {
+      return reviewRoleColor('review');
+    }
+    return REVIEW_SKEL_COLOR;
+  }
 
   /**
    * @param {string} pageId
@@ -8429,7 +8517,7 @@
   function renderReviewMrSkeleton(pending, leadingGap) {
     const row = el('div', 'review-node is-mr is-skel' + (leadingGap ? ' has-gap' : ''));
     row.dataset.reviewSkel = 'mr';
-    row.style.setProperty('--link-color', '#8e4ec6');
+    row.style.setProperty('--link-color', reviewRoleColor('mr'));
     row.setAttribute('aria-busy', 'true');
     row.append(
       linkElbow(reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 20 }), ''),
@@ -8453,11 +8541,12 @@
   /**
    * @param {{ branch: string }} pending
    * @param {boolean} leadingGap
+   * @param {string} color
    */
-  function renderReviewRootSkeleton(pending, leadingGap) {
+  function renderReviewRootSkeleton(pending, leadingGap, color) {
     const row = el('div', 'review-node is-review-root is-skel' + (leadingGap ? ' has-gap' : ''));
     row.dataset.reviewSkel = 'root';
-    row.style.setProperty('--link-color', '#8e4ec6');
+    row.style.setProperty('--link-color', color || reviewRoleColor('review'));
     row.setAttribute('aria-busy', 'true');
     row.append(
       linkElbow(reviewElbowMid({ leadingGap, hasStamp: true, contentHalf: 20 }), ''),
@@ -8487,7 +8576,7 @@
     const withStamp = !!opts?.withStamp;
     const row = el('div', 'review-reply-node has-gap is-skel');
     row.dataset.reviewSkel = 'review';
-    row.style.setProperty('--link-color', color || '#8e4ec6');
+    row.style.setProperty('--link-color', color || reviewRoleColor('review'));
     row.setAttribute('aria-busy', 'true');
     row.append(
       linkElbow(
@@ -8523,7 +8612,7 @@
   function renderReviewFixSkeleton(nextColor) {
     const row = el('div', 'review-reply-node is-fix has-gap is-skel');
     row.dataset.reviewSkel = 'neurofix';
-    row.style.setProperty('--link-color', '#52be37');
+    row.style.setProperty('--link-color', reviewRoleColor('neurofix'));
     row.setAttribute('aria-busy', 'true');
     row.append(
       linkElbow(
@@ -8551,9 +8640,7 @@
     if (!msg) {
       return '';
     }
-    return (
-      msg.color || (msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? '#8e4ec6' : '#6e6e6e')
-    );
+    return msg.color || reviewChipFallback(msg);
   }
 
   const REVIEW_ARROW_UP =
@@ -8938,11 +9025,13 @@
         root.append(tree);
         noteReviewSkeletonScroll('mr');
       } else if (pendingRoot) {
-        tree.append(renderReviewRootSkeleton(pendingRoot, false));
+        tree.append(renderReviewRootSkeleton(pendingRoot, false, reviewRoleColor('review')));
         root.append(tree);
         noteReviewSkeletonScroll('root');
       } else if (pendingExplainRoot) {
-        tree.append(renderReviewRootSkeleton(pendingExplainRoot, false));
+        tree.append(
+          renderReviewRootSkeleton(pendingExplainRoot, false, reviewRoleColor('explain')),
+        );
         root.append(tree);
         noteReviewSkeletonScroll('root');
       }
@@ -9011,24 +9100,42 @@
       const next = messages[index + 1];
       const nextColor = next
         ? reviewMessageColor(next)
-        : pendingMr || pendingRoot || pendingExplainRoot
-          ? '#8e4ec6'
-          : '';
+        : pendingMr
+          ? reviewRoleColor('mr')
+          : pendingRoot
+            ? reviewRoleColor('review')
+            : pendingExplainRoot
+              ? reviewRoleColor('explain')
+              : '';
       tree.append(renderReviewNode(msg, pageId, index > 0 || preceded, nextColor));
       preceded = true;
     });
     if (pendingMr) {
       tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
     } else if (pendingRoot) {
-      tree.append(renderReviewRootSkeleton(pendingRoot, messages.length > 0));
+      tree.append(
+        renderReviewRootSkeleton(pendingRoot, messages.length > 0, reviewRoleColor('review')),
+      );
     } else if (pendingExplainRoot) {
-      tree.append(renderReviewRootSkeleton(pendingExplainRoot, messages.length > 0));
+      tree.append(
+        renderReviewRootSkeleton(
+          pendingExplainRoot,
+          messages.length > 0,
+          reviewRoleColor('explain'),
+        ),
+      );
     }
     if (!gapId && (edge === 'newer' || reviewState.canLoadNewer)) {
       const last = messages[messages.length - 1];
       const spine =
         reviewMessageColor(last) ||
-        (pendingMr || pendingRoot || pendingExplainRoot ? '#8e4ec6' : '#6e6e6e');
+        (pendingMr
+          ? reviewRoleColor('mr')
+          : pendingRoot
+            ? reviewRoleColor('review')
+            : pendingExplainRoot
+              ? reviewRoleColor('explain')
+              : REVIEW_SKEL_COLOR);
       const leadingGap = tree.childElementCount > 0;
       if (edge === 'newer') {
         appendReviewSkeletonPack(tree, leadingGap, '');
@@ -9278,8 +9385,7 @@
    * @param {string} nextColor
    */
   function renderReviewNode(msg, pageId, leadingGap, nextColor) {
-    const color =
-      msg.color || (msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? '#8e4ec6' : '#6e6e6e');
+    const color = msg.color || reviewChipFallback(msg);
     const showReviewSkeleton =
       !!(msg.isMr || msg.isReviewRoot) &&
       (activePendingReviewId(pageId) === msg.id || activePendingExplainId(pageId) === msg.id);
@@ -9650,14 +9756,20 @@
     const children = el('div', 'review-children');
     const clip = el('div', 'review-children-clip');
     const slide = el('div', 'review-children-slide');
-    const color = msg.color || '#8e4ec6';
+    const color = msg.color || reviewChipFallback(msg);
     const pendingExplain = activePendingExplainId(pageId) === msg.id;
     const showSkeleton = !!withReviewSkeleton || pendingExplain;
     const pendingFix = activePendingNeurofixId(pageId) === msg.id;
     if (reviewHasFixes(msg) || pendingFix) {
       const replies = msg.replies || [];
+      const hasNotes =
+        levelNoteFiles(msg.rereviewNote).length + levelNoteFiles(msg.studyNote).length > 0;
       const hasNext =
-        replies.length > 0 || showSkeleton || !!msg.repliesHasMore || !!msg.repliesHasNewer;
+        hasNotes ||
+        replies.length > 0 ||
+        showSkeleton ||
+        !!msg.repliesHasMore ||
+        !!msg.repliesHasNewer;
       if (reviewHasFixes(msg)) {
         slide.append(
           renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : '', pendingFix, msg.branch),
@@ -9666,6 +9778,7 @@
         slide.append(renderReviewFixSkeleton(hasNext ? color : ''));
       }
     }
+    appendLevelNoteNodes(slide, pageId, msg.id, msg, color);
     if (msg.repliesHasMore) {
       slide.append(renderReviewThreadLoadRow(msg, pageId, 'older', color));
     }
@@ -9724,7 +9837,15 @@
       : { name: '', checkout: false, revealId: '' };
     const stampBranch = branchOpts.name;
     const hasStamp = !!(stampDate || stampBranch);
-    const replyColor = isExplain ? reply.color || '#8e4ec6' : color;
+    const replyColor =
+      reply.color ||
+      (reply.isExplain
+        ? reviewRoleColor('explain')
+        : reply.isRereview
+          ? reviewRoleColor('rereview')
+          : reply.isStudy
+            ? reviewRoleColor('study')
+            : color || reviewRoleColor('review'));
     const row = el(
       'div',
       'review-reply-node' + (isExplain ? ' is-explain' : '') + (leadingGap ? ' has-gap' : ''),
@@ -9839,7 +9960,9 @@
       body.append(plain);
     }
     const pendingFix = !!(pageId && activePendingNeurofixId(pageId) === reply.id);
-    if ((reviewHasFixes(reply) || pendingFix) && pageId) {
+    const replyNotes =
+      levelNoteFiles(reply.rereviewNote).length + levelNoteFiles(reply.studyNote).length > 0;
+    if ((reviewHasFixes(reply) || pendingFix || replyNotes) && pageId) {
       const children = el('div', 'review-children');
       const clip = el('div', 'review-children-clip');
       const slide = el('div', 'review-children-slide');
@@ -9849,14 +9972,15 @@
             pageId,
             reply.id,
             reply,
-            '',
+            replyNotes ? color : '',
             pendingFix,
             stampBranchName(reply.branch, parentBranch),
           ),
         );
       } else if (pendingFix) {
-        slide.append(renderReviewFixSkeleton(''));
+        slide.append(renderReviewFixSkeleton(replyNotes ? color : ''));
       }
+      appendLevelNoteNodes(slide, pageId, reply.id, reply, color);
       clip.append(slide);
       children.append(clip);
       body.append(children);
@@ -9873,13 +9997,126 @@
    * @param {boolean} [busy] neurofix is running against this chip
    * @param {string} [branchRaw]
    */
+  function levelNoteFiles(note) {
+    const files = note && Array.isArray(note.files) ? note.files : [];
+    return files.filter((file) => file && file.filename && Array.isArray(file.indexes) && file.indexes.length);
+  }
+
+  function levelNoteLabel(kind, note) {
+    const title = kind === 'study' ? t('studyChip') : t('rereviewChip');
+    const n = Number(note && note.n) || 0;
+    const parts = [n > 0 ? `${title} ${n}` : title];
+    for (const letter of ['H', 'M', 'L']) {
+      const file = levelNoteFiles(note).find((item) => item.level === letter);
+      if (file) {
+        parts.push(`${letter}:${file.indexes.join(', ')}`);
+      }
+    }
+    return parts.join(' | ');
+  }
+
+  function levelNoteFileList(note, level) {
+    const files = levelNoteFiles(note);
+    if (!level) {
+      return ['H', 'M', 'L']
+        .map((letter) => files.find((file) => file.level === letter))
+        .filter(Boolean)
+        .map((file) => file.filename);
+    }
+    const match = /^([HML])/i.exec(level.trim());
+    const letter = match ? match[1].toUpperCase() : '';
+    const file = files.find((item) => item.level === letter);
+    return file ? [file.filename] : [];
+  }
+
+  function openLevelNoteView(pageId, messageId, title, filenames) {
+    if (!pageId || !filenames.length) {
+      return;
+    }
+    const fileKey = filenames.join('|');
+    closeExplainFileView();
+    closeReviewFixesView();
+    if (
+      reviewFileView &&
+      reviewFileView.pageId === pageId &&
+      reviewFileView.messageId === messageId &&
+      reviewFileView.fileKey === fileKey
+    ) {
+      closeReviewFileView();
+      return;
+    }
+    reviewFileView = {
+      pageId,
+      messageId,
+      title,
+      filename: filenames.join(', '),
+      filenames,
+      fileKey,
+      levelNote: true,
+      status: 'loading',
+      text: '',
+      html: '',
+      error: '',
+    };
+    mountReviewFile();
+    vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId, filenames });
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {'rereview' | 'study'} kind
+   * @param {{ n?: number, files?: Array<{ level: string, indexes: number[], filename: string }> }} note
+   * @param {string} nextColor
+   */
+  function renderLevelNoteNode(pageId, messageId, kind, note, nextColor) {
+    const row = el('div', 'review-reply-node is-note has-gap');
+    row.dataset.reviewNoteFor = messageId;
+    row.dataset.reviewNoteKind = kind;
+    row.style.setProperty(
+      '--link-color',
+      reviewRoleColor(kind === 'study' ? 'study' : 'rereview'),
+    );
+    row.append(
+      linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), nextColor),
+    );
+    const body = el('div', 'review-body');
+    const chip = el('div', 'review-chip is-review-pill is-note');
+    const label = el('span', 'review-chip-label');
+    const title = levelNoteLabel(kind, note);
+    setReviewPillText(label, title, {
+      onTitle: () => openLevelNoteView(pageId, messageId, title, levelNoteFileList(note)),
+      onLevel: (bit) => openLevelNoteView(pageId, messageId, bit, levelNoteFileList(note, bit)),
+    });
+    chip.append(label);
+    chip.addEventListener('click', (event) => {
+      if (event.target instanceof Element && event.target.closest('button')) {
+        return;
+      }
+      openLevelNoteView(pageId, messageId, title, levelNoteFileList(note));
+    });
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
+  function appendLevelNoteNodes(parent, pageId, messageId, source, nextColor) {
+    for (const kind of ['rereview', 'study']) {
+      const note = source && source[kind === 'rereview' ? 'rereviewNote' : 'studyNote'];
+      if (!levelNoteFiles(note).length) {
+        continue;
+      }
+      parent.append(renderLevelNoteNode(pageId, messageId, kind, note, nextColor));
+    }
+  }
+
   function renderReviewFixNode(pageId, messageId, source, nextColor, busy, branchRaw) {
     const stampDate = (source.fixes && source.fixes.at) || '';
     const branchOpts = reviewStampOpts(branchRaw, 'fix:' + messageId);
     const hasStamp = !!(stampDate || branchOpts.name);
     const row = el('div', 'review-reply-node is-fix has-gap');
     row.dataset.reviewFixFor = messageId;
-    row.style.setProperty('--link-color', '#52be37');
+    row.style.setProperty('--link-color', reviewRoleColor('neurofix'));
     row.append(
       linkElbow(
         reviewElbowMid({ leadingGap: true, hasStamp, contentHalf: 17 }),
@@ -10154,6 +10391,26 @@
 
   /** @param {{ messageId?: string, ok?: boolean, text?: string, html?: string, filename?: string, message?: string }} message */
   function onReviewFileResult(message) {
+    if (message.levelNote) {
+      if (
+        reviewFileView &&
+        reviewFileView.messageId === message.messageId &&
+        (!message.fileKey || reviewFileView.fileKey === message.fileKey)
+      ) {
+        if (message.ok && typeof message.text === 'string') {
+          reviewFileView.status = 'ready';
+          reviewFileView.text = message.text;
+          reviewFileView.html = typeof message.html === 'string' ? message.html : '';
+          reviewFileView.filename = message.filename || reviewFileView.filename;
+          reviewFileView.error = '';
+        } else {
+          reviewFileView.status = 'error';
+          reviewFileView.error = message.message || t('reviewFileDownloadFail');
+        }
+        mountReviewFile();
+      }
+      return;
+    }
     if (message.ok && typeof message.text === 'string' && message.messageId) {
       const filename =
         message.filename ||
@@ -10310,6 +10567,7 @@
       reviewFileClose.setAttribute('aria-label', t('reviewFileClose'));
     }
     if (reviewFileSave) {
+      reviewFileSave.hidden = !!view.levelNote;
       reviewFileSave.disabled = view.status !== 'ready';
     }
     reviewFileBody.replaceChildren();
@@ -10428,7 +10686,7 @@
    * Severity, scope and depth each get their own color. `rs` and `rl` share the shallow color.
    * @param {HTMLElement} node
    * @param {string} label
-   * @param {{ jumpNumber?: number, onReviewJump?: (number: number) => void }} [opts]
+   * @param {{ jumpNumber?: number, onReviewJump?: (number: number) => void, onTitle?: () => void, onLevel?: (label: string) => void }} [opts]
    */
   function setReviewPillText(node, label, opts) {
     const text = String(label || '');
@@ -10436,7 +10694,8 @@
     const chunks = text.split(/\s*\|\s*/);
     const anyTone = chunks.some((chunk) => reviewPillTone(chunk.trim()));
     const jumpNumber = opts && opts.jumpNumber;
-    if (!anyTone && !jumpNumber) {
+    const interactive = !!(opts && (opts.onTitle || opts.onLevel));
+    if (!anyTone && !jumpNumber && !interactive) {
       node.textContent = text;
       return;
     }
@@ -10445,6 +10704,33 @@
         node.append(document.createTextNode(' | '));
       }
       const shown = chunk.trim();
+      if (opts && opts.onLevel && /^[HMLS]:\s*\d/i.test(shown)) {
+        const tone = reviewPillTone(shown);
+        const levelBtn = el(
+          'button',
+          'review-pill-jump' + (tone ? ' review-pill-bit review-pill-' + tone : ''),
+          shown,
+        );
+        levelBtn.type = 'button';
+        levelBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          opts.onLevel(shown);
+        });
+        node.append(levelBtn);
+        return;
+      }
+      if (index === 0 && opts && opts.onTitle) {
+        const titleBtn = el('button', 'review-pill-jump', shown);
+        titleBtn.type = 'button';
+        titleBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          opts.onTitle();
+        });
+        node.append(titleBtn);
+        return;
+      }
       const parentJump = /^(?:Ревью|Review)\s+(\d+)$/i.exec(shown);
       if (
         parentJump &&
@@ -12778,8 +13064,14 @@
 
   /** @type {(() => void) | null} */
   let detachReviewPathNav = null;
+  /** @type {(() => void) | null} */
+  let detachReviewTheme = null;
 
   function closeReviewCreatePagePanel() {
+    if (detachReviewTheme) {
+      detachReviewTheme();
+      detachReviewTheme = null;
+    }
     if (detachReviewPathNav) {
       detachReviewPathNav();
       detachReviewPathNav = null;
@@ -13106,6 +13398,115 @@
   }
 
   /**
+   * Theme strip under the page description. The menu stays in the panel flow
+   * so the settings scroller does not clip it.
+   * @param {unknown} initial
+   * @param {(theme: string) => void} onPick
+   */
+  function mountReviewThemeField(initial, onPick) {
+    let theme = normalizeReviewTheme(initial);
+    let open = false;
+    const label = el('div', 'review-mr-field');
+    label.append(el('span', 'review-desc-head', t('reviewFieldTheme')));
+    const strip = el('button', 'review-theme-strip');
+    strip.type = 'button';
+    strip.setAttribute('aria-haspopup', 'listbox');
+    const menu = el('div', 'review-theme-menu');
+    menu.hidden = true;
+    menu.setAttribute('role', 'listbox');
+    /** @type {HTMLButtonElement[]} */
+    const options = REVIEW_THEME_IDS.map((id) => {
+      const option = el('button', 'review-theme-option');
+      option.type = 'button';
+      option.dataset.theme = id;
+      option.setAttribute('role', 'option');
+      option.append(reviewThemeSwatchBar(id));
+      option.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        theme = id;
+        open = false;
+        menu.hidden = true;
+        paintOptions();
+        fill();
+        onPick(theme);
+      });
+      return option;
+    });
+    menu.append(...options);
+    const paintOptions = () => {
+      for (const option of options) {
+        const active = option.dataset.theme === theme;
+        option.classList.toggle('is-active', active);
+        option.setAttribute('aria-selected', active ? 'true' : 'false');
+      }
+    };
+    const fill = () => {
+      strip.replaceChildren(reviewThemeSwatchBar(theme), reviewThemeStackIcon());
+      strip.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    strip.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      open = !open;
+      menu.hidden = !open;
+      fill();
+    });
+    const onPointer = (event) => {
+      if (!open || !(event.target instanceof Node) || label.contains(event.target)) {
+        return;
+      }
+      open = false;
+      menu.hidden = true;
+      fill();
+    };
+    const onKey = (event) => {
+      if (!open || event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      open = false;
+      menu.hidden = true;
+      fill();
+    };
+    document.addEventListener('pointerdown', onPointer, true);
+    document.addEventListener('keydown', onKey, true);
+    detachReviewTheme = () => {
+      document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+    fill();
+    paintOptions();
+    label.append(strip, menu);
+    return { label, theme: () => theme };
+  }
+
+  /** @param {string} themeId */
+  function reviewThemeSwatchBar(themeId) {
+    const bar = el('span', 'review-theme-swatches');
+    const colors = REVIEW_THEME_COLORS[normalizeReviewTheme(themeId)] || REVIEW_THEME_COLORS.explorer;
+    for (const hex of colors) {
+      const swatch = el('span', 'review-theme-swatch');
+      swatch.style.background = hex;
+      bar.append(swatch);
+    }
+    return bar;
+  }
+
+  function reviewThemeStackIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-theme-stack');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', REVIEW_STACK_PATH);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
    * @param {{
    *   origin: string,
    *   suggestedProvider: 'gitlab' | 'github',
@@ -13128,7 +13529,8 @@
    *   reviewModel?: string,
    *   reviewFixModel?: string,
    *   reviewPrintThinking?: boolean,
-   *   reviewPrintTools?: boolean
+   *   reviewPrintTools?: boolean,
+   *   reviewTheme?: string
    * }} opts
    */
   function openReviewCreatePagePanel(opts) {
@@ -13186,6 +13588,12 @@
     const pageDesc = pageDescriptionField(opts.description || '');
     const descInput = pageDesc.input;
     panel.append(pageDesc.label);
+    const themeField = mountReviewThemeField(opts.reviewTheme, (theme) => {
+      if (editing && opts.pageId) {
+        vscode.postMessage({ type: 'reviewSetTheme', pageId: opts.pageId, theme });
+      }
+    });
+    panel.append(themeField.label);
     const channelInput = fieldRow('reviewFieldChannelId', {
       placeholder: '123456789012345678',
       value: opts.channelId || '',
@@ -13636,6 +14044,7 @@
         channelId,
         repoUrl,
         description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        reviewTheme: themeField.theme(),
         gitlabToken: (opts.gitlabToken || '').trim() || undefined,
         githubToken: (opts.githubToken || '').trim() || undefined,
         discordToken: discordInput?.value.trim() || undefined,
@@ -14027,23 +14436,21 @@
    * @returns {SVGSVGElement}
    */
   function linkElbow(mid, stemColor) {
-    const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('class', 'link-elbow');
-    svg.setAttribute('width', String(LINK_BRANCH_GAP));
-    svg.setAttribute('height', '100%');
-    svg.setAttribute('aria-hidden', 'true');
+    const elbow = document.createElement('div');
+    elbow.className = 'link-elbow';
+    elbow.setAttribute('aria-hidden', 'true');
     const radius = Math.min(LINK_ELBOW_RADIUS, Math.max(2, mid - 1));
     const turnY = mid - radius;
     if (stemColor) {
-      const stem = document.createElementNS(SVG_NS, 'path');
-      stem.setAttribute('class', 'link-elbow-stem');
-      stem.setAttribute('d', `M1 ${turnY} V9999`);
-      stem.setAttribute('fill', 'none');
-      stem.setAttribute('stroke', stemColor);
-      stem.setAttribute('stroke-width', '1.4');
-      stem.setAttribute('stroke-linecap', 'butt');
-      svg.append(stem);
+      const stem = document.createElement('span');
+      stem.className = 'link-elbow-stem';
+      stem.style.top = turnY + 'px';
+      stem.style.background = stemColor;
+      elbow.append(stem);
     }
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('width', String(LINK_BRANCH_GAP));
+    svg.setAttribute('height', '100%');
     const turn = document.createElementNS(SVG_NS, 'path');
     turn.setAttribute('d', `M1 0 V${turnY} Q1 ${mid} ${1 + radius} ${mid} H${LINK_BRANCH_GAP}`);
     turn.setAttribute('fill', 'none');
@@ -14051,7 +14458,8 @@
     turn.setAttribute('stroke-width', '1.4');
     turn.setAttribute('stroke-linecap', 'butt');
     svg.append(turn);
-    return svg;
+    elbow.append(svg);
+    return elbow;
   }
 
   /** Rounded down-triangle: group color, thick white rim. @returns {SVGSVGElement} */

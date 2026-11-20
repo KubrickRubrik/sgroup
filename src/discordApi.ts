@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type { ReviewStoredRole } from './reviewThemes';
 
 const API = 'https://discord.com/api/v10';
 export const MR_PREFIX = 'MR_SYN3';
@@ -529,6 +530,26 @@ export function isExplainMessage(content: string): boolean {
   return EXPLAIN_HEAD_RE.test(head);
 }
 
+/** Chip role that owns a Discord color. Neurofix is not its own message. */
+export function reviewMessageRole(content: string): ReviewStoredRole | undefined {
+  if (isMrMessage(content)) {
+    return 'mr';
+  }
+  if (isRereviewMessage(content)) {
+    return 'rereview';
+  }
+  if (isStudyMessage(content)) {
+    return 'study';
+  }
+  if (isExplainMessage(content)) {
+    return 'explain';
+  }
+  if (isReviewMessage(content)) {
+    return 'review';
+  }
+  return undefined;
+}
+
 export function isScenarioGroupMessage(content: string): boolean {
   const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
   return SCENARIO_GROUP_HEAD_RE.test(head.trim());
@@ -738,6 +759,69 @@ export async function editChannelMessage(
   return { ok: true, value: msg };
 }
 
+export type DiscordUpload = {
+  filename: string;
+  bytes: Uint8Array | Buffer;
+};
+
+/**
+ * PATCH content and attachments in one request.
+ * `keepIds` stay. Each upload replaces an attachment with the same filename
+ * because that id is not in `keepIds`. Omitted ids are dropped by Discord.
+ */
+export async function editMessageFiles(
+  token: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+  keepIds: string[],
+  uploads: DiscordUpload[],
+): Promise<DiscordResult<DiscordMessage>> {
+  const files = uploads.map((file) => ({
+    filename: file.filename,
+    bytes: file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes),
+  }));
+  const attachments = [
+    ...keepIds.filter(Boolean).map((id) => ({ id })),
+    ...files.map((file, index) => ({ id: index, filename: file.filename })),
+  ];
+  const payload = JSON.stringify({
+    ...messagePayload(content),
+    attachments,
+  });
+  const encoded = encodeFilesMultipart(payload, files);
+  let last: DiscordFetchAttempt = { ok: false, status: 0, message: 'Upload failed' };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    last = await discordFetchOnce(
+      token,
+      'PATCH',
+      `/channels/${channelId}/messages/${messageId}`,
+      encoded.body,
+      encoded.contentType,
+    );
+    if (last.ok) {
+      const msg = asMessage(last.value);
+      if (!msg) {
+        return { ok: false, status: 0, message: 'Invalid Discord message response' };
+      }
+      const missing = files.find((file) => !msg.attachments?.some((item) => item.filename === file.filename));
+      if (missing) {
+        return {
+          ok: false,
+          status: 0,
+          message: `Discord accepted the edit but did not attach ${missing.filename}`,
+        };
+      }
+      return { ok: true, value: msg };
+    }
+    if (last.status !== 429 || attempt >= 5) {
+      return { ok: false, status: last.status, message: last.message };
+    }
+    await sleep(retryWaitMs(last, attempt));
+  }
+  return { ok: false, status: last.status, message: last.message };
+}
+
 /** Replace the first line with `MR_SYN3:` / `DMR_SYN3:` and the host title. */
 export function replaceMrDiscordHead(content: string, draft: boolean, title: string): string {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
@@ -760,9 +844,49 @@ export function replaceDiscordMetaLine(content: string, key: string, value: stri
   return lines.join('\n');
 }
 
-/** Set or append the `color: #rrggbb` / `#rrggbbaa` line. Other lines stay as they are. */
+const THEME_COLOR_RE = /^#[0-9a-fA-F]{3,8}$/;
+
+/** `them_color:` on a review-map chip. Legacy `color:` is ignored. */
+export function parseThemeColor(content: string): string | undefined {
+  const lines = content.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line.toLowerCase().startsWith('them_color:')) {
+      continue;
+    }
+    const value = line.slice('them_color:'.length).trim();
+    return THEME_COLOR_RE.test(value) ? value : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Chip color for Discord. Writes `them_color:` and drops a legacy `color:` line.
+ * Undefined when the message already stores this color and has no `color:` line.
+ */
+export function themeColorContent(content: string, color: string): string | undefined {
+  const hasLegacy = content.split(/\r?\n/).some((line) => line.trim().toLowerCase().startsWith('color:'));
+  const current = parseThemeColor(content);
+  if (!hasLegacy && current?.toLowerCase() === color.toLowerCase()) {
+    return undefined;
+  }
+  const lines = content
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim().toLowerCase();
+      return !trimmed.startsWith('color:') && !trimmed.startsWith('them_color:');
+    });
+  while (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  lines.push(`them_color: ${color}`);
+  return lines.join('\n');
+}
+
+/** Set `them_color:` and drop legacy `color:`. */
 export function replaceMrDiscordColor(content: string, color: string): string {
-  return replaceDiscordMetaLine(content, 'color', color);
+  return themeColorContent(content, color) ?? content;
 }
 
 export type MrDiscordStatus = 'open' | 'closed';
@@ -914,6 +1038,121 @@ export function writeReviewFixes(content: string, state: ReviewFixState): string
   return replaceDiscordMetaLine(next, 'bullet', bullet);
 }
 
+/** One severity file attached to the parent review. */
+export type LevelNoteFile = {
+  level: ReviewLevel;
+  indexes: number[];
+  filename: string;
+};
+
+/** Run counter and the level files of a rereview or a study on the parent review. */
+export type LevelNoteSet = {
+  n: number;
+  files: LevelNoteFile[];
+};
+
+export type LevelNoteKind = 'rereview' | 'study';
+
+/** Stable Discord filename for one level: `rereview-L.md`, `study-H.md`. */
+export function levelNoteFilename(kind: LevelNoteKind, level: ReviewLevel): string {
+  return `${kind}-${level}.md`;
+}
+
+/** True for `rereview-H.md` and `study-L.md`. The review file itself is not one of these. */
+export function isLevelNoteFilename(filename: string): boolean {
+  return /^(?:rereview|study)-[HML]\.md$/i.test(filename.trim());
+}
+
+const LEVEL_NOTE_LINE_RE = /^([HML]):\s*(\d+(?:\s*,\s*\d+)*)\s*\|\s*(\S+)\s*$/i;
+
+function levelIndexes(raw: string): number[] {
+  return [...new Set(
+    raw
+      .split(',')
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item > 0),
+  )].sort((a, b) => a - b);
+}
+
+function sortedLevelFiles(files: LevelNoteFile[]): LevelNoteFile[] {
+  const order: Record<ReviewLevel, number> = { H: 0, M: 1, L: 2 };
+  return [...files].sort((a, b) => order[a.level] - order[b.level]);
+}
+
+/**
+ * `rereview-n:` / `study-n:` plus one `rereview:` / `study:` line per level.
+ * Absent when the parent has no files of this kind.
+ */
+export function parseLevelNote(content: string, kind: LevelNoteKind): LevelNoteSet | undefined {
+  const prefix = `${kind}:`;
+  const files: LevelNoteFile[] = [];
+  for (const raw of content.replace(/\r\n/g, '\n').split('\n')) {
+    const line = raw.trim();
+    if (!line.toLowerCase().startsWith(prefix)) {
+      continue;
+    }
+    const match = LEVEL_NOTE_LINE_RE.exec(line.slice(prefix.length).trim());
+    const level = match ? reviewLevel(match[1]) : undefined;
+    if (!match || !level) {
+      continue;
+    }
+    const indexes = levelIndexes(match[2]);
+    if (!indexes.length) {
+      continue;
+    }
+    const filename = match[3];
+    const prev = files.find((file) => file.level === level);
+    if (prev) {
+      prev.indexes = levelIndexes([...prev.indexes, ...indexes].join(','));
+      prev.filename = filename;
+      continue;
+    }
+    files.push({ level, indexes, filename });
+  }
+  if (!files.length) {
+    return undefined;
+  }
+  const nRaw = metaLineValue(content, `${kind}-n`);
+  const n = nRaw && /^\d+$/.test(nRaw) ? Number(nRaw) : 0;
+  return { n, files: sortedLevelFiles(files) };
+}
+
+/** Replace every `rereview:` / `study:` line and the matching `*-n:` counter. */
+export function writeLevelNote(content: string, kind: LevelNoteKind, note: LevelNoteSet): string {
+  const prefix = `${kind}:`;
+  const nKey = `${kind}-n:`;
+  const lines = content
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim().toLowerCase();
+      return !trimmed.startsWith(prefix) && !trimmed.startsWith(nKey);
+    });
+  lines.push(`${kind}-n: ${note.n}`);
+  for (const file of sortedLevelFiles(note.files)) {
+    if (!file.indexes.length) {
+      continue;
+    }
+    lines.push(`${kind}: ${file.level}:${file.indexes.join(', ')} | ${file.filename}`);
+  }
+  return lines.join('\n').replace(/\n+$/, '');
+}
+
+/** `fix-n:` on the parent review. Missing line means the chip stays unlabeled. */
+export function parseFixRunCount(content: string): number | undefined {
+  const raw = metaLineValue(content, 'fix-n');
+  if (!raw || !/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  const n = Number(raw);
+  return n > 0 ? n : undefined;
+}
+
+/** Set or append `fix-n:`. */
+export function writeFixRunCount(content: string, n: number): string {
+  return replaceDiscordMetaLine(content, 'fix-n', String(n));
+}
+
 export async function postChannelMessage(
   token: string,
   channelId: string,
@@ -1004,29 +1243,46 @@ export async function postMessageWithFile(
  * Raw multipart body. Extension-host fetch often drops or hangs on FormData/Blob
  * file parts, so the JSON config never appears in the channel.
  */
+function encodeFilesMultipart(
+  payload: string,
+  files: Array<{ filename: string; bytes: Uint8Array }>,
+): { body: Uint8Array; contentType: string } {
+  const boundary = `Syn3Boundary${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const chunks: Buffer[] = [
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="payload_json"\r\n` +
+        `Content-Type: application/json\r\n\r\n` +
+        `${payload}\r\n`,
+      'utf8',
+    ),
+  ];
+  files.forEach((file, index) => {
+    const safeName = file.filename.replace(/["\r\n]/g, '_');
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="files[${index}]"; filename="${safeName}"\r\n` +
+          `Content-Type: application/json; charset=utf-8\r\n\r\n`,
+        'utf8',
+      ),
+    );
+    chunks.push(Buffer.from(file.bytes));
+    chunks.push(Buffer.from('\r\n', 'utf8'));
+  });
+  chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
+  return {
+    body: Buffer.concat(chunks),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 function encodeAttachmentMultipart(
   payload: string,
   filename: string,
   bytes: Uint8Array,
 ): { body: Uint8Array; contentType: string } {
-  const boundary = `Syn3Boundary${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
-  const safeName = filename.replace(/["\r\n]/g, '_');
-  const preamble = Buffer.from(
-    `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="payload_json"\r\n` +
-      `Content-Type: application/json\r\n\r\n` +
-      `${payload}\r\n` +
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="files[0]"; filename="${safeName}"\r\n` +
-      `Content-Type: application/json; charset=utf-8\r\n\r\n`,
-    'utf8',
-  );
-  const ending = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-  const file = Buffer.from(bytes);
-  return {
-    body: Buffer.concat([preamble, file, ending]),
-    contentType: `multipart/form-data; boundary=${boundary}`,
-  };
+  return encodeFilesMultipart(payload, [{ filename, bytes }]);
 }
 
 /** Post a channel message with an in-memory attachment. */
@@ -1126,7 +1382,7 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
  * Repository: [group/app](repo-url)
  * Review author: Profile
  * Assignees: A, B
- * color: #hex
+ * them_color: #hex
  * status: open|closed
  * lock: true|false
  */
@@ -1162,7 +1418,7 @@ export function formatMrDiscordBody(opts: {
     `Repository: ${mdLink(repoPathLabel(repo) || repo, repo)}`,
     `Review author: ${author}`,
     `Assignees: ${assignees}`,
-    `color: ${opts.color}`,
+    `them_color: ${opts.color}`,
     'status: open',
     'lock: false',
   ];
@@ -1187,9 +1443,7 @@ export function parseMrChip(content: string): {
   const title = (headMatch[2] || '').trim() || undefined;
   const mrLine = lines.find((l) => /^(?:MR|МР|PR)\s*:/i.test(l));
   const webUrl = mrLine ? firstMdLinkUrl(mrLine) : undefined;
-  const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
-  const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
-  const color = colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
+  const color = parseThemeColor(content);
   const statusLine = lines.find((l) => l.toLowerCase().startsWith('status:'));
   const statusRaw = statusLine ? statusLine.slice(7).trim().toLowerCase() : '';
   const status: MrDiscordStatus = statusRaw === 'closed' ? 'closed' : 'open';
@@ -1211,7 +1465,7 @@ export function parseMrChip(content: string): {
  * Branch: name
  * Model: …
  * Skill: …
- * color: #hex
+ * them_color: #hex
  * fixes: H:0 | M:0 | L:0
  * status: -
  * lock: false
@@ -1244,7 +1498,7 @@ export function formatReviewDiscordBody(opts: {
   lines.push(`Model: ${model}`, `Skill: ${skill}`);
   const color = opts.color?.trim();
   if (color) {
-    lines.push(`color: ${color}`);
+    lines.push(`them_color: ${color}`);
   }
   lines.push(`fixes: ${formatFixesValue(emptyFixCounts())}`);
   lines.push('status: -');
@@ -1274,17 +1528,23 @@ export function formatRereviewDiscordBody(opts: {
   open: ReviewFixBullets;
   model: string;
   skillPath: string;
+  color?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
   const selection = opts.selection.trim();
-  return [
+  const lines = [
     `${REREVIEW_PREFIX}: Реревью ${opts.reviewNumber} на Ревью ${opts.parentNumber} | ${opts.scope} | ${opts.depth} | ${selection}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
     `open: ${formatOpenValue(opts.open)}`,
     'status: -',
-  ].join('\n');
+  ];
+  const color = opts.color?.trim();
+  if (color) {
+    lines.push(`them_color: ${color}`);
+  }
+  return lines.join('\n');
 }
 
 /** Chip and file first line. No study number and no depth token. */
@@ -1311,14 +1571,20 @@ export function formatStudyDiscordBody(opts: {
   selection: string;
   model: string;
   skillPath: string;
+  color?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
-  return [
+  const lines = [
     `${STUDY_PREFIX}: ${formatStudyChipLabel(opts)}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
-  ].join('\n');
+  ];
+  const color = opts.color?.trim();
+  if (color) {
+    lines.push(`them_color: ${color}`);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -1329,7 +1595,7 @@ export function formatStudyDiscordBody(opts: {
  * Branch: name
  * Model: …
  * Skill: …
- * color: #hex
+ * them_color: #hex
  *
  * Older messages say `Что делаем?` or omit scope and depth.
  * The chip always shows `Что сделано`.
@@ -1351,7 +1617,7 @@ export function formatExplainDiscordBody(opts: {
     `Branch: ${branch}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
-    `color: ${color}`,
+    `them_color: ${color}`,
   ].join('\n');
 }
 
@@ -1398,12 +1664,9 @@ export function parseReviewBranch(content: string): string | undefined {
   return name;
 }
 
-/** `color:` on an R_SYN3 message (root review). */
+/** `them_color:` on a review-map chip. Legacy `color:` is ignored. */
 export function parseReviewColor(content: string): string | undefined {
-  const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const colorLine = lines.find((l) => l.toLowerCase().startsWith('color:'));
-  const colorRaw = colorLine ? colorLine.slice(6).trim() : undefined;
-  return colorRaw && /^#[0-9a-fA-F]{3,8}$/.test(colorRaw) ? colorRaw : undefined;
+  return parseThemeColor(content);
 }
 
 /** `status:` on an R_SYN3 message. `-` and a missing line are the empty default. */

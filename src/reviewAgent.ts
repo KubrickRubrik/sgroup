@@ -291,11 +291,10 @@ function buildPrompt(opts: {
       'Проверяются только эти пункты. Не ищи дефекты вне них.',
       `Selection: ${opts.rereview.selection}`,
       'Это ревью родительского Ревью ' + String(opts.rereview.parentNumber) + '.',
-      'Первая строка ответа — ровно строка Selection, без слова Selection и без branch, changes, rl, rm, rd.',
-      'Новую поломку в первую строку не включай. Добавь её отдельным пунктом H, M или L в группах и в таблице.',
+      'Каждый пункт начинай отдельной строкой ровно из буквы и номера, как в списке: L:2.',
+      'Сразу после неё пиши только текст этого пункта. Не пиши ##, шапку файла и строку счётчиков.',
       '«Что сломано» сохрани. Если пункт исправлен, в «Что чинить» напиши ровно: исправлено',
       'Если нет — поясни, что ещё чинить. «Где» сохрани или дополни.',
-      'В колонке «Уровень» номер тот же, что у пункта: второй High — H-2, не новый отсчёт с 1.',
       'На чужой ветке пути «Где» ищи внутри host-diff. Локальное дерево не открывай, если в запуске есть host-diff.',
       '',
       'Пункты:',
@@ -316,7 +315,7 @@ function buildPrompt(opts: {
       'Не пиши строку счётчиков H:N | M:N | L:N и не пиши таблицу.',
       'Команды глубины нет. Не пиши /rl, /rm, /rd и не выбирай глубину.',
       'Каждый пункт начинается с якоря вида H:1 или L:4. Дальше кейс воспроизведения, примеры и контекст.',
-      'Якорь — первая строка пункта.',
+      'Якорь — первая строка пункта. Не пиши ## и не пиши шапку файла.',
       opts.study.readWhere
         ? 'Можно открывать файлы из строк «Где».'
         : 'На чужой ветке пути «Где» ищи внутри host-diff. Локальное дерево не открывай.',
@@ -325,17 +324,20 @@ function buildPrompt(opts: {
       itemLines.join('\n\n'),
     );
   }
-  if (opts.study) {
+  if (opts.rereview) {
+    lines.push(
+      'Answer in ask mode. Do not write a severity count line.',
+      'Start each item with its anchor line, then only that item text. Syn3 writes the headings.',
+    );
+  } else if (opts.study) {
     lines.push('Answer in ask mode. Do not write a severity count line. Syn3 writes the chip line.');
   } else {
     lines.push(
       'Answer in ask mode. Put the severity line first in the form exactly:',
-      opts.rereview ? opts.rereview.selection : 'H:N | M:N | L:N',
+      'H:N | M:N | L:N',
       'Do not write branch, changes, rl, rm, or rd on that line. Syn3 adds them.',
       'Then write the H/M/L groups with bullets, then the readable review block.',
-      opts.rereview
-        ? 'Level cells keep the item number: H-2, M-1. Do not restart at 1.'
-        : 'Level cells are the letter and the 1-based index inside that group: H-1, M-1, M-2.',
+      'Level cells are the letter and the 1-based index inside that group: H-1, M-1, M-2.',
     );
   }
   return lines.join('\n');
@@ -391,6 +393,52 @@ function stripStudyMarker(stdout: string, selection: string): string {
     body.push(line);
   }
   return body.join('\n').trim();
+}
+
+const ITEM_ANCHOR_RE = /^(H|M|L):(\d+)\s*$/i;
+
+/**
+ * Split an agent answer into per-item bodies.
+ * A line that is only `L:2` starts that item. One item with no anchor keeps the whole text.
+ */
+export function splitLevelItemBodies(
+  text: string,
+  items: Array<{ level: ReviewLevel; index: number }>,
+): { ok: true; bodies: Array<{ level: ReviewLevel; index: number; body: string }> } | { ok: false; message: string } {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const anchors: Array<{ level: ReviewLevel; index: number; line: number }> = [];
+  lines.forEach((line, index) => {
+    const match = ITEM_ANCHOR_RE.exec(line.trim());
+    const level = match ? reviewLevel(match[1]) : undefined;
+    if (!match || !level) {
+      return;
+    }
+    anchors.push({ level, index: Number(match[2]), line: index });
+  });
+  if (!anchors.length) {
+    if (items.length === 1) {
+      return { ok: true, bodies: [{ level: items[0].level, index: items[0].index, body: text.trim() }] };
+    }
+    return { ok: false, message: 'В ответе нет якорей пунктов' };
+  }
+  const found = anchors.map((anchor, index) => {
+    const end = anchors[index + 1]?.line ?? lines.length;
+    return {
+      level: anchor.level,
+      index: anchor.index,
+      body: lines.slice(anchor.line + 1, end).join('\n').trim(),
+    };
+  });
+  const bodies = items.map((item) =>
+    found.find((entry) => entry.level === item.level && entry.index === item.index),
+  );
+  if (bodies.some((entry) => !entry)) {
+    return { ok: false, message: 'В ответе не все пункты' };
+  }
+  return {
+    ok: true,
+    bodies: bodies.filter((entry): entry is { level: ReviewLevel; index: number; body: string } => !!entry),
+  };
 }
 
 type AgentStream = {
@@ -1114,6 +1162,120 @@ export async function writeReviewFile(opts: {
   ].join('\n');
   await fs.writeFile(fsPath, text, 'utf8');
   return fsPath;
+}
+
+const LEVEL_FILE_HEADING_RE = /^##\s+([HML]):(\d+)\s*$/i;
+const LEVEL_FILE_HEADER_RE = /^(H|M|L):\s*(\d+(?:\s*,\s*\d+)*)\s*$/i;
+
+export type LevelFileSection = { index: number; body: string };
+
+/** Header indexes, the unsectioned block, and `## L:1` sections of one level file. */
+export function parseLevelFile(
+  text: string,
+  level: ReviewLevel,
+): { headerIndexes: number[]; legacy: string; sections: LevelFileSection[] } {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  let start = 0;
+  while (start < lines.length && !lines[start].trim()) {
+    start += 1;
+  }
+  let headerIndexes: number[] = [];
+  const header = LEVEL_FILE_HEADER_RE.exec((lines[start] || '').trim());
+  const headerLevel = header ? reviewLevel(header[1]) : undefined;
+  if (header && headerLevel === level) {
+    headerIndexes = header[2]
+      .split(',')
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item > 0);
+    start += 1;
+  }
+  const legacyLines: string[] = [];
+  const sections: LevelFileSection[] = [];
+  let current: { index: number; body: string[] } | undefined;
+  for (let index = start; index < lines.length; index += 1) {
+    const mark = LEVEL_FILE_HEADING_RE.exec(lines[index].trim());
+    const markLevel = mark ? reviewLevel(mark[1]) : undefined;
+    if (mark && markLevel === level) {
+      if (current) {
+        sections.push({ index: current.index, body: current.body.join('\n').trim() });
+      }
+      current = { index: Number(mark[2]), body: [] };
+      continue;
+    }
+    if (current) {
+      current.body.push(lines[index]);
+    } else {
+      legacyLines.push(lines[index]);
+    }
+  }
+  if (current) {
+    sections.push({ index: current.index, body: current.body.join('\n').trim() });
+  }
+  return { headerIndexes, legacy: legacyLines.join('\n').trim(), sections };
+}
+
+function levelHeader(level: ReviewLevel, indexes: number[]): string {
+  const nums = [...new Set(indexes)].filter((item) => item > 0).sort((a, b) => a - b);
+  return `${level}:${nums.join(', ')}`;
+}
+
+/**
+ * Rewrite one level file.
+ * Existing `##` sections stay in order. An update replaces that section.
+ * A new index is appended. Text with no heading stays above the sections.
+ */
+export function stitchLevelFile(opts: {
+  level: ReviewLevel;
+  indexes: number[];
+  previous?: string;
+  updates: Array<{ index: number; body: string }>;
+}): string {
+  const parsed = parseLevelFile(opts.previous || '', opts.level);
+  const sections = parsed.sections.map((section) => ({ ...section }));
+  for (const update of opts.updates) {
+    const at = sections.findIndex((section) => section.index === update.index);
+    const body = update.body.trim();
+    if (at >= 0) {
+      sections[at] = { index: update.index, body };
+    } else {
+      sections.push({ index: update.index, body });
+    }
+  }
+  const chunks = [levelHeader(opts.level, opts.indexes), ''];
+  if (parsed.legacy) {
+    chunks.push(parsed.legacy, '');
+  }
+  for (const section of sections) {
+    chunks.push(`## ${opts.level}:${section.index}`, section.body, '');
+  }
+  return `${chunks.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`;
+}
+
+/** Append a migrated block under the header. Existing `##` sections stay. */
+export function appendLevelLegacy(opts: {
+  level: ReviewLevel;
+  previous?: string;
+  indexes: number[];
+  block: string;
+}): string {
+  const parsed = parseLevelFile(opts.previous || '', opts.level);
+  const indexes = [...new Set([...parsed.headerIndexes, ...opts.indexes])]
+    .filter((item) => item > 0)
+    .sort((a, b) => a - b);
+  const legacy = [parsed.legacy, opts.block.trim()].filter(Boolean).join('\n\n');
+  const rebuilt = [
+    levelHeader(opts.level, indexes),
+    '',
+    legacy,
+    '',
+    ...parsed.sections.flatMap((section) => [`## ${opts.level}:${section.index}`, section.body, '']),
+  ].join('\n');
+  return stitchLevelFile({
+    level: opts.level,
+    indexes,
+    previous: rebuilt,
+    updates: [],
+  });
 }
 
 export async function writeRereviewFile(opts: {

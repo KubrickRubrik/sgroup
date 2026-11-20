@@ -26,6 +26,7 @@ import { normalizeLocale, stringsFor, t } from './i18n';
 import { instructionPageHtml, instructionTitle, reviewFileHtml, reviewFixTableHtml } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
+import { normalizeReviewTheme } from './reviewThemes';
 import { cssColor, normalizeHex, PALETTE } from './palette';
 import { postChannelMessage, ReviewChipStatus } from './discordApi';
 import {
@@ -513,10 +514,11 @@ type IncomingMessage =
     }
   | { type: 'explainRetryFile'; pageId: string; messageId: string }
   | { type: 'reviewRetryFile'; pageId: string; messageId: string }
-  | { type: 'reviewOpenFile'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFile'; pageId: string; messageId: string; filenames?: string[] }
+  | { type: 'reviewMigrate'; pageId: string; messageId: string }
   | { type: 'reviewOpenFixes'; pageId: string; messageId: string }
   | { type: 'reviewSaveFile'; pageId: string; messageId: string }
-  | { type: 'reviewOpenFileTab'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFileTab'; pageId: string; messageId: string; filenames?: string[] }
   | {
       type: 'reviewCreatePage';
       name: string;
@@ -527,7 +529,9 @@ type IncomingMessage =
       gitlabToken?: string;
       githubToken?: string;
       discordToken?: string;
+      reviewTheme?: string;
     }
+  | { type: 'reviewSetTheme'; pageId: string; theme: string }
   | { type: 'reviewOpenPageSettings'; pageId: string }
   | { type: 'pageOpenSettings'; pageId: string }
   | {
@@ -1054,6 +1058,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ...this.store.reviewMapFilters(),
         checkoutName: this.checkoutName,
       }),
+      (pageId) => normalizeReviewTheme(this.store.page(pageId)?.reviewTheme),
     );
     this.scenarios = new ScenarioMapController(store, this.hostSecrets, () => store.root.fsPath);
     this.scenarios.setChangeHandler((pageId, state) => {
@@ -3376,11 +3381,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'reviewOpenFile') {
-      const result = await this.review.readReviewAttachment(message.pageId, message.messageId);
+      const named = message.filenames?.filter(Boolean) ?? [];
+      const result = named.length
+        ? await this.review.readNamedAttachments(message.pageId, message.messageId, named)
+        : await this.review.readReviewAttachment(message.pageId, message.messageId);
       await webview.postMessage({
         type: 'reviewFile',
         pageId: message.pageId,
         messageId: message.messageId,
+        levelNote: named.length > 0,
+        fileKey: named.join('|'),
         ok: result.ok,
         filename: result.ok ? result.filename : undefined,
         text: result.ok ? result.text : undefined,
@@ -3389,12 +3399,26 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
+    if (message.type === 'reviewMigrate') {
+      const result = await this.review.migrateReviewNotes(message.pageId, message.messageId);
+      if (result.state) {
+        await this.pushReviewState(webview, result.state);
+      }
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      }
+      return;
+    }
     if (message.type === 'reviewSaveFile') {
       await this.saveReviewAttachment(message.pageId, message.messageId);
       return;
     }
     if (message.type === 'reviewOpenFileTab') {
-      const result = await this.review.openReviewAttachmentTab(message.pageId, message.messageId);
+      const result = await this.review.openReviewAttachmentTab(
+        message.pageId,
+        message.messageId,
+        message.filenames,
+      );
       if (!result.ok) {
         void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
       }
@@ -3553,6 +3577,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewUpdatePage') {
       await this.updateReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'reviewSetTheme') {
+      const page = this.store.page(message.pageId);
+      if (!page || page.kind !== 'review') {
+        return;
+      }
+      const theme = normalizeReviewTheme(message.theme);
+      await this.store.setPageReviewTheme(message.pageId, theme);
+      await this.review.syncThemeColors(message.pageId);
+      const state = this.review.snapshot(message.pageId);
+      if (state) {
+        await this.pushReviewState(webview, state);
+      }
       return;
     }
     if (message.type === 'setReviewPaths') {
@@ -6421,6 +6459,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       gitlabToken?: string;
       githubToken?: string;
       discordToken?: string;
+      reviewTheme?: string;
     },
   ): Promise<void> {
     const fail = async (text: string) => {
@@ -6487,6 +6526,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail('Failed to create page');
       return;
     }
+    const theme = normalizeReviewTheme(message.reviewTheme);
+    if (theme !== 'explorer') {
+      await this.store.setPageReviewTheme(id, theme);
+    }
     await this.review.savePageAccess(id, {
       provider,
       channelId,
@@ -6523,6 +6566,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       pageId,
       name: page.name,
       description: page.description || '',
+      reviewTheme: normalizeReviewTheme(page.reviewTheme),
       origin: defaults.origin,
       repoUrl: lockedRepo || defaults.origin,
       projectRepoLocked: !!lockedRepo,
@@ -6645,7 +6689,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     await webview.postMessage({
       type: 'reviewState',
-      review: { ...state, checkout: this.checkoutName },
+      review: {
+        ...state,
+        checkout: this.checkoutName,
+        theme: normalizeReviewTheme(this.store.page(state.pageId)?.reviewTheme),
+      },
     });
   }
 

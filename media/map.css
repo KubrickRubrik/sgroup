@@ -910,11 +910,27 @@ button.toolbar-lock.is-fixed:hover {
   bottom: 0;
   color: var(--link-color, #8e4ec6);
   left: calc(-1 * var(--link-branch-gap));
-  overflow: hidden;
+  overflow: visible;
   pointer-events: none;
   position: absolute;
   top: 0;
   width: var(--link-branch-gap);
+}
+
+/* Spine below the turn. A bar, not an SVG path: the path was clipped to the
+   curve and stopped short of the next chip. */
+.link-elbow-stem {
+  bottom: -1px;
+  left: 0.3px;
+  position: absolute;
+  width: 1.4px;
+}
+
+.link-elbow svg {
+  display: block;
+  height: 100%;
+  overflow: visible;
+  width: 100%;
 }
 
 .link-node:last-child > .link-elbow .link-elbow-stem {
@@ -4332,8 +4348,22 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   height: 34px;
 }
 
-.review-reply-node.is-fix {
-  --link-color: #52be37;
+.review-reply-node.is-note > .review-body {
+  align-items: flex-start;
+  max-width: 100%;
+  width: max-content;
+}
+
+.review-reply-node.is-note > .review-body > .review-stamp {
+  overflow: visible;
+  position: relative;
+  white-space: nowrap;
+  width: max-content;
+}
+
+.review-chip.is-note {
+  cursor: pointer;
+  width: auto;
 }
 
 .review-reply-node.is-fix > .review-body {
@@ -4358,9 +4388,6 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 .review-chip.is-fix {
   align-self: stretch;
-  background: color-mix(in srgb, #52be37 18%, #121214);
-  border-color: #52be37;
-  color: #52be37;
   justify-content: center;
   max-width: none;
   width: auto;
@@ -4387,7 +4414,7 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 }
 
 .review-pill-changes {
-  color: #f5c400;
+  color: #e6c45a;
 }
 
 .review-pill-branch {
@@ -4727,7 +4754,7 @@ button.review-neurofix-btn.is-muted:hover {
 
 .review-fix-loader {
   align-items: center;
-  color: #52be37;
+  color: var(--link-color, #81b88b);
   display: inline-flex;
   flex: 0 0 auto;
 }
@@ -4739,7 +4766,7 @@ button.review-neurofix-btn.is-muted:hover {
 }
 
 .review-fix-loader .review-ico-progress {
-  color: #52be37;
+  color: var(--link-color, #81b88b);
 }
 
 .review-skel-title {
@@ -5628,6 +5655,62 @@ button.review-neurofix-btn.is-muted:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.review-theme-strip,
+.review-theme-option {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  display: flex;
+  padding: 4px;
+  width: 100%;
+}
+
+.review-theme-strip {
+  gap: 8px;
+  padding-right: 6px;
+}
+
+.review-theme-option {
+  border-color: transparent;
+}
+
+.review-theme-option.is-active {
+  border-color: var(--vscode-focusBorder);
+}
+
+.review-theme-swatches {
+  border-radius: 3px;
+  display: flex;
+  flex: 1 1 auto;
+  height: 18px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.review-theme-swatch {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.review-theme-stack {
+  flex: 0 0 auto;
+  height: 16px;
+  width: 16px;
+}
+
+.review-theme-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.review-theme-menu[hidden] {
+  display: none;
 }
 
 .review-mr-field[hidden] {
