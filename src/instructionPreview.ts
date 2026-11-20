@@ -44,6 +44,7 @@ export function instructionPageHtml(markdown: string): string {
   pre.md-code {
     background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.2));
     border-radius: 4px;
+    color: var(--vscode-editor-foreground);
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 0.92em;
     line-height: 1.45;
@@ -54,6 +55,7 @@ export function instructionPageHtml(markdown: string): string {
   pre.md-code code {
     background: none;
     border-radius: 0;
+    color: inherit;
     display: block;
     font-size: inherit;
     padding: 0;

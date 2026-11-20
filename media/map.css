@@ -153,22 +153,46 @@ textarea.review-mr-title::-webkit-scrollbar,
 
 .review-filters {
   align-items: center;
+  border-top: 1px solid var(--vscode-panel-border, transparent);
   display: flex;
-  gap: 4px;
-  padding: 4px 10px 0 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px 0 8px;
 }
 
 .review-filters[hidden] {
   display: none;
 }
 
-.review-filter {
-  border-radius: 999px;
-  font-size: 12px;
+.history-btn.review-filter {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 42%, transparent);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--vscode-foreground);
+  flex: 0 0 auto;
+  font-size: 0.85em;
   height: auto;
   line-height: 1.2;
   padding: 2px 10px;
+  white-space: nowrap;
   width: auto;
+}
+
+.history-btn.review-filter:hover:not(:disabled):not([aria-pressed='true']) {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--vscode-foreground) 68%, transparent);
+}
+
+.history-btn.review-filter[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
+  border-color: transparent;
+  color: var(--vscode-foreground);
+}
+
+.history-btn.review-filter[aria-pressed='true']:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-foreground) 30%, transparent);
 }
 
 /* Grows on the first row so the right section stays at the end while it fits.
@@ -4962,6 +4986,7 @@ button.review-neurofix-btn.is-muted:hover {
 .explain-md pre.md-code {
   background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.2));
   border-radius: 4px;
+  color: var(--vscode-editor-foreground);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.92em;
   line-height: 1.45;
@@ -4973,6 +4998,7 @@ button.review-neurofix-btn.is-muted:hover {
 .explain-md pre.md-code code {
   background: none;
   border-radius: 0;
+  color: inherit;
   display: block;
   font-size: inherit;
   padding: 0;

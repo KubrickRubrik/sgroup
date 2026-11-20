@@ -7463,11 +7463,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
     </div>
   </div>
-  <div id="review-filters" class="review-filters" hidden>
-    <button id="review-filter-checkout" class="history-btn review-filter" type="button" aria-pressed="false">checkout</button>
-    <button id="review-filter-general" class="history-btn review-filter" type="button" aria-pressed="true">Общие</button>
-    <button id="review-filter-discussions" class="history-btn review-filter" type="button" aria-pressed="true">Обсуждения</button>
-  </div>
   <div id="pager" class="pager" hidden>
     <div class="pager-history">
       <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
@@ -7480,6 +7475,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ${icon('arrow-right')}
       </button>
     </div>
+  </div>
+  <div id="review-filters" class="review-filters" hidden>
+    <button id="review-filter-checkout" class="history-btn review-filter" type="button" aria-pressed="false">checkout</button>
+    <button id="review-filter-general" class="history-btn review-filter" type="button" aria-pressed="true">Общие</button>
+    <button id="review-filter-discussions" class="history-btn review-filter" type="button" aria-pressed="true">Обсуждения</button>
   </div>
   </div>
   <div id="stage" class="page-stage">
