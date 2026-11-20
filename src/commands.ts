@@ -721,57 +721,97 @@ export function registerCommands(
     };
   }
 
+  function gated<Args extends unknown[]>(
+    fn: (...args: Args) => unknown | Promise<unknown>,
+  ): (...args: Args) => Promise<unknown> {
+    return async (...args: Args) => {
+      if (!store.ready) {
+        void vscode.window.showInformationMessage('Syn3: сначала выполните команду «Syn3: start».');
+        return;
+      }
+      if (await map.refuseIfDiscordGate()) {
+        return;
+      }
+      return fn(...args);
+    };
+  }
+
   return [
-    vscode.commands.registerCommand('syn3.assign', assign),
-    vscode.commands.registerCommand('syn3.unassign', withNode(unassign)),
-    vscode.commands.registerCommand('syn3.unassignFromExplorer', unassignFromExplorer),
-    vscode.commands.registerCommand('syn3.rename', withNode(rename)),
+    vscode.commands.registerCommand('syn3.assign', gated(assign)),
+    vscode.commands.registerCommand('syn3.unassign', gated(withNode(unassign))),
+    vscode.commands.registerCommand('syn3.unassignFromExplorer', gated(unassignFromExplorer)),
+    vscode.commands.registerCommand('syn3.rename', gated(withNode(rename))),
     vscode.commands.registerCommand(
       'syn3.reveal',
-      withNode(async (node) => {
-        const target = node;
-        const uri = target ? tree.uriOf(target) : undefined;
-        if (uri) {
-          await vscode.commands.executeCommand('revealInExplorer', uri);
-        }
-      }),
-    ),
-    vscode.commands.registerCommand('syn3.relink', withNode(relink)),
-    vscode.commands.registerCommand('syn3.createMarker', (pageId?: string) =>
-      createMarkerFlow(undefined, typeof pageId === 'string' ? pageId : undefined),
-    ),
-    vscode.commands.registerCommand('syn3.createSubgroup', withNode(createSubgroup)),
-    vscode.commands.registerCommand('syn3.unnestMarker', withNode(unnestMarker)),
-    vscode.commands.registerCommand('syn3.editMarker', withNode(editMarker)),
-    vscode.commands.registerCommand('syn3.deleteMarker', withNode(deleteMarker)),
-    vscode.commands.registerCommand('syn3.changeColor', withNode(editMarkerField('color', pickColor))),
-    vscode.commands.registerCommand('syn3.addIcon', (arg?: unknown) => addIcon(arg)),
-    vscode.commands.registerCommand('syn3.removeIcon', (arg?: unknown) => changeIcon(arg)),
-    ...COLUMNS_MODES.map((columns) =>
-      vscode.commands.registerCommand(
-        `syn3.setColumns.${columns}`,
+      gated(
         withNode(async (node) => {
-          if (node?.kind !== 'marker') {
-            return;
+          const target = node;
+          const uri = target ? tree.uriOf(target) : undefined;
+          if (uri) {
+            await vscode.commands.executeCommand('revealInExplorer', uri);
           }
-          if (refuseLocked(node.markerId)) {
-            return;
-          }
-          await store.setColumns(node.markerId, columns);
         }),
       ),
     ),
-    vscode.commands.registerCommand('syn3.markClass', () => markClass()),
-    vscode.commands.registerCommand('syn3.markClassManual', (uri?: vscode.Uri) => markClassManual(uri)),
-    vscode.commands.registerCommand('syn3.setAlias', withNode(setAlias)),
-    vscode.commands.registerCommand('syn3.clearAlias', withNode(clearAlias)),
-    vscode.commands.registerCommand('syn3.openClass', withNode(openClassCommand)),
-    vscode.commands.registerCommand('syn3.openItem', withNode((node) => openItemOrFull(node, false))),
-    vscode.commands.registerCommand('syn3.openFull', withNode((node) => openItemOrFull(node, true))),
-    vscode.commands.registerCommand('syn3.moveMarkerUp', withNode((node) => moveMarker(node, -1))),
-    vscode.commands.registerCommand('syn3.moveMarkerDown', withNode((node) => moveMarker(node, 1))),
-    vscode.commands.registerCommand('syn3.openConfig', openConfig),
-    vscode.commands.registerCommand('syn3.refresh', () => store.load()),
+    vscode.commands.registerCommand('syn3.relink', gated(withNode(relink))),
+    vscode.commands.registerCommand(
+      'syn3.createMarker',
+      gated((pageId?: string) =>
+        createMarkerFlow(undefined, typeof pageId === 'string' ? pageId : undefined),
+      ),
+    ),
+    vscode.commands.registerCommand('syn3.createSubgroup', gated(withNode(createSubgroup))),
+    vscode.commands.registerCommand('syn3.unnestMarker', gated(withNode(unnestMarker))),
+    vscode.commands.registerCommand('syn3.editMarker', gated(withNode(editMarker))),
+    vscode.commands.registerCommand('syn3.deleteMarker', gated(withNode(deleteMarker))),
+    vscode.commands.registerCommand(
+      'syn3.changeColor',
+      gated(withNode(editMarkerField('color', pickColor))),
+    ),
+    vscode.commands.registerCommand('syn3.addIcon', gated((arg?: unknown) => addIcon(arg))),
+    vscode.commands.registerCommand('syn3.removeIcon', gated((arg?: unknown) => changeIcon(arg))),
+    ...COLUMNS_MODES.map((columns) =>
+      vscode.commands.registerCommand(
+        `syn3.setColumns.${columns}`,
+        gated(
+          withNode(async (node) => {
+            if (node?.kind !== 'marker') {
+              return;
+            }
+            if (refuseLocked(node.markerId)) {
+              return;
+            }
+            await store.setColumns(node.markerId, columns);
+          }),
+        ),
+      ),
+    ),
+    vscode.commands.registerCommand('syn3.markClass', gated(() => markClass())),
+    vscode.commands.registerCommand(
+      'syn3.markClassManual',
+      gated((uri?: vscode.Uri) => markClassManual(uri)),
+    ),
+    vscode.commands.registerCommand('syn3.setAlias', gated(withNode(setAlias))),
+    vscode.commands.registerCommand('syn3.clearAlias', gated(withNode(clearAlias))),
+    vscode.commands.registerCommand('syn3.openClass', gated(withNode(openClassCommand))),
+    vscode.commands.registerCommand(
+      'syn3.openItem',
+      gated(withNode((node) => openItemOrFull(node, false))),
+    ),
+    vscode.commands.registerCommand(
+      'syn3.openFull',
+      gated(withNode((node) => openItemOrFull(node, true))),
+    ),
+    vscode.commands.registerCommand(
+      'syn3.moveMarkerUp',
+      gated(withNode((node) => moveMarker(node, -1))),
+    ),
+    vscode.commands.registerCommand(
+      'syn3.moveMarkerDown',
+      gated(withNode((node) => moveMarker(node, 1))),
+    ),
+    vscode.commands.registerCommand('syn3.openConfig', gated(openConfig)),
+    vscode.commands.registerCommand('syn3.refresh', gated(() => store.load())),
   ];
 }
 

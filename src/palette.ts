@@ -68,27 +68,36 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-const HEX_RE = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
+const HEX_RE = /^#?([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 export function isHexColor(value: string): boolean {
   return HEX_RE.test(value.trim());
 }
 
-/** Returns `#rrggbb` or undefined. */
+/**
+ * Returns `#rrggbb`, or `#rrggbbaa` when alpha is below opaque. `ff` is dropped.
+ * Undefined when the value is not hex.
+ */
 export function normalizeHex(value: string): string | undefined {
   const match = HEX_RE.exec(value.trim());
   if (!match) {
     return undefined;
   }
-  const digits = match[1].length === 3 ? [...match[1]].map((c) => c + c).join('') : match[1];
-  return '#' + digits.toLowerCase();
+  let digits = match[1].toLowerCase();
+  if (digits.length <= 4) {
+    digits = [...digits].map((c) => c + c).join('');
+  }
+  if (digits.length === 8 && digits.endsWith('ff')) {
+    digits = digits.slice(0, 6);
+  }
+  return '#' + digits;
 }
 
 /** Theme color id usable by VS Code APIs: palette/theme ids as is, custom hex mapped to the nearest palette color. */
 export function themeColorId(color: string): string {
   const hex = normalizeHex(color);
   if (hex && (color.trim().startsWith('#') || HEX_RE.test(color.trim()))) {
-    return nearestByHex(hex).id;
+    return nearestByHex(hex.slice(0, 7)).id;
   }
   return color;
 }
@@ -112,7 +121,7 @@ function resolvePaletteEntry(color: string): (typeof PALETTE)[number] {
   }
   const hex = normalizeHex(color);
   if (hex && (color.trim().startsWith('#') || HEX_RE.test(color.trim()))) {
-    return nearestByHex(hex);
+    return nearestByHex(hex.slice(0, 7));
   }
   const token = color.toLowerCase().split('.').pop() ?? '';
   return (
@@ -145,6 +154,6 @@ export function cssColor(color: string): string {
 }
 
 function rgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.slice(1), 16);
+  const n = parseInt(hex.replace('#', '').slice(0, 6), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
