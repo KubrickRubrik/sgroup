@@ -1,6 +1,5 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import type { ReviewStoredRole } from './reviewThemes';
 
 const API = 'https://discord.com/api/v10';
 export const MR_PREFIX = 'MR_SYN3';
@@ -18,8 +17,6 @@ export const STUDY_PREFIX = 'Z_SYN3';
 export const STUDY_TITLE = 'Изучено';
 /** Chip and file title for an explain message. Older Discord lines still say `Что делаем?`. */
 export const EXPLAIN_TITLE = 'Что сделано';
-/** Default chip color for explain messages (Violet). */
-export const EXPLAIN_DEFAULT_COLOR = '#8e4ec6';
 /** Scenario group root message: `GRSCN_SYN3`. */
 export const SCENARIO_GROUP_PREFIX = 'GRSCN_SYN3';
 /** Scenario chip message: `SCN_SYN3`. */
@@ -530,26 +527,6 @@ export function isExplainMessage(content: string): boolean {
   return EXPLAIN_HEAD_RE.test(head);
 }
 
-/** Chip role that owns a Discord color. Neurofix is not its own message. */
-export function reviewMessageRole(content: string): ReviewStoredRole | undefined {
-  if (isMrMessage(content)) {
-    return 'mr';
-  }
-  if (isRereviewMessage(content)) {
-    return 'rereview';
-  }
-  if (isStudyMessage(content)) {
-    return 'study';
-  }
-  if (isExplainMessage(content)) {
-    return 'explain';
-  }
-  if (isReviewMessage(content)) {
-    return 'review';
-  }
-  return undefined;
-}
-
 export function isScenarioGroupMessage(content: string): boolean {
   const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
   return SCENARIO_GROUP_HEAD_RE.test(head.trim());
@@ -842,51 +819,6 @@ export function replaceDiscordMetaLine(content: string, key: string, value: stri
     lines.push(next);
   }
   return lines.join('\n');
-}
-
-const THEME_COLOR_RE = /^#[0-9a-fA-F]{3,8}$/;
-
-/** `them_color:` on a review-map chip. Legacy `color:` is ignored. */
-export function parseThemeColor(content: string): string | undefined {
-  const lines = content.split(/\r?\n/);
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line.toLowerCase().startsWith('them_color:')) {
-      continue;
-    }
-    const value = line.slice('them_color:'.length).trim();
-    return THEME_COLOR_RE.test(value) ? value : undefined;
-  }
-  return undefined;
-}
-
-/**
- * Chip color for Discord. Writes `them_color:` and drops a legacy `color:` line.
- * Undefined when the message already stores this color and has no `color:` line.
- */
-export function themeColorContent(content: string, color: string): string | undefined {
-  const hasLegacy = content.split(/\r?\n/).some((line) => line.trim().toLowerCase().startsWith('color:'));
-  const current = parseThemeColor(content);
-  if (!hasLegacy && current?.toLowerCase() === color.toLowerCase()) {
-    return undefined;
-  }
-  const lines = content
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .filter((line) => {
-      const trimmed = line.trim().toLowerCase();
-      return !trimmed.startsWith('color:') && !trimmed.startsWith('them_color:');
-    });
-  while (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines.pop();
-  }
-  lines.push(`them_color: ${color}`);
-  return lines.join('\n');
-}
-
-/** Set `them_color:` and drop legacy `color:`. */
-export function replaceMrDiscordColor(content: string, color: string): string {
-  return themeColorContent(content, color) ?? content;
 }
 
 export type MrDiscordStatus = 'open' | 'closed';
@@ -1382,7 +1314,6 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
  * Repository: [group/app](repo-url)
  * Review author: Profile
  * Assignees: A, B
- * them_color: #hex
  * status: open|closed
  * lock: true|false
  */
@@ -1390,7 +1321,6 @@ export function formatMrDiscordBody(opts: {
   webUrl: string;
   title: string;
   draft: boolean;
-  color: string;
   provider: 'gitlab' | 'github';
   iid: number;
   sourceBranch: string;
@@ -1418,7 +1348,6 @@ export function formatMrDiscordBody(opts: {
     `Repository: ${mdLink(repoPathLabel(repo) || repo, repo)}`,
     `Review author: ${author}`,
     `Assignees: ${assignees}`,
-    `them_color: ${opts.color}`,
     'status: open',
     'lock: false',
   ];
@@ -1429,7 +1358,6 @@ export function parseMrChip(content: string): {
   webUrl?: string;
   title?: string;
   draft?: boolean;
-  color?: string;
   /** Missing `status:` means open. */
   status?: MrDiscordStatus;
 } {
@@ -1443,11 +1371,10 @@ export function parseMrChip(content: string): {
   const title = (headMatch[2] || '').trim() || undefined;
   const mrLine = lines.find((l) => /^(?:MR|МР|PR)\s*:/i.test(l));
   const webUrl = mrLine ? firstMdLinkUrl(mrLine) : undefined;
-  const color = parseThemeColor(content);
   const statusLine = lines.find((l) => l.toLowerCase().startsWith('status:'));
   const statusRaw = statusLine ? statusLine.slice(7).trim().toLowerCase() : '';
   const status: MrDiscordStatus = statusRaw === 'closed' ? 'closed' : 'open';
-  return { webUrl, title, draft, color, status };
+  return { webUrl, title, draft, status };
 }
 
 /**
@@ -1465,7 +1392,6 @@ export function parseMrChip(content: string): {
  * Branch: name
  * Model: …
  * Skill: …
- * them_color: #hex
  * fixes: H:0 | M:0 | L:0
  * status: -
  * lock: false
@@ -1481,7 +1407,6 @@ export function formatReviewDiscordBody(opts: {
   model: string;
   skillPath: string;
   branch?: string;
-  color?: string;
 }): string {
   const parsed = parseReviewSeverityLine(opts.severity);
   const severity = parsed?.severity ?? formatSeverityLine(0, 0, 0);
@@ -1496,10 +1421,6 @@ export function formatReviewDiscordBody(opts: {
     lines.push(`Branch: ${branch}`);
   }
   lines.push(`Model: ${model}`, `Skill: ${skill}`);
-  const color = opts.color?.trim();
-  if (color) {
-    lines.push(`them_color: ${color}`);
-  }
   lines.push(`fixes: ${formatFixesValue(emptyFixCounts())}`);
   lines.push('status: -');
   if (branch) {
@@ -1528,7 +1449,6 @@ export function formatRereviewDiscordBody(opts: {
   open: ReviewFixBullets;
   model: string;
   skillPath: string;
-  color?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
@@ -1540,10 +1460,6 @@ export function formatRereviewDiscordBody(opts: {
     `open: ${formatOpenValue(opts.open)}`,
     'status: -',
   ];
-  const color = opts.color?.trim();
-  if (color) {
-    lines.push(`them_color: ${color}`);
-  }
   return lines.join('\n');
 }
 
@@ -1571,7 +1487,6 @@ export function formatStudyDiscordBody(opts: {
   selection: string;
   model: string;
   skillPath: string;
-  color?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
@@ -1580,10 +1495,6 @@ export function formatStudyDiscordBody(opts: {
     `Model: ${model}`,
     `Skill: ${skill}`,
   ];
-  const color = opts.color?.trim();
-  if (color) {
-    lines.push(`them_color: ${color}`);
-  }
   return lines.join('\n');
 }
 
@@ -1595,7 +1506,6 @@ export function formatStudyDiscordBody(opts: {
  * Branch: name
  * Model: …
  * Skill: …
- * them_color: #hex
  *
  * Older messages say `Что делаем?` or omit scope and depth.
  * The chip always shows `Что сделано`.
@@ -1606,18 +1516,15 @@ export function formatExplainDiscordBody(opts: {
   branch: string;
   scope: ReviewScopeToken;
   depth: ReviewDepthToken;
-  color?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
   const branch = opts.branch.trim() || '—';
-  const color = (opts.color?.trim() || EXPLAIN_DEFAULT_COLOR).trim();
   return [
     `${EXPLAIN_PREFIX}: ${EXPLAIN_TITLE} | ${opts.scope} | ${opts.depth}`,
     `Branch: ${branch}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
-    `them_color: ${color}`,
   ].join('\n');
 }
 
@@ -1662,11 +1569,6 @@ export function parseReviewBranch(content: string): string | undefined {
     return undefined;
   }
   return name;
-}
-
-/** `them_color:` on a review-map chip. Legacy `color:` is ignored. */
-export function parseReviewColor(content: string): string | undefined {
-  return parseThemeColor(content);
 }
 
 /** `status:` on an R_SYN3 message. `-` and a missing line are the empty default. */

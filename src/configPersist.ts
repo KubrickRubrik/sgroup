@@ -40,7 +40,7 @@ import type {
   StyleProfile,
   SurfaceCollapsed,
 } from './markerStore';
-import { normalizeReviewTheme } from './reviewThemes';
+import { normalizeReviewScheme, REVIEW_SCHEME_DEFAULT } from './reviewThemes';
 import type { Syn3Locale } from './i18n';
 
 const GENERAL_PROFILE_ID = 'general';
@@ -243,7 +243,6 @@ export function projectPageEntryFromPage(page: PageDef, version = 1): ProjectPag
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
-    ...(page.reviewTheme ? { reviewTheme: page.reviewTheme } : {}),
   };
 }
 
@@ -436,6 +435,10 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(source.reviewPrintThinking === true ? { reviewPrintThinking: true } : {}),
     ...(source.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(() => {
+      const scheme = normalizeReviewScheme(source.reviewScheme);
+      return scheme === REVIEW_SCHEME_DEFAULT ? {} : { reviewScheme: scheme };
+    })(),
+    ...(() => {
       const filters = normalizeReviewMapFilters(
         (source as { map_filters?: unknown; mapFilters?: unknown }).map_filters ??
           (source as { mapFilters?: unknown }).mapFilters,
@@ -501,9 +504,6 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
     kind,
     order: typeof source.order === 'number' && Number.isFinite(source.order) ? source.order : index,
     ...(description ? { description } : {}),
-    ...(normalizeReviewTheme(source.reviewTheme) !== 'explorer'
-      ? { reviewTheme: normalizeReviewTheme(source.reviewTheme) }
-      : {}),
   };
 }
 
@@ -1260,7 +1260,6 @@ export function assembleSplitWorkspace(
         groupsLayout: layout.groupsLayout,
         collapsed: emptyCollapsedLocal(),
         ...(meta.description ? { description: meta.description } : {}),
-        ...(meta.reviewTheme ? { reviewTheme: meta.reviewTheme } : {}),
       };
       if (file.cloud) {
         pageCloud[pageId] = file.cloud;
@@ -1353,7 +1352,6 @@ function packWirePageEntry(page: ProjectPageEntry): Record<string, unknown> {
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
-    ...(page.reviewTheme ? { reviewTheme: page.reviewTheme } : {}),
   };
 }
 
@@ -1383,6 +1381,9 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
     ...(entry.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(entry.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(entry.mapFilters ? { map_filters: entry.mapFilters } : {}),
+    ...(entry.reviewScheme && entry.reviewScheme !== REVIEW_SCHEME_DEFAULT
+      ? { reviewScheme: entry.reviewScheme }
+      : {}),
   };
 }
 

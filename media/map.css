@@ -4433,6 +4433,487 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   color: #5aa2ff;
 }
 
+.review-page[class*='review-scheme-'] .review-pill-changes {
+  color: var(--token-changes);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-branch {
+  color: var(--token-branch);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-rd {
+  color: var(--token-rd);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-rm {
+  color: var(--token-rm);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-rs {
+  color: var(--token-rs);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-high {
+  color: var(--level-h);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-medium {
+  color: var(--level-m);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-low {
+  color: var(--level-l);
+}
+
+.review-level-pill {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  vertical-align: baseline;
+}
+
+.review-page[class*='review-scheme-'] .review-level-pill.review-pill-high {
+  --level-bg: var(--level-h-bg);
+  background: var(--level-h-bg);
+  color: var(--level-h);
+}
+
+.review-page[class*='review-scheme-'] .review-level-pill.review-pill-medium {
+  --level-bg: var(--level-m-bg);
+  background: var(--level-m-bg);
+  color: var(--level-m);
+}
+
+.review-page[class*='review-scheme-'] .review-level-pill.review-pill-low {
+  --level-bg: var(--level-l-bg);
+  background: var(--level-l-bg);
+  color: var(--level-l);
+}
+
+.review-scheme-plate {
+  align-items: center;
+  background: var(--chip-icon-bg, transparent);
+  border-radius: var(--chip-icon-radius, 999px);
+  color: var(--chip-icon, currentColor);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.review-scheme-plate.is-line {
+  background: transparent;
+}
+
+.review-scheme-plate .review-ico {
+  height: 14px;
+  width: 14px;
+}
+
+.review-page[class*='review-scheme-'] .review-chip[class*='is-role-'] {
+  background: var(--chip-fill);
+  border-color: var(--chip-border, transparent);
+  border-radius: var(--chip-radius, 12px);
+  color: var(--chip-text);
+}
+
+.review-page.review-scheme-softSemantic {
+  --chip-radius: 999px;
+  --token-branch: #9aa3ad;
+  --token-changes: #d7b56a;
+  --token-rd: #8d97a3;
+  --token-rm: #7dcaa0;
+  --token-rs: #8eb4e8;
+  --level-h: #ff6b5e;
+  --level-h-bg: #3a2228;
+  --level-m: #f2b233;
+  --level-m-bg: #3a2c18;
+  --level-l: #7eb0ea;
+  --level-l-bg: #1a2840;
+  --scheme-mr: #8aa4b8;
+  --scheme-review: #f2554a;
+  --scheme-rereview: #a78bfa;
+  --scheme-neurofix: #5ee0b5;
+  --scheme-explain: #d4b86a;
+  --scheme-study: #34d399;
+  --scheme-note: #9a9aa4;
+  --scheme-fix: #6ebea0;
+}
+
+.review-page.review-scheme-softSemantic .review-chip[class*='is-role-'] {
+  --chip-icon: #fff;
+  height: auto;
+  min-height: 36px;
+  padding: 5px 10px 5px 6px;
+}
+
+.review-page.review-scheme-softSemantic .review-chip.is-role-mr {
+  --chip-fill: #222833;
+  --chip-text: #d5dde6;
+  --chip-icon-bg: #8aa4b8;
+  border: 1px solid #515c70;
+}
+.review-page.review-scheme-softSemantic .review-chip.is-role-review {
+  --chip-fill: #222833;
+  --chip-text: #f3f4f6;
+  --chip-icon-bg: #f2554a;
+  border: 1px solid #515c70;
+}
+.review-page.review-scheme-softSemantic .review-chip.is-role-rereview {
+  --chip-fill: #2c2748;
+  --chip-text: #c4b5fd;
+  --chip-icon-bg: #a07be0;
+  border: 1px solid #5c5488;
+}
+.review-page.review-scheme-softSemantic .review-chip.is-role-neurofix,
+.review-page.review-scheme-softSemantic .review-chip.is-role-fix {
+  --chip-fill: #18332e;
+  --chip-text: #b7efe0;
+  --chip-icon-bg: #5ee0b5;
+  border: 1px solid #3d6e64;
+}
+.review-page.review-scheme-softSemantic .review-chip.is-role-explain {
+  --chip-fill: #2c281e;
+  --chip-text: #e4d2a2;
+  --chip-icon-bg: #d4b86a;
+  border: 1px solid #6a5c40;
+}
+.review-page.review-scheme-softSemantic .review-chip.is-role-study {
+  --chip-fill: #1c332d;
+  --chip-text: #9dceba;
+  --chip-icon-bg: #349461;
+  border: 1px solid #3f6a5c;
+}
+.review-page.review-scheme-softSemantic .review-chip.is-role-note {
+  --chip-fill: #282a32;
+  --chip-text: #c8c8ce;
+  --chip-icon-bg: #9a9aa4;
+  border: 1px solid #555862;
+}
+
+.review-page.review-scheme-highContrast {
+  --chip-radius: 8px;
+  --token-branch: #b0b0b8;
+  --token-changes: #c6a43a;
+  --token-rd: #9aa0a8;
+  --token-rm: #7cb342;
+  --token-rs: #5c6bc0;
+  --level-h: #e53935;
+  --level-m: #fb8c00;
+  --level-l: #00acc1;
+  --scheme-mr: #5c6bc0;
+  --scheme-review: #e53935;
+  --scheme-rereview: #7e57c2;
+  --scheme-neurofix: #7cb342;
+  --scheme-explain: #00897b;
+  --scheme-study: #43a047;
+  --scheme-note: #757575;
+  --scheme-fix: #9e9e9e;
+}
+
+.review-page.review-scheme-highContrast .review-chip[class*='is-role-'] {
+  --chip-fill: #1a1a1c;
+  --chip-text: #ffffff;
+  --chip-border: #2a2a2e;
+  padding-left: 14px;
+  position: relative;
+}
+
+.review-page.review-scheme-highContrast .review-chip[class*='is-role-']::before {
+  background: var(--link-color, #fff);
+  border-radius: 2px;
+  bottom: 6px;
+  content: '';
+  left: 4px;
+  position: absolute;
+  top: 6px;
+  width: 3px;
+}
+
+.review-page.review-scheme-mutedPastel {
+  --chip-radius: 16px;
+  --token-branch: #a9a9b2;
+  --token-changes: #c4b48a;
+  --token-rd: #8e96a2;
+  --token-rm: #8fbf9f;
+  --token-rs: #8fb8d9;
+  --level-h: #e8a0a0;
+  --level-h-bg: #4a2a2e;
+  --level-m: #d9c07a;
+  --level-m-bg: #4a3e22;
+  --level-l: #8fb8d9;
+  --level-l-bg: #2a3a4a;
+  --scheme-mr: #8aa4b8;
+  --scheme-review: #d98c8c;
+  --scheme-rereview: #a89bd9;
+  --scheme-neurofix: #7fbf8f;
+  --scheme-explain: #c4b48a;
+  --scheme-study: #8fbf9f;
+  --scheme-note: #9a9aa6;
+  --scheme-fix: #8eae98;
+}
+
+.review-page.review-scheme-mutedPastel .review-chip.is-role-mr {
+  --chip-fill: #2a3038;
+  --chip-text: #c9d3dc;
+  --chip-icon: #8aa4b8;
+  --chip-icon-bg: #343c46;
+}
+.review-page.review-scheme-mutedPastel .review-chip.is-role-review {
+  --chip-fill: #3a2a2e;
+  --chip-text: #e8c8c8;
+  --chip-icon: #d98c8c;
+  --chip-icon-bg: #4a3438;
+}
+.review-page.review-scheme-mutedPastel .review-chip.is-role-rereview {
+  --chip-fill: #2e2a3a;
+  --chip-text: #d4cce8;
+  --chip-icon: #a89bd9;
+  --chip-icon-bg: #3a3448;
+}
+.review-page.review-scheme-mutedPastel .review-chip.is-role-neurofix,
+.review-page.review-scheme-mutedPastel .review-chip.is-role-fix {
+  --chip-fill: #1e3328;
+  --chip-text: #c5e0c8;
+  --chip-icon: #7fbf8f;
+  --chip-icon-bg: #2a4034;
+}
+.review-page.review-scheme-mutedPastel .review-chip.is-role-explain {
+  --chip-fill: #3a3428;
+  --chip-text: #e4d7b8;
+  --chip-icon: #c4b48a;
+  --chip-icon-bg: #463e30;
+}
+.review-page.review-scheme-mutedPastel .review-chip.is-role-study {
+  --chip-fill: #24352c;
+  --chip-text: #c8e0d0;
+  --chip-icon: #8fbf9f;
+  --chip-icon-bg: #31483a;
+}
+.review-page.review-scheme-mutedPastel .review-chip.is-role-note {
+  --chip-fill: #26262e;
+  --chip-text: #b8b8c0;
+  --chip-icon: #9a9aa6;
+  --chip-icon-bg: #32323a;
+}
+
+.review-page.review-scheme-neonOutline {
+  --chip-radius: 999px;
+  --token-branch: #9aa3af;
+  --token-changes: #c9923a;
+  --token-rd: #8b93a0;
+  --token-rm: #3dcc78;
+  --token-rs: #3db7e0;
+  --level-h: inherit;
+  --level-m: inherit;
+  --level-l: inherit;
+  --scheme-mr: #4d9fff;
+  --scheme-review: #ff4d4d;
+  --scheme-rereview: #b44dff;
+  --scheme-neurofix: #3ee0a0;
+  --scheme-explain: #22d3ee;
+  --scheme-study: #2ee66b;
+  --scheme-note: #9ca3af;
+  --scheme-fix: #a1a1aa;
+}
+
+.review-page.review-scheme-neonOutline .review-chip[class*='is-role-'] {
+  --chip-fill: #0a0a0c;
+  --chip-text: var(--link-color);
+  --chip-border: var(--link-color);
+  --chip-icon: var(--link-color);
+  --chip-icon-bg: transparent;
+}
+
+.review-page.review-scheme-softFilled {
+  --chip-radius: 999px;
+  --token-branch: color-mix(in srgb, currentColor 70%, transparent);
+  --token-changes: color-mix(in srgb, currentColor 82%, #e6c45a);
+  --token-rd: color-mix(in srgb, currentColor 62%, transparent);
+  --token-rm: color-mix(in srgb, currentColor 88%, #8fd9b0);
+  --token-rs: color-mix(in srgb, currentColor 88%, #9ec0e8);
+  --level-h: inherit;
+  --level-m: inherit;
+  --level-l: inherit;
+  --scheme-mr: #7f93a6;
+  --scheme-review: #b5544a;
+  --scheme-rereview: #6b5aa6;
+  --scheme-neurofix: #c4b15a;
+  --scheme-explain: #3a6ea5;
+  --scheme-study: #2e7d5b;
+  --scheme-note: #8a8a94;
+  --scheme-fix: #a89860;
+}
+
+.review-page.review-scheme-softFilled .review-chip.is-role-mr {
+  --chip-fill: #4e6272;
+  --chip-text: #e6eef4;
+  --chip-icon: #fff;
+  --chip-icon-bg: #3d5160;
+}
+.review-page.review-scheme-softFilled .review-chip.is-role-review {
+  --chip-fill: #b5544a;
+  --chip-text: #ffffff;
+  --chip-icon: #fff;
+  --chip-icon-bg: #8f4038;
+}
+.review-page.review-scheme-softFilled .review-chip.is-role-rereview {
+  --chip-fill: #6b5aa6;
+  --chip-text: #e6deff;
+  --chip-icon: #fff;
+  --chip-icon-bg: #55488a;
+}
+.review-page.review-scheme-softFilled .review-chip.is-role-neurofix,
+.review-page.review-scheme-softFilled .review-chip.is-role-fix {
+  --chip-fill: #8a7a2e;
+  --chip-text: #fff3c4;
+  --chip-icon: #fff;
+  --chip-icon-bg: #6e621f;
+}
+.review-page.review-scheme-softFilled .review-chip.is-role-explain {
+  --chip-fill: #3a6ea5;
+  --chip-text: #d6e9ff;
+  --chip-icon: #fff;
+  --chip-icon-bg: #2c5684;
+}
+.review-page.review-scheme-softFilled .review-chip.is-role-study {
+  --chip-fill: #2e7d5b;
+  --chip-text: #d6f5e3;
+  --chip-icon: #fff;
+  --chip-icon-bg: #246348;
+}
+.review-page.review-scheme-softFilled .review-chip.is-role-note {
+  --chip-fill: #3a3a42;
+  --chip-text: #d0d0d6;
+  --chip-icon: #fff;
+  --chip-icon-bg: #2c2c34;
+}
+
+.review-page.review-scheme-warmEarthy {
+  --chip-radius: 10px;
+  --token-branch: #b7a898;
+  --token-changes: #c4a06a;
+  --token-rd: #9a9088;
+  --token-rm: #8fb07a;
+  --token-rs: #8fb8d9;
+  --level-h: #ff6b4a;
+  --level-m: #e0b050;
+  --level-l: #8fb8d9;
+  --scheme-mr: #8aa4ae;
+  --scheme-review: #e0a080;
+  --scheme-rereview: #d9a0b0;
+  --scheme-neurofix: #f0a060;
+  --scheme-explain: #e0d060;
+  --scheme-study: #b8d99f;
+  --scheme-note: #a0a0a8;
+  --scheme-fix: #c4b09a;
+}
+
+.review-page.review-scheme-warmEarthy .review-chip.is-role-mr {
+  --chip-fill: #2c3438;
+  --chip-text: #b7c6ce;
+  --chip-icon: #b7c6ce;
+}
+.review-page.review-scheme-warmEarthy .review-chip.is-role-review {
+  --chip-fill: #3e3220;
+  --chip-text: #e0a080;
+  --chip-icon: #e0a080;
+}
+.review-page.review-scheme-warmEarthy .review-chip.is-role-rereview {
+  --chip-fill: #3e2a30;
+  --chip-text: #d9a0b0;
+  --chip-icon: #d9a0b0;
+}
+.review-page.review-scheme-warmEarthy .review-chip.is-role-neurofix,
+.review-page.review-scheme-warmEarthy .review-chip.is-role-fix {
+  --chip-fill: #4a2e1a;
+  --chip-text: #f0a060;
+  --chip-icon: #f0a060;
+}
+.review-page.review-scheme-warmEarthy .review-chip.is-role-explain {
+  --chip-fill: #3a3a1a;
+  --chip-text: #e0d060;
+  --chip-icon: #e0d060;
+}
+.review-page.review-scheme-warmEarthy .review-chip.is-role-study {
+  --chip-fill: #2e3a24;
+  --chip-text: #b8d99f;
+  --chip-icon: #b8d99f;
+}
+.review-page.review-scheme-warmEarthy .review-chip.is-role-note {
+  --chip-fill: #2a2a2e;
+  --chip-text: #a0a0a8;
+  --chip-icon: #a0a0a8;
+}
+
+.review-page.review-scheme-coolTech {
+  --chip-radius: 12px;
+  --chip-icon-radius: 6px;
+  --token-branch: #9aa6b8;
+  --token-changes: #c9a15a;
+  --token-rd: #8b95a8;
+  --token-rm: #5ecfb8;
+  --token-rs: #7eb6f0;
+  --level-h: #ff6b5e;
+  --level-m: #f2b233;
+  --level-l: #5b9dff;
+  --scheme-mr: #38bdf8;
+  --scheme-review: #f2554a;
+  --scheme-rereview: #818cf8;
+  --scheme-neurofix: #34d399;
+  --scheme-explain: #3b82f6;
+  --scheme-study: #2dd4bf;
+  --scheme-note: #6b7280;
+  --scheme-fix: #94a3b8;
+}
+
+.review-page.review-scheme-coolTech .review-chip.is-role-mr {
+  --chip-fill: #1a2433;
+  --chip-text: #d6e4f5;
+  --chip-icon: #fff;
+  --chip-icon-bg: #163044;
+}
+.review-page.review-scheme-coolTech .review-chip.is-role-review {
+  --chip-fill: #2a1c1c;
+  --chip-text: #f5f5f5;
+  --chip-icon: #fff;
+  --chip-icon-bg: #3a1f1f;
+}
+.review-page.review-scheme-coolTech .review-chip.is-role-rereview {
+  --chip-fill: #221e38;
+  --chip-text: #c7d2fe;
+  --chip-icon: #fff;
+  --chip-icon-bg: #2a2350;
+}
+.review-page.review-scheme-coolTech .review-chip.is-role-neurofix,
+.review-page.review-scheme-coolTech .review-chip.is-role-fix {
+  --chip-fill: #142820;
+  --chip-text: #c8f5e4;
+  --chip-icon: #fff;
+  --chip-icon-bg: #143528;
+}
+.review-page.review-scheme-coolTech .review-chip.is-role-explain {
+  --chip-fill: #162033;
+  --chip-text: #d6e4ff;
+  --chip-icon: #fff;
+  --chip-icon-bg: #1a3058;
+}
+.review-page.review-scheme-coolTech .review-chip.is-role-study {
+  --chip-fill: #122824;
+  --chip-text: #d5f5f0;
+  --chip-icon: #fff;
+  --chip-icon-bg: #123a35;
+}
+.review-page.review-scheme-coolTech .review-chip.is-role-note {
+  --chip-fill: #1c1c24;
+  --chip-text: #c4c8d0;
+  --chip-icon: #fff;
+  --chip-icon-bg: #2a2e36;
+}
+
 .review-pill-jump {
   appearance: none;
   background: transparent;
@@ -4449,6 +4930,51 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 .review-pill-jump:hover {
   color: #fff;
+}
+
+.review-page[class*='review-scheme-'] .review-chip-label {
+  align-items: center;
+  display: inline-flex;
+  gap: 0;
+  overflow: visible;
+}
+
+.review-page[class*='review-scheme-'] .review-level-pill,
+.review-page[class*='review-scheme-'] button.review-level-pill {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 18%, var(--level-bg, transparent));
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin: 0 2px;
+  padding: 1px 7px;
+}
+
+.review-page[class*='review-scheme-'] .review-pill-jump.review-pill-high:hover {
+  color: var(--level-h);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-jump.review-pill-medium:hover {
+  color: var(--level-m);
+}
+
+.review-page[class*='review-scheme-'] .review-pill-jump.review-pill-low:hover {
+  color: var(--level-l);
+}
+
+.review-branch-ico {
+  flex: 0 0 auto;
+  height: 12px;
+  width: 12px;
+}
+
+.review-pill-branch {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.review-pill-sep {
+  white-space: pre;
 }
 
 @keyframes review-chip-rereview-flash {
@@ -5672,11 +6198,23 @@ button.review-neurofix-btn.is-muted:hover {
 
 .review-theme-strip {
   gap: 8px;
-  padding-right: 6px;
+  justify-content: flex-start;
+  padding: 6px 8px;
+}
+
+.review-theme-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-theme-option {
   border-color: transparent;
+  justify-content: flex-start;
+  padding: 6px 8px;
 }
 
 .review-theme-option.is-active {

@@ -1304,7 +1304,7 @@
         return;
       }
       reviewState = incoming;
-      reviewThemeId = normalizeReviewTheme(incoming && incoming.theme);
+      reviewSchemeId = normalizeReviewScheme(incoming && (incoming.scheme || incoming.theme));
       if (incoming && incoming.resetView) {
         closeReviewFileView();
         closeExplainFileView();
@@ -1617,7 +1617,7 @@
         reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
         reviewPrintThinking: message.reviewPrintThinking === true,
         reviewPrintTools: message.reviewPrintTools !== false,
-        reviewTheme: typeof message.reviewTheme === 'string' ? message.reviewTheme : '',
+        reviewScheme: typeof message.reviewScheme === 'string' ? message.reviewScheme : '',
       });
     } else if (message.type === 'pageCloudBusy') {
       pageCloudBusy = message.busy === true;
@@ -3613,13 +3613,6 @@
         }),
       );
       scroller.append(
-        menuActionChoice(t('menuChangeColor'), {
-          reviewEdit: 'color',
-          pageId,
-          messageId,
-        }),
-      );
-      scroller.append(
         menuActionChoice(t(isPr ? 'reviewClosePr' : 'reviewCloseMr'), {
           reviewEdit: 'close',
           pageId,
@@ -3737,13 +3730,6 @@
         appendStudyRow(scroller, !!openMenuState.studyExpanded);
       }
       scroller.append(
-        menuActionChoice(t('menuChangeColor'), {
-          reviewEdit: 'color',
-          pageId,
-          messageId,
-        }),
-      );
-      scroller.append(
         menuActionChoice(t('reviewMigrate'), {
           reviewEdit: 'migrate',
           pageId,
@@ -3789,13 +3775,6 @@
       const chip =
         (reviewState?.messages || []).find((item) => item.id === messageId) ||
         findReviewReply(messageId);
-      scroller.append(
-        menuActionChoice(t('menuChangeColor'), {
-          reviewEdit: 'color',
-          pageId,
-          messageId,
-        }),
-      );
       scroller.append(
         menuActionChoice(t('menuDelete'), {
           reviewEdit: 'delete',
@@ -4660,14 +4639,6 @@
           messageId,
           title: parent?.title || '',
           isPr: typeof parent?.webUrl === 'string' && /\/pull\/\d+/.test(parent.webUrl),
-        });
-      } else if (button.dataset.reviewEdit === 'color') {
-        openColorsPanel({
-          kind: 'review',
-          id: messageId,
-          pageId,
-          currentHex: chip?.color || '',
-          allowNone: false,
         });
       } else if (button.dataset.reviewEdit === 'close') {
         vscode.postMessage({
@@ -8202,30 +8173,124 @@
   const REVIEW_SKELETON_PARENTS = 3;
   const REVIEW_SKELETON_CHILDREN = 3;
   const REVIEW_SKEL_COLOR = '#6e6e6e';
-  /** Keep in sync with src/reviewThemes.ts. Order: MR, review, rereview, neurofix, explain, study. */
-  const REVIEW_THEME_IDS = ['roles', 'syntax', 'explorer', 'rolesNear'];
-  const REVIEW_THEME_DEFAULT = 'explorer';
-  const REVIEW_THEME_ROLES = ['mr', 'review', 'rereview', 'neurofix', 'explain', 'study'];
-  const REVIEW_THEME_COLORS = {
-    roles: ['#9aa3ab', '#7d92a6', '#6480af', '#6aa67c', '#9678aa', '#6aa8b4'],
-    syntax: ['#9c9894', '#868e96', '#7a96ae', '#81b88b', '#c586c0', '#4ec9b0'],
-    explorer: ['#9a9690', '#8090a0', '#6a7d9e', '#81b88b', '#c586c0', '#5b93c4'],
-    rolesNear: ['#9aa3ab', '#7d92a6', '#6d8aa8', '#6aa67c', '#9678aa', '#6aa8b4'],
+  /** Keep in sync with src/reviewThemes.ts. */
+  const REVIEW_SCHEME_IDS = ['softSemantic', 'highContrast', 'mutedPastel', 'neonOutline', 'softFilled', 'warmEarthy', 'coolTech'];
+  const REVIEW_SCHEME_DEFAULT = 'softSemantic';
+  const REVIEW_SCHEME_LABELS = {
+    softSemantic: 'Soft Semantic',
+    highContrast: 'High-Contrast Flat',
+    mutedPastel: 'Muted Pastel Dark',
+    neonOutline: 'Neon Outline',
+    softFilled: 'Soft Filled',
+    warmEarthy: 'Warm Earthy',
+    coolTech: 'Cool Tech',
   };
-  const REVIEW_STACK_PATH =
-    'M20.0835 15.1999L21.2856 15.9212C21.5224 16.0633 21.5991 16.3704 21.4571 16.6072C21.4148 16.6776 21.356 16.7365 21.2856 16.7787L12.5146 22.0412C12.198 22.2313 11.8023 22.2313 11.4857 22.0412L2.71475 16.7787C2.47796 16.6366 2.40118 16.3295 2.54325 16.0927C2.58548 16.0223 2.64437 15.9634 2.71475 15.9212L3.91684 15.1999L12.0002 20.0499L20.0835 15.1999ZM20.0835 10.4999L21.2856 11.2212C21.5224 11.3633 21.5991 11.6704 21.4571 11.9072C21.4148 11.9776 21.356 12.0365 21.2856 12.0787L12.0002 17.6499L2.71475 12.0787C2.47796 11.9366 2.40118 11.6295 2.54325 11.3927C2.58548 11.3223 2.64437 11.2634 2.71475 11.2212L3.91684 10.4999L12.0002 15.3499L20.0835 10.4999ZM12.5146 1.30864L21.2856 6.5712C21.5224 6.71327 21.5991 7.0204 21.4571 7.25719C21.4148 7.32757 21.356 7.38647 21.2856 7.42869L12.0002 12.9999L2.71475 7.42869C2.47796 7.28662 2.40118 6.97949 2.54325 6.7427C2.58548 6.67232 2.64437 6.61343 2.71475 6.5712L11.4857 1.30864C11.8023 1.11864 12.198 1.11864 12.5146 1.30864ZM12.0002 3.33233L5.88747 6.99995L12.0002 10.6676L18.1129 6.99995L12.0002 3.33233Z';
-  let reviewThemeId = REVIEW_THEME_DEFAULT;
+  /** Schemes whose H/M/L counts are separate pills. Zero counts are hidden. */
+  const REVIEW_SCHEME_LEVEL_PILLS = { softSemantic: true, mutedPastel: true };
+  /** Empty means the scheme has no role icons. */
+  const REVIEW_SCHEME_ICONS = {
+    softSemantic: 'fill',
+    highContrast: '',
+    mutedPastel: 'fill',
+    neonOutline: 'line',
+    softFilled: 'fill',
+    warmEarthy: 'line',
+    coolTech: 'fill',
+  };
+  const REVIEW_SCHEME_ICON_PATHS = {
+    mr: {
+      fill: 'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929Z',
+      line: 'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929ZM6 7C6.55228 7 7 6.55228 7 6C7 5.44772 6.55228 5 6 5C5.44772 5 5 5.44772 5 6C5 6.55228 5.44772 7 6 7ZM6 19C6.55228 19 7 18.5523 7 18C7 17.4477 6.55228 17 6 17C5.44772 17 5 17.4477 5 18C5 18.5523 5.44772 19 6 19ZM18 19C18.5523 19 19 18.5523 19 18C19 17.4477 18.5523 17 18 17C17.4477 17 17 17.4477 17 18C17 18.5523 17.4477 19 18 19Z',
+    },
+    review: {
+      fill: 'M24 12L18.3431 17.6569L16.9289 16.2426L21.1716 12L16.9289 7.75736L18.3431 6.34315L24 12ZM2.82843 12L7.07107 16.2426L5.65685 17.6569L0 12L5.65685 6.34315L7.07107 7.75736L2.82843 12ZM9.78828 21H7.66006L14.2118 3H16.34L9.78828 21Z',
+      line: 'M24 12L18.3431 17.6569L16.9289 16.2426L21.1716 12L16.9289 7.75736L18.3431 6.34315L24 12ZM2.82843 12L7.07107 16.2426L5.65685 17.6569L0 12L5.65685 6.34315L7.07107 7.75736L2.82843 12ZM9.78828 21H7.66006L14.2118 3H16.34L9.78828 21Z',
+    },
+    rereview: {
+      fill: 'M12 4C9.4095 4 7.10606 5.23053 5.64274 7.14274L8 9.5H2V3.5L4.21863 5.71863C6.05061 3.452 8.85558 2 12 2 17.5228 2 22 6.47715 22 12H20C20 7.58172 16.4183 4 12 4ZM4 12C4 16.4183 7.58172 20 12 20 14.5905 20 16.894 18.7695 18.3573 16.8573L16 14.5 22 14.5V20.5L19.7814 18.2814C17.9494 20.548 15.1444 22 12 22 6.47715 22 2 17.5228 2 12H4Z',
+      line: 'M12 4C9.25144 4 6.82508 5.38626 5.38443 7.5H8V9.5H2V3.5H4V5.99936C5.82381 3.57166 8.72764 2 12 2C17.5228 2 22 6.47715 22 12H20C20 7.58172 16.4183 4 12 4ZM4 12C4 16.4183 7.58172 20 12 20C14.7486 20 17.1749 18.6137 18.6156 16.5H16V14.5H22V20.5H20V18.0006C18.1762 20.4283 15.2724 22 12 22C6.47715 22 2 17.5228 2 12H4Z',
+    },
+    neurofix: {
+      fill: 'M17.0007 1.20825L18.3195 3.68108L20.7923 4.99992L18.3195 6.31876L17.0007 8.79159L15.6818 6.31876L13.209 4.99992L15.6818 3.68108L17.0007 1.20825ZM8.00065 4.33325L10.6673 9.33325L15.6673 11.9999L10.6673 14.6666L8.00065 19.6666L5.33398 14.6666L0.333984 11.9999L5.33398 9.33325L8.00065 4.33325ZM19.6673 16.3333L18.0007 13.2083L16.334 16.3333L13.209 17.9999L16.334 19.6666L18.0007 22.7916L19.6673 19.6666L22.7923 17.9999L19.6673 16.3333Z',
+      line: 'M17.0007 1.20825 18.3195 3.68108 20.7923 4.99992 18.3195 6.31876 17.0007 8.79159 15.6818 6.31876 13.209 4.99992 15.6818 3.68108 17.0007 1.20825ZM10.6673 9.33325 15.6673 11.9999 10.6673 14.6666 8.00065 19.6666 5.33398 14.6666.333984 11.9999 5.33398 9.33325 8.00065 4.33325 10.6673 9.33325ZM11.4173 11.9999 9.18905 10.8115 8.00065 8.58325 6.81224 10.8115 4.58398 11.9999 6.81224 13.1883 8.00065 15.4166 9.18905 13.1883 11.4173 11.9999ZM19.6673 16.3333 18.0007 13.2083 16.334 16.3333 13.209 17.9999 16.334 19.6666 18.0007 22.7916 19.6673 19.6666 22.7923 17.9999 19.6673 16.3333Z',
+    },
+    explain: {
+      fill: 'M9.24264 18.9967H21V20.9967H3V16.754L12.8995 6.85453L17.1421 11.0972L9.24264 18.9967ZM14.3137 5.44032L16.435 3.319C16.8256 2.92848 17.4587 2.92848 17.8492 3.319L20.6777 6.14743C21.0682 6.53795 21.0682 7.17112 20.6777 7.56164L18.5563 9.68296L14.3137 5.44032Z',
+      line: 'M5 18.89H6.41421L15.7279 9.57627L14.3137 8.16206L5 17.4758V18.89ZM21 20.89H3V16.6473L16.435 3.21231C16.8256 2.82179 17.4587 2.82179 17.8492 3.21231L20.6777 6.04074C21.0682 6.43126 21.0682 7.06443 20.6777 7.45495L9.24264 18.89H21V20.89ZM15.7279 6.74785L17.1421 8.16206L18.5563 6.74785L17.1421 5.33363L15.7279 6.74785Z',
+    },
+    study: {
+      fill: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+      line: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+    },
+    note: {
+      fill: 'M15 14L14.8834 14.0067C14.4243 14.0601 14.0601 14.4243 14.0067 14.8834L14 15V21H3.99826C3.44694 21 3 20.5551 3 20.0066V3.9934C3 3.44476 3.44495 3 3.9934 3H20.0066C20.5552 3 21 3.44749 21 3.9985V14H15ZM21 16L16 20.997V16H21Z',
+      line: 'M21 15L15 20.996L4.00221 21C3.4487 21 3 20.5551 3 20.0066V3.9934C3 3.44476 3.44495 3 3.9934 3H20.0066C20.5552 3 21 3.45576 21 4.00247V15ZM19 5H5V19H13V14C13 13.4872 13.386 13.0645 13.8834 13.0067L14 13L19 12.999V5ZM18.171 14.999L15 15V18.169L18.171 14.999Z',
+    },
+    fix: {
+      fill: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+      line: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+    },
+  };
+  const REVIEW_BRANCH_ICON =
+    'M7.10508 15.2101C8.21506 15.6501 9 16.7334 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V11.9996C7.83566 11.3719 8.87439 11 10 11H14C15.3835 11 16.5482 10.0635 16.8949 8.78991C15.7849 8.34988 15 7.26661 15 6C15 4.34315 16.3431 3 18 3C19.6569 3 21 4.34315 21 6C21 7.3332 20.1303 8.46329 18.9274 8.85392C18.5222 11.2085 16.4703 13 14 13H10C8.61653 13 7.45179 13.9365 7.10508 15.2101Z';
+  let reviewSchemeId = REVIEW_SCHEME_DEFAULT;
 
   /** @param {unknown} value */
-  function normalizeReviewTheme(value) {
-    return REVIEW_THEME_IDS.includes(/** @type {string} */ (value)) ? value : REVIEW_THEME_DEFAULT;
+  function normalizeReviewScheme(value) {
+    return REVIEW_SCHEME_IDS.includes(/** @type {string} */ (value)) ? value : REVIEW_SCHEME_DEFAULT;
   }
 
-  /** @param {'mr' | 'review' | 'rereview' | 'neurofix' | 'explain' | 'study'} role */
+  function reviewSchemeIconStyle() {
+    return REVIEW_SCHEME_ICONS[reviewSchemeId] || '';
+  }
+
+  function reviewSchemeLevelPills() {
+    return !!REVIEW_SCHEME_LEVEL_PILLS[reviewSchemeId];
+  }
+
+  /** Spine color. Chip paint comes from the scheme class. */
   function reviewRoleColor(role) {
-    const colors = REVIEW_THEME_COLORS[reviewThemeId] || REVIEW_THEME_COLORS.explorer;
-    const index = REVIEW_THEME_ROLES.indexOf(role);
-    return colors[index] || colors[1];
+    return 'var(--scheme-' + role + ')';
+  }
+
+  /**
+   * @param {string} role
+   */
+  function reviewSchemeGlyph(role) {
+    const style = reviewSchemeIconStyle();
+    const paths = REVIEW_SCHEME_ICON_PATHS[role];
+    if (!style || !paths) {
+      return null;
+    }
+    const plate = el('span', 'review-scheme-plate is-' + style);
+    plate.append(reviewSvgIcon('review-scheme-glyph', paths[style] || paths.fill));
+    return plate;
+  }
+
+  /**
+   * @param {HTMLElement} chip
+   * @param {string} role
+   */
+  function dressReviewChip(chip, role) {
+    chip.classList.add('is-role-' + role);
+    const style = reviewSchemeIconStyle();
+    if (!style) {
+      return;
+    }
+    if (role === 'mr') {
+      const existing = chip.querySelector(':scope > .review-ico');
+      if (existing) {
+        const plate = el('span', 'review-scheme-plate is-' + style);
+        existing.classList.add('review-scheme-glyph');
+        existing.replaceWith(plate);
+        plate.append(existing);
+        return;
+      }
+    }
+    const glyph = reviewSchemeGlyph(role);
+    if (glyph) {
+      chip.prepend(glyph);
+    }
   }
 
   /**
@@ -8964,7 +9029,7 @@
     reviewStructureKeyValue = structureKey;
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
-    root.className = 'map-page review-page';
+    root.className = 'map-page review-page review-scheme-' + reviewSchemeId;
     clearDropHighlights();
     if (
       edge ||
@@ -9208,6 +9273,7 @@
     /** @type {string[]} */
     const chunks = [
       pageId,
+      reviewSchemeId,
       edge || '',
       state.error || '',
       state.empty ? '1' : '0',
@@ -9467,6 +9533,7 @@
       bindCheckoutBranchHover(chip, branchRevealId);
       chip.append(msg.status === 'closed' ? reviewClosedIcon() : reviewPrIcon());
       chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
+      dressReviewChip(chip, 'mr');
       if (canFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
         tri.append(linkCaretIcon());
@@ -9552,10 +9619,13 @@
       const chip = el('button', 'review-chip is-review-pill');
       chip.type = 'button';
       bindCheckoutBranchHover(chip, branchRevealId);
-      chip.append(reviewStatusIcon(msg.reviewStatus));
+      if (!reviewSchemeIconStyle()) {
+        chip.append(reviewStatusIcon(msg.reviewStatus));
+      }
       const rootLabel = el('span', 'review-chip-label');
       setReviewPillText(rootLabel, msg.pillLabel || t('reviewFileTitle'));
       chip.append(rootLabel);
+      dressReviewChip(chip, 'review');
       if (rootCanFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
         tri.append(linkCaretIcon());
@@ -9600,6 +9670,7 @@
       const explainLabel = el('span', 'review-chip-label');
       setReviewPillText(explainLabel, msg.pillLabel || t('explainFileTitle'));
       chip.append(explainLabel);
+      dressReviewChip(chip, 'explain');
       if (explainCanFold) {
         const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
         tri.append(linkCaretIcon());
@@ -9883,6 +9954,7 @@
       const explainLabel = el('span', 'review-chip-label');
       setReviewPillText(explainLabel, reply.pillLabel || t('explainFileTitle'));
       chip.append(explainLabel);
+      dressReviewChip(chip, 'explain');
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -9899,7 +9971,9 @@
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill');
       bindCheckoutBranchHover(chip, stampBranch ? 'reply:' + reply.id : '');
-      chip.append(reviewStatusIcon(reply.status));
+      if (!reviewSchemeIconStyle()) {
+        chip.append(reviewStatusIcon(reply.status));
+      }
       const replyLabel = el('span', 'review-chip-label');
       const replyPill = reply.isRereview
         ? normalizeRereviewPill(reply.pillLabel || '')
@@ -9917,6 +9991,10 @@
           : undefined,
       );
       chip.append(replyLabel);
+      dressReviewChip(
+        chip,
+        reply.isRereview ? 'rereview' : reply.isStudy ? 'study' : 'review',
+      );
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -10073,10 +10151,7 @@
     const row = el('div', 'review-reply-node is-note has-gap');
     row.dataset.reviewNoteFor = messageId;
     row.dataset.reviewNoteKind = kind;
-    row.style.setProperty(
-      '--link-color',
-      reviewRoleColor(kind === 'study' ? 'study' : 'rereview'),
-    );
+    row.style.setProperty('--link-color', reviewRoleColor('note'));
     row.append(
       linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), nextColor),
     );
@@ -10089,6 +10164,7 @@
       onLevel: (bit) => openLevelNoteView(pageId, messageId, bit, levelNoteFileList(note, bit)),
     });
     chip.append(label);
+    dressReviewChip(chip, 'note');
     chip.addEventListener('click', (event) => {
       if (event.target instanceof Element && event.target.closest('button')) {
         return;
@@ -10116,7 +10192,7 @@
     const hasStamp = !!(stampDate || branchOpts.name);
     const row = el('div', 'review-reply-node is-fix has-gap');
     row.dataset.reviewFixFor = messageId;
-    row.style.setProperty('--link-color', reviewRoleColor('neurofix'));
+    row.style.setProperty('--link-color', reviewRoleColor('fix'));
     row.append(
       linkElbow(
         reviewElbowMid({ leadingGap: true, hasStamp, contentHalf: 17 }),
@@ -10141,6 +10217,7 @@
     const label = el('span', 'review-chip-label');
     setReviewPillText(label, reviewFixLabel(source));
     chip.append(label);
+    dressReviewChip(chip, 'fix');
     chip.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -10696,22 +10773,34 @@
     const jumpNumber = opts && opts.jumpNumber;
     const interactive = !!(opts && (opts.onTitle || opts.onLevel));
     if (!anyTone && !jumpNumber && !interactive) {
-      node.textContent = text;
+      node.textContent = text.replace(/\s*\|\s*/g, ' | ');
       return;
     }
+    let wrote = false;
+    let lastLevel = false;
     chunks.forEach((chunk, index) => {
-      if (index > 0) {
-        node.append(document.createTextNode(' | '));
-      }
       const shown = chunk.trim();
+      if (reviewSchemeLevelPills() && /^[HMLS]:\s*0\s*$/i.test(shown)) {
+        return;
+      }
+      const tone = reviewPillTone(shown);
+      const isLevel =
+        reviewSchemeLevelPills() && (tone === 'high' || tone === 'medium' || tone === 'low');
+      const levelClass = isLevel ? ' review-level-pill' : '';
+      if (wrote && !(lastLevel && isLevel)) {
+        const sep = el('span', 'review-pill-sep');
+        sep.textContent = ' | ';
+        node.append(sep);
+      }
+      wrote = true;
+      lastLevel = isLevel;
       if (opts && opts.onLevel && /^[HMLS]:\s*\d/i.test(shown)) {
-        const tone = reviewPillTone(shown);
         const levelBtn = el(
           'button',
-          'review-pill-jump' + (tone ? ' review-pill-bit review-pill-' + tone : ''),
-          shown,
+          'review-pill-jump' + (tone ? ' review-pill-bit review-pill-' + tone : '') + levelClass,
         );
         levelBtn.type = 'button';
+        levelBtn.append(document.createTextNode(shown));
         levelBtn.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -10748,12 +10837,17 @@
         node.append(jump);
         return;
       }
-      const tone = reviewPillTone(shown);
-      if (!tone) {
+      const toneSeen = reviewPillTone(shown);
+      if (!toneSeen) {
         node.append(document.createTextNode(shown));
         return;
       }
-      node.append(el('span', 'review-pill-bit review-pill-' + tone, shown));
+      const bit = el('span', 'review-pill-bit review-pill-' + toneSeen + levelClass);
+      if (toneSeen === 'branch' && reviewSchemeIconStyle()) {
+        bit.append(reviewSvgIcon('review-branch-ico', REVIEW_BRANCH_ICON));
+      }
+      bit.append(document.createTextNode(shown));
+      node.append(bit);
     });
   }
 
@@ -13398,51 +13492,52 @@
   }
 
   /**
-   * Theme strip under the page description. The menu stays in the panel flow
+   * Scheme name list under the page description. The menu stays in the panel flow
    * so the settings scroller does not clip it.
    * @param {unknown} initial
-   * @param {(theme: string) => void} onPick
+   * @param {(scheme: string) => void} onPick
    */
   function mountReviewThemeField(initial, onPick) {
-    let theme = normalizeReviewTheme(initial);
+    let scheme = normalizeReviewScheme(initial);
     let open = false;
     const label = el('div', 'review-mr-field');
     label.append(el('span', 'review-desc-head', t('reviewFieldTheme')));
     const strip = el('button', 'review-theme-strip');
     strip.type = 'button';
     strip.setAttribute('aria-haspopup', 'listbox');
+    const current = el('span', 'review-theme-current');
+    strip.append(current);
     const menu = el('div', 'review-theme-menu');
     menu.hidden = true;
     menu.setAttribute('role', 'listbox');
     /** @type {HTMLButtonElement[]} */
-    const options = REVIEW_THEME_IDS.map((id) => {
-      const option = el('button', 'review-theme-option');
+    const options = REVIEW_SCHEME_IDS.map((id) => {
+      const option = el('button', 'review-theme-option', REVIEW_SCHEME_LABELS[id] || id);
       option.type = 'button';
-      option.dataset.theme = id;
+      option.dataset.scheme = id;
       option.setAttribute('role', 'option');
-      option.append(reviewThemeSwatchBar(id));
       option.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        theme = id;
+        scheme = id;
         open = false;
         menu.hidden = true;
         paintOptions();
         fill();
-        onPick(theme);
+        onPick(scheme);
       });
       return option;
     });
     menu.append(...options);
     const paintOptions = () => {
       for (const option of options) {
-        const active = option.dataset.theme === theme;
+        const active = option.dataset.scheme === scheme;
         option.classList.toggle('is-active', active);
         option.setAttribute('aria-selected', active ? 'true' : 'false');
       }
     };
     const fill = () => {
-      strip.replaceChildren(reviewThemeSwatchBar(theme), reviewThemeStackIcon());
+      current.textContent = REVIEW_SCHEME_LABELS[scheme] || scheme;
       strip.setAttribute('aria-expanded', open ? 'true' : 'false');
     };
     strip.addEventListener('click', (event) => {
@@ -13479,31 +13574,7 @@
     fill();
     paintOptions();
     label.append(strip, menu);
-    return { label, theme: () => theme };
-  }
-
-  /** @param {string} themeId */
-  function reviewThemeSwatchBar(themeId) {
-    const bar = el('span', 'review-theme-swatches');
-    const colors = REVIEW_THEME_COLORS[normalizeReviewTheme(themeId)] || REVIEW_THEME_COLORS.explorer;
-    for (const hex of colors) {
-      const swatch = el('span', 'review-theme-swatch');
-      swatch.style.background = hex;
-      bar.append(swatch);
-    }
-    return bar;
-  }
-
-  function reviewThemeStackIcon() {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('class', 'review-theme-stack');
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', REVIEW_STACK_PATH);
-    path.setAttribute('fill', 'currentColor');
-    svg.append(path);
-    return svg;
+    return { label, theme: () => scheme };
   }
 
   /**
@@ -13530,7 +13601,7 @@
    *   reviewFixModel?: string,
    *   reviewPrintThinking?: boolean,
    *   reviewPrintTools?: boolean,
-   *   reviewTheme?: string
+   *   reviewScheme?: string
    * }} opts
    */
   function openReviewCreatePagePanel(opts) {
@@ -13588,10 +13659,8 @@
     const pageDesc = pageDescriptionField(opts.description || '');
     const descInput = pageDesc.input;
     panel.append(pageDesc.label);
-    const themeField = mountReviewThemeField(opts.reviewTheme, (theme) => {
-      if (editing && opts.pageId) {
-        vscode.postMessage({ type: 'reviewSetTheme', pageId: opts.pageId, theme });
-      }
+    const themeField = mountReviewThemeField(opts.reviewScheme, (scheme) => {
+      vscode.postMessage({ type: 'reviewSetScheme', scheme });
     });
     panel.append(themeField.label);
     const channelInput = fieldRow('reviewFieldChannelId', {
@@ -14044,7 +14113,6 @@
         channelId,
         repoUrl,
         description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
-        reviewTheme: themeField.theme(),
         gitlabToken: (opts.gitlabToken || '').trim() || undefined,
         githubToken: (opts.githubToken || '').trim() || undefined,
         discordToken: discordInput?.value.trim() || undefined,

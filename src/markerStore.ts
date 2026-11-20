@@ -55,7 +55,7 @@ import {
   parseConfigHeader,
   resolveProjectChannel,
 } from './configFormat';
-import { normalizeReviewTheme, type ReviewThemeId } from './reviewThemes';
+import { normalizeReviewScheme, REVIEW_SCHEME_DEFAULT, type ReviewSchemeId } from './reviewThemes';
 import {
   assembleSplitWorkspace,
   mergeProjectChannels,
@@ -589,8 +589,6 @@ export interface PageDef {
   kind: PageKind;
   /** Short description shown in the page settings panel. */
   description?: string;
-  /** Review-map chip theme. Absent means Проводник. */
-  reviewTheme?: ReviewThemeId;
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -3729,20 +3727,32 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  /** Review-map chip theme. Проводник is stored as an absent field. */
-  async setPageReviewTheme(id: string, theme: ReviewThemeId): Promise<void> {
-    const page = this.data.pages[id];
-    if (!page) {
-      return;
-    }
-    const next = normalizeReviewTheme(theme);
-    if (next === 'explorer') {
-      delete page.reviewTheme;
-    } else {
-      page.reviewTheme = next;
-    }
-    await this.bumpPageSettings(id);
-    await this.commit();
+  /** Review-map chip scheme for the active profile in the active project. */
+  reviewScheme(): ReviewSchemeId {
+    const id = this.activeId || GENERAL_PROFILE_ID;
+    return normalizeReviewScheme(this.activeProject()?.profiles[id]?.reviewScheme);
+  }
+
+  /** Soft Semantic is stored as an absent field. */
+  async setReviewScheme(scheme: ReviewSchemeId): Promise<void> {
+    await this.enqueue(async () => {
+      const project = this.ensureActiveProject();
+      const id = this.ensureActiveProfileId();
+      const profile = project?.profiles[id];
+      if (!project || !profile) {
+        return;
+      }
+      const next = normalizeReviewScheme(scheme);
+      if (next === REVIEW_SCHEME_DEFAULT) {
+        delete profile.reviewScheme;
+      } else {
+        profile.reviewScheme = next;
+      }
+      profile.version = (profile.version || 1) + 1;
+      this.profileDirty = true;
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
   }
 
   /** Bump page settings version in the base snapshot (not content). */
@@ -3759,11 +3769,6 @@ export class MarkerStore implements vscode.Disposable {
         entry.name = page?.name ?? entry.name;
         entry.description = page?.description;
         entry.order = page?.order ?? entry.order;
-        if (page?.reviewTheme) {
-          entry.reviewTheme = page.reviewTheme;
-        } else {
-          delete entry.reviewTheme;
-        }
       }
       this.projectDirty = true;
       await this.persistBaseOnly();
@@ -6292,7 +6297,6 @@ export class MarkerStore implements vscode.Disposable {
         ...(meta?.description || legacyPage?.description
           ? { description: meta?.description || legacyPage?.description }
           : {}),
-        ...(meta?.reviewTheme ? { reviewTheme: meta.reviewTheme } : {}),
       };
     }
     const page = this.data.pages[pageId];
@@ -6304,11 +6308,6 @@ export class MarkerStore implements vscode.Disposable {
         page.description = meta.description;
       } else {
         delete page.description;
-      }
-      if (meta.reviewTheme) {
-        page.reviewTheme = meta.reviewTheme;
-      } else {
-        delete page.reviewTheme;
       }
     } else if (page && legacyPage) {
       page.name = legacyPage.name || page.name;
@@ -9524,9 +9523,6 @@ function normalize(raw: unknown): MarkersFile {
         layout: normalizeMapLayout(def.layout),
         groupsLayout: normalizeGroupsLayout(def.groupsLayout),
         collapsed: normalizeCollapsed(def.collapsed),
-        ...(normalizeReviewTheme(def.reviewTheme) !== 'explorer'
-          ? { reviewTheme: normalizeReviewTheme(def.reviewTheme) }
-          : {}),
       };
     }
   }

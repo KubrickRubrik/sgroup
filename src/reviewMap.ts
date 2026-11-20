@@ -33,7 +33,6 @@ import {
   isReviewMessage,
   isStudyMessage,
   listChannelMessages,
-  reviewMessageRole,
   listThreadMessages,
   parseDiscordLock,
   parseExplainMessagePill,
@@ -48,7 +47,6 @@ import {
   formatRereviewSelection,
   parseReviewAttachment,
   parseReviewBranch,
-  parseReviewColor,
   parseReviewMessagePill,
   parseReviewFixes,
   deleteChannelMessage,
@@ -64,8 +62,6 @@ import {
   postChannelMessage,
   postMessageWithFile,
   replaceDiscordLock,
-  replaceMrDiscordColor,
-  themeColorContent,
   replaceMrDiscordHead,
   replaceMrDiscordStatus,
   replaceReviewDiscordStatus,
@@ -112,14 +108,6 @@ import {
   listGithubOpenPrs,
   updatePullRequest,
 } from './githubApi';
-import {
-  normalizeReviewTheme,
-  reviewThemeColor,
-  REVIEW_THEME_DEFAULT,
-  type ReviewStoredRole,
-  type ReviewThemeId,
-} from './reviewThemes';
-import { normalizeHex } from './palette';
 import {
   detectProviderFromRepoUrl,
   type HostOpenRequest,
@@ -292,17 +280,8 @@ export interface ReviewFilterContext {
   checkoutName: string;
 }
 
-function chipThemeHex(content: string, theme: ReviewThemeId): string | undefined {
-  const role = reviewMessageRole(content);
-  if (!role) {
-    return undefined;
-  }
-  return parseReviewColor(content) || reviewThemeColor(theme, role);
-}
-
 function toChip(
   msg: DiscordMessage,
-  theme: ReviewThemeId,
   replies: ReviewThreadMsg[] = [],
   repliesHasMore = false,
   repliesLoaded = false,
@@ -327,7 +306,6 @@ function toChip(
         ? parseReviewBranch(msg.content)
         : undefined,
     draft: parsed.draft,
-    color: chipThemeHex(msg.content, theme),
     pillLabel: isReviewRoot
       ? parseReviewMessagePill(msg.content)
       : isExplainRoot
@@ -363,7 +341,7 @@ function reviewAttachment(msg: DiscordMessage): { filename: string; url: string 
   return files.find((file) => !isLevelNoteFilename(file.filename));
 }
 
-function toReplyBase(msg: DiscordMessage, theme: ReviewThemeId): ReviewThreadMsg {
+function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
   const file = reviewAttachment(msg);
   const explain = isExplainMessage(msg.content);
   const rereview = isRereviewMessage(msg.content);
@@ -379,7 +357,6 @@ function toReplyBase(msg: DiscordMessage, theme: ReviewThemeId): ReviewThreadMsg
     isStudy: study,
     isExplain: explain,
     status: review || rereview ? parseReviewStatus(msg.content) : undefined,
-    color: chipThemeHex(msg.content, theme),
     branch: explain ? parseReviewBranch(msg.content) : undefined,
     hasFile: !!file,
     filename: file?.filename,
@@ -762,12 +739,10 @@ export class ReviewMapController {
   private readonly neurofixSkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
   private readonly skeletonSeq = new Map<string, number>();
-  /** Bumps when a theme repaint starts, so an older Discord walk stops. */
-  private readonly themePaintGen = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
   private readonly replyMeta = new Map<
     string,
-    { isPill: boolean; pillLabel?: string; isExplain?: boolean; color?: string; branch?: string }
+    { isPill: boolean; pillLabel?: string; isExplain?: boolean; branch?: string }
   >();
   /**
    * Channel last used to list a page when access.json has no channel.
@@ -808,163 +783,10 @@ export class ReviewMapController {
       discussions: true,
       checkoutName: '',
     }),
-    private readonly themeFor: (pageId: string) => ReviewThemeId = () => REVIEW_THEME_DEFAULT,
   ) {
     this.access = new AccessStore(root);
     this.pending = new ReviewPendingStore(root);
     this.explainPending = new ExplainPendingStore(root);
-  }
-
-  private themeId(pageId: string): ReviewThemeId {
-    return normalizeReviewTheme(this.themeFor(pageId));
-  }
-
-  private roleColor(pageId: string, role: 'mr' | 'review' | 'rereview' | 'explain' | 'study'): string {
-    return reviewThemeColor(this.themeId(pageId), role);
-  }
-
-  /**
-   * Paint the active theme onto loaded chips, then walk Discord and store `them_color`.
-   * Legacy `color:` lines are dropped. The map snapshot already uses the theme.
-   */
-  async syncThemeColors(pageId: string): Promise<void> {
-    const theme = this.themeId(pageId);
-    const colorOf = (role: ReviewStoredRole) => reviewThemeColor(theme, role);
-    const gen = (this.themePaintGen.get(pageId) ?? 0) + 1;
-    this.themePaintGen.set(pageId, gen);
-    const channelId = await this.listingChannel(pageId);
-    const jobs: { channelId: string; messageId: string; content: string }[] = [];
-    const seen = new Set<string>();
-    const take = (targetChannel: string, msg: DiscordMessage) => {
-      const role = reviewMessageRole(msg.content);
-      if (!role) {
-        return;
-      }
-      const next = themeColorContent(msg.content, colorOf(role));
-      seen.add(msg.id);
-      if (!next) {
-        return;
-      }
-      msg.content = next;
-      const meta = this.replyMeta.get(msg.id);
-      if (meta) {
-        meta.color = colorOf(role);
-      }
-      if (targetChannel) {
-        jobs.push({ channelId: targetChannel, messageId: msg.id, content: next });
-      }
-    };
-    const win = this.windows.get(pageId);
-    if (win) {
-      for (const msg of win.messages) {
-        take(channelId, msg);
-      }
-      for (const [threadId, bucket] of win.threads) {
-        for (const msg of bucket.replies) {
-          take(threadId, msg);
-        }
-      }
-    }
-    if (channelId) {
-      void this.persistThemeColors(pageId, gen, colorOf, channelId, jobs, seen);
-    }
-  }
-
-  private async persistThemeColors(
-    pageId: string,
-    gen: number,
-    colorOf: (role: ReviewStoredRole) => string,
-    channelId: string,
-    jobs: { channelId: string; messageId: string; content: string }[],
-    seen: Set<string>,
-  ): Promise<void> {
-    const token = await this.discordToken();
-    if (!token) {
-      return;
-    }
-    const current = () => this.themePaintGen.get(pageId) === gen;
-    const paint = async (target: string, messageId: string, content: string) => {
-      if (!current()) {
-        return;
-      }
-      await editChannelMessage(token, target, messageId, content);
-      await new Promise((resolve) => setTimeout(resolve, 1100));
-    };
-    for (const job of jobs) {
-      if (!current()) {
-        return;
-      }
-      await paint(job.channelId, job.messageId, job.content);
-    }
-    let before: string | undefined;
-    for (let page = 0; page < 8 && current(); page += 1) {
-      const batch = await listChannelMessages(token, channelId, { limit: 100, before });
-      if (!batch.ok || batch.value.length === 0) {
-        return;
-      }
-      for (const msg of batch.value) {
-        if (!current()) {
-          return;
-        }
-        if (!seen.has(msg.id)) {
-          const role = reviewMessageRole(msg.content);
-          const next = role ? themeColorContent(msg.content, colorOf(role)) : undefined;
-          if (next) {
-            seen.add(msg.id);
-            await paint(channelId, msg.id, next);
-          }
-        }
-        const threadId = msg.thread?.id;
-        if (threadId) {
-          await this.paintThreadTheme(pageId, gen, token, threadId, colorOf, seen);
-        }
-      }
-      if (batch.value.length < 100) {
-        return;
-      }
-      before = batch.value[0]?.id;
-      if (!before) {
-        return;
-      }
-    }
-  }
-
-  private async paintThreadTheme(
-    pageId: string,
-    gen: number,
-    token: string,
-    threadId: string,
-    colorOf: (role: ReviewStoredRole) => string,
-    seen: Set<string>,
-  ): Promise<void> {
-    const current = () => this.themePaintGen.get(pageId) === gen;
-    let before: string | undefined;
-    for (let page = 0; page < 3 && current(); page += 1) {
-      const batch = await listThreadMessages(token, threadId, { limit: 100, before });
-      if (!batch.ok || batch.value.length === 0) {
-        return;
-      }
-      for (const msg of batch.value) {
-        if (!current() || seen.has(msg.id)) {
-          continue;
-        }
-        const role = reviewMessageRole(msg.content);
-        const next = role ? themeColorContent(msg.content, colorOf(role)) : undefined;
-        if (!next) {
-          continue;
-        }
-        seen.add(msg.id);
-        await editChannelMessage(token, threadId, msg.id, next);
-        await new Promise((resolve) => setTimeout(resolve, 1100));
-      }
-      if (batch.value.length < 100) {
-        return;
-      }
-      before = batch.value[0]?.id;
-      if (!before) {
-        return;
-      }
-    }
   }
 
   private profilePaths(): ReviewProfilePaths {
@@ -1275,7 +1097,7 @@ export class ReviewMapController {
     const messages = win.messages.filter((m) => this.channelRootPasses(m, filterCtx)).map((m) => {
       const thread = m.thread?.id ? win.threads.get(m.thread.id) : undefined;
       const replies = (thread?.replies ?? []).filter((r) => this.threadReplyPasses(r, filterCtx)).map((r) => {
-        const base = toReplyBase(r, this.themeId(pageId));
+        const base = toReplyBase(r);
         const meta = this.replyMeta.get(r.id);
         if (!meta) {
           return base;
@@ -1285,13 +1107,12 @@ export class ReviewMapController {
           isPill: meta.isPill,
           pillLabel: meta.pillLabel,
           isExplain: meta.isExplain || base.isExplain,
-          color: base.color,
           branch: meta.branch || base.branch,
         };
       });
       const loaded = !!thread;
       const hasMore = threadHasMore(m, thread);
-      const chip = toChip(m, this.themeId(pageId), replies, hasMore, loaded);
+      const chip = toChip(m, replies, hasMore, loaded);
       if (thread?.canLoadNewer) {
         chip.repliesHasNewer = true;
       }
@@ -1636,7 +1457,6 @@ export class ReviewMapController {
           isPill: true,
           pillLabel: explainPill,
           isExplain: true,
-          color: parseReviewColor(msg.content),
           branch: parseReviewBranch(msg.content),
         });
         continue;
@@ -2668,7 +2488,6 @@ export class ReviewMapController {
       webUrl: mr.web_url,
       title: mr.title,
       draft: mr.draft,
-      color: this.roleColor(pageId, 'mr'),
       provider: access.provider,
       iid: mr.iid,
       sourceBranch: mr.source_branch,
@@ -3071,27 +2890,19 @@ export class ReviewMapController {
   }
 
   /**
-   * Rename or toggle draft on the host MR/PR, or recolor the Discord chip.
-   * Color stays in the Discord body and does not touch the host MR/PR.
-   * Root reviews and explain chips accept color-only patches.
+   * Rename or toggle draft on the host MR/PR.
+   * Root reviews and explain chips are not renamed here.
    */
   async updateMrChip(
     pageId: string,
     messageId: string,
-    patch: { title?: string; draft?: boolean; color?: string },
+    patch: { title?: string; draft?: boolean },
   ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
     const win = this.windows.get(pageId);
     const access = await this.getAccess(pageId);
     const discord = await this.discordToken();
     if (!win || !discord) {
       return { kind: 'error', message: 'MR message not found on the map' };
-    }
-    // Explain reply in a thread: color-only.
-    if (patch.color !== undefined && patch.title === undefined && patch.draft === undefined) {
-      const located = this.findReviewMessage(win, messageId);
-      if (located?.kind === 'thread' && isExplainMessage(located.found.content)) {
-        return this.recolorExplainMessage(pageId, win, located.channelId, discord, located.found, patch.color);
-      }
     }
     const parent = win.messages.find((item) => item.id === messageId);
     if (!access || !parent) {
@@ -3110,9 +2921,6 @@ export class ReviewMapController {
     }
     if (isMrMessage(parent.content) && parseMrChip(parent.content).status === 'closed') {
       return { kind: 'error', message: 'MR is closed' };
-    }
-    if (patch.color !== undefined && patch.title === undefined && patch.draft === undefined) {
-      return this.recolorMrChip(pageId, win, access.channelId, discord, parent, patch.color);
     }
     const parsed = parseMrChip(parent.content);
     if (!parsed.webUrl) {
@@ -3163,95 +2971,6 @@ export class ReviewMapController {
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 
-  /** Rewrite `color:` on the Discord MR or root-review message, then refresh the chip. */
-  private async recolorMrChip(
-    pageId: string,
-    win: ReviewWindow,
-    channelId: string,
-    discord: string,
-    parent: DiscordMessage,
-    rawColor: string,
-  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
-    const color = normalizeHex(rawColor);
-    if (!color) {
-      return { kind: 'error', message: 'Color is not a hex value' };
-    }
-    const current =
-      parseMrChip(parent.content).color || parseReviewColor(parent.content) || '';
-    if (current.toLowerCase() === color) {
-      return { kind: 'state', state: this.snapshot(pageId) };
-    }
-    const edited = await editChannelMessage(
-      discord,
-      channelId,
-      parent.id,
-      replaceMrDiscordColor(parent.content, color),
-    );
-    if (!edited.ok) {
-      return { kind: 'error', message: edited.message };
-    }
-    const idx = win.messages.findIndex((item) => item.id === parent.id);
-    if (idx >= 0) {
-      win.messages[idx] = {
-        ...edited.value,
-        thread: edited.value.thread ?? parent.thread,
-        hasThread: edited.value.hasThread || parent.hasThread,
-        attachments: edited.value.attachments?.length
-          ? edited.value.attachments
-          : parent.attachments,
-      };
-    }
-    return { kind: 'state', state: this.snapshot(pageId) };
-  }
-
-  /** Rewrite `color:` on a W_SYN3 thread reply. */
-  private async recolorExplainMessage(
-    pageId: string,
-    win: ReviewWindow,
-    threadId: string,
-    discord: string,
-    message: DiscordMessage,
-    rawColor: string,
-  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
-    const color = normalizeHex(rawColor);
-    if (!color) {
-      return { kind: 'error', message: 'Color is not a hex value' };
-    }
-    const current = parseReviewColor(message.content) || '';
-    if (current.toLowerCase() === color) {
-      return { kind: 'state', state: this.snapshot(pageId) };
-    }
-    const edited = await editChannelMessage(
-      discord,
-      threadId,
-      message.id,
-      replaceMrDiscordColor(message.content, color),
-    );
-    if (!edited.ok) {
-      return { kind: 'error', message: edited.message };
-    }
-    const bucket = win.threads.get(threadId);
-    if (bucket) {
-      const idx = bucket.replies.findIndex((item) => item.id === message.id);
-      if (idx >= 0) {
-        const prev = bucket.replies[idx];
-        bucket.replies[idx] = {
-          ...edited.value,
-          attachments: edited.value.attachments?.length
-            ? edited.value.attachments
-            : prev.attachments,
-        };
-      }
-    }
-    this.replyMeta.set(message.id, {
-      isPill: true,
-      pillLabel: EXPLAIN_TITLE,
-      isExplain: true,
-      color,
-      branch: parseReviewBranch(edited.value.content) || parseReviewBranch(message.content),
-    });
-    return { kind: 'state', state: this.snapshot(pageId) };
-  }
 
   /** Write `lock: true|false` on a channel parent. Replies are not lockable. */
   async setParentLock(
@@ -5113,7 +4832,6 @@ export class ReviewMapController {
       depth: depthToken,
       model: paths.model,
       skillPath: paths.skillPath,
-      color: this.roleColor(pageId, 'review'),
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
@@ -5182,7 +4900,6 @@ export class ReviewMapController {
       model: paths.model,
       skillPath: paths.skillPath,
       branch,
-      color: this.roleColor(pageId, 'review'),
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);
     if (!posted.ok) {
@@ -5663,7 +5380,6 @@ export class ReviewMapController {
       branch,
       scope: reviewScopeToken(pending?.kind ?? 'changes'),
       depth: reviewDepthToken(pending?.depth ?? 'medium'),
-      color: this.roleColor(pageId, 'explain'),
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
@@ -5712,7 +5428,6 @@ export class ReviewMapController {
       branch,
       scope: reviewScopeToken(pending?.kind ?? 'branch'),
       depth: reviewDepthToken(pending?.depth ?? 'medium'),
-      color: this.roleColor(pageId, 'explain'),
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);
     if (!posted.ok) {

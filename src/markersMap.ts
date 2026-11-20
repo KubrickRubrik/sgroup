@@ -26,7 +26,7 @@ import { normalizeLocale, stringsFor, t } from './i18n';
 import { instructionPageHtml, instructionTitle, reviewFileHtml, reviewFixTableHtml } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
-import { normalizeReviewTheme } from './reviewThemes';
+import { normalizeReviewScheme } from './reviewThemes';
 import { cssColor, normalizeHex, PALETTE } from './palette';
 import { postChannelMessage, ReviewChipStatus } from './discordApi';
 import {
@@ -529,9 +529,8 @@ type IncomingMessage =
       gitlabToken?: string;
       githubToken?: string;
       discordToken?: string;
-      reviewTheme?: string;
     }
-  | { type: 'reviewSetTheme'; pageId: string; theme: string }
+  | { type: 'reviewSetScheme'; scheme: string }
   | { type: 'reviewOpenPageSettings'; pageId: string }
   | { type: 'pageOpenSettings'; pageId: string }
   | {
@@ -1058,7 +1057,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         ...this.store.reviewMapFilters(),
         checkoutName: this.checkoutName,
       }),
-      (pageId) => normalizeReviewTheme(this.store.page(pageId)?.reviewTheme),
     );
     this.scenarios = new ScenarioMapController(store, this.hostSecrets, () => store.root.fsPath);
     this.scenarios.setChangeHandler((pageId, state) => {
@@ -3003,7 +3001,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       const result = await this.review.updateMrChip(message.pageId, message.messageId, {
         title: message.title,
         draft: message.draft,
-        color: message.color,
       });
       if (result.kind === 'error') {
         void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
@@ -3579,18 +3576,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.updateReviewPageFromPanel(webview, message);
       return;
     }
-    if (message.type === 'reviewSetTheme') {
-      const page = this.store.page(message.pageId);
-      if (!page || page.kind !== 'review') {
-        return;
-      }
-      const theme = normalizeReviewTheme(message.theme);
-      await this.store.setPageReviewTheme(message.pageId, theme);
-      await this.review.syncThemeColors(message.pageId);
-      const state = this.review.snapshot(message.pageId);
-      if (state) {
-        await this.pushReviewState(webview, state);
-      }
+    if (message.type === 'reviewSetScheme') {
+      await this.store.setReviewScheme(normalizeReviewScheme(message.scheme));
+      await this.pushOpenReviewSchemes();
       return;
     }
     if (message.type === 'setReviewPaths') {
@@ -5561,6 +5549,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (id) {
         await this.store.setActiveProfile(id);
         await this.syncOpenSurfacesIfNeeded(true);
+        await this.pushOpenReviewSchemes();
         await this.withBaseConfigBusy(async () => {
           const result = await this.store.pushProfileConfig();
           if (!result.ok && result.message && result.message !== 'Nothing to push') {
@@ -5670,6 +5659,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         }
       }
       await this.store.setActiveProject(id);
+      await this.pushOpenReviewSchemes();
       return;
     }
     if (action === 'create') {
@@ -6459,7 +6449,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       gitlabToken?: string;
       githubToken?: string;
       discordToken?: string;
-      reviewTheme?: string;
     },
   ): Promise<void> {
     const fail = async (text: string) => {
@@ -6526,10 +6515,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await fail('Failed to create page');
       return;
     }
-    const theme = normalizeReviewTheme(message.reviewTheme);
-    if (theme !== 'explorer') {
-      await this.store.setPageReviewTheme(id, theme);
-    }
     await this.review.savePageAccess(id, {
       provider,
       channelId,
@@ -6566,7 +6551,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       pageId,
       name: page.name,
       description: page.description || '',
-      reviewTheme: normalizeReviewTheme(page.reviewTheme),
+      reviewScheme: this.store.reviewScheme(),
       origin: defaults.origin,
       repoUrl: lockedRepo || defaults.origin,
       projectRepoLocked: !!lockedRepo,
@@ -6673,6 +6658,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
+  private async pushOpenReviewSchemes(): Promise<void> {
+    for (const view of this.webviews) {
+      const pageId = this.activePageByWebview.get(view);
+      const page = pageId ? this.store.page(pageId) : undefined;
+      if (!pageId || page?.kind !== 'review') {
+        continue;
+      }
+      const state = this.review.snapshot(pageId);
+      if (state) {
+        await this.pushReviewState(view, state);
+      }
+    }
+  }
+
   private async pushReviewState(
     webview: vscode.Webview,
     state: ReviewPageState,
@@ -6692,7 +6691,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       review: {
         ...state,
         checkout: this.checkoutName,
-        theme: normalizeReviewTheme(this.store.page(state.pageId)?.reviewTheme),
+        scheme: this.store.reviewScheme(),
       },
     });
   }

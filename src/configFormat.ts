@@ -5,7 +5,7 @@ import type {
   PageKind,
   PanelOpenState,
 } from './markerStore';
-import type { ReviewThemeId } from './reviewThemes';
+import type { ReviewSchemeId } from './reviewThemes';
 
 /** Discord config message kinds (attachment + header). */
 export type ConfigMessageKind = 'BASE' | 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
@@ -111,8 +111,6 @@ export interface ProjectPageEntry {
   name: string;
   kind: PageKind;
   description?: string;
-  /** Review-map chip theme. Absent means Проводник. */
-  reviewTheme?: ReviewThemeId;
   order: number;
 }
 
@@ -236,6 +234,8 @@ export interface ProjectProfileEntry {
   scenarioPrintTools?: boolean;
   /** Review map filters. Absent means checkout off, «Общие» and «Обсуждения» on. */
   mapFilters?: ReviewMapFilters;
+  /** Review-map chip scheme. Absent means Soft Semantic. */
+  reviewScheme?: ReviewSchemeId;
 }
 
 /** One project inside the base snapshot (memory keeps Records by id). */
