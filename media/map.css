@@ -4139,6 +4139,7 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 .review-page {
   --link-branch-gap: 18px;
+  --review-thread-indent: 10px;
   --link-fold-duration: 320ms;
   --link-fold-ease: cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
@@ -4173,12 +4174,14 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
   padding-top: 10px;
 }
 
-.review-node.is-collapsed > .review-body > .review-children {
+.review-node.is-collapsed > .review-body > .review-children,
+.review-node.is-collapsed > .review-body > .review-talk-follow > .review-children {
   grid-template-rows: 0fr;
   pointer-events: none;
 }
 
-.review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide {
+.review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide,
+.review-node.is-collapsed > .review-body > .review-talk-follow > .review-children > .review-children-clip > .review-children-slide {
   transform: translateY(-100%);
   visibility: hidden;
   transition:
@@ -5233,10 +5236,20 @@ button.review-talk-btn svg {
   opacity: 0.35;
 }
 
+.review-talk-send.is-sending,
+.review-talk-send.is-sending:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
 .review-talk-send svg {
   display: block;
   height: 18px;
   width: 18px;
+}
+
+.review-talk-send.is-sending svg {
+  animation: pager-cloud-spin 0.9s linear infinite;
 }
 
 .review-talk-block {
@@ -5247,11 +5260,6 @@ button.review-talk-btn svg {
   gap: 4px;
   max-width: min(100%, 420px);
   width: fit-content;
-}
-
-.review-talk-block.is-other {
-  align-items: flex-end;
-  align-self: flex-end;
 }
 
 .review-talk-head {
@@ -5267,39 +5275,37 @@ button.review-talk-btn svg {
   background: #222833;
   border: 1px solid #515c70;
   border-radius: 999px;
+  box-sizing: border-box;
   color: #f3f4f6;
   display: inline-flex;
-  flex: 0 1 auto;
-  gap: 8px;
-  max-width: 100%;
-  min-height: 36px;
-  padding: 5px 12px 5px 6px;
+  flex: none;
+  gap: 4px;
+  height: 32px;
+  padding: 4px 8px 4px 4px;
+}
+
+.review-talk-chip.is-solo {
+  gap: 0;
+  justify-content: center;
+  padding: 4px;
+  width: 32px;
+}
+
+.review-talk-chip.is-author {
+  border-color: #f76b15;
+}
+
+.review-talk-chip > .link-chip-tri {
+  color: #f3f4f6;
 }
 
 .review-talk-avatar {
-  align-items: center;
-  background: #5b6b80;
-  border-radius: 50%;
-  color: #fff;
-  display: inline-flex;
-  flex: 0 0 auto;
+  align-self: center;
+  display: block;
+  flex: none;
   height: 22px;
-  justify-content: center;
-  overflow: hidden;
+  overflow: visible;
   width: 22px;
-}
-
-.review-talk-avatar svg {
-  display: block;
-  height: 14px;
-  width: 14px;
-}
-
-.review-talk-avatar img {
-  display: block;
-  height: 100%;
-  object-fit: cover;
-  width: 100%;
 }
 
 .review-talk-name {
@@ -5309,6 +5315,46 @@ button.review-talk-btn svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Parent text shares the child chip's left edge. The spine in the gutter runs from the chip to the thread. */
+.review-talk-follow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: calc(var(--review-thread-indent) + var(--link-branch-gap));
+  min-width: 0;
+}
+
+.review-talk-follow > .review-children {
+  margin-left: calc(-1 * var(--link-branch-gap));
+}
+
+.review-talk-copy {
+  position: relative;
+}
+
+.review-talk-copy::before {
+  background: var(--link-color, #8e4ec6);
+  bottom: -5px;
+  content: "";
+  left: calc(-1 * var(--link-branch-gap) + 1px);
+  pointer-events: none;
+  position: absolute;
+  top: -4px;
+  width: 1.4px;
+}
+
+.review-node.is-collapsed > .review-body > .review-talk-follow {
+  margin-left: 0;
+}
+
+.review-node.is-collapsed > .review-body > .review-talk-follow > .review-talk-copy::before {
+  content: none;
+}
+
+.review-node.is-collapsed > .review-body > .review-talk-follow > .review-children {
+  margin-left: var(--review-thread-indent);
 }
 
 .review-talk-text {
@@ -5608,9 +5654,11 @@ button.review-talk-btn svg {
   .review-skel-ico,
   .review-skel-bar,
   .review-fix-loader .review-ico,
+  .review-talk-send.is-sending svg,
   .review-children,
   .review-children-slide,
   .review-node.is-collapsed > .review-body > .review-children > .review-children-clip > .review-children-slide,
+  .review-node.is-collapsed > .review-body > .review-talk-follow > .review-children > .review-children-clip > .review-children-slide,
   .review-chip.is-rereview-flash {
     animation: none;
     transition: none;
@@ -6013,7 +6061,7 @@ button.review-talk-btn svg {
 .review-children {
   display: grid;
   grid-template-rows: 1fr;
-  margin: 0 0 0 10px;
+  margin: 0 0 0 var(--review-thread-indent);
   overflow-anchor: none;
   position: relative;
   transition: grid-template-rows var(--link-fold-duration) var(--link-fold-ease);

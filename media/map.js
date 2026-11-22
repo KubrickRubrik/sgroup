@@ -9421,7 +9421,7 @@
       const collapsed = reviewCollapsed.has(node.dataset.reviewId || '');
       node.classList.toggle('is-collapsed', collapsed);
       const tri = node.querySelector(
-        ':scope > .review-body > .review-mr-head .link-chip-tri, :scope > .review-body > .review-plain > .link-chip-tri',
+        ':scope > .review-body > .review-mr-head .link-chip-tri, :scope > .review-body > .review-plain > .link-chip-tri, :scope > .review-body > .review-chip-wrap .review-talk-chip > .link-chip-tri',
       );
       if (tri) {
         tri.classList.toggle('is-collapsed', collapsed);
@@ -9524,7 +9524,7 @@
         reviewElbowMid({
           leadingGap,
           hasStamp,
-          contentHalf: msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? 20 : 12,
+          contentHalf: msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? 20 : msg.isTalk ? 16 : 12,
         }),
         nextColor,
       ),
@@ -9749,20 +9749,20 @@
       }
     } else if (msg.isTalk) {
       const chipWrap = el('div', 'review-chip-wrap');
-      chipWrap.append(reviewTalkChip(msg.profileName, msg.avatar));
-      chipWrap.append(
-        reviewTalkButton(pageId, msg.id, reviewTalkMsLabel(msg.profileName), !!msg.locked),
-      );
+      let talkTri = null;
       if (plainCanFold) {
-        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
-        tri.append(linkCaretIcon());
-        tri.addEventListener('click', (event) => {
+        talkTri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        talkTri.append(linkCaretIcon());
+        talkTri.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
           toggleReviewCollapsed(msg.id);
         });
-        chipWrap.append(tri);
       }
+      chipWrap.append(reviewTalkChip(msg.profileName, msg.avatar, talkTri));
+      chipWrap.append(
+        reviewTalkButton(pageId, msg.id, reviewTalkMsLabel(msg.profileName), !!msg.locked),
+      );
       const talkText = reviewTalkText(msg, plainOpen);
       const openTalkMenu = (event) => {
         event.preventDefault();
@@ -9772,9 +9772,15 @@
       chipWrap.addEventListener('contextmenu', openTalkMenu);
       talkText.addEventListener('contextmenu', openTalkMenu);
       body.append(chipWrap);
-      body.append(talkText);
       if (canFold) {
-        body.append(renderReviewThread(msg, pageId, false, false));
+        const follow = el('div', 'review-talk-follow');
+        const copy = el('div', 'review-talk-copy');
+        copy.append(talkText);
+        follow.append(copy);
+        follow.append(renderReviewThread(msg, pageId, false, false));
+        body.append(follow);
+      } else {
+        body.append(talkText);
       }
     } else {
       const raw = reviewDisplayText(msg.content);
@@ -9946,7 +9952,7 @@
           hasNext ? color : '',
           pageId,
           msg.branch,
-          reviewProfileId(msg),
+          msg.isMr || msg.isReviewRoot ? reviewProfileId(msg) : '',
         ),
       );
     }
@@ -9974,8 +9980,9 @@
    * @param {string} nextColor stem below this turn (hidden on :last-child via CSS)
    * @param {string} [pageId]
    * @param {string} [parentBranch]
+   * @param {string} [authorProfileId] profile of the MR or review author; empty outside those threads
    */
-  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch, parentProfileId) {
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch, authorProfileId) {
     const isExplain = !!reply.isExplain;
     const stampDate = formatReviewStamp(reply.timestamp);
     const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
@@ -10004,7 +10011,7 @@
         reviewElbowMid({
           leadingGap,
           hasStamp,
-          contentHalf: isPill || isExplain ? 17 : 12,
+          contentHalf: reply.isTalk ? 16 : isPill || isExplain ? 17 : 12,
         }),
         nextColor,
       ),
@@ -10094,9 +10101,9 @@
       }
       body.append(wrap);
     } else if (reply.isTalk) {
-      const mine = reviewProfileId(reply) === (parentProfileId || '1');
-      const block = el('div', 'review-talk-block' + (mine ? ' is-author' : ' is-other'));
-      block.append(reviewTalkChip(reply.profileName, reply.avatar));
+      const author = !!authorProfileId && reviewProfileId(reply) === authorProfileId;
+      const block = el('div', 'review-talk-block');
+      block.append(reviewTalkChip(reply.profileName, reply.avatar, null, author));
       const talkText = reviewTalkText(reply, reviewPlainExpanded.has(reply.id));
       const openTalkMenu = (event) => {
         event.preventDefault();
@@ -10828,13 +10835,6 @@
     );
   }
 
-  function reviewTalkUserIcon() {
-    return reviewSvgIcon(
-      'review-talk-user',
-      'M20 22H4V20C4 17.2386 6.23858 15 9 15H15C17.7614 15 20 17.2386 20 20V22ZM12 13C8.68629 13 6 10.3137 6 7C6 3.68629 8.68629 1 12 1C15.3137 1 18 3.68629 18 7C18 10.3137 15.3137 13 12 13Z',
-    );
-  }
-
   function reviewTalkCloseIcon() {
     return reviewSvgIcon(
       'review-talk-close',
@@ -10896,31 +10896,93 @@
     return '';
   }
 
+  /** Person glyph centered in the 22×22 avatar circle. */
+  function reviewTalkUserGlyph() {
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.setAttribute('transform', 'translate(4 4) scale(0.58333)');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute(
+      'd',
+      'M20 22H4V20C4 17.2386 6.23858 15 9 15H15C17.7614 15 20 17.2386 20 20V22ZM12 13C8.68629 13 6 10.3137 6 7C6 3.68629 8.68629 1 12 1C15.3137 1 18 3.68629 18 7C18 10.3137 15.3137 13 12 13Z',
+    );
+    path.setAttribute('fill', '#fff');
+    g.append(path);
+    return g;
+  }
+
+  let reviewTalkAvatarSeq = 0;
+
   /**
-   * Round chip, circle inside, avatar or the user icon, name to the right of the chip.
-   * @param {string | undefined} name
+   * Square SVG so the disc stays a circle even when the flex row squeezes the box.
    * @param {string | undefined} avatar
    */
-  function reviewTalkChip(name, avatar) {
-    const head = el('div', 'review-talk-head');
-    const chip = el('div', 'review-talk-chip');
-    const circle = el('span', 'review-talk-avatar');
+  function reviewTalkAvatarNode(avatar) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'review-talk-avatar');
+    svg.setAttribute('viewBox', '0 0 22 22');
+    svg.setAttribute('width', '22');
+    svg.setAttribute('height', '22');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.setAttribute('aria-hidden', 'true');
+    const disc = document.createElementNS(SVG_NS, 'circle');
+    disc.setAttribute('cx', '11');
+    disc.setAttribute('cy', '11');
+    disc.setAttribute('r', '11');
+    disc.setAttribute('fill', '#5b6b80');
+    svg.append(disc);
     const src = reviewTalkAvatarSrc(avatar);
-    if (src) {
-      const img = document.createElement('img');
-      img.alt = '';
-      img.referrerPolicy = 'no-referrer';
-      img.addEventListener('error', () => {
-        img.replaceWith(reviewTalkUserIcon());
-      });
-      img.src = src;
-      circle.append(img);
-    } else {
-      circle.append(reviewTalkUserIcon());
+    if (!src) {
+      svg.append(reviewTalkUserGlyph());
+      return svg;
     }
-    chip.append(circle);
-    chip.append(el('span', 'review-talk-name', String(name || '').trim() || '—'));
+    const clipId = 'review-talk-avatar-' + ++reviewTalkAvatarSeq;
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    const clip = document.createElementNS(SVG_NS, 'clipPath');
+    clip.setAttribute('id', clipId);
+    const clipDisc = document.createElementNS(SVG_NS, 'circle');
+    clipDisc.setAttribute('cx', '11');
+    clipDisc.setAttribute('cy', '11');
+    clipDisc.setAttribute('r', '11');
+    clip.append(clipDisc);
+    defs.append(clip);
+    svg.append(defs);
+    const img = document.createElementNS(SVG_NS, 'image');
+    img.setAttribute('href', src);
+    img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', src);
+    img.setAttribute('x', '0');
+    img.setAttribute('y', '0');
+    img.setAttribute('width', '22');
+    img.setAttribute('height', '22');
+    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+    img.setAttribute('clip-path', 'url(#' + clipId + ')');
+    img.addEventListener('error', () => {
+      img.remove();
+      svg.append(reviewTalkUserGlyph());
+    });
+    svg.append(img);
+    return svg;
+  }
+
+  /**
+   * Pill with a circle inside. The fold caret sits in the pill. The name stays outside it.
+   * Without a caret the pill is a square ring, so the disc stays centered.
+   * @param {string | undefined} name
+   * @param {string | undefined} avatar
+   * @param {HTMLElement | null} [tri]
+   * @param {boolean} [author] MR or review author: orange ring
+   */
+  function reviewTalkChip(name, avatar, tri, author) {
+    const head = el('div', 'review-talk-head');
+    const chip = el(
+      'div',
+      'review-talk-chip' + (tri ? '' : ' is-solo') + (author ? ' is-author' : ''),
+    );
+    chip.append(reviewTalkAvatarNode(avatar));
+    if (tri) {
+      chip.append(tri);
+    }
     head.append(chip);
+    head.append(el('span', 'review-talk-name', String(name || '').trim() || '—'));
     return head;
   }
 
@@ -11001,12 +11063,28 @@
       reviewTalkSend.disabled = reviewTalkBusy || empty;
       reviewTalkSend.title = t('reviewTalkSend');
       reviewTalkSend.setAttribute('aria-label', reviewTalkSend.title);
+      paintReviewTalkSend();
     }
     if (reviewTalkSourceClear) {
       reviewTalkSourceClear.title = t('reviewTalkClear');
       reviewTalkSourceClear.setAttribute('aria-label', reviewTalkSourceClear.title);
     }
     resizeReviewTalk();
+  }
+
+  /** Send glyph while idle, spinning loader while the post is in flight. */
+  function paintReviewTalkSend() {
+    if (!reviewTalkSend) {
+      return;
+    }
+    const mode = reviewTalkBusy ? 'loader' : 'send';
+    reviewTalkSend.classList.toggle('is-sending', reviewTalkBusy);
+    reviewTalkSend.setAttribute('aria-busy', reviewTalkBusy ? 'true' : 'false');
+    if (reviewTalkSend.dataset.icon === mode && reviewTalkSend.firstChild) {
+      return;
+    }
+    reviewTalkSend.replaceChildren(reviewTalkBusy ? reviewProgressIcon() : reviewTalkFillIcon());
+    reviewTalkSend.dataset.icon = mode;
   }
 
   function sendReviewTalk() {
@@ -11068,9 +11146,7 @@
       event.preventDefault();
       sendReviewTalk();
     });
-    if (reviewTalkSend && !reviewTalkSend.firstChild) {
-      reviewTalkSend.append(reviewTalkFillIcon());
-    }
+    paintReviewTalkSend();
     if (reviewTalkSourceClear && !reviewTalkSourceClear.firstChild) {
       reviewTalkSourceClear.append(reviewTalkCloseIcon());
     }
