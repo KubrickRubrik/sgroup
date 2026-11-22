@@ -37,6 +37,15 @@
   const reviewFilterCheckout = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-checkout'));
   const reviewFilterGeneral = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-general'));
   const reviewFilterDiscussions = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-discussions'));
+  const reviewTalk = /** @type {HTMLElement | null} */ (document.getElementById('review-talk'));
+  const reviewTalkSourceRow = /** @type {HTMLElement | null} */ (document.getElementById('review-talk-source'));
+  const reviewTalkSourceLabel = /** @type {HTMLElement | null} */ (document.getElementById('review-talk-source-label'));
+  const reviewTalkSourceClear = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-talk-source-clear'));
+  const reviewTalkInput = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('review-talk-input'));
+  const reviewTalkSend = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-talk-send'));
+  /** @type {Map<string, { messageId: string, label: string }>} */
+  const reviewTalkSource = new Map();
+  let reviewTalkBusy = false;
   const reviewFilePane = /** @type {HTMLElement | null} */ (document.getElementById('review-file'));
   const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
   const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
@@ -823,6 +832,7 @@
 
   /** @type {{ activePageId?: string, side?: 'left' | 'right' }} */
   const uiState = vscode.getState() || {};
+  bindReviewTalk();
   const bodySide = document.body.getAttribute('data-side');
   if (bodySide === 'left' || bodySide === 'right') {
     uiState.side = bodySide;
@@ -1019,7 +1029,12 @@
    *       branch?: string,
    *       hasFile?: boolean,
    *       filename?: string,
-   *       contentMissing?: boolean
+   *       contentMissing?: boolean,
+   *       isTalk?: boolean,
+   *       profileId?: string,
+   *       profileName?: string,
+   *       avatar?: string,
+   *       talkText?: string
    *     }>,
    *     repliesHasMore: boolean,
    *     repliesHasNewer?: boolean,
@@ -1027,7 +1042,12 @@
    *     repliesLoaded?: boolean,
    *     contentMissing?: boolean,
    *     branch?: string,
-   *     isExplainRoot?: boolean
+   *     isExplainRoot?: boolean,
+   *     isTalk?: boolean,
+   *     profileId?: string,
+   *     profileName?: string,
+   *     avatar?: string,
+   *     talkText?: string
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
@@ -1293,6 +1313,13 @@
           paintReviewPage();
         }
       }
+    } else if (message.type === 'reviewTalkResult') {
+      reviewTalkBusy = false;
+      if (message.ok && reviewTalkInput) {
+        reviewTalkInput.value = '';
+        resizeReviewTalk();
+      }
+      syncReviewTalk();
     } else if (message.type === 'reviewState') {
       const incoming = keepLoadedReview(message.review || null);
       const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
@@ -9483,7 +9510,9 @@
             ? ' is-review-root'
             : msg.isExplainRoot
               ? ' is-explain-root'
-              : ' is-plain') +
+              : msg.isTalk
+                ? ' is-talk'
+                : ' is-plain') +
         (leadingGap ? ' has-gap' : '') +
         (collapsed ? ' is-collapsed' : '') +
         (plainOpen ? ' is-plain-open' : ''),
@@ -9572,6 +9601,14 @@
           return match ? match[1].trim() : '';
         })() ||
         t('reviewEmptyMessage');
+      chipWrap.append(
+        reviewTalkButton(
+          pageId,
+          msg.id,
+          reviewTalkLabel(titleText),
+          !!(msg.locked || msg.status === 'closed'),
+        ),
+      );
       const title = el(
         'button',
         'review-mr-title-text' + (reviewTitleExpanded.has(msg.id) ? ' is-expanded' : ''),
@@ -9650,6 +9687,15 @@
         openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
       });
       chipWrap.append(chip);
+      const reviewHead = String(msg.pillLabel || '').split(/\s*\|\s*/)[0].trim();
+      chipWrap.append(
+        reviewTalkButton(
+          pageId,
+          msg.id,
+          reviewTalkLabel(reviewHead || t('reviewFileTitle')),
+          !!msg.locked,
+        ),
+      );
       chipWrap.append(reviewNeurofixButton(pageId, msg.id));
 
       const head = el('div', 'review-mr-head');
@@ -9700,6 +9746,35 @@
       body.append(head);
       if (canFold) {
         body.append(renderReviewThread(msg, pageId, true, false));
+      }
+    } else if (msg.isTalk) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      chipWrap.append(reviewTalkChip(msg.profileName, msg.avatar));
+      chipWrap.append(
+        reviewTalkButton(pageId, msg.id, reviewTalkMsLabel(msg.profileName), !!msg.locked),
+      );
+      if (plainCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chipWrap.append(tri);
+      }
+      const talkText = reviewTalkText(msg, plainOpen);
+      const openTalkMenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      };
+      chipWrap.addEventListener('contextmenu', openTalkMenu);
+      talkText.addEventListener('contextmenu', openTalkMenu);
+      body.append(chipWrap);
+      body.append(talkText);
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, false, false));
       }
     } else {
       const raw = reviewDisplayText(msg.content);
@@ -9871,6 +9946,7 @@
           hasNext ? color : '',
           pageId,
           msg.branch,
+          reviewProfileId(msg),
         ),
       );
     }
@@ -9899,7 +9975,7 @@
    * @param {string} [pageId]
    * @param {string} [parentBranch]
    */
-  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch) {
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch, parentProfileId) {
     const isExplain = !!reply.isExplain;
     const stampDate = formatReviewStamp(reply.timestamp);
     const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
@@ -10017,6 +10093,20 @@
         wrap.append(reviewNeurofixButton(pageId || '', reply.id));
       }
       body.append(wrap);
+    } else if (reply.isTalk) {
+      const mine = reviewProfileId(reply) === (parentProfileId || '1');
+      const block = el('div', 'review-talk-block' + (mine ? ' is-author' : ' is-other'));
+      block.append(reviewTalkChip(reply.profileName, reply.avatar));
+      const talkText = reviewTalkText(reply, reviewPlainExpanded.has(reply.id));
+      const openTalkMenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      };
+      block.addEventListener('contextmenu', openTalkMenu);
+      talkText.addEventListener('contextmenu', openTalkMenu);
+      block.append(talkText);
+      body.append(block);
     } else {
       const plain = el('div', 'review-plain is-child');
       const ico = el('span', 'review-plain-ico');
@@ -10723,6 +10813,304 @@
     );
   }
 
+  function reviewTalkLineIcon() {
+    return reviewSvgIcon(
+      'review-talk-line',
+      'M5.76282 17H20V5H4V18.3851L5.76282 17ZM6.45455 19L2 22.5V4C2 3.44772 2.44772 3 3 3H21C21.5523 3 22 3.44772 22 4V18C22 18.5523 21.5523 19 21 19H6.45455Z',
+    );
+  }
+
+  /** assets/send.svg */
+  function reviewTalkFillIcon() {
+    return reviewSvgIcon(
+      'review-talk-fill',
+      'M1.94607 9.31531C1.42353 9.14113 1.4194 8.8601 1.95682 8.68096L21.043 2.31889C21.5715 2.14273 21.8746 2.43854 21.7265 2.95682L16.2733 22.0431C16.1223 22.5715 15.8177 22.5899 15.5944 22.0875L11.9999 13.9999L17.9999 5.99993L9.99992 11.9999L1.94607 9.31531Z',
+    );
+  }
+
+  function reviewTalkUserIcon() {
+    return reviewSvgIcon(
+      'review-talk-user',
+      'M20 22H4V20C4 17.2386 6.23858 15 9 15H15C17.7614 15 20 17.2386 20 20V22ZM12 13C8.68629 13 6 10.3137 6 7C6 3.68629 8.68629 1 12 1C15.3137 1 18 3.68629 18 7C18 10.3137 15.3137 13 12 13Z',
+    );
+  }
+
+  function reviewTalkCloseIcon() {
+    return reviewSvgIcon(
+      'review-talk-close',
+      'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z',
+    );
+  }
+
+  /** @param {string | undefined} detail */
+  function reviewTalkLabel(detail) {
+    const tail = String(detail || '').trim();
+    return tail ? t('reviewTalkThread') + ' ' + tail : t('reviewTalkThread');
+  }
+
+  /** @param {string | undefined} name */
+  function reviewTalkMsLabel(name) {
+    const who = String(name || '').trim() || '—';
+    return t('reviewTalkThread') + ' ' + t('reviewTalkReplyTo') + ' · ' + who;
+  }
+
+  /** @param {{ profileId?: string } | null | undefined} node */
+  function reviewProfileId(node) {
+    const id = node && typeof node.profileId === 'string' ? node.profileId.trim() : '';
+    return id || '1';
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {string} label
+   * @param {boolean} disabled
+   */
+  function reviewTalkButton(pageId, messageId, label, disabled) {
+    const button = el('button', 'review-side review-talk-btn');
+    button.type = 'button';
+    button.disabled = !!disabled;
+    button.title = t('reviewTalkReplyTo');
+    button.setAttribute('aria-label', button.title);
+    button.append(reviewTalkLineIcon());
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
+      reviewTalkSource.set(pageId, { messageId, label });
+      syncReviewTalk();
+      resizeReviewTalk();
+      reviewTalkInput?.focus();
+    });
+    return button;
+  }
+
+  /** @param {string | undefined} value */
+  function reviewTalkAvatarSrc(value) {
+    const raw = String(value || '').trim();
+    if (/^https?:\/\//i.test(raw) || /^data:image\//i.test(raw)) {
+      return raw;
+    }
+    return '';
+  }
+
+  /**
+   * Round chip, circle inside, avatar or the user icon, name to the right of the chip.
+   * @param {string | undefined} name
+   * @param {string | undefined} avatar
+   */
+  function reviewTalkChip(name, avatar) {
+    const head = el('div', 'review-talk-head');
+    const chip = el('div', 'review-talk-chip');
+    const circle = el('span', 'review-talk-avatar');
+    const src = reviewTalkAvatarSrc(avatar);
+    if (src) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      img.addEventListener('error', () => {
+        img.replaceWith(reviewTalkUserIcon());
+      });
+      img.src = src;
+      circle.append(img);
+    } else {
+      circle.append(reviewTalkUserIcon());
+    }
+    chip.append(circle);
+    chip.append(el('span', 'review-talk-name', String(name || '').trim() || '—'));
+    head.append(chip);
+    return head;
+  }
+
+  /**
+   * @param {{ id: string, talkText?: string, contentMissing?: boolean, locked?: boolean }} msg
+   * @param {boolean} open
+   */
+  function reviewTalkText(msg, open) {
+    const raw = typeof msg.talkText === 'string' ? msg.talkText : '';
+    const missing = msg.contentMissing === true || !raw.trim();
+    const text = el(
+      'button',
+      'review-talk-text' + (open ? ' is-open' : '') + (missing ? ' is-missing' : ''),
+      missing ? t('reviewEmptyMessage') : raw,
+    );
+    text.type = 'button';
+    text.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (msg.locked) {
+        flashReviewLock(msg.id);
+        return;
+      }
+      if (reviewPlainExpanded.has(msg.id)) {
+        reviewPlainExpanded.delete(msg.id);
+      } else {
+        reviewPlainExpanded.add(msg.id);
+      }
+      paintReviewPage();
+    });
+    return text;
+  }
+
+  function resizeReviewTalk() {
+    const input = reviewTalkInput;
+    if (!input) {
+      return;
+    }
+    const line = 18;
+    const pad = 12;
+    const max = line * 6 + pad;
+    input.style.overflowY = 'hidden';
+    input.style.height = 'auto';
+    const full = input.scrollHeight;
+    const over = full > max + 1;
+    input.style.height = (over ? max : full) + 'px';
+    input.style.overflowY = over ? 'auto' : 'hidden';
+    if (over) {
+      bindThinScroll(input);
+    } else {
+      releaseThinScroll(input);
+    }
+    scheduleThinScroll(true);
+    const bar = reviewTalk;
+    const space = bar && !bar.hidden ? bar.offsetHeight + 16 : 0;
+    document.documentElement.style.setProperty('--review-talk-space', space + 'px');
+  }
+
+  function syncReviewTalk() {
+    const onReview = activePage()?.kind === 'review';
+    if (reviewTalk) {
+      reviewTalk.hidden = !onReview;
+    }
+    if (!onReview) {
+      document.documentElement.style.setProperty('--review-talk-space', '0px');
+      return;
+    }
+    const pageId = activePage()?.id || '';
+    const source = pageId ? reviewTalkSource.get(pageId) : undefined;
+    if (reviewTalkSourceRow) {
+      reviewTalkSourceRow.hidden = !source;
+    }
+    if (reviewTalkSourceLabel) {
+      reviewTalkSourceLabel.textContent = source ? source.label : '';
+    }
+    const empty = !reviewTalkInput || !reviewTalkInput.value.trim();
+    if (reviewTalkSend) {
+      reviewTalkSend.disabled = reviewTalkBusy || empty;
+      reviewTalkSend.title = t('reviewTalkSend');
+      reviewTalkSend.setAttribute('aria-label', reviewTalkSend.title);
+    }
+    if (reviewTalkSourceClear) {
+      reviewTalkSourceClear.title = t('reviewTalkClear');
+      reviewTalkSourceClear.setAttribute('aria-label', reviewTalkSourceClear.title);
+    }
+    resizeReviewTalk();
+  }
+
+  function sendReviewTalk() {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || !reviewTalkInput || reviewTalkBusy) {
+      return;
+    }
+    const text = reviewTalkInput.value;
+    if (!text.trim()) {
+      return;
+    }
+    reviewTalkBusy = true;
+    syncReviewTalk();
+    const source = reviewTalkSource.get(page.id);
+    vscode.postMessage({
+      type: 'reviewTalk',
+      pageId: page.id,
+      text,
+      parentMessageId: source ? source.messageId : '',
+    });
+  }
+
+  function clearReviewTalkSource() {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    reviewTalkSource.delete(page.id);
+    syncReviewTalk();
+  }
+
+  function reviewTalkEscapeBlocked() {
+    if (openMenuState) {
+      return true;
+    }
+    if (!contextMenu.hidden) {
+      return true;
+    }
+    if (toolbarMenu && !toolbarMenu.hidden) {
+      return true;
+    }
+    if (reviewFileView || explainFileView || reviewFixesView) {
+      return true;
+    }
+    if (openColorPanel || openGroupPanel || openLinkPanelId) {
+      return true;
+    }
+    if (dirPopoverState || problemPanelState) {
+      return true;
+    }
+    if (!dropDialog.hidden) {
+      return true;
+    }
+    return false;
+  }
+
+  function bindReviewTalk() {
+    reviewTalk?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      sendReviewTalk();
+    });
+    if (reviewTalkSend && !reviewTalkSend.firstChild) {
+      reviewTalkSend.append(reviewTalkFillIcon());
+    }
+    if (reviewTalkSourceClear && !reviewTalkSourceClear.firstChild) {
+      reviewTalkSourceClear.append(reviewTalkCloseIcon());
+    }
+    reviewTalkInput?.addEventListener('input', () => {
+      syncReviewTalk();
+    });
+    reviewTalkInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendReviewTalk();
+      }
+    });
+    reviewTalkSend?.addEventListener('click', (event) => {
+      event.preventDefault();
+      sendReviewTalk();
+    });
+    reviewTalkSourceClear?.addEventListener('click', (event) => {
+      event.preventDefault();
+      clearReviewTalkSource();
+    });
+    document.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented) {
+          return;
+        }
+        if (reviewTalkEscapeBlocked()) {
+          return;
+        }
+        const page = activePage();
+        if (!page || page.kind !== 'review' || !reviewTalkSource.has(page.id)) {
+          return;
+        }
+        event.preventDefault();
+        clearReviewTalkSource();
+      },
+      true,
+    );
+  }
+
   /**
    * Sparkle beside a review chip. On a foreign branch it stays visible and muted.
    * @param {string} pageId
@@ -10843,7 +11231,7 @@
         return;
       }
       const bit = el('span', 'review-pill-bit review-pill-' + toneSeen + levelClass);
-      if (toneSeen === 'branch' && reviewSchemeIconStyle()) {
+      if (toneSeen === 'branch' && reviewSchemeIconStyle() && reviewSchemeId !== 'softSemantic') {
         bit.append(reviewSvgIcon('review-branch-ico', REVIEW_BRANCH_ICON));
       }
       bit.append(document.createTextNode(shown));
@@ -16899,6 +17287,7 @@
     setReviewFilterPressed(reviewFilterCheckout, flags.checkout);
     setReviewFilterPressed(reviewFilterGeneral, flags.general);
     setReviewFilterPressed(reviewFilterDiscussions, flags.discussions);
+    syncReviewTalk();
   }
 
   /** @param {'checkout' | 'general' | 'discussions'} key */

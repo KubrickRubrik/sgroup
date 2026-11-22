@@ -22,6 +22,11 @@ import {
   formatExplainDiscordBody,
   formatMrDiscordBody,
   formatReviewDiscordBody,
+  formatTalkDiscordBody,
+  isTalkMessage,
+  parseDiscordProfileId,
+  parseDiscordProfileName,
+  parseTalkMessage,
   getChannelMessage,
   isConfigMessage,
   isDiscordSystemNotice,
@@ -162,6 +167,16 @@ export interface ReviewThreadMsg {
   isRereview?: boolean;
   /** Thread reply Z_SYN3 («Изучено»). */
   isStudy?: boolean;
+  /** Thread reply MS_SYN3. */
+  isTalk?: boolean;
+  /** Discord `id_profile`. Missing line is `1`. */
+  profileId?: string;
+  /** Discord `profile_name`. */
+  profileName?: string;
+  /** Value of `avatar:` on an MS_SYN3 message. Empty shows the user icon. */
+  avatar?: string;
+  /** MS_SYN3 text after `avatar:`. */
+  talkText?: string;
   /** `fixes:` / `bullet:` on this R_SYN3 or RR_SYN3 message. Absent until the line is written. */
   fixes?: ReviewFixState;
   /** `fix-n:` run counter. Absent on older messages, so the chip keeps the item list only. */
@@ -194,6 +209,16 @@ export interface ReviewChip {
   isReviewRoot?: boolean;
   /** Channel-root W_SYN3 («Что сделано»). */
   isExplainRoot?: boolean;
+  /** Channel-root MS_SYN3. */
+  isTalk?: boolean;
+  /** Discord `id_profile`. Missing line is `1`. */
+  profileId?: string;
+  /** Discord `profile_name`. */
+  profileName?: string;
+  /** Value of `avatar:` on an MS_SYN3 message. Empty shows the user icon. */
+  avatar?: string;
+  /** MS_SYN3 text after `avatar:`. */
+  talkText?: string;
   webUrl?: string;
   title?: string;
   draft?: boolean;
@@ -289,6 +314,8 @@ function toChip(
   const isMr = isMrMessage(msg.content);
   const isReviewRoot = !isMr && isReviewMessage(msg.content);
   const isExplainRoot = !isMr && !isReviewRoot && isExplainMessage(msg.content);
+  const isTalk = !isMr && !isReviewRoot && !isExplainRoot && isTalkMessage(msg.content);
+  const talk = isTalk ? parseTalkMessage(msg.content) : undefined;
   const parsed = isMr ? parseMrChip(msg.content) : {};
   const file = isReviewRoot || isExplainRoot ? reviewAttachment(msg) : undefined;
   return {
@@ -299,6 +326,11 @@ function toChip(
     isMr,
     isReviewRoot,
     isExplainRoot,
+    isTalk,
+    profileId: parseDiscordProfileId(msg.content),
+    profileName: talk?.profileName || parseDiscordProfileName(msg.content),
+    avatar: talk?.avatar || '',
+    talkText: talk?.text,
     webUrl: parsed.webUrl,
     title: isMr
       ? parsed.title
@@ -347,6 +379,7 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
   const rereview = isRereviewMessage(msg.content);
   const study = isStudyMessage(msg.content);
   const review = isReviewMessage(msg.content);
+  const talk = isTalkMessage(msg.content) ? parseTalkMessage(msg.content) : undefined;
   return {
     id: msg.id,
     content: msg.content,
@@ -355,6 +388,11 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
     isReview: review,
     isRereview: rereview,
     isStudy: study,
+    isTalk: !!talk,
+    profileId: parseDiscordProfileId(msg.content),
+    profileName: talk?.profileName || parseDiscordProfileName(msg.content),
+    avatar: talk?.avatar || '',
+    talkText: talk?.text,
     isExplain: explain,
     status: review || rereview ? parseReviewStatus(msg.content) : undefined,
     branch: explain ? parseReviewBranch(msg.content) : undefined,
@@ -1147,6 +1185,12 @@ export class ReviewMapController {
 
   private profileId(): string {
     return this.profileContext().profileId || 'general';
+  }
+
+  /** Active profile as Discord `id_profile` / `profile_name` inputs. */
+  private profileStamp(): { profileId: string; profileName: string } {
+    const ctx = this.profileContext();
+    return { profileId: ctx.profileId || 'general', profileName: ctx.profileName || '' };
   }
 
   private async hostToken(provider: ReviewHostProvider): Promise<string | undefined> {
@@ -2492,7 +2536,8 @@ export class ReviewMapController {
       iid: mr.iid,
       sourceBranch: mr.source_branch,
       repoUrl: access.repoUrl,
-      reviewAuthor: this.profileContext().profileName,
+      profileId: this.profileContext().profileId,
+      profileName: this.profileContext().profileName,
       assignees: mr.assignees.map((a) => a.username),
     });
     const posted = await postChannelMessage(token, access.channelId, body);
@@ -4832,6 +4877,7 @@ export class ReviewMapController {
       depth: depthToken,
       model: paths.model,
       skillPath: paths.skillPath,
+      ...this.profileStamp(),
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
@@ -4900,6 +4946,7 @@ export class ReviewMapController {
       model: paths.model,
       skillPath: paths.skillPath,
       branch,
+      ...this.profileStamp(),
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);
     if (!posted.ok) {
@@ -5380,6 +5427,7 @@ export class ReviewMapController {
       branch,
       scope: reviewScopeToken(pending?.kind ?? 'changes'),
       depth: reviewDepthToken(pending?.depth ?? 'medium'),
+      ...this.profileStamp(),
     });
     const posted = await postMessageWithFile(token, thread.value.id, content, filePath);
     if (!posted.ok) {
@@ -5428,6 +5476,7 @@ export class ReviewMapController {
       branch,
       scope: reviewScopeToken(pending?.kind ?? 'branch'),
       depth: reviewDepthToken(pending?.depth ?? 'medium'),
+      ...this.profileStamp(),
     });
     const posted = await postMessageWithFile(token, channelId, content, filePath);
     if (!posted.ok) {
@@ -5436,6 +5485,87 @@ export class ReviewMapController {
     await this.explainPending.clear();
     await deleteReviewFile(filePath);
     await this.appendPostedMessage(pageId, channelId, posted.value);
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Post an MS_SYN3 message. No parent: channel root. Parent: reply in that
+   * MR, root review, or root talk thread (created as `reviews` or `messages`).
+   */
+  async postTalk(
+    pageId: string,
+    text: string,
+    parentMessageId?: string,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const body = text.replace(/\r\n/g, '\n').replace(/\s+$/g, '');
+    if (!body.trim()) {
+      return { kind: 'error', message: 'Empty message' };
+    }
+    const win = this.windows.get(pageId);
+    const access = await this.getAccess(pageId);
+    const token = await this.discordToken();
+    if (!win || !access || !token) {
+      return { kind: 'error', message: 'Review page is not ready' };
+    }
+    const profile = this.profileContext();
+    const content = formatTalkDiscordBody({
+      profileId: profile.profileId,
+      profileName: profile.profileName,
+      text: body,
+    });
+    const parentId = (parentMessageId || '').trim();
+    if (!parentId) {
+      const posted = await postChannelMessage(token, access.channelId, content);
+      if (!posted.ok) {
+        return { kind: 'error', message: posted.message };
+      }
+      await this.appendPostedMessage(pageId, access.channelId, posted.value);
+      return { kind: 'state', state: this.snapshot(pageId) };
+    }
+    const parent = win.messages.find((item) => item.id === parentId);
+    if (!parent) {
+      return { kind: 'error', message: 'Message not found on the map' };
+    }
+    const isMr = isMrMessage(parent.content);
+    const isRoot = isReviewMessage(parent.content);
+    const isTalk = isTalkMessage(parent.content);
+    if (!isMr && !isRoot && !isTalk) {
+      return { kind: 'error', message: 'Select an MR_SYN3, R_SYN3 or MS_SYN3 chip' };
+    }
+    if (parseDiscordLock(parent.content)) {
+      return { kind: 'error', message: 'Entity is locked' };
+    }
+    if (isMr && parseMrChip(parent.content).status === 'closed') {
+      return { kind: 'error', message: 'MR is closed' };
+    }
+    const thread = await ensureThread(token, access.channelId, parent, isTalk ? 'messages' : 'reviews');
+    if (!thread.ok) {
+      return { kind: 'error', message: thread.message };
+    }
+    const opened = { id: thread.value.id, messageCount: thread.value.messageCount };
+    const idx = win.messages.findIndex((item) => item.id === parent.id);
+    if (idx >= 0) {
+      win.messages[idx] = {
+        ...win.messages[idx],
+        thread: opened,
+        hasThread: true,
+      };
+    }
+    const posted = await postChannelMessage(token, thread.value.id, content);
+    if (!posted.ok) {
+      return { kind: 'error', message: posted.message };
+    }
+    const postedCount =
+      typeof thread.value.messageCount === 'number' ? thread.value.messageCount + 1 : undefined;
+    const current = idx >= 0 ? win.messages[idx] : undefined;
+    if (current) {
+      win.messages[idx] = {
+        ...current,
+        thread: { id: thread.value.id, messageCount: postedCount },
+        hasThread: true,
+      };
+    }
+    this.placeThreadPost(win, thread.value.id, posted.value, postedCount);
     return { kind: 'state', state: this.snapshot(pageId) };
   }
 }

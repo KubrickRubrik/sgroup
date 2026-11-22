@@ -413,6 +413,7 @@ type IncomingMessage =
   | { type: 'setAppearance'; appearance: Partial<Appearance> }
   | { type: 'reviewLoad'; pageId: string; force?: boolean }
   | { type: 'reviewSetFilters'; pageId: string; checkout: boolean; general: boolean; discussions: boolean }
+  | { type: 'reviewTalk'; pageId: string; text: string; parentMessageId?: string }
   | { type: 'reviewLoadOlder'; pageId: string }
   | { type: 'reviewLoadNewer'; pageId: string }
   | { type: 'reviewLoadThread'; pageId: string; messageId: string; direction?: 'older' | 'newer' }
@@ -2924,6 +2925,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       } else {
         await this.showReviewPage(webview, message.pageId);
       }
+      return;
+    }
+    if (message.type === 'reviewTalk') {
+      const result = await this.review.postTalk(
+        message.pageId,
+        typeof message.text === 'string' ? message.text : '',
+        message.parentMessageId,
+      );
+      if (result.kind === 'error') {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        await webview.postMessage({ type: 'reviewTalkResult', ok: false });
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      await webview.postMessage({ type: 'reviewTalkResult', ok: true });
       return;
     }
     if (message.type === 'reviewSetFilters') {
@@ -7562,6 +7578,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
       <div id="explain-file-body" class="review-file-body explain-file-body"></div>
     </aside>
+    <form id="review-talk" class="review-talk" hidden>
+      <div id="review-talk-source" class="review-talk-source" hidden>
+        <span id="review-talk-source-label" class="review-talk-source-label"></span>
+        <button id="review-talk-source-clear" class="review-talk-source-clear" type="button"></button>
+      </div>
+      <div class="review-talk-row">
+        <textarea id="review-talk-input" class="review-talk-input" rows="1"></textarea>
+        <button id="review-talk-send" class="review-talk-send" type="button" disabled></button>
+      </div>
+    </form>
   </div>
   <script nonce="${nonce}">
     (function () {

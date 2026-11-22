@@ -13,6 +13,8 @@ export const REREVIEW_PREFIX = 'RR_SYN3';
 export const EXPLAIN_PREFIX = 'W_SYN3';
 /** Study («Изучено») message prefix: `Z_SYN3: Изучено | Ревью N | branch | H:1, 2`. */
 export const STUDY_PREFIX = 'Z_SYN3';
+/** Profile talk on the review map: `MS_SYN3:` plus `id_profile`, `profile_name`, `avatar:`. */
+export const TALK_PREFIX = 'MS_SYN3';
 /** Chip and file title for a study message. */
 export const STUDY_TITLE = 'Изучено';
 /** Chip and file title for an explain message. Older Discord lines still say `Что делаем?`. */
@@ -829,10 +831,23 @@ export function replaceMrDiscordStatus(content: string, status: MrDiscordStatus)
 }
 
 const LOCK_LINE_RE = /^lock:\s*(true|false)\s*$/i;
+const TALK_HEAD_RE = /^\(?MS_SYN3\)?:\s*(.*)$/;
+const AVATAR_LINE_RE = /^avatar:\s*(.*)$/i;
+
+/** Talk body starts after `avatar:`. Lock in that body must not lock the chip. */
+function lockScanLines(content: string): string[] {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const head = (lines[0] || '').trim();
+  if (!TALK_HEAD_RE.test(head)) {
+    return lines;
+  }
+  const avatarAt = lines.findIndex((line) => AVATAR_LINE_RE.test(line.trim()));
+  return avatarAt >= 0 ? lines.slice(0, avatarAt) : lines;
+}
 
 /** `lock: true` fixes the parent. A missing line or `lock: false` stays open. */
 export function parseDiscordLock(content: string): boolean {
-  const lines = content.split(/\r?\n/);
+  const lines = lockScanLines(content);
   for (const line of lines) {
     const match = LOCK_LINE_RE.exec(line.trim());
     if (match) {
@@ -1305,6 +1320,116 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
   return provider === 'github' ? `${base}/tree/${encoded}` : `${base}/-/tree/${encoded}`;
 }
 
+/** Store id of the shared profile. Discord writes it as `1`. */
+const GENERAL_PROFILE_STORE_ID = 'general';
+const PROFILE_ID_LINE_RE = /^id_profile:\s*(.*)$/i;
+const PROFILE_NAME_LINE_RE = /^profile_name:\s*(.*)$/i;
+
+/** Discord `id_profile`. The shared profile is `1`; other profiles keep their store id. */
+export function discordProfileId(profileId: string | undefined): string {
+  const id = (profileId || '').trim();
+  if (!id || id === GENERAL_PROFILE_STORE_ID) {
+    return '1';
+  }
+  return id;
+}
+
+/** `id_profile` and `profile_name` lines for a new review-map Discord message. */
+export function formatProfileLines(profileId: string | undefined, profileName: string | undefined): string[] {
+  const name = (profileName || '').trim() || '—';
+  return [`id_profile: ${discordProfileId(profileId)}`, `profile_name: ${name}`];
+}
+
+function readMetaLine(lines: string[], re: RegExp): string | undefined {
+  for (const line of lines) {
+    const match = re.exec(line.trim());
+    if (match) {
+      const value = (match[1] || '').trim();
+      return value || undefined;
+    }
+  }
+  return undefined;
+}
+
+export function isTalkMessage(content: string): boolean {
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  return TALK_HEAD_RE.test(head);
+}
+
+function talkHeaderLines(content: string): string[] {
+  return lockScanLines(content);
+}
+
+/**
+ * Author id from a Discord body. A missing `id_profile` is the shared profile, `1`.
+ * On `MS_SYN3` only the header (before `avatar:`) counts.
+ */
+export function parseDiscordProfileId(content: string): string {
+  const lines = isTalkMessage(content) ? talkHeaderLines(content) : content.split(/\r?\n/);
+  return readMetaLine(lines, PROFILE_ID_LINE_RE) || '1';
+}
+
+/** `profile_name` from a Discord body. Empty when the line is missing. */
+export function parseDiscordProfileName(content: string): string {
+  const lines = isTalkMessage(content) ? talkHeaderLines(content) : content.split(/\r?\n/);
+  return readMetaLine(lines, PROFILE_NAME_LINE_RE) || '';
+}
+
+/** Value on the `avatar:` line. Empty when the line is missing or blank. */
+export function parseTalkAvatar(content: string): string {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  for (const line of lines) {
+    const match = AVATAR_LINE_RE.exec(line.trim());
+    if (match) {
+      return (match[1] || '').trim();
+    }
+  }
+  return '';
+}
+
+/** Header fields and the text after `avatar:` for an `MS_SYN3` message. */
+export function parseTalkMessage(content: string):
+  | { profileId: string; profileName: string; avatar: string; text: string }
+  | undefined {
+  if (!isTalkMessage(content)) {
+    return undefined;
+  }
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const avatarAt = lines.findIndex((line) => AVATAR_LINE_RE.test(line.trim()));
+  const text = avatarAt >= 0 ? lines.slice(avatarAt + 1).join('\n') : '';
+  return {
+    profileId: parseDiscordProfileId(content),
+    profileName: parseDiscordProfileName(content),
+    avatar: parseTalkAvatar(content),
+    text,
+  };
+}
+
+/**
+ * MS_SYN3:
+ * id_profile: 1
+ * profile_name: Общий
+ * lock: false
+ * avatar:
+ * Текст
+ *
+ * Text is everything after `avatar:`, including lines that look like keys.
+ */
+export function formatTalkDiscordBody(opts: {
+  profileId?: string;
+  profileName?: string;
+  text: string;
+}): string {
+  const text = opts.text.replace(/\r\n/g, '\n').replace(/\s+$/g, '');
+  return [
+    `${TALK_PREFIX}:`,
+    ...formatProfileLines(opts.profileId, opts.profileName),
+    'lock: false',
+    'avatar:',
+    text,
+  ].join('\n');
+}
+
 /**
  * Human-readable MR/PR body for Discord. First line carries the parse marker.
  *
@@ -1312,7 +1437,8 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
  * MR: [MR !12](url)
  * Branch: [branch](tree-url)
  * Repository: [group/app](repo-url)
- * Review author: Profile
+ * id_profile: 1
+ * profile_name: Profile
  * Assignees: A, B
  * status: open|closed
  * lock: true|false
@@ -1325,7 +1451,8 @@ export function formatMrDiscordBody(opts: {
   iid: number;
   sourceBranch: string;
   repoUrl: string;
-  reviewAuthor: string;
+  profileId?: string;
+  profileName?: string;
   assignees: string[];
 }): string {
   const repo = normalizeRepoWebUrl(opts.repoUrl);
@@ -1335,7 +1462,6 @@ export function formatMrDiscordBody(opts: {
   const prefix = opts.draft ? DMR_PREFIX : MR_PREFIX;
   const assignees =
     opts.assignees.length > 0 ? opts.assignees.join(', ') : '—';
-  const author = opts.reviewAuthor.trim() || '—';
   const branch = opts.sourceBranch.trim() || '—';
   const lines = [
     `${prefix}: ${opts.title.trim() || iidLabel}`,
@@ -1346,7 +1472,7 @@ export function formatMrDiscordBody(opts: {
         : '—'
     }`,
     `Repository: ${mdLink(repoPathLabel(repo) || repo, repo)}`,
-    `Review author: ${author}`,
+    ...formatProfileLines(opts.profileId, opts.profileName),
     `Assignees: ${assignees}`,
     'status: open',
     'lock: false',
@@ -1395,6 +1521,8 @@ export function parseMrChip(content: string): {
  * fixes: H:0 | M:0 | L:0
  * status: -
  * lock: false
+ * id_profile: 1
+ * profile_name: Profile
  *
  * Older messages omit kind and depth: `Ревью N | H:n | M:n | S:n`. S is Low.
  * After a neurofix the fixes line gains a stamp and a `bullet:` line lists 1-based indexes.
@@ -1407,6 +1535,8 @@ export function formatReviewDiscordBody(opts: {
   model: string;
   skillPath: string;
   branch?: string;
+  profileId?: string;
+  profileName?: string;
 }): string {
   const parsed = parseReviewSeverityLine(opts.severity);
   const severity = parsed?.severity ?? formatSeverityLine(0, 0, 0);
@@ -1426,6 +1556,7 @@ export function formatReviewDiscordBody(opts: {
   if (branch) {
     lines.push('lock: false');
   }
+  lines.push(...formatProfileLines(opts.profileId, opts.profileName));
   return lines.join('\n');
 }
 
@@ -1437,6 +1568,8 @@ export function formatReviewDiscordBody(opts: {
  * Skill: …
  * open: L:1, 2
  * status: -
+ * id_profile: 1
+ * profile_name: Profile
  *
  * No `fixes:` until a neurofix runs. `open: -` means every selected row is «исправлено».
  */
@@ -1449,6 +1582,8 @@ export function formatRereviewDiscordBody(opts: {
   open: ReviewFixBullets;
   model: string;
   skillPath: string;
+  profileId?: string;
+  profileName?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
@@ -1459,6 +1594,7 @@ export function formatRereviewDiscordBody(opts: {
     `Skill: ${skill}`,
     `open: ${formatOpenValue(opts.open)}`,
     'status: -',
+    ...formatProfileLines(opts.profileId, opts.profileName),
   ];
   return lines.join('\n');
 }
@@ -1478,6 +1614,8 @@ export function formatStudyChipLabel(opts: {
  * Z_SYN3: Изучено | Ревью K | branch | L:1, 2
  * Model: …
  * Skill: …
+ * id_profile: 1
+ * profile_name: Profile
  *
  * No `fixes:` and no `open:`. The file is free text, not a review table.
  */
@@ -1487,6 +1625,8 @@ export function formatStudyDiscordBody(opts: {
   selection: string;
   model: string;
   skillPath: string;
+  profileId?: string;
+  profileName?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
@@ -1494,6 +1634,7 @@ export function formatStudyDiscordBody(opts: {
     `${STUDY_PREFIX}: ${formatStudyChipLabel(opts)}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
+    ...formatProfileLines(opts.profileId, opts.profileName),
   ];
   return lines.join('\n');
 }
@@ -1506,6 +1647,8 @@ export function formatStudyDiscordBody(opts: {
  * Branch: name
  * Model: …
  * Skill: …
+ * id_profile: 1
+ * profile_name: Profile
  *
  * Older messages say `Что делаем?` or omit scope and depth.
  * The chip always shows `Что сделано`.
@@ -1516,6 +1659,8 @@ export function formatExplainDiscordBody(opts: {
   branch: string;
   scope: ReviewScopeToken;
   depth: ReviewDepthToken;
+  profileId?: string;
+  profileName?: string;
 }): string {
   const model = opts.model.trim() || '—';
   const skill = opts.skillPath.trim() || '—';
@@ -1525,6 +1670,7 @@ export function formatExplainDiscordBody(opts: {
     `Branch: ${branch}`,
     `Model: ${model}`,
     `Skill: ${skill}`,
+    ...formatProfileLines(opts.profileId, opts.profileName),
   ].join('\n');
 }
 
