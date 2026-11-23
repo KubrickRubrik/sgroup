@@ -298,6 +298,8 @@ export interface ReviewPageState {
   pendingExplainId?: string;
   /** Review message whose thread shows a neurofix chip until the agent finishes. */
   pendingNeurofixId?: string;
+  /** Review message whose thread shows an «Изучено» chip until the agent finishes. */
+  pendingStudyId?: string;
   /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
   skeletonSeq?: number;
   /** Branch checked out in this window. Empty when git has no branch name. */
@@ -791,6 +793,8 @@ export class ReviewMapController {
   private readonly explainSkeleton = new Map<string, string>();
   /** Neurofix chip placeholder: page id → review message id. */
   private readonly neurofixSkeleton = new Map<string, string>();
+  /** «Изучено» chip placeholder: page id → review message id. */
+  private readonly studySkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
   private readonly skeletonSeq = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
@@ -1030,6 +1034,21 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
+  /** Show the «Изучено» chip under this review until the agent finishes. */
+  beginStudySkeleton(pageId: string, messageId: string): ReviewPageState {
+    this.studySkeleton.set(pageId, messageId);
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  endStudySkeleton(pageId: string, messageId: string): ReviewPageState {
+    if (messageId && this.studySkeleton.get(pageId) === messageId) {
+      this.studySkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
   private mrSkeletonTitle(title: string): string {
     return title.trim() || 'MR';
   }
@@ -1057,6 +1076,7 @@ export class ReviewMapController {
     | 'pendingExplainRoot'
     | 'pendingExplainId'
     | 'pendingNeurofixId'
+    | 'pendingStudyId'
     | 'skeletonSeq'
   > {
     return {
@@ -1066,6 +1086,7 @@ export class ReviewMapController {
       pendingExplainRoot: this.explainRootSkeleton.get(pageId),
       pendingExplainId: this.explainSkeleton.get(pageId),
       pendingNeurofixId: this.neurofixSkeleton.get(pageId),
+      pendingStudyId: this.studySkeleton.get(pageId),
       skeletonSeq: this.skeletonSeq.get(pageId) ?? 0,
     };
   }
@@ -1102,6 +1123,7 @@ export class ReviewMapController {
     this.explainRootSkeleton.clear();
     this.explainSkeleton.clear();
     this.neurofixSkeleton.clear();
+    this.studySkeleton.clear();
   }
 
   /** Remember the project review channel so posts work without an access.json page row. */
@@ -3366,6 +3388,46 @@ export class ReviewMapController {
     return { ok: true, filename: filenames.join(', '), text: parts.join('\n\n') };
   }
 
+  /**
+   * Write the open description to disk and return its absolute path.
+   * Pasting that path into Cursor chat is enough for the agent to read the file.
+   */
+  async copyReviewFileLink(
+    pageId: string,
+    messageId: string,
+    filenames?: string[],
+  ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+    const named = (filenames ?? []).map((item) => item.trim()).filter(Boolean);
+    const read = named.length
+      ? await this.readNamedAttachments(pageId, messageId, named)
+      : await this.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      return read;
+    }
+    try {
+      const full = await this.writeChatCopy(messageId, read.filename, read.text);
+      return { ok: true, path: full };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, message };
+    }
+  }
+
+  /**
+   * Stable markdown copy outside the repo. `.syn3` is gitignored, and Cursor
+   * will not read a gitignored path pasted into chat.
+   */
+  private async writeChatCopy(messageId: string, filename: string, text: string): Promise<string> {
+    const safeId = messageId.replace(/[^\w.\-]+/g, '_') || 'file';
+    const safeName = filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
+    const safe = /\.md$/i.test(safeName) ? safeName : `${safeName}.md`;
+    const dir = path.join(os.tmpdir(), 'syn3-reviews');
+    await fs.mkdir(dir, { recursive: true });
+    const full = path.join(dir, `${safeId}-${safe}`);
+    await fs.writeFile(full, text, 'utf8');
+    return full;
+  }
+
   /** Write the cached attachment to a temp markdown file and open its preview. */
   async openReviewAttachmentTab(
     pageId: string,
@@ -3378,14 +3440,14 @@ export class ReviewMapController {
     if (!read.ok) {
       return read;
     }
-    const safeName = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
-    const safe = /\.md$/i.test(safeName) ? safeName : `${safeName}.md`;
-    const dir = path.join(os.tmpdir(), 'syn3-reviews');
-    await fs.mkdir(dir, { recursive: true });
-    const full = path.join(dir, `${messageId}-${safe}`);
-    await fs.writeFile(full, read.text, 'utf8');
-    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(full));
-    return { ok: true };
+    try {
+      const full = await this.writeChatCopy(messageId, read.filename, read.text);
+      await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(full));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, message };
+    }
   }
 
   /**

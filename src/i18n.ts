@@ -394,6 +394,8 @@ const EN = {
   reviewFileGrow: 'Increase',
   reviewFileShrink: 'Decrease',
   reviewFileSave: 'Download',
+  reviewFileLink: 'Link to the description',
+  reviewFileLinkCopied: 'Link copied',
   reviewFileMissing: 'This message has no file attached',
   reviewFileDownloadFail: 'Could not download the review file',
   reviewContentBlocked:
@@ -916,6 +918,8 @@ const RU: Syn3Strings = {
   reviewFileGrow: 'Увеличить',
   reviewFileShrink: 'Уменьшить',
   reviewFileSave: 'Скачать',
+  reviewFileLink: 'Ссылка на описание',
+  reviewFileLinkCopied: 'Ссылка скопирована',
   reviewFileMissing: 'К этому сообщению не приложен файл',
   reviewFileDownloadFail: 'Не удалось скачать файл ревью',
   reviewContentBlocked:

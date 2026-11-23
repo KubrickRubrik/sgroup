@@ -5606,6 +5606,12 @@ button.review-talk-btn svg {
   width: auto;
 }
 
+.review-fix-line.is-busy > .review-chip.is-note {
+  align-self: center;
+  flex: 0 0 auto;
+  width: auto;
+}
+
 .review-fix-line.is-busy > .review-fix-loader {
   left: 100%;
   margin-left: 8px;

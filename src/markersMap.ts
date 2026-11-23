@@ -527,6 +527,7 @@ type IncomingMessage =
   | { type: 'reviewMigrate'; pageId: string; messageId: string }
   | { type: 'reviewOpenFixes'; pageId: string; messageId: string }
   | { type: 'reviewSaveFile'; pageId: string; messageId: string }
+  | { type: 'reviewCopyFileLink'; pageId: string; messageId: string; filenames?: string[] }
   | { type: 'reviewOpenFileTab'; pageId: string; messageId: string; filenames?: string[] }
   | {
       type: 'reviewCreatePage';
@@ -3125,23 +3126,30 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewStudy') {
       const selection = normalizeRereviewSelection(message.selection);
+      const idle = () =>
+        webview.postMessage({
+          type: 'reviewStudyIdle',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
       if (!selection) {
+        await idle();
         return;
       }
       if (this.review.isAgentBusy()) {
         void vscode.window.showErrorMessage(
           `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
         );
+        await idle();
         return;
       }
-      const parentId = this.review.threadParentId(message.pageId, message.messageId);
       const result = await this.withReviewAgentPlaceholder(
         webview,
-        () => this.review.beginReviewSkeleton(message.pageId, parentId),
-        () => this.review.endReviewSkeleton(message.pageId, parentId),
+        () => this.review.beginStudySkeleton(message.pageId, message.messageId),
+        () => this.review.endStudySkeleton(message.pageId, message.messageId),
         () => this.review.startStudy(message.pageId, message.messageId, selection),
       );
-      await this.handleReviewFileResult(webview, message.pageId, parentId, result);
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
       return;
     }
     if (message.type === 'reviewStart') {
@@ -3433,6 +3441,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewSaveFile') {
       await this.saveReviewAttachment(message.pageId, message.messageId);
+      return;
+    }
+    if (message.type === 'reviewCopyFileLink') {
+      const result = await this.review.copyReviewFileLink(
+        message.pageId,
+        message.messageId,
+        message.filenames,
+      );
+      if (!result.ok) {
+        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        return;
+      }
+      await vscode.env.clipboard.writeText(result.path);
+      const locale = normalizeLocale(this.store.appearance.language);
+      void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'reviewFileLinkCopied')}`);
       return;
     }
     if (message.type === 'reviewOpenFileTab') {
@@ -7450,6 +7473,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z';
     const iconClose =
       'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z';
+    const iconLink =
+      'M17.6567 14.8285L16.2425 13.4143L17.6567 12.0001C19.2188 10.438 19.2188 7.9053 17.6567 6.3432C16.0946 4.78111 13.5619 4.78111 11.9998 6.3432L10.5856 7.75742L9.17139 6.3432L10.5856 4.92899C12.9287 2.58584 16.7277 2.58584 19.0709 4.92899C21.414 7.27214 21.414 11.0712 19.0709 13.4143L17.6567 14.8285ZM14.8282 17.657L13.414 19.0712C11.0709 21.4143 7.27189 21.4143 4.92875 19.0712C2.5856 16.728 2.5856 12.929 4.92875 10.5859L6.34296 9.17163L7.75717 10.5859L6.34296 12.0001C4.78086 13.5622 4.78086 16.0949 6.34296 17.657C7.90506 19.219 10.4377 19.219 11.9998 17.657L13.414 16.2427L14.8282 17.657ZM14.8282 7.75742L16.2425 9.17163L9.17139 16.2427L7.75717 14.8285L14.8282 7.75742Z';
     const sideAttr = surface === 'left' || surface === 'right' ? ` data-side="${surface}"` : '';
     return `<!DOCTYPE html>
 <html lang="en">
@@ -7593,6 +7618,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       <div class="review-file-head">
         <span id="review-file-title" class="review-file-title"></span>
         <div class="review-file-actions">
+          <button id="review-file-link" class="history-btn" type="button" aria-label="Ссылка на описание" disabled>${glyph(iconLink)}</button>
           <button id="review-file-grow" class="history-btn" type="button" aria-label="Увеличить">${glyph(iconGrow)}</button>
           <button id="review-file-shrink" class="history-btn" type="button" aria-label="Уменьшить">${glyph(iconShrink)}</button>
           <button id="review-file-save" class="history-btn" type="button" aria-label="Скачать" disabled>${glyph(iconDownload)}</button>
@@ -7612,6 +7638,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       <div class="review-file-head">
         <span id="explain-file-title" class="review-file-title"></span>
         <div class="review-file-actions">
+          <button id="explain-file-link" class="history-btn" type="button" aria-label="Ссылка на описание" disabled>${glyph(iconLink)}</button>
           <button id="explain-file-grow" class="history-btn" type="button" aria-label="Увеличить">${glyph(iconGrow)}</button>
           <button id="explain-file-shrink" class="history-btn" type="button" aria-label="Уменьшить">${glyph(iconShrink)}</button>
           <button id="explain-file-save" class="history-btn" type="button" aria-label="Скачать" disabled>${glyph(iconDownload)}</button>

@@ -50,6 +50,7 @@
   const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
   const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
   const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
+  const reviewFileLink = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-link'));
   const reviewFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-grow'));
   const reviewFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-shrink'));
   const reviewFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-save'));
@@ -60,6 +61,7 @@
   const explainFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-title'));
   const explainFileBody = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-body'));
   const explainFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-close'));
+  const explainFileLink = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-link'));
   const explainFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-grow'));
   const explainFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-shrink'));
   const explainFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-save'));
@@ -450,6 +452,17 @@
   reviewFileClose?.addEventListener('click', () => {
     closeReviewFileView();
   });
+  reviewFileLink?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewCopyFileLink',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+      filenames: reviewFileView.levelNote ? reviewFileView.filenames : undefined,
+    });
+  });
   reviewFileGrow?.addEventListener('click', () => {
     stepReviewFont(0.05);
   });
@@ -468,6 +481,16 @@
   });
   explainFileClose?.addEventListener('click', () => {
     closeExplainFileView();
+  });
+  explainFileLink?.addEventListener('click', () => {
+    if (!explainFileView || explainFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewCopyFileLink',
+      pageId: explainFileView.pageId,
+      messageId: explainFileView.messageId,
+    });
   });
   explainFileGrow?.addEventListener('click', () => {
     stepReviewFont(0.05);
@@ -1067,6 +1090,7 @@
    *   pendingExplainRoot?: { branch: string },
    *   pendingExplainId?: string,
    *   pendingNeurofixId?: string,
+   *   pendingStudyId?: string,
    *   skeletonSeq?: number
    * }} ReviewState
    */
@@ -1177,6 +1201,12 @@
    * @type {{ pageId: string, messageId: string } | null}
    */
   let localPendingNeurofix = null;
+  /**
+   * «Изучено» chip drawn under a review message before the host snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingStudy = null;
   /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
   const reviewSkeletonSeq = new Map();
   /** Last placeholder scrolled into view, so later paints do not jump. */
@@ -1286,6 +1316,7 @@
       pendingExplainRoot: incoming.pendingExplainRoot || kept.pendingExplainRoot,
       pendingExplainId: incoming.pendingExplainId || kept.pendingExplainId,
       pendingNeurofixId: incoming.pendingNeurofixId || kept.pendingNeurofixId,
+      pendingStudyId: incoming.pendingStudyId || kept.pendingStudyId,
     };
   }
 
@@ -1314,6 +1345,17 @@
         localPendingNeurofix.messageId === message.messageId
       ) {
         localPendingNeurofix = null;
+        if (activePage()?.kind === 'review' && activePage()?.id === message.pageId) {
+          paintReviewPage();
+        }
+      }
+    } else if (message.type === 'reviewStudyIdle') {
+      if (
+        localPendingStudy &&
+        localPendingStudy.pageId === message.pageId &&
+        localPendingStudy.messageId === message.messageId
+      ) {
+        localPendingStudy = null;
         if (activePage()?.kind === 'review' && activePage()?.id === message.pageId) {
           paintReviewPage();
         }
@@ -1379,6 +1421,11 @@
             localPendingNeurofix = null;
           }
         }
+        if (localPendingStudy && localPendingStudy.pageId === reviewState.pageId) {
+          if (reviewState.pendingStudyId === localPendingStudy.messageId) {
+            localPendingStudy = null;
+          }
+        }
         if (reviewState.pendingReviewId) {
           reviewCollapsed.delete(reviewState.pendingReviewId);
         }
@@ -1387,6 +1434,9 @@
         }
         if (reviewState.pendingNeurofixId) {
           reviewCollapsed.delete(reviewFoldParentId(reviewState.pendingNeurofixId));
+        }
+        if (reviewState.pendingStudyId) {
+          reviewCollapsed.delete(reviewFoldParentId(reviewState.pendingStudyId));
         }
         reviewAutoLoad.delete(reviewState.pageId);
         if (reviewState.error || reviewState.loadingEdge === 'initial') {
@@ -2997,7 +3047,7 @@
    * @param {{ H?: number[] | 'all', M?: number[] | 'all', L?: number[] | 'all' }} selection
    */
   function postStudy(pageId, messageId, selection) {
-    beginLocalReviewSkeleton(pageId, reviewThreadParentId(messageId));
+    beginLocalStudySkeleton(pageId, messageId);
     vscode.postMessage({
       type: 'reviewStudy',
       pageId,
@@ -5552,7 +5602,7 @@
       return false;
     }
     const pageId = activePage()?.id || '';
-    if (activePendingNeurofixId(pageId) === msg.id) {
+    if (activePendingNeurofixId(pageId) === msg.id || activePendingStudyId(pageId) === msg.id) {
       return true;
     }
     if (
@@ -5885,6 +5935,13 @@
     setSize('--size-file', a.fontFile, 0.9);
     setSize('--size-review', a.fontReview, 1);
     const reviewSize = typeof a.fontReview === 'number' ? a.fontReview : 1;
+    for (const link of [reviewFileLink, explainFileLink]) {
+      if (!link) {
+        continue;
+      }
+      link.title = t('reviewFileLink');
+      link.setAttribute('aria-label', t('reviewFileLink'));
+    }
     for (const grow of [reviewFileGrow, explainFileGrow]) {
       if (!grow) {
         continue;
@@ -8499,6 +8556,17 @@
     return '';
   }
 
+  /** @param {string} pageId */
+  function activePendingStudyId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingStudyId) {
+      return reviewState.pendingStudyId;
+    }
+    if (localPendingStudy && localPendingStudy.pageId === pageId) {
+      return localPendingStudy.messageId;
+    }
+    return '';
+  }
+
   function activePendingExplainRoot(pageId) {
     if (
       reviewState &&
@@ -8595,6 +8663,21 @@
     }
   }
 
+  /**
+   * @param {string} pageId
+   * @param {string} messageId review chip the «Изучено» run is writing onto
+   */
+  function beginLocalStudySkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingStudy = { pageId, messageId };
+    reviewCollapsed.delete(reviewFoldParentId(messageId));
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
   function beginLocalExplainRootSkeleton(pageId, branch) {
     if (!pageId) {
       return;
@@ -8605,7 +8688,7 @@
     }
   }
 
-  /** @param {'mr' | 'review' | 'root' | 'neurofix'} kind */
+  /** @param {'mr' | 'review' | 'root' | 'neurofix' | 'study'} kind */
   function noteReviewSkeletonScroll(kind) {
     const pageId = activePage()?.id || '';
     const token =
@@ -8613,9 +8696,11 @@
         ? 'review:' + activePendingReviewId(pageId)
         : kind === 'neurofix'
           ? 'neurofix:' + activePendingNeurofixId(pageId)
-          : kind === 'root'
-            ? 'root:' + (activePendingRoot(pageId)?.branch || '')
-            : 'mr:' + (activePendingMr(pageId)?.title || '');
+          : kind === 'study'
+            ? 'study:' + activePendingStudyId(pageId)
+            : kind === 'root'
+              ? 'root:' + (activePendingRoot(pageId)?.branch || '')
+              : 'mr:' + (activePendingMr(pageId)?.title || '');
     if (!token || token === reviewSkelShown) {
       return;
     }
@@ -8743,6 +8828,29 @@
     stamp.append(dateBar);
     body.append(stamp);
     const chip = el('div', 'review-chip is-review-pill is-fix is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Note chip while «Изучено» is running and the chip is not on the review yet.
+   * @param {string} nextColor
+   */
+  function renderReviewStudySkeleton(nextColor) {
+    const row = el('div', 'review-reply-node is-note has-gap is-skel');
+    row.dataset.reviewSkel = 'study';
+    row.style.setProperty('--link-color', reviewRoleColor('note'));
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    const chip = el('div', 'review-chip is-review-pill is-note is-skel');
     chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
     body.append(chip);
     row.append(body);
@@ -9048,6 +9156,10 @@
     if (pendingNeurofixId) {
       reviewCollapsed.delete(reviewFoldParentId(pendingNeurofixId));
     }
+    const pendingStudyId = activePendingStudyId(pageId);
+    if (pendingStudyId) {
+      reviewCollapsed.delete(reviewFoldParentId(pendingStudyId));
+    }
     const pendingMr = activePendingMr(pageId);
     const pendingRoot = activePendingRoot(pageId);
     const pendingExplainRoot = activePendingExplainRoot(pageId);
@@ -9057,7 +9169,8 @@
       !pendingReviewId &&
       !pendingExplainRoot &&
       !pendingExplainId &&
-      !pendingNeurofixId
+      !pendingNeurofixId &&
+      !pendingStudyId
     ) {
       reviewSkelShown = '';
     }
@@ -9090,6 +9203,7 @@
       pendingExplainRoot ||
       pendingExplainId ||
       pendingNeurofixId ||
+      pendingStudyId ||
       (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId)
     ) {
       root.setAttribute('aria-busy', 'true');
@@ -9294,18 +9408,21 @@
       pendingReviewId ||
       pendingExplainId ||
       pendingNeurofixId ||
+      pendingStudyId ||
       pendingMr ||
       pendingRoot ||
       pendingExplainRoot
     ) {
       noteReviewSkeletonScroll(
-        pendingNeurofixId
-          ? 'neurofix'
-          : pendingReviewId || pendingExplainId
-            ? 'review'
-            : pendingMr
-              ? 'mr'
-              : 'root',
+        pendingStudyId
+          ? 'study'
+          : pendingNeurofixId
+            ? 'neurofix'
+            : pendingReviewId || pendingExplainId
+              ? 'review'
+              : pendingMr
+                ? 'mr'
+                : 'root',
       );
     }
     syncReviewFileMark();
@@ -9342,6 +9459,7 @@
       activePendingReviewId(pageId),
       activePendingExplainId(pageId),
       activePendingNeurofixId(pageId),
+      activePendingStudyId(pageId),
       (() => {
         const pending = activePendingMr(pageId);
         return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
@@ -9944,12 +10062,14 @@
     const pendingExplain = activePendingExplainId(pageId) === msg.id;
     const showSkeleton = !!withReviewSkeleton || pendingExplain;
     const pendingFix = activePendingNeurofixId(pageId) === msg.id;
+    const pendingStudy = activePendingStudyId(pageId) === msg.id;
     if (reviewHasFixes(msg) || pendingFix) {
       const replies = msg.replies || [];
       const hasNotes =
         levelNoteFiles(msg.rereviewNote).length + levelNoteFiles(msg.studyNote).length > 0;
       const hasNext =
         hasNotes ||
+        pendingStudy ||
         replies.length > 0 ||
         showSkeleton ||
         !!msg.repliesHasMore ||
@@ -10184,25 +10304,27 @@
       body.append(plain);
     }
     const pendingFix = !!(pageId && activePendingNeurofixId(pageId) === reply.id);
+    const pendingStudy = !!(pageId && activePendingStudyId(pageId) === reply.id);
     const replyNotes =
       levelNoteFiles(reply.rereviewNote).length + levelNoteFiles(reply.studyNote).length > 0;
-    if ((reviewHasFixes(reply) || pendingFix || replyNotes) && pageId) {
+    if ((reviewHasFixes(reply) || pendingFix || replyNotes || pendingStudy) && pageId) {
       const children = el('div', 'review-children');
       const clip = el('div', 'review-children-clip');
       const slide = el('div', 'review-children-slide');
+      const noteNext = replyNotes || pendingStudy ? color : '';
       if (reviewHasFixes(reply)) {
         slide.append(
           renderReviewFixNode(
             pageId,
             reply.id,
             reply,
-            replyNotes ? color : '',
+            noteNext,
             pendingFix,
             stampBranchName(reply.branch, parentBranch),
           ),
         );
       } else if (pendingFix) {
-        slide.append(renderReviewFixSkeleton(replyNotes ? color : ''));
+        slide.append(renderReviewFixSkeleton(noteNext));
       }
       appendLevelNoteNodes(slide, pageId, reply.id, reply, color);
       clip.append(slide);
@@ -10292,8 +10414,9 @@
    * @param {'rereview' | 'study'} kind
    * @param {{ n?: number, files?: Array<{ level: string, indexes: number[], filename: string }> }} note
    * @param {string} nextColor
+   * @param {boolean} [busy] study is running against this chip
    */
-  function renderLevelNoteNode(pageId, messageId, kind, note, nextColor) {
+  function renderLevelNoteNode(pageId, messageId, kind, note, nextColor, busy) {
     const row = el('div', 'review-reply-node is-note has-gap');
     row.dataset.reviewNoteFor = messageId;
     row.dataset.reviewNoteKind = kind;
@@ -10317,18 +10440,40 @@
       }
       openLevelNoteView(pageId, messageId, title, levelNoteFileList(note));
     });
-    body.append(chip);
+    if (busy) {
+      row.dataset.reviewSkel = 'study';
+      row.setAttribute('aria-busy', 'true');
+      const line = el('div', 'review-fix-line is-busy');
+      const loader = el('span', 'review-fix-loader');
+      loader.setAttribute('role', 'status');
+      loader.setAttribute('aria-label', t('studyChip'));
+      loader.append(reviewProgressIcon());
+      line.append(chip, loader);
+      body.append(line);
+    } else {
+      body.append(chip);
+    }
     row.append(body);
     return row;
   }
 
   function appendLevelNoteNodes(parent, pageId, messageId, source, nextColor) {
+    const studyBusy = !!(pageId && activePendingStudyId(pageId) === messageId);
+    let studyShown = false;
     for (const kind of ['rereview', 'study']) {
       const note = source && source[kind === 'rereview' ? 'rereviewNote' : 'studyNote'];
       if (!levelNoteFiles(note).length) {
         continue;
       }
-      parent.append(renderLevelNoteNode(pageId, messageId, kind, note, nextColor));
+      parent.append(
+        renderLevelNoteNode(pageId, messageId, kind, note, nextColor, kind === 'study' && studyBusy),
+      );
+      if (kind === 'study') {
+        studyShown = true;
+      }
+    }
+    if (studyBusy && !studyShown) {
+      parent.append(renderReviewStudySkeleton(nextColor));
     }
   }
 
@@ -10594,6 +10739,11 @@
       explainFileClose.title = t('reviewFileClose');
       explainFileClose.setAttribute('aria-label', t('reviewFileClose'));
     }
+    if (explainFileLink) {
+      explainFileLink.disabled = view.status !== 'ready';
+      explainFileLink.title = t('reviewFileLink');
+      explainFileLink.setAttribute('aria-label', t('reviewFileLink'));
+    }
     if (explainFileSave) {
       explainFileSave.disabled = view.status !== 'ready';
     }
@@ -10788,6 +10938,11 @@
     if (reviewFileClose) {
       reviewFileClose.title = t('reviewFileClose');
       reviewFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    if (reviewFileLink) {
+      reviewFileLink.disabled = view.status !== 'ready';
+      reviewFileLink.title = t('reviewFileLink');
+      reviewFileLink.setAttribute('aria-label', t('reviewFileLink'));
     }
     if (reviewFileSave) {
       reviewFileSave.hidden = !!view.levelNote;
