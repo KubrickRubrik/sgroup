@@ -5575,14 +5575,8 @@ button.review-talk-btn svg {
   min-width: 92px;
 }
 
-.review-chip.is-review-pill.is-skel {
-  flex: 0 0 150px;
-  max-width: 150px;
-  min-width: 150px;
-  width: 150px;
-}
-
-/* Fix chip sits in a column, so flex-basis would set height and make a square. */
+/* Column parents use flex-basis as height. A 150px basis turns the chip into a square. */
+.review-chip.is-review-pill.is-skel,
 .review-chip.is-fix.is-skel {
   align-self: flex-start;
   flex: 0 0 auto;
@@ -5867,6 +5861,90 @@ button.review-talk-btn svg {
 .explain-md p {
   margin: 0.6em 0;
 }
+
+.explain-md .score-card {
+  margin: 2px 0 16px;
+  max-width: 280px;
+}
+
+.explain-md .score-card-head {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+}
+
+.explain-md .score-card .score-ink-value {
+  font-size: 2em;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.explain-md .score-ink-of {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.5em;
+  font-weight: 500;
+  letter-spacing: 0;
+  margin-left: 1px;
+}
+
+.explain-md .score-card-label {
+  color: var(--vscode-foreground);
+  font-size: 0.95em;
+}
+
+.explain-md .score-card-track {
+  background: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+  border-radius: 999px;
+  display: flex;
+  height: 3px;
+  margin-top: 10px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.explain-md .score-card-track i {
+  display: block;
+  flex: 1 1 0;
+  height: 100%;
+}
+
+.explain-md span.score-ink {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.explain-md .score-ink-1 .score-ink-value,
+.explain-md span.score-ink-1 { color: #b6d96a; }
+.explain-md .score-ink-1 .score-card-track i.on { background: #b6d96a; }
+.explain-md .score-ink-2 .score-ink-value,
+.explain-md span.score-ink-2 { color: #8ed4a8; }
+.explain-md .score-ink-2 .score-card-track i.on { background: #8ed4a8; }
+.explain-md .score-ink-3 .score-ink-value,
+.explain-md span.score-ink-3 { color: #6ec4e6; }
+.explain-md .score-ink-3 .score-card-track i.on { background: #6ec4e6; }
+.explain-md .score-ink-4 .score-ink-value,
+.explain-md span.score-ink-4 { color: #7eb6d4; }
+.explain-md .score-ink-4 .score-card-track i.on { background: #7eb6d4; }
+.explain-md .score-ink-5 .score-ink-value,
+.explain-md span.score-ink-5 { color: #d4d06a; }
+.explain-md .score-ink-5 .score-card-track i.on { background: #d4d06a; }
+.explain-md .score-ink-6 .score-ink-value,
+.explain-md span.score-ink-6 { color: #f0d24a; }
+.explain-md .score-ink-6 .score-card-track i.on { background: #f0d24a; }
+.explain-md .score-ink-7 .score-ink-value,
+.explain-md span.score-ink-7 { color: #f0a84a; }
+.explain-md .score-ink-7 .score-card-track i.on { background: #f0a84a; }
+.explain-md .score-ink-8 .score-ink-value,
+.explain-md span.score-ink-8 { color: #f08a3a; }
+.explain-md .score-ink-8 .score-card-track i.on { background: #f08a3a; }
+.explain-md .score-ink-9 .score-ink-value,
+.explain-md span.score-ink-9 { color: #e86a45; }
+.explain-md .score-ink-9 .score-card-track i.on { background: #e86a45; }
+.explain-md .score-ink-10 .score-ink-value,
+.explain-md span.score-ink-10 { color: #e85d6a; }
+.explain-md .score-ink-10 .score-card-track i.on { background: #e85d6a; }
 
 .explain-md a {
   color: var(--vscode-textLink-foreground);

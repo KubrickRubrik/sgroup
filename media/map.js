@@ -10678,6 +10678,7 @@
     const onReview = activePage()?.kind === 'review';
     if (!view || !onReview) {
       reviewFixesPane.hidden = true;
+      syncReviewTalk();
       return;
     }
     reviewFixesPane.hidden = false;
@@ -10697,8 +10698,10 @@
     } else {
       const table = el('div', 'explain-md');
       table.innerHTML = view.html || '';
+      layoutReviewUsage(table);
       reviewFixesBody.append(table);
     }
+    syncReviewTalk();
   }
 
   /** @param {{ messageId?: string, ok?: boolean, html?: string, message?: string }} message */
@@ -10726,6 +10729,7 @@
     if (!view || !onReview) {
       explainFilePane.hidden = true;
       syncReviewFileMark();
+      syncReviewTalk();
       return;
     }
     explainFilePane.hidden = false;
@@ -10757,9 +10761,11 @@
     } else {
       const md = el('div', 'explain-md');
       md.innerHTML = view.html || '';
+      layoutReviewUsage(md);
       explainFileBody.append(md);
     }
     syncReviewFileMark();
+    syncReviewTalk();
   }
 
   /** @param {{ messageId?: string, ok?: boolean, text?: string, html?: string, filename?: string, message?: string }} message */
@@ -10898,8 +10904,14 @@
     vscode.postMessage({ type: 'setAppearance', appearance: { fontReview: snapped } });
   }
 
-  /** Webview CSP drops inline styles, so segment widths are applied here. */
+  /** Webview CSP drops inline styles, so segment widths and score ink are applied here. */
   function layoutReviewUsage(root) {
+    root.querySelectorAll('.md-ink[data-ink]').forEach((node) => {
+      const ink = node.getAttribute('data-ink') || '';
+      if (/^#[0-9A-Fa-f]{6}$/.test(ink)) {
+        node.style.color = ink;
+      }
+    });
     root.querySelectorAll('.review-usage-bar').forEach((bar) => {
       const segs = Array.from(bar.querySelectorAll('.review-usage-seg'));
       const total = segs.reduce((sum, seg) => sum + Number(seg.getAttribute('data-count') || 0), 0);
@@ -10926,6 +10938,7 @@
         toolbarReviewTab.hidden = true;
       }
       syncReviewFileMark();
+      syncReviewTalk();
       return;
     }
     reviewFilePane.hidden = false;
@@ -10972,6 +10985,7 @@
       }
     }
     syncReviewFileMark();
+    syncReviewTalk();
   }
 
   /**
@@ -11317,13 +11331,26 @@
     document.documentElement.style.setProperty('--review-talk-space', space + 'px');
   }
 
+  /** Review, re-review, study, explain, and neurofix readers cover the message field. */
+  function reviewPreviewOpen() {
+    return !!(
+      (reviewFilePane && !reviewFilePane.hidden) ||
+      (explainFilePane && !explainFilePane.hidden) ||
+      (reviewFixesPane && !reviewFixesPane.hidden)
+    );
+  }
+
   function syncReviewTalk() {
     const onReview = activePage()?.kind === 'review';
+    const previewOpen = onReview && reviewPreviewOpen();
     if (reviewTalk) {
-      reviewTalk.hidden = !onReview;
+      reviewTalk.hidden = !onReview || previewOpen;
     }
-    if (!onReview) {
+    if (!onReview || previewOpen) {
       document.documentElement.style.setProperty('--review-talk-space', '0px');
+      if (previewOpen && reviewTalkInput && document.activeElement === reviewTalkInput) {
+        reviewTalkInput.blur();
+      }
       return;
     }
     const pageId = activePage()?.id || '';

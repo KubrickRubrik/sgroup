@@ -188,7 +188,16 @@ export function markdownToHtml(markdown: string): string {
       paragraph.push(lines[index].trim());
       index += 1;
     }
-    blocks.push(`<p>${renderInline(paragraph.join(' '))}</p>`);
+    const joined = paragraph.join(' ');
+    const score = readScoreLine(joined);
+    if (score) {
+      blocks.push(scoreCard(score.n, score.label));
+      continue;
+    }
+    if (joined === 'Оценка' && upcomingScore(lines, index)) {
+      continue;
+    }
+    blocks.push(`<p>${renderInline(joined)}</p>`);
   }
   return blocks.join('\n');
 }
@@ -421,25 +430,80 @@ function lineIndent(line: string): number {
 type InlineOpts = { shortFile?: boolean };
 
 function renderInline(text: string, opts?: InlineOpts): string {
-  const re = /\[([^\]]+)\]\(([^)\s]+)\)|`([^`]+)`|\*\*([^*]+)\*\*/g;
+  const re =
+    /(?:^|(?<=[^\w]))(10|[1-9])\/10(?!\w)|<span style="color:(#[0-9A-Fa-f]{6})">([^<]*)<\/span>|\[([^\]]+)\]\(([^)\s]+)\)|`([^`]+)`|\*\*([^*]+)\*\*/g;
   let html = '';
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text))) {
     html += linkifyFileRefs(text.slice(last, match.index), opts);
     if (match[1] !== undefined) {
-      html += renderLink(match[1], match[2], opts);
-    } else if (match[3] !== undefined) {
-      const file = workspaceFile(match[3], match[3]);
-      const shown = file && opts?.shortFile ? fileChipLabel(file) : match[3];
-      html += file ? fileAnchor(file, shown) : `<code>${escapeHtml(match[3])}</code>`;
+      html += scoreInk(match[1]);
+    } else if (match[2] !== undefined && match[3] !== undefined) {
+      const score = /^(10|[1-9])\/10$/.exec(match[3].trim());
+      html += score ? scoreInk(score[1]) : renderInk(match[2], match[3]);
+    } else if (match[4] !== undefined) {
+      html += renderLink(match[4], match[5], opts);
+    } else if (match[6] !== undefined) {
+      const file = workspaceFile(match[6], match[6]);
+      const shown = file && opts?.shortFile ? fileChipLabel(file) : match[6];
+      html += file ? fileAnchor(file, shown) : `<code>${escapeHtml(match[6])}</code>`;
     } else {
-      html += `<strong>${renderInline(match[4], opts)}</strong>`;
+      html += `<strong>${renderInline(match[7], opts)}</strong>`;
     }
     last = match.index + match[0].length;
   }
   html += linkifyFileRefs(text.slice(last), opts);
   return html;
+}
+
+/** A study score line: `9/10 — править нужно`, with an optional `Оценка` in front. */
+function readScoreLine(text: string): { n: string; label: string } | undefined {
+  const plain = text
+    .replace(/<span style="color:#[0-9A-Fa-f]{6}">([\s\S]*?)<\/span>/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const match = /^(?:Оценка\s+)?(10|[1-9])\/10\s*[—–-]\s*(.+)$/.exec(plain);
+  if (!match) {
+    return undefined;
+  }
+  return { n: match[1], label: match[2].trim() };
+}
+
+function upcomingScore(lines: string[], index: number): boolean {
+  let look = index;
+  while (look < lines.length && !lines[look].trim()) {
+    look += 1;
+  }
+  return look < lines.length && readScoreLine(lines[look]) !== undefined;
+}
+
+/** Same scale as the review usage bar: a number, the verdict, one continuous track. */
+function scoreCard(raw: string, label: string): string {
+  const n = Number(raw);
+  const cells = Array.from({ length: 10 }, (_, index) => {
+    return `<i${index < n ? ' class="on"' : ''}></i>`;
+  }).join('');
+  return (
+    `<div class="score-card score-ink-${n}">` +
+    `<div class="score-card-head">` +
+    `<span class="score-ink-value">${n}<span class="score-ink-of">/10</span></span>` +
+    `<span class="score-card-label">${escapeHtml(label)}</span>` +
+    `</div>` +
+    `<div class="score-card-track" aria-hidden="true">${cells}</div>` +
+    `</div>`
+  );
+}
+
+/** A bare `9/10` inside a sentence. The card is for a line of its own. */
+function scoreInk(raw: string): string {
+  return `<span class="score-ink score-ink-${raw}">${raw}<span class="score-ink-of">/10</span></span>`;
+}
+
+/** Score chip from the study skill. The map webview drops style="", so data-ink is painted in JS. */
+function renderInk(hex: string, text: string): string {
+  const color = hex.toUpperCase();
+  return `<span class="md-ink" data-ink="${color}" style="color:${color}">${escapeHtml(text)}</span>`;
 }
 
 /** Column «Где»: the link still opens the full path, the label is `File.kt:130`. */
