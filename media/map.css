@@ -47,6 +47,7 @@ html::-webkit-scrollbar {
 .review-mr-people,
 .review-file-body,
 .review-path-nav-list,
+.figma-scope-scroll,
 .link-panel,
 .color-panel,
 .dir-popover-list,
@@ -69,6 +70,7 @@ textarea.review-mr-title,
 .review-mr-people::-webkit-scrollbar,
 .review-file-body::-webkit-scrollbar,
 .review-path-nav-list::-webkit-scrollbar,
+.figma-scope-scroll::-webkit-scrollbar,
 .link-panel::-webkit-scrollbar,
 .color-panel::-webkit-scrollbar,
 .dir-popover-list::-webkit-scrollbar,
@@ -7376,6 +7378,46 @@ button.review-doc-card:hover {
 
 .figma-token-hint[hidden] {
   display: none;
+}
+
+.figma-scope-section {
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 28%, transparent);
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  width: 100%;
+}
+
+.figma-scope-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.figma-scope-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(10 * 64px + 9 * 8px);
+  overflow: auto;
+}
+
+.figma-scope-row {
+  min-height: 64px;
+}
+
+.figma-scope-label {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.figma-scope-add {
+  align-self: stretch;
+  width: 100%;
 }
 
 .review-panel-error {

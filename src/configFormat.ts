@@ -117,8 +117,8 @@ export interface ProjectPageEntry {
   name: string;
   kind: PageKind;
   description?: string;
-  /** Figma file keys. Only meaningful when `kind` is `figma`. */
-  figmaFiles?: string[];
+  /** Figma links and the name typed above each one. Only meaningful when `kind` is `figma`. */
+  figmaFiles?: { url: string; label?: string }[];
   order: number;
 }
 
@@ -234,6 +234,8 @@ export interface ProjectProfileEntry {
   reviewPrintTools?: boolean;
   /** Absolute or workspace-relative path to the scenarios skill. */
   scenarioSkillPath?: string;
+  /** Absolute or workspace-relative path to the Figma tag skill. */
+  figmaSkillPath?: string;
   /** Optional model for the scenarios chat. */
   scenarioModel?: string;
   /** Keep reasoning out of the scenario md. Absent means off. */

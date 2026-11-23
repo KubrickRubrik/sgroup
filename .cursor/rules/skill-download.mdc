@@ -13,5 +13,6 @@ alwaysApply: true
 - «Что сделано» — `explain/SKILL.md`
 - «Изучено» — `study/SKILL.md`
 - схема — `scenarios/SKILL.md`
+- тег Figma — `figma-tag/SKILL.md` и рядом `lookup.js`
 
 Диалог — `showOpenDialog` с `canSelectFolders: true`. Запись общая: `saveSkillIntoFolder` в `src/markersMap.ts`. Новый скачиваемый скилл Syn3 идёт тем же путём: своя папка и файл `SKILL.md`.

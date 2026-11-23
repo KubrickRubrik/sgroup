@@ -17,6 +17,7 @@
       "reviewDirPath": ".syn3/review",
       "reviewModel": "grok-4.7-high",
       "reviewPrintThinking": true,
+      "figmaSkillPath": ".cursor/skills/figma-tag/SKILL.md",
       "githubNick": "KubrickRubrik"
     }
   ]

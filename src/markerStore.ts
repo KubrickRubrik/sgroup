@@ -106,7 +106,7 @@ import {
   type WorkingFocus,
 } from './positions';
 import { getSecret, SECRET_DISCORD, type AccessStore } from './accessStore';
-import { normalizeStoredFigmaFiles } from './figmaLink';
+import { FigmaStoredLink, normalizeStoredFigmaFiles } from './figmaLink';
 
 export type { WorkingFocus };
 
@@ -237,6 +237,8 @@ export interface StyleProfile {
   reviewPrintTools?: boolean;
   /** Absolute or workspace-relative path to the scenarios skill. */
   scenarioSkillPath?: string;
+  /** Absolute or workspace-relative path to the Figma tag skill. */
+  figmaSkillPath?: string;
   /** Optional Cursor Agent / chat model for scenarios. Empty → default. */
   scenarioModel?: string;
   /** Ask the scenarios chat to keep reasoning out of the md file. */
@@ -597,8 +599,8 @@ export interface PageDef {
   kind: PageKind;
   /** Short description shown in the page settings panel. */
   description?: string;
-  /** Figma file keys this map is limited to. Only on kind `figma`. */
-  figmaFiles?: string[];
+  /** Figma links and the name typed above each one. Only on kind `figma`. */
+  figmaFiles?: { url: string; label?: string }[];
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -1750,6 +1752,33 @@ export class MarkerStore implements vscode.Disposable {
       printThinking: profile?.scenarioPrintThinking === true,
       printTools: profile?.scenarioPrintTools !== false,
     };
+  }
+
+  /** Figma tag skill of the active profile. Empty until the page settings store one. */
+  activeFigmaSkillPath(): string {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    return (profile?.figmaSkillPath ?? '').trim();
+  }
+
+  async setActiveFigmaSkillPath(figmaSkillPath: string): Promise<void> {
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      if (!profile) {
+        return;
+      }
+      const next = figmaSkillPath.trim();
+      if (next) {
+        profile.figmaSkillPath = next;
+      } else {
+        delete profile.figmaSkillPath;
+      }
+      await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
   }
 
   async setActiveScenarioPaths(partial: {
@@ -3742,14 +3771,14 @@ export class MarkerStore implements vscode.Disposable {
     await this.commit();
   }
 
-  /** File keys for a Figma map page. Empty clears the list. Bumps page settings, not map content. */
-  async setPageFigmaFiles(pageId: string, keys: string[]): Promise<void> {
+  /** Figma links for a map page. Empty clears the list. Bumps page settings, not map content. */
+  async setPageFigmaFiles(pageId: string, links: FigmaStoredLink[]): Promise<void> {
     const page = this.data.pages[pageId];
     if (!page || page.kind !== 'figma') {
       return;
     }
-    if (keys.length > 0) {
-      page.figmaFiles = keys;
+    if (links.length > 0) {
+      page.figmaFiles = links;
     } else {
       delete page.figmaFiles;
     }
@@ -6866,6 +6895,7 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
           ...(p.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
           ...(p.scenarioSkillPath ? { scenarioSkillPath: p.scenarioSkillPath } : {}),
+          ...(p.figmaSkillPath ? { figmaSkillPath: p.figmaSkillPath } : {}),
           ...(p.scenarioModel ? { scenarioModel: p.scenarioModel } : {}),
           ...(p.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
           ...(p.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
@@ -9369,6 +9399,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewPrintThinking?: unknown;
         reviewPrintTools?: unknown;
         scenarioSkillPath?: unknown;
+        figmaSkillPath?: unknown;
         scenarioModel?: unknown;
         scenarioPrintThinking?: unknown;
         scenarioPrintTools?: unknown;
@@ -9398,6 +9429,8 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
       const reviewPrintTools = item.reviewPrintTools === false ? false : undefined;
       const scenarioSkillPath =
         typeof item.scenarioSkillPath === 'string' ? item.scenarioSkillPath.trim() : undefined;
+      const figmaSkillPath =
+        typeof item.figmaSkillPath === 'string' ? item.figmaSkillPath.trim() : undefined;
       const scenarioModel =
         typeof item.scenarioModel === 'string' ? item.scenarioModel.trim() : undefined;
       const scenarioPrintThinking = item.scenarioPrintThinking === true ? true : undefined;
@@ -9419,6 +9452,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
           ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
           ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
+          ...(figmaSkillPath ? { figmaSkillPath } : {}),
           ...(scenarioModel ? { scenarioModel } : {}),
           ...(scenarioPrintThinking ? { scenarioPrintThinking } : {}),
           ...(scenarioPrintTools === false ? { scenarioPrintTools } : {}),
@@ -9449,6 +9483,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
         ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
         ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
+        ...(figmaSkillPath ? { figmaSkillPath } : {}),
         ...(scenarioModel ? { scenarioModel } : {}),
         ...(scenarioPrintThinking ? { scenarioPrintThinking } : {}),
         ...(scenarioPrintTools === false ? { scenarioPrintTools } : {}),

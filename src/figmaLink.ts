@@ -54,78 +54,162 @@ export function parseFigmaFrame(raw: string): FigmaFrame | undefined {
   return { fileKey: key, nodeId: nodeId || undefined };
 }
 
-/** File keys stored on a Figma map page. */
-export const FIGMA_PAGE_FILE_MAX = 10;
+/** Links stored on a Figma map page. The settings list shows ten and scrolls the rest. */
+export const FIGMA_PAGE_FILE_MAX = 20;
+
+/** A file, page, or layer link. `nodeId` uses colons, as the REST API expects. */
+export interface FigmaLinkRef {
+  fileKey: string;
+  nodeId?: string;
+  /** Stable design URL. A bare key already saved in settings becomes a file link. */
+  url: string;
+}
+
+/** One working link. `label` is the name typed in settings, so the node can be recognized. */
+export interface FigmaStoredLink {
+  url: string;
+  label?: string;
+}
+
+/** Cap for the typed name above a link. */
+export const FIGMA_LINK_LABEL_MAX = 80;
+
+/** `https://www.figma.com/design/{key}` plus `node-id` when the link points at a node. */
+export function canonicalFigmaLink(fileKey: string, nodeId?: string): string {
+  const base = `https://www.figma.com/design/${fileKey}`;
+  if (!nodeId) {
+    return base;
+  }
+  return `${base}?node-id=${nodeId.replace(/:/g, '-')}`;
+}
 
 /**
- * A pasted file URL, or a bare key already saved in the page settings.
- * Frame URLs keep the file key (branch key when the URL is a branch). `node-id` is dropped.
+ * A pasted Figma URL, or a bare file key already saved in the page settings.
+ * Branch URLs keep the branch key. The stored value is the canonical link, not the key.
  */
-export function figmaFileKeyFromInput(raw: string): string | undefined {
+export function figmaLinkFromInput(raw: string): FigmaLinkRef | undefined {
   const trimmed = raw.trim();
   if (!trimmed) {
     return undefined;
   }
   const frame = parseFigmaFrame(trimmed);
   if (frame) {
-    return frame.fileKey;
+    return {
+      fileKey: frame.fileKey,
+      nodeId: frame.nodeId,
+      url: canonicalFigmaLink(frame.fileKey, frame.nodeId),
+    };
   }
-  return KEY.test(trimmed) ? trimmed : undefined;
+  if (!KEY.test(trimmed)) {
+    return undefined;
+  }
+  return { fileKey: trimmed, url: canonicalFigmaLink(trimmed) };
 }
 
 export type FigmaFileListError = 'invalid' | 'duplicate';
 
-/** Drop empty rows. A bad row or a repeated key rejects the list. */
-export function collectFigmaFileKeys(
-  values: readonly string[],
-): { ok: true; keys: string[] } | { ok: false; reason: FigmaFileListError } {
-  const keys: string[] = [];
-  const seen = new Set<string>();
+/**
+ * A file link covers every page and layer of that file.
+ * The same file key and node id cover each other.
+ */
+export function figmaLinksOverlap(left: FigmaLinkRef, right: FigmaLinkRef): boolean {
+  if (left.fileKey !== right.fileKey) {
+    return false;
+  }
+  return !left.nodeId || !right.nodeId || left.nodeId === right.nodeId;
+}
+
+function overlappingPair(refs: readonly FigmaLinkRef[]): boolean {
+  for (let i = 0; i < refs.length; i += 1) {
+    for (let j = i + 1; j < refs.length; j += 1) {
+      if (figmaLinksOverlap(refs[i], refs[j])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function clipFigmaLabel(raw: unknown): string {
+  if (typeof raw !== 'string') {
+    return '';
+  }
+  return raw.trim().replace(/\s+/g, ' ').slice(0, FIGMA_LINK_LABEL_MAX);
+}
+
+function storedFigmaLink(url: string, label: string): FigmaStoredLink {
+  return label ? { url, label } : { url };
+}
+
+function parseStoredFigmaItem(item: unknown): { ref: FigmaLinkRef; label: string } | undefined {
+  if (typeof item === 'string') {
+    const ref = figmaLinkFromInput(item);
+    return ref ? { ref, label: '' } : undefined;
+  }
+  if (!item || typeof item !== 'object') {
+    return undefined;
+  }
+  const url = (item as { url?: unknown }).url;
+  if (typeof url !== 'string' || !url.trim()) {
+    return undefined;
+  }
+  const ref = figmaLinkFromInput(url);
+  return ref ? { ref, label: clipFigmaLabel((item as { label?: unknown }).label) } : undefined;
+}
+
+/** Drop empty rows. A bad row, a repeat, or a link already covered by a wider one rejects the list. */
+export function collectFigmaLinks(
+  values: readonly unknown[],
+): { ok: true; links: FigmaStoredLink[] } | { ok: false; reason: FigmaFileListError } {
+  const rows: { ref: FigmaLinkRef; label: string }[] = [];
   let filled = 0;
   for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed) {
+    const url =
+      typeof value === 'string'
+        ? value
+        : value && typeof value === 'object'
+          ? (value as { url?: unknown }).url
+          : undefined;
+    if (typeof url !== 'string' || !url.trim()) {
       continue;
     }
     filled += 1;
     if (filled > FIGMA_PAGE_FILE_MAX) {
       return { ok: false, reason: 'invalid' };
     }
-    const key = figmaFileKeyFromInput(trimmed);
-    if (!key) {
+    const parsed = parseStoredFigmaItem(value);
+    if (!parsed) {
       return { ok: false, reason: 'invalid' };
     }
-    if (seen.has(key)) {
-      return { ok: false, reason: 'duplicate' };
-    }
-    seen.add(key);
-    keys.push(key);
+    rows.push(parsed);
   }
-  return { ok: true, keys };
+  if (overlappingPair(rows.map((row) => row.ref))) {
+    return { ok: false, reason: 'duplicate' };
+  }
+  return { ok: true, links: rows.map((row) => storedFigmaLink(row.ref.url, row.label)) };
 }
 
-/** Stored list: drop empties, bad keys, and duplicates. Cap at {@link FIGMA_PAGE_FILE_MAX}. */
-export function normalizeStoredFigmaFiles(raw: unknown): string[] | undefined {
+/** Stored list: canonical links plus the typed name. A file link drops narrower links of the same file. */
+export function normalizeStoredFigmaFiles(raw: unknown): FigmaStoredLink[] | undefined {
   if (!Array.isArray(raw)) {
     return undefined;
   }
-  const keys: string[] = [];
-  const seen = new Set<string>();
+  const rows: { ref: FigmaLinkRef; label: string }[] = [];
   for (const item of raw) {
-    if (typeof item !== 'string') {
+    const parsed = parseStoredFigmaItem(item);
+    if (!parsed || rows.some((kept) => kept.ref.fileKey === parsed.ref.fileKey && kept.ref.nodeId === parsed.ref.nodeId)) {
       continue;
     }
-    const key = figmaFileKeyFromInput(item);
-    if (!key || seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    keys.push(key);
-    if (keys.length >= FIGMA_PAGE_FILE_MAX) {
+    rows.push(parsed);
+    if (rows.length >= FIGMA_PAGE_FILE_MAX) {
       break;
     }
   }
-  return keys.length > 0 ? keys : undefined;
+  const fileKeys = new Set(rows.filter((row) => !row.ref.nodeId).map((row) => row.ref.fileKey));
+  const links = rows
+    .filter((row) => !row.ref.nodeId || !fileKeys.has(row.ref.fileKey))
+    .map((row) => storedFigmaLink(row.ref.url, row.label));
+  return links.length > 0 ? links : undefined;
 }
 
 /** Cache slot for one URL plus the token that was used. A new token misses. */

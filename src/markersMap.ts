@@ -64,7 +64,8 @@ import {
   writeProfileHostToken,
 } from './accessStore';
 import {
-  collectFigmaFileKeys,
+  collectFigmaLinks,
+  FigmaStoredLink,
   figmaLinkPreviewEnabled,
   figmaPreviewCacheKey,
   loadFigmaPreview,
@@ -428,6 +429,8 @@ type IncomingMessage =
   | { type: 'reviewExpandPlain'; pageId: string; messageId: string }
   | { type: 'reviewOpenPromptExample' }
   | { type: 'reviewSkillFile'; which: 'review' | 'explain' | 'study'; action: 'open' | 'copy' | 'save' }
+  | { type: 'figmaSkillFile'; action: 'open' | 'copy' | 'save' }
+  | { type: 'figmaOpenSetupDoc' }
   | { type: 'reviewClearFocus'; pageId: string }
   | {
       type: 'reviewCreateMr';
@@ -552,7 +555,8 @@ type IncomingMessage =
       channelId?: string;
       discordToken?: string;
       figmaToken?: string;
-      figmaFiles?: string[];
+      figmaFiles?: { url: string; label?: string }[];
+      figmaSkillPath?: string;
     }
   | {
       type: 'reviewUpdatePage';
@@ -2723,6 +2727,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.type !== 'listProjectDir' &&
         message.type !== 'clipboardRead' &&
         message.type !== 'reviewOpenSetupDoc' &&
+        message.type !== 'figmaOpenSetupDoc' &&
+        message.type !== 'figmaSkillFile' &&
         message.type !== 'discordGateOpenHowTo'
       ) {
         // Clear optimistic / leftover sync loaders before the gate takes over.
@@ -2998,6 +3004,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewSkillFile') {
       await this.onReviewSkillFile(webview, message.which, message.action);
+      return;
+    }
+    if (message.type === 'figmaOpenSetupDoc') {
+      await this.openInstruction('figma-tag-setup.md');
+      return;
+    }
+    if (message.type === 'figmaSkillFile') {
+      await this.onFigmaSkillFile(webview, message.action);
       return;
     }
     if (message.type === 'reviewClearFocus') {
@@ -4386,7 +4400,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   /** User picks a directory. The skill folder and SKILL.md are created inside it. */
-  private async saveSkillIntoFolder(folderName: string, text: string): Promise<void> {
+  private async saveSkillIntoFolder(
+    folderName: string,
+    text: string,
+    extras?: Array<{ name: string; text: string }>,
+  ): Promise<void> {
     const locale = normalizeLocale(this.store.appearance.language);
     const picked = await vscode.window.showOpenDialog({
       canSelectFiles: false,
@@ -4403,6 +4421,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const dir = vscode.Uri.joinPath(parent, folderName);
     await vscode.workspace.fs.createDirectory(dir);
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'SKILL.md'), Buffer.from(text, 'utf8'));
+    for (const extra of extras || []) {
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.joinPath(dir, extra.name),
+        Buffer.from(extra.text, 'utf8'),
+      );
+    }
   }
 
   private async readSkillDoc(which: 'review' | 'explain' | 'study'): Promise<string | undefined> {
@@ -4465,6 +4489,45 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     await this.saveSkillIntoFolder(this.skillDocName(which).folder, text);
+  }
+
+  private async readDocFile(fileName: string): Promise<string | undefined> {
+    const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      const locale = normalizeLocale(this.store.appearance.language);
+      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
+      return undefined;
+    }
+  }
+
+  private async onFigmaSkillFile(
+    webview: vscode.Webview,
+    action: 'open' | 'copy' | 'save',
+  ): Promise<void> {
+    if (action !== 'open' && action !== 'copy' && action !== 'save') {
+      return;
+    }
+    if (action === 'open') {
+      await this.openInstruction('figma-tag-skill.md');
+      return;
+    }
+    const text = await this.readDocFile('figma-tag-skill.md');
+    if (text === undefined) {
+      return;
+    }
+    if (action === 'copy') {
+      await vscode.env.clipboard.writeText(text);
+      await webview.postMessage({ type: 'reviewSkillCopied' });
+      return;
+    }
+    const script = await this.readDocFile('figma-tag-lookup.js');
+    if (script === undefined) {
+      return;
+    }
+    await this.saveSkillIntoFolder('figma-tag', text, [{ name: 'lookup.js', text: script }]);
   }
 
   private scenarioSkillUri(): vscode.Uri {
@@ -6172,6 +6235,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       hasDiscord: status.hasDiscord,
       ...(figmaToken !== undefined ? { figmaToken } : {}),
       ...(figmaFiles !== undefined ? { figmaFiles } : {}),
+      ...(figmaPage ? { figmaSkillPath: this.store.activeFigmaSkillPath() } : {}),
     });
   }
 
@@ -6413,7 +6477,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       channelId?: string;
       discordToken?: string;
       figmaToken?: string;
-      figmaFiles?: string[];
+      figmaFiles?: { url: string; label?: string }[];
+      figmaSkillPath?: string;
     },
   ): Promise<void> {
     const name = message.name.trim();
@@ -6432,19 +6497,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const editing = this.store.page(message.pageId || '');
     const kind = editing?.kind ?? (normalizePageKind(message.kind) ?? 'files');
-    let figmaKeys: string[] | undefined;
+    let figmaLinks: FigmaStoredLink[] | undefined;
     if (kind === 'figma') {
-      const values = Array.isArray(message.figmaFiles)
-        ? message.figmaFiles.filter((item): item is string => typeof item === 'string')
-        : [];
-      const collected = collectFigmaFileKeys(values);
+      const values = Array.isArray(message.figmaFiles) ? message.figmaFiles : [];
+      const collected = collectFigmaLinks(values);
       if (!collected.ok) {
         await fail(t(locale, collected.reason === 'duplicate' ? 'figmaFileDuplicate' : 'figmaFileInvalid'));
         return;
       }
-      figmaKeys = collected.keys;
+      figmaLinks = collected.links;
       if (typeof message.figmaToken === 'string') {
         await this.savePageFigmaToken(message.figmaToken, !!message.pageId);
+      }
+      if (typeof message.figmaSkillPath === 'string') {
+        await this.store.setActiveFigmaSkillPath(message.figmaSkillPath);
       }
     }
     if (message.pageId) {
@@ -6453,8 +6519,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       await this.store.setPageMeta(message.pageId, name, message.description);
-      if (page.kind === 'figma' && figmaKeys) {
-        await this.store.setPageFigmaFiles(message.pageId, figmaKeys);
+      if (page.kind === 'figma' && figmaLinks) {
+        await this.store.setPageFigmaFiles(message.pageId, figmaLinks);
       }
       await this.savePageDiscordAndChannel(page.kind, channelId, message.discordToken);
       return;
@@ -6507,8 +6573,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
-    if (kind === 'figma' && figmaKeys) {
-      await this.store.setPageFigmaFiles(id, figmaKeys);
+    if (kind === 'figma' && figmaLinks) {
+      await this.store.setPageFigmaFiles(id, figmaLinks);
     }
     await this.savePageDiscordAndChannel(kind, channelId, message.discordToken);
     await this.pushBaseAfterPageHello();

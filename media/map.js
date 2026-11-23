@@ -1627,9 +1627,8 @@
         channelId: typeof message.channelId === 'string' ? message.channelId : '',
         hasDiscord: message.hasDiscord === true,
         figmaToken: typeof message.figmaToken === 'string' ? message.figmaToken : '',
-        figmaFiles: Array.isArray(message.figmaFiles)
-          ? message.figmaFiles.filter((item) => typeof item === 'string')
-          : [],
+        figmaSkillPath: typeof message.figmaSkillPath === 'string' ? message.figmaSkillPath : '',
+        figmaFiles: figmaFileEntries(message.figmaFiles),
       });
     } else if (message.type === 'pageSettingsError') {
       const panel = document.getElementById('page-settings-panel');
@@ -13793,7 +13792,14 @@
     removeOverlay('profile-settings-panel');
   }
 
+  /** @type {(() => void) | null} */
+  let detachFigmaPathNav = null;
+
   function closePageSettingsPanel() {
+    if (detachFigmaPathNav) {
+      detachFigmaPathNav();
+      detachFigmaPathNav = null;
+    }
     removeOverlay('page-settings-panel');
   }
 
@@ -13985,46 +13991,90 @@
    *   channelId?: string,
    *   hasDiscord?: boolean,
    *   figmaToken?: string,
+   *   figmaSkillPath?: string,
    *   figmaFiles?: string[]
    * }} opts
    */
-  function figmaFileKeyFromInput(raw) {
+  /**
+   * @param {string} raw
+   * @returns {{ fileKey: string, nodeId: string, url: string } | null}
+   */
+  function figmaLinkFromInput(raw) {
     const trimmed = String(raw || '').trim();
     if (!trimmed) {
-      return '';
+      return null;
     }
     const keyRe = /^[0-9A-Za-z]+$/;
+    const canonical = (fileKey, nodeId) => {
+      const base = 'https://www.figma.com/design/' + fileKey;
+      return nodeId ? base + '?node-id=' + nodeId.replace(/:/g, '-') : base;
+    };
     let url;
     try {
       url = new URL(trimmed);
     } catch {
-      return keyRe.test(trimmed) ? trimmed : '';
+      return keyRe.test(trimmed) ? { fileKey: trimmed, nodeId: '', url: canonical(trimmed, '') } : null;
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      return '';
+      return null;
     }
     const host = url.hostname.toLowerCase();
     if (host !== 'figma.com' && !host.endsWith('.figma.com')) {
-      return '';
+      return null;
     }
     const kinds = new Set(['file', 'design', 'proto', 'board', 'slides']);
     const parts = url.pathname.split('/').filter((part) => part.length > 0);
     const kindAt = parts.findIndex((part) => kinds.has(part.toLowerCase()));
     if (kindAt < 0) {
-      return '';
+      return null;
     }
-    const fileKey = parts[kindAt + 1];
-    if (!fileKey || !keyRe.test(fileKey)) {
-      return '';
+    const pathKey = parts[kindAt + 1];
+    if (!pathKey || !keyRe.test(pathKey)) {
+      return null;
     }
-    let key = fileKey;
+    let fileKey = pathKey;
     if (parts[kindAt + 2] && parts[kindAt + 2].toLowerCase() === 'branch') {
       const branchKey = parts[kindAt + 3];
       if (branchKey && keyRe.test(branchKey)) {
-        key = branchKey;
+        fileKey = branchKey;
       }
     }
-    return key;
+    const nodeRaw = (url.searchParams.get('node-id') || '').split(',')[0].trim();
+    const nodeId = nodeRaw ? nodeRaw.replace(/-/g, ':') : '';
+    return { fileKey, nodeId, url: canonical(fileKey, nodeId) };
+  }
+
+  /**
+   * A saved link is a URL string or `{ url, label }`.
+   * @param {unknown} raw
+   * @returns {{ url: string, label: string }[]}
+   */
+  function figmaFileEntries(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    /** @type {{ url: string, label: string }[]} */
+    const entries = [];
+    for (const item of raw) {
+      if (typeof item === 'string') {
+        entries.push({ url: item, label: '' });
+      } else if (item && typeof item.url === 'string') {
+        entries.push({ url: item.url, label: typeof item.label === 'string' ? item.label : '' });
+      }
+    }
+    return entries;
+  }
+
+  /**
+   * A file link covers every page and layer of that file. The same node covers itself.
+   * @param {{ fileKey: string, nodeId: string }} left
+   * @param {{ fileKey: string, nodeId: string }} right
+   */
+  function figmaLinksOverlap(left, right) {
+    if (!left || !right || left.fileKey !== right.fileKey) {
+      return false;
+    }
+    return !left.nodeId || !right.nodeId || left.nodeId === right.nodeId;
   }
 
   function openPageSettingsPanel(opts) {
@@ -14095,12 +14145,16 @@
 
     /** @type {HTMLInputElement | null} */
     let figmaInput = null;
-    /** @type {{ label: HTMLElement, input: HTMLInputElement }[]} */
+    /** @type {HTMLInputElement | null} */
+    let figmaSkillInput = null;
+    /** @type {{ label: HTMLElement, input: HTMLInputElement, nameInput: HTMLInputElement }[]} */
     const figmaFileRows = [];
     /** @type {HTMLButtonElement | null} */
     let figmaAdd = null;
     let onFigmaFilesChanged = () => {};
-    const figmaFileMax = 10;
+    /** @type {(markInvalid: boolean) => { invalid: boolean, duplicate: boolean, links: { url: string, label: string }[] }} */
+    let noteFigmaLinkRows = () => ({ invalid: false, duplicate: false, links: [] });
+    const figmaFileMax = 20;
     if (selectedKind === 'figma') {
       const figmaLabel = el('label', 'review-mr-field', t('figmaTokenField'));
       const figmaRow = el('div', 'figma-token-row');
@@ -14135,36 +14189,199 @@
       panel.append(figmaLabel, figmaHint);
       figmaInput = figmaTokenInput;
 
-      figmaAdd = el('button', 'review-btn', t('figmaFilesAdd'));
+      const skillLabel = el('label', 'review-mr-field', t('figmaSkillPath'));
+      const skillRow = el('div', 'review-path-field');
+      const skillPathInput = document.createElement('input');
+      skillPathInput.className = 'review-mr-title';
+      skillPathInput.type = 'text';
+      skillPathInput.spellcheck = false;
+      skillPathInput.value = opts.figmaSkillPath || '';
+      const skillBrowse = el('button', 'review-btn review-path-browse', '…');
+      skillBrowse.type = 'button';
+      skillBrowse.title = t('browseProject');
+      skillBrowse.setAttribute('aria-label', t('browseProject'));
+      skillRow.append(skillPathInput, skillBrowse);
+      skillLabel.append(skillRow);
+      panel.append(skillLabel);
+      figmaSkillInput = skillPathInput;
+
+      const pathNav = el('div', 'review-path-nav');
+      pathNav.hidden = true;
+      const pathPanel = el('div', 'review-path-nav-panel');
+      pathPanel.setAttribute('role', 'dialog');
+      const pathTitle = el('div', 'review-path-nav-title', t('figmaSkillPath'));
+      const pathBar = el('div', 'review-path-nav-bar');
+      const pathUp = el('button', 'review-path-nav-icon', '↑');
+      pathUp.type = 'button';
+      pathUp.title = t('pathNavUp');
+      const pathCrumbs = el('div', 'review-path-nav-crumbs');
+      const pathClose = el('button', 'review-path-nav-icon', '×');
+      pathClose.type = 'button';
+      pathClose.title = t('pathNavClose');
+      pathBar.append(pathUp, pathCrumbs, pathClose);
+      const pathList = el('div', 'review-path-nav-list');
+      pathList.tabIndex = -1;
+      const pathFoot = el('div', 'review-path-nav-foot');
+      const pathPick = el('button', 'review-btn', t('pathNavSelectDir'));
+      pathPick.type = 'button';
+      pathFoot.append(pathPick);
+      pathPanel.append(pathTitle, pathBar, pathList, pathFoot);
+      pathNav.append(pathPanel);
+      document.body.append(pathNav);
+
+      let browseSeq = 0;
+      let navRel = '';
+
+      function closeFigmaPathNav() {
+        pathNav.hidden = true;
+      }
+
+      function requestFigmaDir(rel) {
+        browseSeq += 1;
+        navRel = rel || '';
+        vscode.postMessage({ type: 'listProjectDir', seq: browseSeq, rel: navRel });
+      }
+
+      function chooseFigmaPath(rel) {
+        skillPathInput.value = rel || '.';
+        closeFigmaPathNav();
+        skillPathInput.dispatchEvent(new Event('change'));
+      }
+
+      /**
+       * @param {{ relDir?: string, entries?: Array<{ name: string, relPath: string, isDir: boolean }>, error?: string }} payload
+       */
+      function renderFigmaPathNav(payload) {
+        navRel = payload && typeof payload.relDir === 'string' ? payload.relDir : '';
+        pathUp.disabled = !navRel;
+        pathCrumbs.replaceChildren();
+        const rootBtn = el('button', 'review-path-crumb', t('pathNavRoot'));
+        rootBtn.type = 'button';
+        rootBtn.addEventListener('click', () => requestFigmaDir(''));
+        pathCrumbs.append(rootBtn);
+        if (navRel) {
+          let acc = '';
+          for (const part of navRel.split('/')) {
+            acc = acc ? acc + '/' + part : part;
+            pathCrumbs.append(el('span', 'review-path-crumb-sep', '/'));
+            const crumb = el('button', 'review-path-crumb', part);
+            crumb.type = 'button';
+            const target = acc;
+            crumb.addEventListener('click', () => requestFigmaDir(target));
+            pathCrumbs.append(crumb);
+          }
+        }
+        pathList.replaceChildren();
+        const entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (payload && payload.error) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavUnreadable')));
+        } else if (entries.length === 0) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavEmpty')));
+        }
+        for (const entry of entries) {
+          const row = el('div', 'review-path-nav-row');
+          const open = el('button', 'review-path-nav-open');
+          open.type = 'button';
+          open.append(
+            el('span', 'review-path-nav-mark', entry.isDir ? '▸' : ''),
+            el('span', 'review-path-nav-name', entry.name),
+          );
+          if (entry.isDir) {
+            open.addEventListener('click', () => requestFigmaDir(entry.relPath));
+            const pick = el('button', 'review-btn review-path-nav-pick', t('pathNavPick'));
+            pick.type = 'button';
+            pick.addEventListener('click', () => chooseFigmaPath(entry.relPath));
+            row.append(open, pick);
+          } else {
+            open.title = t('pathNavPick');
+            open.addEventListener('click', () => chooseFigmaPath(entry.relPath));
+            row.append(open);
+          }
+          pathList.append(row);
+        }
+      }
+
+      function onFigmaPathMessage(event) {
+        if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {
+          renderFigmaPathNav(event.data);
+        }
+      }
+
+      function onFigmaPathKey(event) {
+        if (event.key === 'Escape' && !pathNav.hidden) {
+          event.stopPropagation();
+          closeFigmaPathNav();
+        }
+      }
+
+      skillBrowse.addEventListener('click', () => {
+        pathNav.hidden = false;
+        requestFigmaDir(skillPathInput.value);
+        pathList.focus();
+      });
+      pathUp.addEventListener('click', () => {
+        requestFigmaDir(navRel.includes('/') ? navRel.slice(0, navRel.lastIndexOf('/')) : '');
+      });
+      pathClose.addEventListener('click', () => closeFigmaPathNav());
+      pathPick.addEventListener('click', () => chooseFigmaPath(navRel));
+      pathNav.addEventListener('click', (event) => {
+        if (event.target === pathNav) {
+          closeFigmaPathNav();
+        }
+      });
+      document.addEventListener('keydown', onFigmaPathKey, true);
+      window.addEventListener('message', onFigmaPathMessage);
+      detachFigmaPathNav = () => {
+        document.removeEventListener('keydown', onFigmaPathKey, true);
+        window.removeEventListener('message', onFigmaPathMessage);
+        pathNav.remove();
+      };
+
+      const figmaScopeSection = el('div', 'figma-scope-section');
+      figmaScopeSection.append(el('div', 'figma-scope-title', t('figmaScopeSection')));
+      const figmaScopeScroll = el('div', 'figma-scope-scroll');
+      figmaAdd = el('button', 'review-btn figma-scope-add', t('figmaFilesAdd'));
       figmaAdd.type = 'button';
       figmaAdd.addEventListener('click', (event) => {
         event.preventDefault();
-        addFigmaFileRow('');
+        addFigmaFileRow('', '');
         const last = figmaFileRows[figmaFileRows.length - 1];
         if (last) {
-          last.input.focus();
+          last.nameInput.focus();
         }
       });
-      panel.append(figmaAdd);
+      figmaScopeSection.append(figmaScopeScroll, figmaAdd);
+      panel.append(figmaScopeSection);
       /**
        * @param {string} value
+       * @param {string} name
        */
-      function addFigmaFileRow(value) {
+      function addFigmaFileRow(value, name) {
         if (!figmaAdd || figmaFileRows.length >= figmaFileMax) {
           return;
         }
-        const label = el('label', 'review-mr-field');
+        const label = el('div', 'review-mr-field figma-scope-row');
+        const nameInput = document.createElement('input');
+        nameInput.className = 'review-mr-title figma-scope-label';
+        nameInput.type = 'text';
+        nameInput.maxLength = 80;
+        nameInput.spellcheck = false;
+        nameInput.placeholder = t('figmaLinkLabel');
+        nameInput.setAttribute('aria-label', t('figmaLinkLabel'));
+        nameInput.value = name || '';
         const row = el('div', 'figma-token-row');
         const input = document.createElement('input');
         input.className = 'review-mr-title';
         input.type = 'text';
         input.spellcheck = false;
         input.placeholder = t('figmaFilePlaceholder');
+        input.setAttribute('aria-label', t('figmaFilePlaceholder'));
         input.value = value || '';
-        input.addEventListener('input', () => {
-          label.classList.remove('has-error');
-        });
+        /** @type {{ label: HTMLElement, input: HTMLInputElement, nameInput: HTMLInputElement }} */
+        const entry = { label, input, nameInput };
+        input.addEventListener('input', () => noteFigmaLinkRows(false));
         input.addEventListener('change', () => onFigmaFilesChanged());
+        nameInput.addEventListener('change', () => onFigmaFilesChanged());
         const remove = el('button', 'figma-token-help', '×');
         remove.type = 'button';
         remove.title = t('figmaFileRemove');
@@ -14178,12 +14395,13 @@
           }
           label.remove();
           syncFigmaAdd();
+          noteFigmaLinkRows(false);
           onFigmaFilesChanged();
         });
         row.append(input, remove);
-        label.append(row);
-        figmaAdd.before(label);
-        figmaFileRows.push({ label, input });
+        label.append(nameInput, row);
+        figmaScopeScroll.append(label);
+        figmaFileRows.push(entry);
         syncFigmaAdd();
       }
       function syncFigmaAdd() {
@@ -14191,14 +14409,14 @@
           figmaAdd.hidden = figmaFileRows.length >= figmaFileMax;
         }
       }
-      const savedFiles = Array.isArray(opts.figmaFiles) ? opts.figmaFiles.filter((item) => item) : [];
+      const savedFiles = figmaFileEntries(opts.figmaFiles);
       if (savedFiles.length === 0) {
         for (let slot = 0; slot < 3; slot += 1) {
-          addFigmaFileRow('');
+          addFigmaFileRow('', '');
         }
       } else {
-        for (const key of savedFiles.slice(0, figmaFileMax)) {
-          addFigmaFileRow(key);
+        for (const item of savedFiles.slice(0, figmaFileMax)) {
+          addFigmaFileRow(item.url, item.label);
         }
       }
     }
@@ -14213,13 +14431,131 @@
       discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
     }
 
+    if (selectedKind === 'figma') {
+      const skillIconPath = {
+        download:
+          'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z',
+        copy:
+          'M6.99979 7V3C6.99979 2.44772 7.4475 2 7.99979 2H20.9998C21.5521 2 21.9998 2.44772 21.9998 3V16C21.9998 16.5523 21.5521 17 20.9998 17H17V20.9925C17 21.5489 16.551 22 15.9925 22H3.00728C2.45086 22 2 21.5511 2 20.9925L2.00276 8.00748C2.00288 7.45107 2.4518 7 3.01025 7H6.99979ZM8.99979 7H15.9927C16.549 7 17 7.44892 17 8.00748V15H19.9998V4H8.99979V7ZM4.00255 9L4.00021 20H15V9H4.00255Z',
+      };
+      /**
+       * @param {'download' | 'copy'} kind
+       * @param {string} label
+       * @param {() => void} onClick
+       */
+      function figmaSkillIconButton(kind, label, onClick) {
+        const button = el('button', 'review-skill-icon');
+        button.type = 'button';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('fill', 'currentColor');
+        path.setAttribute('d', skillIconPath[kind]);
+        svg.append(path);
+        button.append(svg);
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onClick();
+        });
+        return button;
+      }
+      const docs = el('div', 'review-settings-docs');
+      const howTo = el('button', 'review-doc-card', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'figmaOpenSetupDoc' });
+      });
+      const card = el('div', 'review-doc-card');
+      const openSkill = el('button', 'review-doc-open', t('figmaSkillRequired'));
+      openSkill.type = 'button';
+      openSkill.addEventListener('click', () => {
+        vscode.postMessage({ type: 'figmaSkillFile', action: 'open' });
+      });
+      const icons = el('div', 'review-skill-icons');
+      icons.append(
+        figmaSkillIconButton('download', t('reviewSkillDownload'), () => {
+          vscode.postMessage({ type: 'figmaSkillFile', action: 'save' });
+        }),
+        figmaSkillIconButton('copy', t('reviewSkillCopy'), () => {
+          vscode.postMessage({ type: 'figmaSkillFile', action: 'copy' });
+        }),
+      );
+      card.append(openSkill, icons);
+      docs.append(howTo, card);
+      const copied = el('p', 'review-skill-copied');
+      copied.id = 'review-skill-copied';
+      copied.hidden = true;
+      copied.setAttribute('aria-live', 'polite');
+      panel.append(docs, copied);
+    }
+
     const error = el('div', 'review-panel-error');
     error.hidden = true;
     panel.append(error);
 
+    noteFigmaLinkRows = (markInvalid) => {
+      /** @type {{ url: string, label: string }[]} */
+      const links = [];
+      /** @type {{ fileKey: string, nodeId: string, label: HTMLElement, url: string, name: string }[]} */
+      const described = [];
+      let invalid = false;
+      let duplicate = false;
+      for (const row of figmaFileRows) {
+        row.label.classList.remove('has-error');
+        const raw = row.input.value.trim();
+        if (!raw) {
+          continue;
+        }
+        const ref = figmaLinkFromInput(raw);
+        if (!ref) {
+          if (markInvalid) {
+            invalid = true;
+            row.label.classList.add('has-error');
+          }
+          continue;
+        }
+        described.push({
+          fileKey: ref.fileKey,
+          nodeId: ref.nodeId,
+          label: row.label,
+          url: ref.url,
+          name: row.nameInput.value.trim().replace(/\s+/g, ' ').slice(0, 80),
+        });
+      }
+      for (let i = 0; i < described.length; i += 1) {
+        for (let j = i + 1; j < described.length; j += 1) {
+          if (figmaLinksOverlap(described[i], described[j])) {
+            duplicate = true;
+            described[i].label.classList.add('has-error');
+            described[j].label.classList.add('has-error');
+          }
+        }
+      }
+      if (!invalid && !duplicate) {
+        for (const item of described) {
+          links.push(item.name ? { url: item.url, label: item.name } : { url: item.url });
+        }
+        if (
+          error.textContent === t('figmaFileInvalid') ||
+          error.textContent === t('figmaFileDuplicate')
+        ) {
+          error.hidden = true;
+          error.textContent = '';
+        }
+      } else if (!markInvalid && duplicate) {
+        error.textContent = t('figmaFileDuplicate');
+        error.hidden = false;
+      }
+      return { invalid, duplicate, links };
+    };
+
     /**
      * @param {boolean} report
-     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaFiles: string[] | undefined } | null}
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaSkillPath: string | undefined, figmaFiles: { url: string, label?: string }[] | undefined } | null}
      */
     function readPageForm(report) {
       const name = nameInput.value.trim();
@@ -14253,39 +14589,13 @@
         }
         return null;
       }
-      /** @type {string[] | undefined} */
+      /** @type {{ url: string, label?: string }[] | undefined} */
       let figmaFiles;
       if (selectedKind === 'figma') {
-        const keys = [];
-        /** @type {Map<string, HTMLElement>} */
-        const seen = new Map();
-        let invalid = false;
-        let duplicate = false;
-        for (const row of figmaFileRows) {
-          row.label.classList.remove('has-error');
-          const raw = row.input.value.trim();
-          if (!raw) {
-            continue;
-          }
-          const key = figmaFileKeyFromInput(raw);
-          if (!key) {
-            invalid = true;
-            row.label.classList.add('has-error');
-            continue;
-          }
-          const prev = seen.get(key);
-          if (prev) {
-            duplicate = true;
-            prev.classList.add('has-error');
-            row.label.classList.add('has-error');
-          } else {
-            seen.set(key, row.label);
-            keys.push(key);
-          }
-        }
-        if (invalid || duplicate) {
+        const checked = noteFigmaLinkRows(true);
+        if (checked.invalid || checked.duplicate) {
           if (report) {
-            error.textContent = t(invalid ? 'figmaFileInvalid' : 'figmaFileDuplicate');
+            error.textContent = t(checked.invalid ? 'figmaFileInvalid' : 'figmaFileDuplicate');
             error.hidden = false;
             const bad = panel.querySelector('.review-mr-field.has-error input');
             if (bad instanceof HTMLElement) {
@@ -14294,7 +14604,7 @@
           }
           return null;
         }
-        figmaFiles = keys;
+        figmaFiles = checked.links;
       }
       if (report) {
         error.hidden = true;
@@ -14307,6 +14617,7 @@
         channelId,
         discordToken: discordInput?.value.trim() || undefined,
         figmaToken: figmaInput ? figmaInput.value.trim() : undefined,
+        figmaSkillPath: figmaSkillInput ? figmaSkillInput.value.trim() : undefined,
         figmaFiles,
       };
     }
@@ -14356,6 +14667,7 @@
           channelId: fields.channelId,
           discordToken: fields.discordToken,
           figmaToken: fields.figmaToken,
+          figmaSkillPath: fields.figmaSkillPath,
           figmaFiles: fields.figmaFiles,
         });
       };
@@ -14370,7 +14682,8 @@
         channelId: (opts.channelId || '').trim(),
         discordToken: '',
         figmaToken: figmaInput ? figmaInput.value.trim() : '',
-        figmaFiles: (Array.isArray(opts.figmaFiles) ? opts.figmaFiles : []).join('\n'),
+        figmaSkillPath: figmaSkillInput ? figmaSkillInput.value.trim() : '',
+        figmaFiles: JSON.stringify(selectedKind === 'figma' ? noteFigmaLinkRows(false).links : []),
       });
       /**
        * @param {boolean} [closeAfter]
@@ -14386,7 +14699,8 @@
           channelId: fields.channelId,
           discordToken: fields.discordToken || '',
           figmaToken: fields.figmaToken || '',
-          figmaFiles: (fields.figmaFiles || []).join('\n'),
+          figmaSkillPath: fields.figmaSkillPath || '',
+          figmaFiles: JSON.stringify(fields.figmaFiles || []),
         });
         if (sig !== savedSig) {
           savedSig = sig;
@@ -14398,6 +14712,7 @@
             channelId: fields.channelId,
             discordToken: fields.discordToken,
             figmaToken: fields.figmaToken,
+            figmaSkillPath: fields.figmaSkillPath,
             figmaFiles: fields.figmaFiles,
           });
         }
@@ -14413,6 +14728,9 @@
       }
       if (figmaInput) {
         figmaInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaSkillInput) {
+        figmaSkillInput.addEventListener('change', () => saveEditing(false));
       }
       onFigmaFilesChanged = () => saveEditing(false);
       bindSettingsCommitKey(panel, () => saveEditing(true));
@@ -26998,6 +27316,7 @@
     '.review-mr-people',
     '.review-file-body',
     '.review-path-nav-list',
+    '.figma-scope-scroll',
     '.link-panel',
     '.color-panel',
     '.dir-popover-list',

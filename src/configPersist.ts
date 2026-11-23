@@ -421,6 +421,9 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(typeof source.studySkillPath === 'string' && source.studySkillPath.trim()
       ? { studySkillPath: source.studySkillPath.trim() }
       : {}),
+    ...(typeof source.figmaSkillPath === 'string' && source.figmaSkillPath.trim()
+      ? { figmaSkillPath: source.figmaSkillPath.trim() }
+      : {}),
     ...(typeof source.reviewDirPath === 'string' && source.reviewDirPath.trim()
       ? { reviewDirPath: source.reviewDirPath.trim() }
       : {}),
@@ -1112,6 +1115,7 @@ export function packProfileEntry(opts: {
     ...(opts.profile.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(opts.profile.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(opts.profile.scenarioSkillPath ? { scenarioSkillPath: opts.profile.scenarioSkillPath } : {}),
+    ...(opts.profile.figmaSkillPath ? { figmaSkillPath: opts.profile.figmaSkillPath } : {}),
     ...(opts.profile.scenarioModel ? { scenarioModel: opts.profile.scenarioModel } : {}),
     ...(opts.profile.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
     ...(opts.profile.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
@@ -1160,6 +1164,7 @@ export function unpackProfilesFromBase(
       ...(data?.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
       ...(data?.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
       ...(data?.scenarioSkillPath ? { scenarioSkillPath: data.scenarioSkillPath } : {}),
+      ...(data?.figmaSkillPath ? { figmaSkillPath: data.figmaSkillPath } : {}),
       ...(data?.scenarioModel ? { scenarioModel: data.scenarioModel } : {}),
       ...(data?.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
       ...(data?.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
@@ -1381,6 +1386,7 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
     ...(entry.reviewFixSkillPath ? { reviewFixSkillPath: entry.reviewFixSkillPath } : {}),
     ...(entry.explainSkillPath ? { explainSkillPath: entry.explainSkillPath } : {}),
     ...(entry.studySkillPath ? { studySkillPath: entry.studySkillPath } : {}),
+    ...(entry.figmaSkillPath ? { figmaSkillPath: entry.figmaSkillPath } : {}),
     ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
     ...(adoptReviewModel(entry.reviewModel, entry.reviewFixModel)
       ? { reviewModel: adoptReviewModel(entry.reviewModel, entry.reviewFixModel) }
