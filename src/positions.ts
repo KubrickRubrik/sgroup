@@ -47,10 +47,10 @@ export interface WorkingFocus {
 
 /** Local queue: tell the page channel this page was removed. */
 export interface PageTombstone {
-  kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
+  kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'FIGMA' | 'REVIEW';
   channelId: string;
   name: string;
-  pageKind: 'files' | 'notes' | 'links' | 'review' | 'scenarios';
+  pageKind: 'files' | 'notes' | 'links' | 'figma' | 'review' | 'scenarios';
   order: number;
   number: number;
   headerDate: string;
@@ -478,10 +478,15 @@ function normalizePageTombstones(raw: unknown): Record<string, PageTombstone> | 
     const channelId = typeof item.channelId === 'string' ? item.channelId.trim() : '';
     const name = typeof item.name === 'string' ? item.name.trim() : '';
     if (
-      (kind !== 'EXPLORER' && kind !== 'NOTES' && kind !== 'LINKS' && kind !== 'REVIEW') ||
+      (kind !== 'EXPLORER' &&
+        kind !== 'NOTES' &&
+        kind !== 'LINKS' &&
+        kind !== 'FIGMA' &&
+        kind !== 'REVIEW') ||
       (pageKind !== 'files' &&
         pageKind !== 'notes' &&
         pageKind !== 'links' &&
+        pageKind !== 'figma' &&
         pageKind !== 'review' &&
         pageKind !== 'scenarios') ||
       !channelId ||

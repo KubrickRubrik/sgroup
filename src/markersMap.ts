@@ -20,6 +20,7 @@ import {
   normalizeGroupsLayout,
   normalizeMapLayout,
   normalizePageKind,
+  isLinkMapKind,
   snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
@@ -62,7 +63,13 @@ import {
   writeRepositoryToken,
   writeProfileHostToken,
 } from './accessStore';
-import { figmaLinkPreviewEnabled, figmaPreviewCacheKey, loadFigmaPreview, parseFigmaFrame } from './figmaLink';
+import {
+  collectFigmaFileKeys,
+  figmaLinkPreviewEnabled,
+  figmaPreviewCacheKey,
+  loadFigmaPreview,
+  parseFigmaFrame,
+} from './figmaLink';
 import { isReviewHostProvider, recognizedRepoProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 import { listProjectDirectory } from './projectNav';
 import type { CatalogChannels } from './configFormat';
@@ -205,6 +212,7 @@ type IncomingToolbarAction =
   | 'createPageFiles'
   | 'createPageNotes'
   | 'createPageLinks'
+  | 'createPageFigma'
   | 'createPageReview'
   | 'createPageScenarios'
   | 'createMr'
@@ -543,6 +551,7 @@ type IncomingMessage =
       channelId?: string;
       discordToken?: string;
       figmaToken?: string;
+      figmaFiles?: string[];
     }
   | {
       type: 'reviewUpdatePage';
@@ -3937,7 +3946,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'createLinkLayout') {
-      if (!this.store.page(message.pageId) || this.store.page(message.pageId)?.kind !== 'links') {
+      if (!isLinkMapKind(this.store.page(message.pageId)?.kind)) {
         return;
       }
       await this.store.createLinkLayout(message.pageId);
@@ -5196,7 +5205,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'createLinkLayout') {
-      if (this.store.page(activePage)?.kind === 'links') {
+      if (isLinkMapKind(this.store.page(activePage)?.kind)) {
         await this.store.createLinkLayout(activePage);
       }
       return;
@@ -5218,6 +5227,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       action === 'createPageFiles' ||
       action === 'createPageNotes' ||
       action === 'createPageLinks' ||
+      action === 'createPageFigma' ||
       action === 'createPageReview' ||
       action === 'createPageScenarios'
     ) {
@@ -5226,7 +5236,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ? 'notes'
           : action === 'createPageLinks'
             ? 'links'
-            : action === 'createPageReview'
+            : action === 'createPageFigma'
+              ? 'figma'
+              : action === 'createPageReview'
               ? 'review'
               : action === 'createPageScenarios'
                 ? 'scenarios'
@@ -6084,7 +6096,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await this.postPageSettingsPanel(webview, { mode: 'create', kind: pageKind });
   }
 
-  private mapKindChannelKey(kind: PageKind): 'explorer' | 'notes' | 'links' | undefined {
+  private mapKindChannelKey(kind: PageKind): 'explorer' | 'notes' | 'links' | 'figma' | undefined {
     if (kind === 'files') {
       return 'explorer';
     }
@@ -6093,6 +6105,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (kind === 'links') {
       return 'links';
+    }
+    if (kind === 'figma') {
+      return 'figma';
     }
     return undefined;
   }
@@ -6116,10 +6131,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     },
   ): Promise<void> {
     const status = await secretsStatus(this.hostSecrets);
-    const figmaToken =
-      opts.kind === 'links'
-        ? (await readFigmaToken(this.hostSecrets, this.store.activeProfileId)) || ''
-        : undefined;
+    const figmaPage = opts.kind === 'figma';
+    const figmaToken = figmaPage
+      ? (await readFigmaToken(this.hostSecrets, this.store.activeProfileId)) || ''
+      : undefined;
+    const figmaFiles = figmaPage
+      ? this.store.page(opts.pageId || '')?.figmaFiles ?? []
+      : undefined;
     await webview.postMessage({
       type: 'pageSettingsPanel',
       mode: opts.mode,
@@ -6130,6 +6148,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       channelId: this.catalogChannelForPageKind(opts.kind),
       hasDiscord: status.hasDiscord,
       ...(figmaToken !== undefined ? { figmaToken } : {}),
+      ...(figmaFiles !== undefined ? { figmaFiles } : {}),
     });
   }
 
@@ -6250,6 +6269,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (kind === 'links') {
       return 'links';
     }
+    if (kind === 'figma') {
+      return 'figma';
+    }
     if (kind === 'review') {
       return 'review';
     }
@@ -6368,32 +6390,49 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       channelId?: string;
       discordToken?: string;
       figmaToken?: string;
+      figmaFiles?: string[];
     },
   ): Promise<void> {
     const name = message.name.trim();
     const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'pageSettingsError', message: text });
+    };
     if (!name) {
-      await webview.postMessage({
-        type: 'pageSettingsError',
-        message: t(locale, 'profileNameEmpty'),
-      });
+      await fail(t(locale, 'profileNameEmpty'));
       return;
     }
     const channelId = typeof message.channelId === 'string' ? message.channelId.trim() : '';
     if (channelId && !/^\d{5,}$/.test(channelId)) {
-      await webview.postMessage({
-        type: 'pageSettingsError',
-        message: t(locale, 'projectChannelInvalid'),
-      });
+      await fail(t(locale, 'projectChannelInvalid'));
       return;
     }
-    await this.savePageFigmaToken(message.figmaToken, !!message.pageId);
+    const editing = this.store.page(message.pageId || '');
+    const kind = editing?.kind ?? (normalizePageKind(message.kind) ?? 'files');
+    let figmaKeys: string[] | undefined;
+    if (kind === 'figma') {
+      const values = Array.isArray(message.figmaFiles)
+        ? message.figmaFiles.filter((item): item is string => typeof item === 'string')
+        : [];
+      const collected = collectFigmaFileKeys(values);
+      if (!collected.ok) {
+        await fail(t(locale, collected.reason === 'duplicate' ? 'figmaFileDuplicate' : 'figmaFileInvalid'));
+        return;
+      }
+      figmaKeys = collected.keys;
+      if (typeof message.figmaToken === 'string') {
+        await this.savePageFigmaToken(message.figmaToken, !!message.pageId);
+      }
+    }
     if (message.pageId) {
       const page = this.store.page(message.pageId);
       if (!page) {
         return;
       }
       await this.store.setPageMeta(message.pageId, name, message.description);
+      if (page.kind === 'figma' && figmaKeys) {
+        await this.store.setPageFigmaFiles(message.pageId, figmaKeys);
+      }
       await this.savePageDiscordAndChannel(page.kind, channelId, message.discordToken);
       return;
     }
@@ -6411,7 +6450,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
-    const kind = normalizePageKind(message.kind) ?? 'files';
     if (kind === 'review') {
       await webview.postMessage({
         type: 'pageSettingsError',
@@ -6445,6 +6483,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message: 'Failed to create page',
       });
       return;
+    }
+    if (kind === 'figma' && figmaKeys) {
+      await this.store.setPageFigmaFiles(id, figmaKeys);
     }
     await this.savePageDiscordAndChannel(kind, channelId, message.discordToken);
     await this.pushBaseAfterPageHello();
@@ -7514,6 +7555,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
               <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Explorer</span></button>
               <button type="button" data-action="createPageNotes" role="menuitem"><span data-i18n="menuNewPageNotes">Notes</span></button>
               <button type="button" data-action="createPageLinks" role="menuitem"><span data-i18n="menuNewPageLinks">Links</span></button>
+              <button type="button" data-action="createPageFigma" role="menuitem"><span data-i18n="menuNewPageFigma">Figma</span></button>
               <button type="button" data-action="createPageReview" role="menuitem"><span data-i18n="menuNewPageReview">Review</span></button>
               <button type="button" data-action="createPageScenarios" role="menuitem"><span data-i18n="menuNewPageScenarios">Scenarios</span></button>
             </div>

@@ -324,7 +324,7 @@
     if (toolbarCreate?.disabled) {
       return;
     }
-    if (activePage()?.kind === 'links') {
+    if (isLinkMapKind(activePage()?.kind)) {
       cancelMenuClose();
       closeToolbarMenus();
       closeContextMenu();
@@ -357,7 +357,7 @@
   });
   toolbarCreateWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-create');
-    if (toolbarCreate?.disabled || activePage()?.kind === 'links' || activePage()?.kind === 'scenarios') {
+    if (toolbarCreate?.disabled || isLinkMapKind(activePage()?.kind) || activePage()?.kind === 'scenarios') {
       return;
     }
     if (!toolbarCreateMenu || !toolbarCreateMenu.hidden) {
@@ -1034,7 +1034,10 @@
    *       profileId?: string,
    *       profileName?: string,
    *       avatar?: string,
-   *       talkText?: string
+   *       talkText?: string,
+   *       talkSourceType?: string,
+   *       talkSourceTitle?: string,
+   *       locked?: boolean
    *     }>,
    *     repliesHasMore: boolean,
    *     repliesHasNewer?: boolean,
@@ -1047,7 +1050,9 @@
    *     profileId?: string,
    *     profileName?: string,
    *     avatar?: string,
-   *     talkText?: string
+   *     talkText?: string,
+   *     talkSourceType?: string,
+   *     talkSourceTitle?: string
    *   }>,
    *   canLoadOlder?: boolean,
    *   canLoadNewer?: boolean,
@@ -1560,12 +1565,21 @@
       openPageSettingsPanel({
         mode: message.mode === 'edit' ? 'edit' : 'create',
         pageId: typeof message.pageId === 'string' ? message.pageId : '',
-        kind: message.kind === 'notes' || message.kind === 'links' || message.kind === 'review' ? message.kind : 'files',
+        kind:
+          message.kind === 'notes' ||
+          message.kind === 'links' ||
+          message.kind === 'figma' ||
+          message.kind === 'review'
+            ? message.kind
+            : 'files',
         name: typeof message.name === 'string' ? message.name : '',
         description: typeof message.description === 'string' ? message.description : '',
         channelId: typeof message.channelId === 'string' ? message.channelId : '',
         hasDiscord: message.hasDiscord === true,
         figmaToken: typeof message.figmaToken === 'string' ? message.figmaToken : '',
+        figmaFiles: Array.isArray(message.figmaFiles)
+          ? message.figmaFiles.filter((item) => typeof item === 'string')
+          : [],
       });
     } else if (message.type === 'pageSettingsError') {
       const panel = document.getElementById('page-settings-panel');
@@ -1962,6 +1976,11 @@
     return data && Array.isArray(data.pages) ? data.pages : [];
   }
 
+  /** Links and Figma share the link-card canvas. */
+  function isLinkMapKind(kind) {
+    return kind === 'links' || kind === 'figma';
+  }
+
   function activePage() {
     const list = pages();
     return list.find((page) => page.id === uiState.activePageId) || list[0];
@@ -2321,6 +2340,7 @@
       ['createPageFiles', 'files'],
       ['createPageNotes', 'notes'],
       ['createPageLinks', 'links'],
+      ['createPageFigma', 'figma'],
       ['createPageReview', 'review'],
       ['createPageScenarios', 'scenarios'],
     ];
@@ -2400,6 +2420,7 @@
     setMenuItemLocaleByAction('createPageFiles', 'menuNewPageGroups');
     setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
     setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
+    setMenuItemLocaleByAction('createPageFigma', 'menuNewPageFigma');
     setMenuItemLocaleByAction('createPageReview', 'menuNewPageReview');
     setMenuItemLocaleByAction('createPageScenarios', 'menuNewPageScenarios');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
@@ -2603,7 +2624,7 @@
     const target = isMenu ? ensureMenuChrome(menuRoot).scroller : menuRoot;
     clearReviewDepthMenu();
     target.replaceChildren();
-    if (activePage()?.kind === 'links') {
+    if (isLinkMapKind(activePage()?.kind)) {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
     } else if (activePage()?.kind === 'scenarios') {
       target.append(menuActionChoice(t('createScenario'), { toolbar: 'scenarioCreate' }));
@@ -5424,7 +5445,7 @@
         return !!(chip.md && chip.hasFile);
       });
     }
-    if (page?.kind === 'links') {
+    if (isLinkMapKind(page?.kind)) {
       return (data?.links || []).filter(
         (link) =>
           !link.parent &&
@@ -5608,7 +5629,7 @@
 
   function syncToolbarView() {
     const kind = activePage()?.kind;
-    const hide = !isAuxPageOpen() && (kind === 'links' || kind === 'review' || kind === 'scenarios');
+    const hide = !isAuxPageOpen() && (isLinkMapKind(kind) || kind === 'review' || kind === 'scenarios');
     if (toolbarViewWrap) {
       toolbarViewWrap.hidden = hide;
     }
@@ -6114,8 +6135,11 @@
     if (!page || page.kind === 'review' || page.kind === 'scenarios') {
       return '';
     }
-    if (page.kind === 'notes' || page.kind === 'links') {
+    if (page.kind === 'notes') {
       return page.kind;
+    }
+    if (isLinkMapKind(page.kind)) {
+      return 'links';
     }
     return 'files';
   }
@@ -9759,7 +9783,15 @@
           toggleReviewCollapsed(msg.id);
         });
       }
-      chipWrap.append(reviewTalkChip(msg.profileName, msg.avatar, talkTri));
+      chipWrap.append(
+        reviewTalkChip(
+          msg.profileName,
+          msg.avatar,
+          talkTri,
+          false,
+          reviewTalkReplyPhrase(msg.talkSourceType, msg.talkSourceTitle),
+        ),
+      );
       chipWrap.append(
         reviewTalkButton(pageId, msg.id, reviewTalkMsLabel(msg.profileName), !!msg.locked),
       );
@@ -9937,6 +9969,7 @@
     const replies = msg.replies || [];
     const gapReplyId = msg.gapBeforeReplyId || '';
     const tailNewer = !!msg.repliesHasNewer && !gapReplyId;
+    const talkBlocked = !!(msg.locked || (msg.isMr && msg.status === 'closed'));
     for (let index = 0; index < replies.length; index += 1) {
       if (gapReplyId && replies[index].id === gapReplyId && msg.repliesHasNewer) {
         slide.append(renderReviewThreadLoadRow(msg, pageId, 'newer', color));
@@ -9953,6 +9986,7 @@
           pageId,
           msg.branch,
           msg.isMr || msg.isReviewRoot ? reviewProfileId(msg) : '',
+          talkBlocked,
         ),
       );
     }
@@ -9981,8 +10015,9 @@
    * @param {string} [pageId]
    * @param {string} [parentBranch]
    * @param {string} [authorProfileId] profile of the MR or review author; empty outside those threads
+   * @param {boolean} [talkBlocked] thread owner is locked or the MR is closed
    */
-  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch, authorProfileId) {
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch, authorProfileId, talkBlocked) {
     const isExplain = !!reply.isExplain;
     const stampDate = formatReviewStamp(reply.timestamp);
     const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
@@ -10033,7 +10068,8 @@
     if (isExplain && isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill is-explain-pill');
-      bindCheckoutBranchHover(chip, stampBranch ? 'reply:' + reply.id : '');
+      const revealId = 'reply:' + reply.id;
+      bindCheckoutBranchHover(chip, revealId);
       const explainLabel = el('span', 'review-chip-label');
       setReviewPillText(explainLabel, reply.pillLabel || t('explainFileTitle'));
       chip.append(explainLabel);
@@ -10049,11 +10085,13 @@
         openExplainFileView(pageId || '', reply);
       });
       wrap.append(chip);
+      wrap.append(reviewReplyTalkButton(reply, pageId, talkBlocked));
       body.append(wrap);
     } else if (isPill) {
       const wrap = el('div', 'review-chip-wrap');
       const chip = el('div', 'review-chip is-review-pill');
-      bindCheckoutBranchHover(chip, stampBranch ? 'reply:' + reply.id : '');
+      const revealId = 'reply:' + reply.id;
+      bindCheckoutBranchHover(chip, revealId);
       if (!reviewSchemeIconStyle()) {
         chip.append(reviewStatusIcon(reply.status));
       }
@@ -10089,6 +10127,7 @@
         openReviewFileView(pageId || '', reply);
       });
       wrap.append(chip);
+      wrap.append(reviewReplyTalkButton(reply, pageId, talkBlocked));
       if (
         !reply.isStudy &&
         (!reply.isRereview ||
@@ -10103,7 +10142,17 @@
     } else if (reply.isTalk) {
       const author = !!authorProfileId && reviewProfileId(reply) === authorProfileId;
       const block = el('div', 'review-talk-block');
-      block.append(reviewTalkChip(reply.profileName, reply.avatar, null, author));
+      const revealId = 'reply:' + reply.id;
+      const head = reviewTalkChip(
+        reply.profileName,
+        reply.avatar,
+        null,
+        author,
+        reviewTalkReplyPhrase(reply.talkSourceType, reply.talkSourceTitle),
+      );
+      bindCheckoutBranchHover(head, revealId);
+      head.append(reviewReplyTalkButton(reply, pageId, talkBlocked));
+      block.append(head);
       const talkText = reviewTalkText(reply, reviewPlainExpanded.has(reply.id));
       const openTalkMenu = (event) => {
         event.preventDefault();
@@ -10848,6 +10897,62 @@
     return tail ? t('reviewTalkThread') + ' ' + tail : t('reviewTalkThread');
   }
 
+  /** @param {string | undefined} detail */
+  function reviewTalkReplyLabel(detail) {
+    const tail = String(detail || '').trim();
+    return tail
+      ? t('reviewTalkThread') + ' ' + t('reviewTalkReplyOn') + ' ' + tail
+      : t('reviewTalkThread') + ' ' + t('reviewTalkReplyOn');
+  }
+
+  /** Short chip title shown after «ответ на» in the composer. */
+  function reviewTalkSourceTitle(reply) {
+    if (reply.isTalk) {
+      return String(reply.profileName || '').trim() || '—';
+    }
+    if (reply.isExplain) {
+      return 'Что сделано';
+    }
+    if (reply.isStudy) {
+      return 'Изучено';
+    }
+    const pill = String(reply.pillLabel || '').trim();
+    const head = pill.split(/\s*\|\s*/)[0].trim();
+    if (reply.isRereview) {
+      const match = /(?:Реревью|Rereview)\s+\d+/i.exec(head || pill);
+      return match ? match[0] : head;
+    }
+    const review = /(?:Ревью|Review)\s+\d+/i.exec(head || pill);
+    return review ? review[0] : head;
+  }
+
+  const TALK_SOURCE_COLUMN = new Set(['R_SYN3', 'RR_SYN3', 'W_SYN3', 'Z_SYN3']);
+
+  /** Third column beside the profile name. Message replies keep the name only. */
+  function reviewTalkReplyPhrase(type, title) {
+    const kind = String(type || '').trim();
+    const label = String(title || '').trim();
+    if (!label || !TALK_SOURCE_COLUMN.has(kind)) {
+      return '';
+    }
+    return t('reviewTalkReplyOn') + ' ' + label;
+  }
+
+  /**
+   * @param {{ isTalk?: boolean, isExplain?: boolean, isStudy?: boolean, isRereview?: boolean, pillLabel?: string, profileName?: string, locked?: boolean, id: string }} reply
+   * @param {string | undefined} pageId
+   * @param {boolean | undefined} blocked
+   */
+  function reviewReplyTalkButton(reply, pageId, blocked) {
+    return reviewTalkButton(
+      pageId || '',
+      reply.id,
+      reviewTalkReplyLabel(reviewTalkSourceTitle(reply)),
+      !!(blocked || reply.locked),
+      'reply:' + reply.id,
+    );
+  }
+
   /** @param {string | undefined} name */
   function reviewTalkMsLabel(name) {
     const who = String(name || '').trim() || '—';
@@ -10865,14 +10970,25 @@
    * @param {string} messageId
    * @param {string} label
    * @param {boolean} disabled
+   * @param {string} [revealId] show with the branch hover timers
    */
-  function reviewTalkButton(pageId, messageId, label, disabled) {
-    const button = el('button', 'review-side review-talk-btn');
+  function reviewTalkButton(pageId, messageId, label, disabled, revealId) {
+    const shown = !!revealId && checkoutBranchShown.has(revealId);
+    const button = el(
+      'button',
+      'review-side review-talk-btn' +
+        (revealId ? ' is-reveal' : '') +
+        (shown ? ' is-shown' : ''),
+    );
     button.type = 'button';
     button.disabled = !!disabled;
     button.title = t('reviewTalkReplyTo');
     button.setAttribute('aria-label', button.title);
     button.append(reviewTalkLineIcon());
+    if (revealId) {
+      button.dataset.branchReveal = revealId;
+      bindCheckoutBranchHover(button, revealId);
+    }
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -10970,8 +11086,9 @@
    * @param {string | undefined} avatar
    * @param {HTMLElement | null} [tri]
    * @param {boolean} [author] MR or review author: orange ring
+   * @param {string} [replyPhrase] «ответ на Ревью N» and the other chip replies
    */
-  function reviewTalkChip(name, avatar, tri, author) {
+  function reviewTalkChip(name, avatar, tri, author, replyPhrase) {
     const head = el('div', 'review-talk-head');
     const chip = el(
       'div',
@@ -10983,6 +11100,10 @@
     }
     head.append(chip);
     head.append(el('span', 'review-talk-name', String(name || '').trim() || '—'));
+    const phrase = String(replyPhrase || '').trim();
+    if (phrase) {
+      head.append(el('span', 'review-talk-reply', phrase));
+    }
     return head;
   }
 
@@ -13681,9 +13802,49 @@
    *   description?: string,
    *   channelId?: string,
    *   hasDiscord?: boolean,
-   *   figmaToken?: string
+   *   figmaToken?: string,
+   *   figmaFiles?: string[]
    * }} opts
    */
+  function figmaFileKeyFromInput(raw) {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) {
+      return '';
+    }
+    const keyRe = /^[0-9A-Za-z]+$/;
+    let url;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return keyRe.test(trimmed) ? trimmed : '';
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return '';
+    }
+    const host = url.hostname.toLowerCase();
+    if (host !== 'figma.com' && !host.endsWith('.figma.com')) {
+      return '';
+    }
+    const kinds = new Set(['file', 'design', 'proto', 'board', 'slides']);
+    const parts = url.pathname.split('/').filter((part) => part.length > 0);
+    const kindAt = parts.findIndex((part) => kinds.has(part.toLowerCase()));
+    if (kindAt < 0) {
+      return '';
+    }
+    const fileKey = parts[kindAt + 1];
+    if (!fileKey || !keyRe.test(fileKey)) {
+      return '';
+    }
+    let key = fileKey;
+    if (parts[kindAt + 2] && parts[kindAt + 2].toLowerCase() === 'branch') {
+      const branchKey = parts[kindAt + 3];
+      if (branchKey && keyRe.test(branchKey)) {
+        key = branchKey;
+      }
+    }
+    return key;
+  }
+
   function openPageSettingsPanel(opts) {
     closePageSettingsPanel();
     closeReviewCreatePagePanel();
@@ -13728,13 +13889,17 @@
     panel.append(nameInput);
 
     const selectedKind =
-      opts.kind === 'notes' || opts.kind === 'links' || opts.kind === 'files' ? opts.kind : 'files';
+      opts.kind === 'notes' || opts.kind === 'links' || opts.kind === 'figma' || opts.kind === 'files'
+        ? opts.kind
+        : 'files';
     const kindKey =
       selectedKind === 'notes'
         ? 'pageKindNotes'
         : selectedKind === 'links'
           ? 'pageKindLinks'
-          : 'pageKindFiles';
+          : selectedKind === 'figma'
+            ? 'pageKindFigma'
+            : 'pageKindFiles';
     panel.append(el('div', 'page-kind-line', t('labelPageKind') + ': ' + t(kindKey)));
 
     const pageDesc = pageDescriptionField(opts.description || '');
@@ -13748,7 +13913,13 @@
 
     /** @type {HTMLInputElement | null} */
     let figmaInput = null;
-    if (selectedKind === 'links') {
+    /** @type {{ label: HTMLElement, input: HTMLInputElement }[]} */
+    const figmaFileRows = [];
+    /** @type {HTMLButtonElement | null} */
+    let figmaAdd = null;
+    let onFigmaFilesChanged = () => {};
+    const figmaFileMax = 10;
+    if (selectedKind === 'figma') {
       const figmaLabel = el('label', 'review-mr-field', t('figmaTokenField'));
       const figmaRow = el('div', 'figma-token-row');
       const figmaTokenInput = document.createElement('input');
@@ -13781,6 +13952,73 @@
       figmaLabel.append(figmaRow);
       panel.append(figmaLabel, figmaHint);
       figmaInput = figmaTokenInput;
+
+      figmaAdd = el('button', 'review-btn', t('figmaFilesAdd'));
+      figmaAdd.type = 'button';
+      figmaAdd.addEventListener('click', (event) => {
+        event.preventDefault();
+        addFigmaFileRow('');
+        const last = figmaFileRows[figmaFileRows.length - 1];
+        if (last) {
+          last.input.focus();
+        }
+      });
+      panel.append(figmaAdd);
+      /**
+       * @param {string} value
+       */
+      function addFigmaFileRow(value) {
+        if (!figmaAdd || figmaFileRows.length >= figmaFileMax) {
+          return;
+        }
+        const label = el('label', 'review-mr-field');
+        const row = el('div', 'figma-token-row');
+        const input = document.createElement('input');
+        input.className = 'review-mr-title';
+        input.type = 'text';
+        input.spellcheck = false;
+        input.placeholder = t('figmaFilePlaceholder');
+        input.value = value || '';
+        input.addEventListener('input', () => {
+          label.classList.remove('has-error');
+        });
+        input.addEventListener('change', () => onFigmaFilesChanged());
+        const remove = el('button', 'figma-token-help', '×');
+        remove.type = 'button';
+        remove.title = t('figmaFileRemove');
+        remove.setAttribute('aria-label', t('figmaFileRemove'));
+        remove.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const index = figmaFileRows.findIndex((item) => item.input === input);
+          if (index >= 0) {
+            figmaFileRows.splice(index, 1);
+          }
+          label.remove();
+          syncFigmaAdd();
+          onFigmaFilesChanged();
+        });
+        row.append(input, remove);
+        label.append(row);
+        figmaAdd.before(label);
+        figmaFileRows.push({ label, input });
+        syncFigmaAdd();
+      }
+      function syncFigmaAdd() {
+        if (figmaAdd) {
+          figmaAdd.hidden = figmaFileRows.length >= figmaFileMax;
+        }
+      }
+      const savedFiles = Array.isArray(opts.figmaFiles) ? opts.figmaFiles.filter((item) => item) : [];
+      if (savedFiles.length === 0) {
+        for (let slot = 0; slot < 3; slot += 1) {
+          addFigmaFileRow('');
+        }
+      } else {
+        for (const key of savedFiles.slice(0, figmaFileMax)) {
+          addFigmaFileRow(key);
+        }
+      }
     }
 
     /** @type {HTMLInputElement | null} */
@@ -13799,7 +14037,7 @@
 
     /**
      * @param {boolean} report
-     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined } | null}
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaFiles: string[] | undefined } | null}
      */
     function readPageForm(report) {
       const name = nameInput.value.trim();
@@ -13833,6 +14071,49 @@
         }
         return null;
       }
+      /** @type {string[] | undefined} */
+      let figmaFiles;
+      if (selectedKind === 'figma') {
+        const keys = [];
+        /** @type {Map<string, HTMLElement>} */
+        const seen = new Map();
+        let invalid = false;
+        let duplicate = false;
+        for (const row of figmaFileRows) {
+          row.label.classList.remove('has-error');
+          const raw = row.input.value.trim();
+          if (!raw) {
+            continue;
+          }
+          const key = figmaFileKeyFromInput(raw);
+          if (!key) {
+            invalid = true;
+            row.label.classList.add('has-error');
+            continue;
+          }
+          const prev = seen.get(key);
+          if (prev) {
+            duplicate = true;
+            prev.classList.add('has-error');
+            row.label.classList.add('has-error');
+          } else {
+            seen.set(key, row.label);
+            keys.push(key);
+          }
+        }
+        if (invalid || duplicate) {
+          if (report) {
+            error.textContent = t(invalid ? 'figmaFileInvalid' : 'figmaFileDuplicate');
+            error.hidden = false;
+            const bad = panel.querySelector('.review-mr-field.has-error input');
+            if (bad instanceof HTMLElement) {
+              bad.focus();
+            }
+          }
+          return null;
+        }
+        figmaFiles = keys;
+      }
       if (report) {
         error.hidden = true;
         error.textContent = '';
@@ -13844,6 +14125,7 @@
         channelId,
         discordToken: discordInput?.value.trim() || undefined,
         figmaToken: figmaInput ? figmaInput.value.trim() : undefined,
+        figmaFiles,
       };
     }
 
@@ -13892,6 +14174,7 @@
           channelId: fields.channelId,
           discordToken: fields.discordToken,
           figmaToken: fields.figmaToken,
+          figmaFiles: fields.figmaFiles,
         });
       };
       submit.addEventListener('click', submitCreate);
@@ -13905,6 +14188,7 @@
         channelId: (opts.channelId || '').trim(),
         discordToken: '',
         figmaToken: figmaInput ? figmaInput.value.trim() : '',
+        figmaFiles: (Array.isArray(opts.figmaFiles) ? opts.figmaFiles : []).join('\n'),
       });
       /**
        * @param {boolean} [closeAfter]
@@ -13920,6 +14204,7 @@
           channelId: fields.channelId,
           discordToken: fields.discordToken || '',
           figmaToken: fields.figmaToken || '',
+          figmaFiles: (fields.figmaFiles || []).join('\n'),
         });
         if (sig !== savedSig) {
           savedSig = sig;
@@ -13931,6 +14216,7 @@
             channelId: fields.channelId,
             discordToken: fields.discordToken,
             figmaToken: fields.figmaToken,
+            figmaFiles: fields.figmaFiles,
           });
         }
         if (closeAfter) {
@@ -13946,6 +14232,7 @@
       if (figmaInput) {
         figmaInput.addEventListener('change', () => saveEditing(false));
       }
+      onFigmaFilesChanged = () => saveEditing(false);
       bindSettingsCommitKey(panel, () => saveEditing(true));
     }
     mountSettingsOverlay(panel, closePageSettingsPanel);
@@ -17416,7 +17703,7 @@
       paintReviewPage();
       return;
     }
-    if (page?.kind === 'links') {
+    if (isLinkMapKind(page?.kind)) {
       if (openGroupPanel?.mode === 'create') {
         // Keep create draft if host asked for it on this surface.
       } else if (openGroupPanel) {
@@ -17960,7 +18247,9 @@
       chip.title =
         page.kind === 'links'
           ? page.name + ' (' + t('pageKindLinks') + ')'
-          : page.kind === 'review'
+          : page.kind === 'figma'
+            ? page.name + ' (' + t('pageKindFigma') + ')'
+            : page.kind === 'review'
             ? page.name + ' (' + t('pageKindReview') + ')'
             : page.kind === 'scenarios'
               ? page.name + ' (' + t('pageKindScenarios') + ')'

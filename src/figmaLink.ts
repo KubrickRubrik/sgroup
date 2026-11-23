@@ -54,6 +54,80 @@ export function parseFigmaFrame(raw: string): FigmaFrame | undefined {
   return { fileKey: key, nodeId: nodeId || undefined };
 }
 
+/** File keys stored on a Figma map page. */
+export const FIGMA_PAGE_FILE_MAX = 10;
+
+/**
+ * A pasted file URL, or a bare key already saved in the page settings.
+ * Frame URLs keep the file key (branch key when the URL is a branch). `node-id` is dropped.
+ */
+export function figmaFileKeyFromInput(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const frame = parseFigmaFrame(trimmed);
+  if (frame) {
+    return frame.fileKey;
+  }
+  return KEY.test(trimmed) ? trimmed : undefined;
+}
+
+export type FigmaFileListError = 'invalid' | 'duplicate';
+
+/** Drop empty rows. A bad row or a repeated key rejects the list. */
+export function collectFigmaFileKeys(
+  values: readonly string[],
+): { ok: true; keys: string[] } | { ok: false; reason: FigmaFileListError } {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  let filled = 0;
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+    filled += 1;
+    if (filled > FIGMA_PAGE_FILE_MAX) {
+      return { ok: false, reason: 'invalid' };
+    }
+    const key = figmaFileKeyFromInput(trimmed);
+    if (!key) {
+      return { ok: false, reason: 'invalid' };
+    }
+    if (seen.has(key)) {
+      return { ok: false, reason: 'duplicate' };
+    }
+    seen.add(key);
+    keys.push(key);
+  }
+  return { ok: true, keys };
+}
+
+/** Stored list: drop empties, bad keys, and duplicates. Cap at {@link FIGMA_PAGE_FILE_MAX}. */
+export function normalizeStoredFigmaFiles(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const key = figmaFileKeyFromInput(item);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    keys.push(key);
+    if (keys.length >= FIGMA_PAGE_FILE_MAX) {
+      break;
+    }
+  }
+  return keys.length > 0 ? keys : undefined;
+}
+
 /** Cache slot for one URL plus the token that was used. A new token misses. */
 export function figmaPreviewCacheKey(url: string, token: string | undefined): string {
   const stamp = token

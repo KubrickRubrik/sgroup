@@ -1,6 +1,7 @@
 import type { CatalogChannels } from './configFormat';
 import {
   EXPLORER_CONFIG_PREFIX,
+  FIGMA_CONFIG_PREFIX,
   LINKS_CONFIG_PREFIX,
   NOTES_CONFIG_PREFIX,
   BASE_CONFIG_PREFIX as PROFILE_CONFIG_PREFIX,
@@ -9,13 +10,14 @@ import {
 import { listChannelMessages, postChannelMessage } from './discordApi';
 import type { Syn3Locale } from './i18n';
 
-export type SetupChannelKind = 'profile' | 'explorer' | 'notes' | 'links' | 'review' | 'scenarios';
+export type SetupChannelKind = 'profile' | 'explorer' | 'notes' | 'links' | 'figma' | 'review' | 'scenarios';
 
 export const SETUP_CHANNEL_KINDS: readonly SetupChannelKind[] = [
   'profile',
   'explorer',
   'notes',
   'links',
+  'figma',
   'review',
   'scenarios',
 ];
@@ -32,6 +34,7 @@ const PREFIX_BY_KIND: Record<SetupChannelKind, string> = {
   explorer: EXPLORER_CONFIG_PREFIX,
   notes: NOTES_CONFIG_PREFIX,
   links: LINKS_CONFIG_PREFIX,
+  figma: FIGMA_CONFIG_PREFIX,
   review: REVIEW_CONFIG_PREFIX,
   scenarios: SCENARIOS_SETUP_PREFIX,
 };
@@ -41,6 +44,7 @@ const HELLO_ROLE_EN: Record<SetupChannelKind, string> = {
   explorer: 'the content of the explorer map',
   notes: 'the content of the notes map',
   links: 'the content of the links map',
+  figma: 'the content of the Figma map',
   review: 'the content of the review map',
   scenarios: 'the content of the scenarios map',
 };
@@ -50,6 +54,7 @@ const HELLO_ROLE_RU: Record<SetupChannelKind, string> = {
   explorer: 'контента карты проводника',
   notes: 'контента карты заметок',
   links: 'контента карты ссылок',
+  figma: 'контента карты Figma',
   review: 'контента карты ревью',
   scenarios: 'контента карты сценариев',
 };

@@ -8,12 +8,13 @@ import type {
 import type { ReviewSchemeId } from './reviewThemes';
 
 /** Discord config message kinds (attachment + header). */
-export type ConfigMessageKind = 'BASE' | 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW';
+export type ConfigMessageKind = 'BASE' | 'EXPLORER' | 'NOTES' | 'LINKS' | 'FIGMA' | 'REVIEW';
 
 export const BASE_CONFIG_PREFIX = 'BASE_SYN3';
 export const EXPLORER_CONFIG_PREFIX = 'EXPLORER_SYN3';
 export const NOTES_CONFIG_PREFIX = 'NOTES_SYN3';
 export const LINKS_CONFIG_PREFIX = 'LINKS_SYN3';
+export const FIGMA_CONFIG_PREFIX = 'FIGMA_SYN3';
 export const REVIEW_CONFIG_PREFIX = 'REVIEW_SYN3';
 
 /**
@@ -36,6 +37,7 @@ export const CONFIG_PREFIXES: readonly ConfigMessageKind[] = [
   'EXPLORER',
   'NOTES',
   'LINKS',
+  'FIGMA',
   'REVIEW',
 ];
 
@@ -44,12 +46,13 @@ const PREFIX_BY_KIND: Record<ConfigMessageKind, string> = {
   EXPLORER: EXPLORER_CONFIG_PREFIX,
   NOTES: NOTES_CONFIG_PREFIX,
   LINKS: LINKS_CONFIG_PREFIX,
+  FIGMA: FIGMA_CONFIG_PREFIX,
   REVIEW: REVIEW_CONFIG_PREFIX,
 };
 
 /** `BASE_SYN3 | #1 | 04.11.26 12:15` or `EXPLORER_SYN3 | page-id | #1 | 04.11.26 12:15`. */
 const CONFIG_HEAD_RE =
-  /^\(?((?:BASE|EXPLORER|NOTES|LINKS|REVIEW)_SYN3)\)?\s*\|\s*(?:([^|#]+?)\s*\|\s*)?#(\d+)\s*\|\s*(\d{2}\.\d{2}\.\d{2}\s+\d{1,2}:\d{2})\s*$/i;
+  /^\(?((?:BASE|EXPLORER|NOTES|LINKS|FIGMA|REVIEW)_SYN3)\)?\s*\|\s*(?:([^|#]+?)\s*\|\s*)?#(\d+)\s*\|\s*(\d{2}\.\d{2}\.\d{2}\s+\d{1,2}:\d{2})\s*$/i;
 
 export const BASE_PATH = '.syn3/base.json';
 export const PAGES_DIR = '.syn3/pages';
@@ -60,6 +63,7 @@ export type CatalogChannels = {
   explorer?: string;
   notes?: string;
   links?: string;
+  figma?: string;
   review?: string;
   scenarios?: string;
 };
@@ -77,6 +81,7 @@ export interface ProjectChannels {
   files?: string;
   notes?: string;
   links?: string;
+  figma?: string;
   review?: string;
   scenarios?: string;
 }
@@ -87,6 +92,7 @@ export function packProjectChannels(channels: ProjectChannels): ProjectChannels 
     ...(channels.files?.trim() ? { files: channels.files.trim() } : {}),
     ...(channels.notes?.trim() ? { notes: channels.notes.trim() } : {}),
     ...(channels.links?.trim() ? { links: channels.links.trim() } : {}),
+    ...(channels.figma?.trim() ? { figma: channels.figma.trim() } : {}),
     ...(channels.review?.trim() ? { review: channels.review.trim() } : {}),
     ...(channels.scenarios?.trim() ? { scenarios: channels.scenarios.trim() } : {}),
   };
@@ -111,6 +117,8 @@ export interface ProjectPageEntry {
   name: string;
   kind: PageKind;
   description?: string;
+  /** Figma file keys. Only meaningful when `kind` is `figma`. */
+  figmaFiles?: string[];
   order: number;
 }
 
@@ -290,6 +298,9 @@ export function pageKindToConfigKind(kind: PageKind): ConfigMessageKind | undefi
   if (kind === 'links') {
     return 'LINKS';
   }
+  if (kind === 'figma') {
+    return 'FIGMA';
+  }
   if (kind === 'review') {
     return 'REVIEW';
   }
@@ -307,6 +318,9 @@ export function configKindToPageKind(kind: ConfigMessageKind): PageKind | undefi
   if (kind === 'LINKS') {
     return 'links';
   }
+  if (kind === 'FIGMA') {
+    return 'figma';
+  }
   if (kind === 'REVIEW') {
     return 'review';
   }
@@ -322,6 +336,9 @@ export function pageKindToChannelKey(kind: PageKind): keyof ProjectChannels {
   }
   if (kind === 'links') {
     return 'links';
+  }
+  if (kind === 'figma') {
+    return 'figma';
   }
   if (kind === 'scenarios') {
     return 'scenarios';
@@ -515,6 +532,7 @@ export function normalizeProjectChannels(raw: unknown): ProjectChannels {
     files,
     notes: pick('notes'),
     links: pick('links'),
+    figma: pick('figma'),
     review: pick('review'),
     scenarios: pick('scenarios'),
   });
@@ -532,6 +550,9 @@ export function resolveProjectChannel(
   }
   if (kind === 'LINKS') {
     return (channels.links || '').trim();
+  }
+  if (kind === 'FIGMA') {
+    return (channels.figma || '').trim();
   }
   if (kind === 'REVIEW') {
     return (channels.review || '').trim();

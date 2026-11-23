@@ -5124,6 +5124,43 @@ button.review-talk-btn:disabled {
   opacity: 0.38;
 }
 
+button.review-talk-btn.is-reveal {
+  flex: 0 0 auto;
+  margin-left: -8px;
+  max-width: 0;
+  min-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding: 0;
+  pointer-events: none;
+  transition:
+    max-width 240ms ease,
+    opacity 240ms ease,
+    margin-left 240ms ease;
+}
+
+button.review-talk-btn.is-reveal.is-shown {
+  margin-left: 0;
+  max-width: 32px;
+  opacity: 0.85;
+  padding: 2px;
+  pointer-events: auto;
+}
+
+button.review-talk-btn.is-reveal.is-shown:hover:not(:disabled) {
+  opacity: 1;
+}
+
+button.review-talk-btn.is-reveal.is-shown:disabled {
+  opacity: 0.38;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.review-talk-btn.is-reveal {
+    transition: none;
+  }
+}
+
 button.review-talk-btn svg {
   display: block;
   height: 16px;
@@ -5309,6 +5346,16 @@ button.review-talk-btn svg {
 }
 
 .review-talk-name {
+  font-size: 13px;
+  line-height: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-talk-reply {
+  color: var(--vscode-descriptionForeground, #8b8b8b);
   font-size: 13px;
   line-height: 1;
   min-width: 0;

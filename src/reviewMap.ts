@@ -24,6 +24,7 @@ import {
   formatReviewDiscordBody,
   formatTalkDiscordBody,
   isTalkMessage,
+  talkChipSource,
   parseDiscordProfileId,
   parseDiscordProfileName,
   parseTalkMessage,
@@ -177,6 +178,12 @@ export interface ReviewThreadMsg {
   avatar?: string;
   /** MS_SYN3 text after `avatar:`. */
   talkText?: string;
+  /** `id_source_type` on an MS_SYN3 reply. Empty when the message has no source. */
+  talkSourceType?: string;
+  /** `id_source_title` on an MS_SYN3 reply. */
+  talkSourceTitle?: string;
+  /** `lock: true` on this thread reply. */
+  locked?: boolean;
   /** `fixes:` / `bullet:` on this R_SYN3 or RR_SYN3 message. Absent until the line is written. */
   fixes?: ReviewFixState;
   /** `fix-n:` run counter. Absent on older messages, so the chip keeps the item list only. */
@@ -219,6 +226,10 @@ export interface ReviewChip {
   avatar?: string;
   /** MS_SYN3 text after `avatar:`. */
   talkText?: string;
+  /** `id_source_type` on an MS_SYN3 message. Empty when the message has no source. */
+  talkSourceType?: string;
+  /** `id_source_title` on an MS_SYN3 message. */
+  talkSourceTitle?: string;
   webUrl?: string;
   title?: string;
   draft?: boolean;
@@ -331,6 +342,8 @@ function toChip(
     profileName: talk?.profileName || parseDiscordProfileName(msg.content),
     avatar: talk?.avatar || '',
     talkText: talk?.text,
+    talkSourceType: talk?.source?.type,
+    talkSourceTitle: talk?.source?.title,
     webUrl: parsed.webUrl,
     title: isMr
       ? parsed.title
@@ -393,6 +406,9 @@ function toReplyBase(msg: DiscordMessage): ReviewThreadMsg {
     profileName: talk?.profileName || parseDiscordProfileName(msg.content),
     avatar: talk?.avatar || '',
     talkText: talk?.text,
+    talkSourceType: talk?.source?.type,
+    talkSourceTitle: talk?.source?.title,
+    locked: parseDiscordLock(msg.content),
     isExplain: explain,
     status: review || rereview ? parseReviewStatus(msg.content) : undefined,
     branch: explain ? parseReviewBranch(msg.content) : undefined,
@@ -5489,8 +5505,69 @@ export class ReviewMapController {
   }
 
   /**
-   * Post an MS_SYN3 message. No parent: channel root. Parent: reply in that
+   * Reply to a chip that already lives in a thread.
+   * The new MS_SYN3 is appended to that same thread. Discord cannot open a thread on a thread.
+   */
+  private async postTalkOnThreadChip(
+    pageId: string,
+    win: ReviewWindow,
+    token: string,
+    chip: DiscordMessage,
+    threadId: string,
+    text: string,
+  ): Promise<{ kind: 'state'; state: ReviewPageState } | { kind: 'error'; message: string }> {
+    const source = talkChipSource(chip.content);
+    if (!source) {
+      return {
+        kind: 'error',
+        message: 'Select an R_SYN3, RR_SYN3, W_SYN3, Z_SYN3 or MS_SYN3 chip',
+      };
+    }
+    if (parseDiscordLock(chip.content)) {
+      return { kind: 'error', message: 'Entity is locked' };
+    }
+    const owner = win.messages.find((item) => item.thread?.id === threadId);
+    if (owner && parseDiscordLock(owner.content)) {
+      return { kind: 'error', message: 'Entity is locked' };
+    }
+    if (owner && isMrMessage(owner.content) && parseMrChip(owner.content).status === 'closed') {
+      return { kind: 'error', message: 'MR is closed' };
+    }
+    const profile = this.profileContext();
+    const content = formatTalkDiscordBody({
+      profileId: profile.profileId,
+      profileName: profile.profileName,
+      text,
+      source: { id: chip.id, type: source.type, title: source.title },
+    });
+    const posted = await postChannelMessage(token, threadId, content);
+    if (!posted.ok) {
+      return { kind: 'error', message: posted.message };
+    }
+    const bucket = win.threads.get(threadId);
+    const known =
+      typeof owner?.thread?.messageCount === 'number'
+        ? owner.thread.messageCount
+        : bucket?.messageCount;
+    const postedCount = typeof known === 'number' ? known + 1 : undefined;
+    if (owner) {
+      const idx = win.messages.findIndex((item) => item.id === owner.id);
+      if (idx >= 0) {
+        win.messages[idx] = {
+          ...win.messages[idx],
+          thread: { id: threadId, messageCount: postedCount },
+          hasThread: true,
+        };
+      }
+    }
+    this.placeThreadPost(win, threadId, posted.value, postedCount);
+    return { kind: 'state', state: this.snapshot(pageId) };
+  }
+
+  /**
+   * Post an MS_SYN3 message. No parent: channel root. Channel parent: reply in that
    * MR, root review, or root talk thread (created as `reviews` or `messages`).
+   * A thread chip replies at the end of the thread it already belongs to.
    */
   async postTalk(
     pageId: string,
@@ -5522,7 +5599,14 @@ export class ReviewMapController {
       await this.appendPostedMessage(pageId, access.channelId, posted.value);
       return { kind: 'state', state: this.snapshot(pageId) };
     }
-    const parent = win.messages.find((item) => item.id === parentId);
+    const located = this.findReviewMessage(win, parentId);
+    if (!located) {
+      return { kind: 'error', message: 'Message not found on the map' };
+    }
+    if (located.kind === 'thread') {
+      return this.postTalkOnThreadChip(pageId, win, token, located.found, located.channelId, body);
+    }
+    const parent = located.found;
     if (!parent) {
       return { kind: 'error', message: 'Message not found on the map' };
     }

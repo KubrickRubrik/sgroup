@@ -106,6 +106,7 @@ import {
   type WorkingFocus,
 } from './positions';
 import { getSecret, SECRET_DISCORD, type AccessStore } from './accessStore';
+import { normalizeStoredFigmaFiles } from './figmaLink';
 
 export type { WorkingFocus };
 
@@ -115,6 +116,7 @@ export type CatalogChannels = {
   explorer?: string;
   notes?: string;
   links?: string;
+  figma?: string;
   review?: string;
   scenarios?: string;
 };
@@ -151,12 +153,17 @@ const LEGACY_HISTORY_PATH = '.sgroup/history.json';
 export type ColumnsMode = 'flow' | '1' | '2' | '3';
 export const COLUMNS_MODES: readonly ColumnsMode[] = ['flow', '1', '2', '3'];
 
-/** Max named map pages (one per kind: files, notes, links, review, scenarios). */
-export const MAX_PAGES = 5;
+/** Max named map pages (one per kind: files, notes, links, figma, review, scenarios). */
+export const MAX_PAGES = 6;
 /** Default page id created for legacy files and empty stores. */
 export const DEFAULT_PAGE_ID = 'map';
 
-export type PageKind = 'files' | 'notes' | 'links' | 'review' | 'scenarios';
+export type PageKind = 'files' | 'notes' | 'links' | 'figma' | 'review' | 'scenarios';
+
+/** Links and Figma share the link-card canvas. */
+export function isLinkMapKind(kind: PageKind | undefined): kind is 'links' | 'figma' {
+  return kind === 'links' || kind === 'figma';
+}
 export type MapLayout = 'chips' | 'list';
 export type GroupsLayout = 'flow' | '1' | '2' | '3';
 
@@ -189,6 +196,7 @@ export function normalizePageKind(value: unknown): PageKind | undefined {
   return value === 'files' ||
     value === 'notes' ||
     value === 'links' ||
+    value === 'figma' ||
     value === 'review' ||
     value === 'scenarios'
     ? value
@@ -589,6 +597,8 @@ export interface PageDef {
   kind: PageKind;
   /** Short description shown in the page settings panel. */
   description?: string;
+  /** Figma file keys this map is limited to. Only on kind `figma`. */
+  figmaFiles?: string[];
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -635,7 +645,7 @@ export const LINK_COMPONENT_LABEL = 'Ваш компонент';
 
 /**
  * Link-map node: root = layout (color), children = components.
- * Lives only on pages with kind `links`.
+ * Lives only on pages with kind `links` or `figma`.
  */
 export interface LinkDef {
   label: string;
@@ -2265,6 +2275,7 @@ export class MarkerStore implements vscode.Disposable {
       channels.files?.trim() ||
       channels.notes?.trim() ||
       channels.links?.trim() ||
+      channels.figma?.trim() ||
       channels.review?.trim() ||
       channels.scenarios?.trim()
     ) {
@@ -2366,6 +2377,7 @@ export class MarkerStore implements vscode.Disposable {
       explorer: channels.files,
       notes: channels.notes,
       links: channels.links,
+      figma: channels.figma,
       review: channels.review,
       scenarios: channels.scenarios,
     };
@@ -2405,6 +2417,9 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (partial.links !== undefined) {
         projectPartial.links = partial.links.trim();
+      }
+      if (partial.figma !== undefined) {
+        projectPartial.figma = partial.figma.trim();
       }
       if (partial.review !== undefined) {
         projectPartial.review = partial.review.trim();
@@ -3690,7 +3705,7 @@ export class MarkerStore implements vscode.Disposable {
       page.description = text;
     }
     this.data.pages[id] = page;
-    if (kind === 'links') {
+    if (isLinkMapKind(kind)) {
       this.insertLinkBranch(id, 2);
     }
     this.projectDirty = true;
@@ -3725,6 +3740,20 @@ export class MarkerStore implements vscode.Disposable {
     }
     await this.bumpPageSettings(id);
     await this.commit();
+  }
+
+  /** File keys for a Figma map page. Empty clears the list. Bumps page settings, not map content. */
+  async setPageFigmaFiles(pageId: string, keys: string[]): Promise<void> {
+    const page = this.data.pages[pageId];
+    if (!page || page.kind !== 'figma') {
+      return;
+    }
+    if (keys.length > 0) {
+      page.figmaFiles = keys;
+    } else {
+      delete page.figmaFiles;
+    }
+    await this.bumpPageSettings(pageId);
   }
 
   /** Review-map chip scheme for the active profile in the active project. */
@@ -3768,6 +3797,11 @@ export class MarkerStore implements vscode.Disposable {
         entry.version = (entry.version || 1) + 1;
         entry.name = page?.name ?? entry.name;
         entry.description = page?.description;
+        if (page?.kind === 'figma' && page.figmaFiles?.length) {
+          entry.figmaFiles = page.figmaFiles;
+        } else {
+          delete entry.figmaFiles;
+        }
         entry.order = page?.order ?? entry.order;
       }
       this.projectDirty = true;
@@ -4508,7 +4542,7 @@ export class MarkerStore implements vscode.Disposable {
    */
   async createLinkLayout(pageId: string): Promise<string | undefined> {
     const page = this.data.pages[pageId];
-    if (!page || page.kind !== 'links') {
+    if (!page || !isLinkMapKind(page.kind)) {
       return undefined;
     }
     const rootId = this.insertLinkBranch(pageId, 1);
@@ -5683,7 +5717,7 @@ export class MarkerStore implements vscode.Disposable {
       }
     }
     const seen = new Set<string>();
-    const scan = async (channel: string, kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW') => {
+    const scan = async (channel: string, kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'FIGMA' | 'REVIEW') => {
       const key = `${kind}:${channel}`;
       if (!channel || seen.has(key)) {
         return;
@@ -5734,7 +5768,7 @@ export class MarkerStore implements vscode.Disposable {
       }
     };
     // Review channel stores MR messages, not page content configs.
-    for (const kind of ['EXPLORER', 'NOTES', 'LINKS'] as const) {
+    for (const kind of ['EXPLORER', 'NOTES', 'LINKS', 'FIGMA'] as const) {
       const channel = resolveProjectChannel(this.activeProjectChannels(), kind);
       await scan(channel, kind);
     }
@@ -5751,7 +5785,7 @@ export class MarkerStore implements vscode.Disposable {
 
   /** Local pages of this kind whose messages are posted to `channel`. */
   private pageIdsInChannel(
-    kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'REVIEW',
+    kind: 'EXPLORER' | 'NOTES' | 'LINKS' | 'FIGMA' | 'REVIEW',
     channel: string,
   ): string[] {
     const ids: string[] = [];
@@ -6297,6 +6331,7 @@ export class MarkerStore implements vscode.Disposable {
         ...(meta?.description || legacyPage?.description
           ? { description: meta?.description || legacyPage?.description }
           : {}),
+        ...(meta?.kind === 'figma' && meta.figmaFiles?.length ? { figmaFiles: meta.figmaFiles } : {}),
       };
     }
     const page = this.data.pages[pageId];
@@ -6308,6 +6343,11 @@ export class MarkerStore implements vscode.Disposable {
         page.description = meta.description;
       } else {
         delete page.description;
+      }
+      if (page.kind === 'figma' && meta.figmaFiles?.length) {
+        page.figmaFiles = meta.figmaFiles;
+      } else {
+        delete page.figmaFiles;
       }
     } else if (page && legacyPage) {
       page.name = legacyPage.name || page.name;
@@ -9515,10 +9555,12 @@ function normalize(raw: unknown): MarkersFile {
       const name =
         typeof def.name === 'string' && def.name.trim() ? capitalize(def.name.trim()) : capitalize(id);
       const description = normalizeGroupDescription(def.description);
+      const figmaFiles = kind === 'figma' ? normalizeStoredFigmaFiles(def.figmaFiles) : undefined;
       result.pages[id] = {
         name,
         kind,
         ...(description ? { description } : {}),
+        ...(figmaFiles ? { figmaFiles } : {}),
         order: typeof def.order === 'number' ? def.order : index,
         layout: normalizeMapLayout(def.layout),
         groupsLayout: normalizeGroupsLayout(def.groupsLayout),

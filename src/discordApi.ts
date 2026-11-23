@@ -13,7 +13,7 @@ export const REREVIEW_PREFIX = 'RR_SYN3';
 export const EXPLAIN_PREFIX = 'W_SYN3';
 /** Study («Изучено») message prefix: `Z_SYN3: Изучено | Ревью N | branch | H:1, 2`. */
 export const STUDY_PREFIX = 'Z_SYN3';
-/** Profile talk on the review map: `MS_SYN3:` plus `id_profile`, `profile_name`, `avatar:`. */
+/** Profile talk on the review map: `MS_SYN3:` plus `id_profile`, `profile_name`, optional source lines, `avatar:`. */
 export const TALK_PREFIX = 'MS_SYN3';
 /** Chip and file title for a study message. */
 export const STUDY_TITLE = 'Изучено';
@@ -1324,6 +1324,18 @@ function branchTreeUrl(provider: 'gitlab' | 'github', repoUrl: string, branch: s
 const GENERAL_PROFILE_STORE_ID = 'general';
 const PROFILE_ID_LINE_RE = /^id_profile:\s*(.*)$/i;
 const PROFILE_NAME_LINE_RE = /^profile_name:\s*(.*)$/i;
+const SOURCE_ID_LINE_RE = /^id_source:\s*(.*)$/i;
+const SOURCE_TYPE_LINE_RE = /^id_source_type:\s*(.*)$/i;
+const SOURCE_TITLE_LINE_RE = /^id_source_title:\s*(.*)$/i;
+const REVIEW_TITLE_RE = /(?:Ревью|Review)\s+\d+/i;
+const REREVIEW_TITLE_RE = /(?:Реревью|Rereview)\s+\d+/i;
+
+/** Chip a talk message answers. Stored on `MS_SYN3` before `avatar:`. */
+export type TalkSourceStamp = {
+  id: string;
+  type: string;
+  title: string;
+};
 
 /** Discord `id_profile`. The shared profile is `1`; other profiles keep their store id. */
 export function discordProfileId(profileId: string | undefined): string {
@@ -1389,19 +1401,34 @@ export function parseTalkAvatar(content: string): string {
 
 /** Header fields and the text after `avatar:` for an `MS_SYN3` message. */
 export function parseTalkMessage(content: string):
-  | { profileId: string; profileName: string; avatar: string; text: string }
+  | {
+      profileId: string;
+      profileName: string;
+      avatar: string;
+      text: string;
+      source?: TalkSourceStamp;
+    }
   | undefined {
   if (!isTalkMessage(content)) {
     return undefined;
   }
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const avatarAt = lines.findIndex((line) => AVATAR_LINE_RE.test(line.trim()));
+  const header = avatarAt >= 0 ? lines.slice(0, avatarAt) : lines;
   const text = avatarAt >= 0 ? lines.slice(avatarAt + 1).join('\n') : '';
+  const sourceId = readMetaLine(header, SOURCE_ID_LINE_RE) || '';
+  const sourceType = readMetaLine(header, SOURCE_TYPE_LINE_RE) || '';
+  const sourceTitle = readMetaLine(header, SOURCE_TITLE_LINE_RE) || '';
+  const source =
+    sourceId && sourceType && sourceTitle
+      ? { id: sourceId, type: sourceType, title: sourceTitle }
+      : undefined;
   return {
     profileId: parseDiscordProfileId(content),
     profileName: parseDiscordProfileName(content),
     avatar: parseTalkAvatar(content),
     text,
+    source,
   };
 }
 
@@ -1410,24 +1437,46 @@ export function parseTalkMessage(content: string):
  * id_profile: 1
  * profile_name: Общий
  * lock: false
+ * id_source: 123
+ * id_source_type: R_SYN3
+ * id_source_title: Ревью 2
  * avatar:
  * Текст
  *
+ * Source lines are omitted when the message is not a reply to a chip.
  * Text is everything after `avatar:`, including lines that look like keys.
  */
 export function formatTalkDiscordBody(opts: {
   profileId?: string;
   profileName?: string;
   text: string;
+  source?: TalkSourceStamp;
 }): string {
   const text = opts.text.replace(/\r\n/g, '\n').replace(/\s+$/g, '');
-  return [
+  const lines = [
     `${TALK_PREFIX}:`,
     ...formatProfileLines(opts.profileId, opts.profileName),
     'lock: false',
-    'avatar:',
-    text,
-  ].join('\n');
+  ];
+  const source = talkSourceLines(opts.source);
+  if (source) {
+    lines.push(...source);
+  }
+  lines.push('avatar:', text);
+  return lines.join('\n');
+}
+
+function talkSourceLines(source: TalkSourceStamp | undefined): string[] | undefined {
+  if (!source) {
+    return undefined;
+  }
+  const id = source.id.trim();
+  const type = source.type.trim();
+  const title = source.title.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!id || !type || !title) {
+    return undefined;
+  }
+  return [`id_source: ${id}`, `id_source_type: ${type}`, `id_source_title: ${title}`];
 }
 
 /**
@@ -1830,6 +1879,43 @@ export function parseRereviewParentNumber(pill: string): number | undefined {
   }
   const legacy = /на\s+(?:Ревью|Review)\s+(\d+)\b/i.exec(pill);
   return legacy ? Number(legacy[1]) : undefined;
+}
+
+function numberedChipTitle(content: string, pill: string | undefined, re: RegExp): string {
+  const segment = (pill || '').split(/\s*\|\s*/)[0]?.trim() || '';
+  const fromPill = re.exec(segment);
+  if (fromPill) {
+    return fromPill[0];
+  }
+  const head = content.trimStart().split(/\r?\n/, 1)[0] || '';
+  const fromHead = re.exec(head);
+  return fromHead ? fromHead[0] : '';
+}
+
+/**
+ * Short label of a thread chip a talk message can answer.
+ * Review and rereview keep `Ревью N` / `Реревью N`. Explain and study stay the fixed titles.
+ */
+export function talkChipSource(content: string): { type: string; title: string } | undefined {
+  if (isRereviewMessage(content)) {
+    const title = numberedChipTitle(content, parseRereviewMessagePill(content), REREVIEW_TITLE_RE);
+    return title ? { type: REREVIEW_PREFIX, title } : undefined;
+  }
+  if (isReviewMessage(content)) {
+    const title = numberedChipTitle(content, parseReviewMessagePill(content), REVIEW_TITLE_RE);
+    return title ? { type: REVIEW_PREFIX, title } : undefined;
+  }
+  if (isExplainMessage(content)) {
+    return { type: EXPLAIN_PREFIX, title: EXPLAIN_TITLE };
+  }
+  if (isStudyMessage(content)) {
+    return { type: STUDY_PREFIX, title: STUDY_TITLE };
+  }
+  if (isTalkMessage(content)) {
+    const name = parseDiscordProfileName(content).trim();
+    return { type: TALK_PREFIX, title: name || '—' };
+  }
+  return undefined;
 }
 
 export type ScenarioGroupStatus = 'open' | 'lock';

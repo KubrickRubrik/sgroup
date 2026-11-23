@@ -212,49 +212,138 @@ latest_vsix_file() {
     fi
 }
 
-# Окно может быть на именованном профиле (не Default). CLI без --profile
-# пишет в ~/.cursor/extensions, а окно продолжает грузить предыдущую версию.
-workspace_profile_name() {
+# Оба экземпляра Cursor: обычный и Cursor-2 (--user-data-dir + свой extensions-dir).
+# Ставим в каждый. Профиль берётся из storage этого экземпляра.
+# Строки: open|other|fallback \t userDataDir \t extensionsDir \t profileName
+resolve_install_targets() {
     node - "$ROOT" <<'NODE'
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const root = process.argv[2];
-const storage = path.join(process.env.HOME, 'Library/Application Support/Cursor/User/globalStorage/storage.json');
-if (!fs.existsSync(storage)) process.exit(0);
-const data = JSON.parse(fs.readFileSync(storage, 'utf8'));
 const uri = pathToFileURL(root).href;
-const workspaces = (data.profileAssociations && data.profileAssociations.workspaces) || {};
-const id = workspaces[uri] || workspaces[decodeURI(uri)];
-if (!id || id === '__default__profile__') process.exit(0);
-const prof = (data.userDataProfiles || []).find((p) => p.location === id);
-if (prof && prof.name) process.stdout.write(prof.name);
+const decoded = decodeURI(uri);
+const home = process.env.HOME;
+const appSupport = path.join(home, 'Library/Application Support');
+const defaultUserData = path.join(appSupport, 'Cursor');
+const defaultExtensions = path.join(home, '.cursor/extensions');
+
+function flag(cmd, name) {
+    const re = new RegExp('--' + name + '(?:=|\\s+)([\\s\\S]*?)(?=\\s+--|$)');
+    const match = cmd.match(re);
+    return match ? match[1].trim() : '';
+}
+
+function sameUri(value) {
+    if (!value) return false;
+    return value === uri || decodeURI(value) === decoded;
+}
+
+function profileName(data) {
+    if (!data) return '';
+    const workspaces = (data.profileAssociations && data.profileAssociations.workspaces) || {};
+    const id = workspaces[uri] || workspaces[decoded] || '';
+    if (!id || id === '__default__profile__') return '';
+    const prof = (data.userDataProfiles || []).find((p) => p.location === id);
+    return prof && prof.name ? prof.name : '';
+}
+
+function readStorage(userData) {
+    const storage = path.join(userData, 'User/globalStorage/storage.json');
+    if (!fs.existsSync(storage)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(storage, 'utf8'));
+    } catch {
+        return null;
+    }
+}
+
+function windowHasRoot(data) {
+    const state = (data && data.windowsState) || {};
+    const windows = [state.lastActiveWindow, ...(state.openedWindows || [])].filter(Boolean);
+    return windows.some((win) => sameUri(win.folder) || sameUri(win.workspace));
+}
+
+function extensionsForUserData(userData) {
+    const name = path.basename(userData);
+    if (name === 'Cursor') return defaultExtensions;
+    const match = name.match(/^Cursor(-\d+)$/);
+    if (!match) return '';
+    return path.join(home, '.cursor' + match[1], 'extensions');
+}
+
+const hits = [];
+const seenUserData = new Set();
+function addTarget(userData, extensions) {
+    if (!userData || !extensions || seenUserData.has(userData)) return;
+    if (!fs.existsSync(userData)) return;
+    seenUserData.add(userData);
+    const data = readStorage(userData);
+    const kind = windowHasRoot(data) ? 'open' : 'other';
+    hits.push([kind, userData, extensions, profileName(data)].join('\t'));
+}
+
+let ps = '';
+try {
+    ps = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+} catch {
+    ps = '';
+}
+
+for (const line of ps.split('\n')) {
+    const cmd = line.trim();
+    if (!/\/Contents\/MacOS\/Cursor(?:\s|$)/.test(cmd)) continue;
+    if (cmd.includes('Cursor Helper')) continue;
+    if (/--(install-extension|uninstall-extension|list-extensions)(?:\s|=|$)/.test(cmd)) continue;
+    const userData = flag(cmd, 'user-data-dir') || defaultUserData;
+    const extensions = flag(cmd, 'extensions-dir') || extensionsForUserData(userData) || defaultExtensions;
+    addTarget(userData, extensions);
+}
+
+if (fs.existsSync(appSupport)) {
+    for (const name of fs.readdirSync(appSupport)) {
+        if (!/^Cursor(-\d+)?$/.test(name)) continue;
+        const userData = path.join(appSupport, name);
+        addTarget(userData, extensionsForUserData(userData));
+    }
+}
+
+if (!hits.length) {
+    const fallback = readStorage(defaultUserData);
+    process.stdout.write(['fallback', defaultUserData, defaultExtensions, profileName(fallback)].join('\t') + '\n');
+    process.exit(0);
+}
+
+hits.sort((a, b) => Number(b.startsWith('open\t')) - Number(a.startsWith('open\t')));
+process.stdout.write(hits.join('\n') + '\n');
 NODE
 }
 
-# Ждёт, пока профиль ЭТОГО окна реально указывает на новую распаковку.
+# Ждёт, пока extensions.json ЭТОГО окна указывает на новую распаковку.
 # started_ms — Date.now() до вызова CLI: старая папка с тем же номером версии не считается.
 wait_profile_install() {
-    local ver="$1" started_ms="$2"
-    node - "$ROOT" "$ver" "$started_ms" <<'NODE'
+    local ver="$1" started_ms="$2" user_data="$3" ext_dir="$4"
+    node - "$ROOT" "$ver" "$started_ms" "$user_data" "$ext_dir" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const root = process.argv[2];
 const ver = process.argv[3];
 const started = Number(process.argv[4]);
-const home = process.env.HOME;
-const storage = path.join(home, 'Library/Application Support/Cursor/User/globalStorage/storage.json');
+const userData = process.argv[5];
+const extDir = process.argv[6];
+const storage = path.join(userData, 'User/globalStorage/storage.json');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const extId = `${pkg.publisher}.${pkg.name}`;
-let file = path.join(home, '.cursor/extensions/extensions.json');
+let file = path.join(extDir, 'extensions.json');
 if (fs.existsSync(storage)) {
     const data = JSON.parse(fs.readFileSync(storage, 'utf8'));
     const uri = pathToFileURL(root).href;
     const workspaces = (data.profileAssociations && data.profileAssociations.workspaces) || {};
     const id = workspaces[uri] || workspaces[decodeURI(uri)];
     if (id && id !== '__default__profile__') {
-        file = path.join(home, 'Library/Application Support/Cursor/User/profiles', id, 'extensions.json');
+        file = path.join(userData, 'User/profiles', id, 'extensions.json');
     }
 }
 if (!fs.existsSync(file)) process.exit(1);
@@ -272,8 +361,52 @@ process.exit(inner.version === ver ? 0 : 1);
 NODE
 }
 
+install_vsix_into() {
+    local file="$1" cli="$2" kind="$3" user_data="$4" ext_dir="$5" profile="$6"
+    local started i ver
+    if [[ "$kind" == "fallback" ]]; then
+        echo "Окно с этим проектом не найдено. Ставлю в стандартный каталог Cursor." >&2
+        echo "Если проект открыт во втором экземпляре, новая версия туда не попадёт." >&2
+    fi
+    echo "→ install vsix: $file"
+    echo "→ CLI: $cli"
+    echo "→ user-data-dir: $user_data"
+    echo "→ extensions-dir: $ext_dir"
+    if [[ -n "$profile" ]]; then
+        echo "→ profile: $profile"
+    fi
+    started="$(node -p 'Date.now()')"
+    local -a args
+    args=("$cli" --user-data-dir "$user_data" --extensions-dir "$ext_dir")
+    if [[ -n "$profile" ]]; then
+        args+=(--profile "$profile")
+    fi
+    args+=(--install-extension "$ROOT/$file" --force)
+    "${args[@]}"
+    ver="$(basename "$file" .vsix)"
+    ver="${ver#syn3-}"
+    ver="${ver#syngroup-}"
+    if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        ver="$(pkg_version)"
+    fi
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        if wait_profile_install "$ver" "$started" "$user_data" "$ext_dir"; then
+            echo "Установлено: v${ver}"
+            echo "  $ext_dir"
+            if [[ "$kind" != "open" ]]; then
+                echo "  Это другой экземпляр. Он подхватит версию после своего Reload Window."
+            fi
+            return 0
+        fi
+        sleep 1
+    done
+    echo "CLI ответил успехом, но окно всё ещё не на v${ver}." >&2
+    echo "Каталог: $ext_dir" >&2
+    return 1
+}
+
 install_vsix() {
-    local file cli profile started i
+    local file cli targets kind user_data ext_dir profile
     file="${1:-}"
     if [[ -z "$file" ]]; then
         file="$(latest_vsix_file)" || {
@@ -290,35 +423,15 @@ install_vsix() {
         echo "Установи вручную: $ROOT/$file" >&2
         return 1
     }
-    profile="$(workspace_profile_name || true)"
-    echo "→ install vsix: $file"
-    echo "→ CLI: $cli"
-    if [[ -n "$profile" ]]; then
-        echo "→ profile: $profile"
+    targets="$(resolve_install_targets)" || true
+    if [[ -z "$targets" ]]; then
+        echo "Не удалось определить каталог Cursor." >&2
+        return 1
     fi
-    started="$(node -p 'Date.now()')"
-    if [[ -n "$profile" ]]; then
-        "$cli" --profile "$profile" --install-extension "$ROOT/$file" --force
-    else
-        "$cli" --install-extension "$ROOT/$file" --force
-    fi
-    local ver
-    ver="$(basename "$file" .vsix)"
-    ver="${ver#syn3-}"
-    ver="${ver#syngroup-}"
-    if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-        ver="$(pkg_version)"
-    fi
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-        if wait_profile_install "$ver" "$started"; then
-            echo "Установлено в профиль окна: v${ver}"
-            return 0
-        fi
-        sleep 1
-    done
-    echo "CLI ответил успехом, но профиль окна всё ещё не на v${ver}." >&2
-    echo "Расширение продолжит видеть предыдущую версию, пока профиль не обновится." >&2
-    return 1
+    while IFS=$'\t' read -r kind user_data ext_dir profile; do
+        [[ -z "$kind" ]] && continue
+        install_vsix_into "$file" "$cli" "$kind" "$user_data" "$ext_dir" "$profile" || return 1
+    done <<< "$targets"
 }
 
 # CLI/AppleScript не умеют надёжно reload. Расширение Syn3 смотрит этот файл
@@ -393,7 +506,7 @@ usage() {
   ./sh_vsix.sh --force package перезаписать существующий .vsix
   ./sh_vsix.sh -h|--help
 
-После сборки: install в профиль этого окна, затем Reload Window.
+После сборки: install во все экземпляры Cursor (обычный и Cursor-2), затем Reload Window.
 Версии: baseline = max(package.json, max version/*.vsix); bump пропускает занятые.
 EOF
 }

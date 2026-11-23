@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { normalizeStoredFigmaFiles } from './figmaLink';
 import {
   type BaseConfigFile,
   type BaseProfileEntry,
@@ -103,6 +104,7 @@ function normalizePageKindLocal(value: unknown): PageKind | undefined {
   return value === 'files' ||
     value === 'notes' ||
     value === 'links' ||
+    value === 'figma' ||
     value === 'review' ||
     value === 'scenarios'
     ? value
@@ -243,6 +245,7 @@ export function projectPageEntryFromPage(page: PageDef, version = 1): ProjectPag
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
+    ...(page.kind === 'figma' && page.figmaFiles?.length ? { figmaFiles: page.figmaFiles } : {}),
   };
 }
 
@@ -494,6 +497,7 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
   const kind = normalizePageKindLocal(source.kind) ?? 'files';
   const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : id;
   const description = normalizeGroupDescriptionLocal(source.description);
+  const figmaFiles = kind === 'figma' ? normalizeStoredFigmaFiles(source.figmaFiles) : undefined;
   const version =
     typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
       ? Math.floor(source.version)
@@ -504,6 +508,7 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
     kind,
     order: typeof source.order === 'number' && Number.isFinite(source.order) ? source.order : index,
     ...(description ? { description } : {}),
+    ...(figmaFiles ? { figmaFiles } : {}),
   };
 }
 
@@ -1260,6 +1265,7 @@ export function assembleSplitWorkspace(
         groupsLayout: layout.groupsLayout,
         collapsed: emptyCollapsedLocal(),
         ...(meta.description ? { description: meta.description } : {}),
+        ...(meta.kind === 'figma' && meta.figmaFiles?.length ? { figmaFiles: meta.figmaFiles } : {}),
       };
       if (file.cloud) {
         pageCloud[pageId] = file.cloud;
@@ -1352,6 +1358,7 @@ function packWirePageEntry(page: ProjectPageEntry): Record<string, unknown> {
     kind: page.kind,
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
+    ...(page.kind === 'figma' && page.figmaFiles?.length ? { figmaFiles: page.figmaFiles } : {}),
   };
 }
 
@@ -1515,6 +1522,7 @@ export function mergeProjectChannels(
     files: partial.files !== undefined ? partial.files : current.files,
     notes: partial.notes !== undefined ? partial.notes : current.notes,
     links: partial.links !== undefined ? partial.links : current.links,
+    figma: partial.figma !== undefined ? partial.figma : current.figma,
     review: partial.review !== undefined ? partial.review : current.review,
     scenarios: partial.scenarios !== undefined ? partial.scenarios : current.scenarios,
   });
