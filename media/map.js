@@ -16510,6 +16510,14 @@
         vscode.postMessage({ type: 'createLinkChild', parentId: link.id });
       }
     });
+    const deleteBtn = menuAction(t('menuDelete'));
+    deleteBtn.disabled = isLocked(link) || !link.canDelete;
+    deleteBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (!deleteBtn.disabled) {
+        vscode.postMessage({ type: 'deleteLink', linkId: link.id });
+      }
+    });
     openMenuState = {
       kind: 'context',
       viewExpanded: false,
@@ -16520,7 +16528,7 @@
       y,
     };
     const scroller = ensureMenuChrome(contextMenu).scroller;
-    scroller.replaceChildren(settingsBtn, createBtn);
+    scroller.replaceChildren(settingsBtn, createBtn, deleteBtn);
     updateMenuScrollbar(contextMenu);
     contextMenu.hidden = false;
     positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
