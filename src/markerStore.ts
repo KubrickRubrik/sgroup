@@ -24,6 +24,16 @@ import {
 } from './history';
 import { normalizeLocale, Syn3Locale } from './i18n';
 import {
+  figmaDepthLabel,
+  figmaSegmentLabel,
+  FIGMA_LAYER_LABEL,
+  FIGMA_PAGE_LABEL,
+  parseFigmaTag,
+  readFigmaLinkMeta,
+  type FigmaTagHit,
+  type FigmaTagSource,
+} from './figmaTags';
+import {
   isLinkPaletteColor,
   LINK_PALETTE_DEFAULT,
   LINK_PALETTE_HEX,
@@ -239,6 +249,12 @@ export interface StyleProfile {
   scenarioSkillPath?: string;
   /** Absolute or workspace-relative path to the Figma tag skill. */
   figmaSkillPath?: string;
+  /** Optional Cursor Agent `--model` for the Figma tag scan. Empty → CLI default. */
+  figmaModel?: string;
+  /** Print model reasoning in the Figma tag terminal. Absent means off. */
+  figmaPrintThinking?: boolean;
+  /** When false, hide tool-call lines in the Figma tag terminal. Absent means show them. */
+  figmaPrintTools?: boolean;
   /** Optional Cursor Agent / chat model for scenarios. Empty → default. */
   scenarioModel?: string;
   /** Ask the scenarios chat to keep reasoning out of the md file. */
@@ -664,6 +680,10 @@ export interface LinkDef {
   order: number;
   /** When true, map edits to this node are blocked. Absent means open. */
   locked?: true;
+  /** Tag path without parentheses. Set by «формировать». */
+  figmaTag?: string;
+  /** Every file and link collected for this path. The chip `url` is the first one. */
+  figmaSources?: FigmaTagSource[];
 }
 
 export function defaultPage(name = 'Карта'): PageDef {
@@ -1762,6 +1782,33 @@ export class MarkerStore implements vscode.Disposable {
     return (profile?.figmaSkillPath ?? '').trim();
   }
 
+  /** Figma tag agent model. Empty until the page settings store one. */
+  activeFigmaModel(): string {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    return (profile?.figmaModel ?? '').trim().toLowerCase();
+  }
+
+  async setActiveFigmaModel(figmaModel: string): Promise<void> {
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      if (!profile) {
+        return;
+      }
+      const next = figmaModel.trim().toLowerCase();
+      if (next) {
+        profile.figmaModel = next;
+      } else {
+        delete profile.figmaModel;
+      }
+      await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
+  }
+
   async setActiveFigmaSkillPath(figmaSkillPath: string): Promise<void> {
     await this.enqueue(async () => {
       const id = this.ensureActiveProfileId();
@@ -1774,6 +1821,47 @@ export class MarkerStore implements vscode.Disposable {
         profile.figmaSkillPath = next;
       } else {
         delete profile.figmaSkillPath;
+      }
+      await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
+  }
+
+  /** Terminal print flags for the Figma tag agent. Thinking is off until stored; tools are on. */
+  activeFigmaPrint(): { printThinking: boolean; printTools: boolean } {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    return {
+      printThinking: profile?.figmaPrintThinking === true,
+      printTools: profile?.figmaPrintTools !== false,
+    };
+  }
+
+  async setActiveFigmaPrint(partial: {
+    figmaPrintThinking?: boolean;
+    figmaPrintTools?: boolean;
+  }): Promise<void> {
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      if (!profile) {
+        return;
+      }
+      if (partial.figmaPrintThinking !== undefined) {
+        if (partial.figmaPrintThinking) {
+          profile.figmaPrintThinking = true;
+        } else {
+          delete profile.figmaPrintThinking;
+        }
+      }
+      if (partial.figmaPrintTools !== undefined) {
+        if (partial.figmaPrintTools) {
+          delete profile.figmaPrintTools;
+        } else {
+          profile.figmaPrintTools = false;
+        }
       }
       await this.persistProfiles();
       await this.persistBaseOnly();
@@ -4588,12 +4676,128 @@ export class MarkerStore implements vscode.Disposable {
     if (this.linkDepthOf(parentId) >= MAX_MARKER_DEPTH) {
       return undefined;
     }
+    const pageId = this.pageOfLink(parentId);
+    const figma = pageId ? this.data.pages[pageId]?.kind === 'figma' : false;
     const id = this.insertLinkNode({
-      label: LINK_COMPONENT_LABEL,
+      label: figma ? figmaDepthLabel(this.linkDepthOf(parentId) + 1) : LINK_COMPONENT_LABEL,
       parent: parentId,
     });
     await this.commit();
     return id;
+  }
+
+  /**
+   * Add tag chips on a Figma page. Existing chips and manual links stay.
+   * The same path appends a link that is not already stored. The visible
+   * label and the first url are left as they are.
+   */
+  async mergeFigmaTagHits(pageId: string, hits: FigmaTagHit[]): Promise<void> {
+    const page = this.data.pages[pageId];
+    if (!page || page.kind !== 'figma' || hits.length === 0) {
+      return;
+    }
+    type Pending = {
+      key: string;
+      depth: number;
+      parentKey?: string;
+      title?: string;
+      sources: FigmaTagSource[];
+    };
+    const byKey = new Map<string, Pending>();
+    const ensure = (key: string, depth: number, parentKey: string | undefined): Pending => {
+      const found = byKey.get(key);
+      if (found) {
+        return found;
+      }
+      const row: Pending = { key, depth, ...(parentKey ? { parentKey } : {}), sources: [] };
+      byKey.set(key, row);
+      return row;
+    };
+    for (const hit of hits) {
+      const parsed = parseFigmaTag(hit.tag);
+      const link = hit.link.trim();
+      const fileUrl = hit.fileUrl.trim();
+      if (!parsed || !link || !fileUrl) {
+        continue;
+      }
+      for (const step of parsed.chain) {
+        const parentKey = step.depth === 0 ? undefined : parsed.chain[step.depth - 1]?.key;
+        const row = ensure(step.key, step.depth, parentKey);
+        if (step.title && !row.title) {
+          row.title = step.title;
+        }
+      }
+      const leaf = byKey.get(parsed.key);
+      if (leaf && !leaf.sources.some((source) => source.link === link)) {
+        leaf.sources.push({ fileUrl, link, tag: hit.tag.trim() });
+      }
+    }
+    if (byKey.size === 0) {
+      return;
+    }
+    const existing = new Map<string, string>();
+    for (const [id, def] of Object.entries(this.data.links)) {
+      if (def.figmaTag && this.pageOfLink(id) === pageId && !existing.has(def.figmaTag)) {
+        existing.set(def.figmaTag, id);
+      }
+    }
+    const rows = [...byKey.values()].sort(
+      (a, b) => a.depth - b.depth || a.key.localeCompare(b.key),
+    );
+    let changed = false;
+    for (const row of rows) {
+      const id = existing.get(row.key);
+      if (id) {
+        const def = this.data.links[id];
+        if (!def) {
+          continue;
+        }
+        let added = false;
+        for (const source of row.sources) {
+          const known = new Set((def.figmaSources ?? []).map((item) => item.link));
+          if (def.url) {
+            known.add(def.url);
+          }
+          if (known.has(source.link)) {
+            continue;
+          }
+          def.figmaSources = [...(def.figmaSources ?? []), source];
+          added = true;
+        }
+        if (!def.url) {
+          const first = def.figmaSources?.[0]?.link;
+          if (first) {
+            def.url = first;
+            added = true;
+          }
+        }
+        if (added) {
+          changed = true;
+        }
+        continue;
+      }
+      const parentId = row.parentKey ? existing.get(row.parentKey) : undefined;
+      if (row.parentKey && !parentId) {
+        continue;
+      }
+      if (parentId && this.linkDepthOf(parentId) >= MAX_MARKER_DEPTH) {
+        continue;
+      }
+      const newId = this.insertLinkNode({
+        label: row.title || figmaSegmentLabel(row.key),
+        page: parentId ? undefined : pageId,
+        parent: parentId,
+        color: parentId ? undefined : this.nextLinkColor(pageId),
+        url: row.sources[0]?.link,
+        figmaTag: row.key,
+        figmaSources: row.sources.length > 0 ? row.sources : undefined,
+      });
+      existing.set(row.key, newId);
+      changed = true;
+    }
+    if (changed) {
+      await this.commit();
+    }
   }
 
   async updateLink(
@@ -6456,6 +6660,7 @@ export class MarkerStore implements vscode.Disposable {
         order: def.order,
         ...(def.description ? { description: def.description } : {}),
         ...(def.url ? { url: def.url } : {}),
+        ...readFigmaLinkMeta(def),
         ...(def.parent ? { parent: def.parent } : {}),
         ...(def.page ? { page: def.page } : {}),
         ...(def.color ? { color: def.color } : {}),
@@ -6894,8 +7099,11 @@ export class MarkerStore implements vscode.Disposable {
             : {}),
           ...(p.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
           ...(p.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+          ...(p.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
+          ...(p.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
           ...(p.scenarioSkillPath ? { scenarioSkillPath: p.scenarioSkillPath } : {}),
           ...(p.figmaSkillPath ? { figmaSkillPath: p.figmaSkillPath } : {}),
+          ...(p.figmaModel ? { figmaModel: p.figmaModel } : {}),
           ...(p.scenarioModel ? { scenarioModel: p.scenarioModel } : {}),
           ...(p.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
           ...(p.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
@@ -8757,14 +8965,15 @@ export class MarkerStore implements vscode.Disposable {
    * Returns the root id.
    */
   private insertLinkBranch(pageId: string, childCount: number): string {
+    const figma = this.data.pages[pageId]?.kind === 'figma';
     const rootId = this.insertLinkNode({
-      label: LINK_LAYOUT_LABEL,
+      label: figma ? FIGMA_PAGE_LABEL : LINK_LAYOUT_LABEL,
       page: pageId,
       color: this.nextLinkColor(pageId),
     });
     for (let i = 0; i < childCount; i++) {
       this.insertLinkNode({
-        label: LINK_COMPONENT_LABEL,
+        label: figma ? FIGMA_LAYER_LABEL : LINK_COMPONENT_LABEL,
         parent: rootId,
       });
     }
@@ -8779,6 +8988,8 @@ export class MarkerStore implements vscode.Disposable {
     color?: string;
     description?: string;
     url?: string;
+    figmaTag?: string;
+    figmaSources?: FigmaTagSource[];
   }): string {
     const id = this.uniqueLinkId();
     const parent = def.parent && this.data.links[def.parent] ? def.parent : undefined;
@@ -8810,6 +9021,13 @@ export class MarkerStore implements vscode.Disposable {
     }
     if (def.url?.trim()) {
       entry.url = def.url.trim();
+    }
+    const tagMeta = readFigmaLinkMeta(def);
+    if (tagMeta.figmaTag) {
+      entry.figmaTag = tagMeta.figmaTag;
+    }
+    if (tagMeta.figmaSources) {
+      entry.figmaSources = tagMeta.figmaSources;
     }
     this.data.links[id] = entry;
     siblings.push(id);
@@ -9005,6 +9223,13 @@ export class MarkerStore implements vscode.Disposable {
     }
     if (def.url) {
       entry.url = def.url;
+    }
+    const tagMeta = readFigmaLinkMeta(def);
+    if (tagMeta.figmaTag) {
+      entry.figmaTag = tagMeta.figmaTag;
+    }
+    if (tagMeta.figmaSources) {
+      entry.figmaSources = tagMeta.figmaSources;
     }
     if (def.locked) {
       entry.locked = true;
@@ -9398,8 +9623,11 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewFixModel?: unknown;
         reviewPrintThinking?: unknown;
         reviewPrintTools?: unknown;
+        figmaPrintThinking?: unknown;
+        figmaPrintTools?: unknown;
         scenarioSkillPath?: unknown;
         figmaSkillPath?: unknown;
+        figmaModel?: unknown;
         scenarioModel?: unknown;
         scenarioPrintThinking?: unknown;
         scenarioPrintTools?: unknown;
@@ -9427,10 +9655,14 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
       );
       const reviewPrintThinking = item.reviewPrintThinking === true ? true : undefined;
       const reviewPrintTools = item.reviewPrintTools === false ? false : undefined;
+      const figmaPrintThinking = item.figmaPrintThinking === true ? true : undefined;
+      const figmaPrintTools = item.figmaPrintTools === false ? false : undefined;
       const scenarioSkillPath =
         typeof item.scenarioSkillPath === 'string' ? item.scenarioSkillPath.trim() : undefined;
       const figmaSkillPath =
         typeof item.figmaSkillPath === 'string' ? item.figmaSkillPath.trim() : undefined;
+      const figmaModel =
+        typeof item.figmaModel === 'string' ? item.figmaModel.trim().toLowerCase() : undefined;
       const scenarioModel =
         typeof item.scenarioModel === 'string' ? item.scenarioModel.trim() : undefined;
       const scenarioPrintThinking = item.scenarioPrintThinking === true ? true : undefined;
@@ -9451,8 +9683,11 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewModel ? { reviewModel } : {}),
           ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
           ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
+          ...(figmaPrintThinking ? { figmaPrintThinking } : {}),
+          ...(figmaPrintTools === false ? { figmaPrintTools } : {}),
           ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
           ...(figmaSkillPath ? { figmaSkillPath } : {}),
+          ...(figmaModel ? { figmaModel } : {}),
           ...(scenarioModel ? { scenarioModel } : {}),
           ...(scenarioPrintThinking ? { scenarioPrintThinking } : {}),
           ...(scenarioPrintTools === false ? { scenarioPrintTools } : {}),
@@ -9482,8 +9717,11 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewModel ? { reviewModel } : {}),
         ...(reviewPrintThinking ? { reviewPrintThinking } : {}),
         ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
+        ...(figmaPrintThinking ? { figmaPrintThinking } : {}),
+        ...(figmaPrintTools === false ? { figmaPrintTools } : {}),
         ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
         ...(figmaSkillPath ? { figmaSkillPath } : {}),
+        ...(figmaModel ? { figmaModel } : {}),
         ...(scenarioModel ? { scenarioModel } : {}),
         ...(scenarioPrintThinking ? { scenarioPrintThinking } : {}),
         ...(scenarioPrintTools === false ? { scenarioPrintTools } : {}),
@@ -9915,6 +10153,13 @@ function normalize(raw: unknown): MarkersFile {
       if (typeof def.url === 'string' && def.url.trim()) {
         entry.url = def.url.trim();
       }
+      const rootMeta = readFigmaLinkMeta(def);
+      if (rootMeta.figmaTag) {
+        entry.figmaTag = rootMeta.figmaTag;
+      }
+      if (rootMeta.figmaSources) {
+        entry.figmaSources = rootMeta.figmaSources;
+      }
       if (def.locked === true) {
         entry.locked = true;
       }
@@ -9947,6 +10192,13 @@ function normalize(raw: unknown): MarkersFile {
         }
         if (typeof def.url === 'string' && def.url.trim()) {
           entry.url = def.url.trim();
+        }
+        const childMeta = readFigmaLinkMeta(def);
+        if (childMeta.figmaTag) {
+          entry.figmaTag = childMeta.figmaTag;
+        }
+        if (childMeta.figmaSources) {
+          entry.figmaSources = childMeta.figmaSources;
         }
         if (def.locked === true) {
           entry.locked = true;

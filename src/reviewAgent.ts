@@ -962,6 +962,134 @@ export async function runScenarioAsk(opts: {
   });
 }
 
+export type FigmaTagAgentResult =
+  | { ok: true; answer: string }
+  | { ok: false; message: string };
+
+/**
+ * Run `agent --print` so it can call Figma MCP. No `--mode`:
+ * this CLI only accepts `plan` and `ask`, and both are read-only.
+ * Omitting the flag keeps tool use (`use_figma`). The caller owns the prompt.
+ */
+export async function runFigmaTagAgent(opts: {
+  cwd: string;
+  prompt: string;
+  model?: string;
+  printThinking?: boolean;
+  printTools?: boolean;
+}): Promise<FigmaTagAgentResult> {
+  const resolved = await resolveAgentBin();
+  if (!resolved) {
+    return { ok: false, message: 'Cursor Agent CLI not found (agent / cursor agent)' };
+  }
+  const prompt = opts.prompt;
+  const args = [
+    ...resolved.prefix,
+    '--print',
+    '--trust',
+    '--force',
+    '--approve-mcps',
+    '--output-format',
+    'stream-json',
+    '--stream-partial-output',
+    '--workspace',
+    opts.cwd,
+  ];
+  if (opts.model && opts.model.trim()) {
+    args.push('--model', opts.model.trim());
+  }
+  args.push(prompt);
+  const print = terminalPrint(opts);
+
+  const writeEmitter = new vscode.EventEmitter<string>();
+  let closed = false;
+  let child: ChildProcess | undefined;
+  const started = Date.now();
+  const pty: vscode.Pseudoterminal = {
+    onDidWrite: writeEmitter.event,
+    open: () => {
+      writeEmitter.fire(
+        `$ ${resolved.bin} ${args.filter((a) => a !== prompt).join(' ')} «prompt»\r\n\r\n`,
+      );
+      writeEmitter.fire('агент запущен, шаги появятся ниже\r\n');
+    },
+    close: () => {
+      closed = true;
+      child?.kill();
+    },
+  };
+  const term = vscode.window.createTerminal({ name: 'Syn3 Figma', pty });
+  term.show(true);
+
+  return new Promise((resolve) => {
+    const stream: AgentStream = {
+      buf: '',
+      deltas: '',
+      plain: '',
+      resultText: '',
+      finalFlush: '',
+      sawDelta: false,
+      thinkingOpen: false,
+    };
+    let stderr = '';
+    let settled = false;
+    let lastEmit = Date.now();
+    const emit = (text: string) => {
+      lastEmit = Date.now();
+      if (!closed) {
+        writeEmitter.fire(text);
+      }
+    };
+    const timer = setInterval(() => {
+      if (closed || Date.now() - lastEmit < 20_000) {
+        return;
+      }
+      emit(`… ждём модель, ${Math.round((Date.now() - started) / 1000)} с\r\n`);
+    }, 5_000);
+    child = spawn(resolved.bin, args, {
+      cwd: opts.cwd,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      takeStreamLines(stream, chunk.toString('utf8'), emit, print);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      emit(text.replace(/\n/g, '\r\n'));
+    });
+    const finish = (result: FigmaTagAgentResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(timer);
+      resolve(result);
+    };
+    child.on('error', (error) => {
+      emit(`\r\n${error.message}\r\n`);
+      finish({ ok: false, message: error.message });
+    });
+    child.on('close', (code) => {
+      if (stream.buf.trim()) {
+        emitStreamLine(stream, stream.buf, emit, print);
+      }
+      emit(`\r\n[exit ${code ?? '?'}]\r\n`);
+      const answer = pickAnswer(stream).trim();
+      if (answer) {
+        finish({ ok: true, answer });
+        return;
+      }
+      const message = closed
+        ? 'Figma agent cancelled'
+        : (stderr || `agent exited with ${code}`).trim().slice(0, 400);
+      emit(`\r\n${message}\r\n`);
+      finish({ ok: false, message });
+    });
+  });
+}
+
 /** Whole line the neurofix agent writes when the items are fixed or already fixed in the worktree. */
 export const NEUROFIX_OK_LINE = 'SYN3_NEUROFIX_OK';
 

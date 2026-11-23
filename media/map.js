@@ -34,6 +34,12 @@
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
   const toolbarReviewTab = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-review-tab'));
   const reviewFilters = /** @type {HTMLElement | null} */ (document.getElementById('review-filters'));
+  const figmaFilters = /** @type {HTMLElement | null} */ (document.getElementById('figma-filters'));
+  const figmaFormButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-form'));
+  const figmaFormLoader = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-loader'));
+  const figmaFormStatus = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-status'));
+  let figmaFormRunning = false;
+  let figmaFormStatusText = '';
   const reviewFilterCheckout = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-checkout'));
   const reviewFilterGeneral = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-general'));
   const reviewFilterDiscussions = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-discussions'));
@@ -1367,6 +1373,10 @@
         resizeReviewTalk();
       }
       syncReviewTalk();
+    } else if (message.type === 'figmaFormState') {
+      figmaFormRunning = message.running === true;
+      figmaFormStatusText = typeof message.status === 'string' ? message.status : '';
+      syncFigmaFilters();
     } else if (message.type === 'reviewState') {
       const incoming = keepLoadedReview(message.review || null);
       const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
@@ -1628,6 +1638,9 @@
         hasDiscord: message.hasDiscord === true,
         figmaToken: typeof message.figmaToken === 'string' ? message.figmaToken : '',
         figmaSkillPath: typeof message.figmaSkillPath === 'string' ? message.figmaSkillPath : '',
+        figmaModel: typeof message.figmaModel === 'string' ? message.figmaModel : '',
+        figmaPrintThinking: message.figmaPrintThinking === true,
+        figmaPrintTools: message.figmaPrintTools !== false,
         figmaFiles: figmaFileEntries(message.figmaFiles),
       });
     } else if (message.type === 'pageSettingsError') {
@@ -8233,6 +8246,22 @@
     return reviewSvgIcon('review-ico-bolt', 'M13 10H20L11 23V14H4L13 1V10Z');
   }
 
+  /** assets/alert.svg — Figma tag chip that has no node link. */
+  function figmaTagAlertIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'figma-tag-alert');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M12.8659 3.00017L22.3922 19.5002C22.6684 19.9785 22.5045 20.5901 22.0262 20.8662C21.8742 20.954 21.7017 21.0002 21.5262 21.0002H2.47363C1.92135 21.0002 1.47363 20.5525 1.47363 20.0002C1.47363 19.8246 1.51984 19.6522 1.60761 19.5002L11.1339 3.00017C11.41 2.52187 12.0216 2.358 12.4999 2.63414C12.6519 2.72191 12.7782 2.84815 12.8659 3.00017ZM4.20568 19.0002H19.7941L11.9999 5.50017L4.20568 19.0002ZM10.9999 16.0002H12.9999V18.0002H10.9999V16.0002ZM10.9999 9.00017H12.9999V14.0002H10.9999V9.00017Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
   /** assets/loader-2-fill.svg — review status in progress. */
   function reviewProgressIcon() {
     return reviewSvgIcon(
@@ -13992,6 +14021,9 @@
    *   hasDiscord?: boolean,
    *   figmaToken?: string,
    *   figmaSkillPath?: string,
+   *   figmaModel?: string,
+   *   figmaPrintThinking?: boolean,
+   *   figmaPrintTools?: boolean,
    *   figmaFiles?: string[]
    * }} opts
    */
@@ -14147,6 +14179,12 @@
     let figmaInput = null;
     /** @type {HTMLInputElement | null} */
     let figmaSkillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaModelInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaPrintThinkingInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaPrintToolsInput = null;
     /** @type {{ label: HTMLElement, input: HTMLInputElement, nameInput: HTMLInputElement }[]} */
     const figmaFileRows = [];
     /** @type {HTMLButtonElement | null} */
@@ -14204,6 +14242,62 @@
       skillLabel.append(skillRow);
       panel.append(skillLabel);
       figmaSkillInput = skillPathInput;
+
+      const modelLabel = el('label', 'review-mr-field', t('labelReviewModel'));
+      const modelInput = document.createElement('input');
+      modelInput.className = 'review-mr-title review-model-input';
+      modelInput.type = 'text';
+      modelInput.spellcheck = false;
+      modelInput.autocapitalize = 'none';
+      modelInput.autocomplete = 'off';
+      modelInput.placeholder = 'grok-4.7-high-fast';
+      modelInput.value = (opts.figmaModel || '').toLowerCase();
+      modelInput.addEventListener('input', () => {
+        const next = modelInput.value.toLowerCase();
+        if (next === modelInput.value) {
+          return;
+        }
+        const start = modelInput.selectionStart;
+        const end = modelInput.selectionEnd;
+        modelInput.value = next;
+        if (start !== null && end !== null) {
+          modelInput.setSelectionRange(start, end);
+        }
+      });
+      modelLabel.append(modelInput);
+      panel.append(modelLabel);
+      figmaModelInput = modelInput;
+
+      /**
+       * @param {string} labelKey
+       * @param {boolean} checked
+       */
+      function figmaTerminalFlag(labelKey, checked) {
+        const label = el('label', 'review-terminal-flag');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        label.append(input, el('span', 'review-terminal-flag-text', t(labelKey)));
+        panel.append(label);
+        return input;
+      }
+      figmaPrintThinkingInput = figmaTerminalFlag(
+        'labelReviewPrintThinking',
+        opts.figmaPrintThinking === true,
+      );
+      figmaPrintToolsInput = figmaTerminalFlag(
+        'labelReviewPrintTools',
+        opts.figmaPrintTools !== false,
+      );
+      skillLabel.after(modelLabel);
+      const thinkingLabel = figmaPrintThinkingInput.parentElement;
+      const toolsLabel = figmaPrintToolsInput.parentElement;
+      if (thinkingLabel) {
+        modelLabel.after(thinkingLabel);
+      }
+      if (toolsLabel && thinkingLabel) {
+        thinkingLabel.after(toolsLabel);
+      }
 
       const pathNav = el('div', 'review-path-nav');
       pathNav.hidden = true;
@@ -14555,7 +14649,7 @@
 
     /**
      * @param {boolean} report
-     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaSkillPath: string | undefined, figmaFiles: { url: string, label?: string }[] | undefined } | null}
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaSkillPath: string | undefined, figmaModel: string | undefined, figmaPrintThinking: boolean | undefined, figmaPrintTools: boolean | undefined, figmaFiles: { url: string, label?: string }[] | undefined } | null}
      */
     function readPageForm(report) {
       const name = nameInput.value.trim();
@@ -14618,6 +14712,9 @@
         discordToken: discordInput?.value.trim() || undefined,
         figmaToken: figmaInput ? figmaInput.value.trim() : undefined,
         figmaSkillPath: figmaSkillInput ? figmaSkillInput.value.trim() : undefined,
+        figmaModel: figmaModelInput ? figmaModelInput.value.trim().toLowerCase() : undefined,
+        figmaPrintThinking: figmaPrintThinkingInput ? figmaPrintThinkingInput.checked : undefined,
+        figmaPrintTools: figmaPrintToolsInput ? figmaPrintToolsInput.checked : undefined,
         figmaFiles,
       };
     }
@@ -14668,6 +14765,9 @@
           discordToken: fields.discordToken,
           figmaToken: fields.figmaToken,
           figmaSkillPath: fields.figmaSkillPath,
+          figmaModel: fields.figmaModel,
+          figmaPrintThinking: fields.figmaPrintThinking,
+          figmaPrintTools: fields.figmaPrintTools,
           figmaFiles: fields.figmaFiles,
         });
       };
@@ -14683,6 +14783,9 @@
         discordToken: '',
         figmaToken: figmaInput ? figmaInput.value.trim() : '',
         figmaSkillPath: figmaSkillInput ? figmaSkillInput.value.trim() : '',
+        figmaModel: figmaModelInput ? figmaModelInput.value.trim().toLowerCase() : '',
+        figmaPrintThinking: figmaPrintThinkingInput ? figmaPrintThinkingInput.checked : false,
+        figmaPrintTools: !figmaPrintToolsInput || figmaPrintToolsInput.checked,
         figmaFiles: JSON.stringify(selectedKind === 'figma' ? noteFigmaLinkRows(false).links : []),
       });
       /**
@@ -14700,6 +14803,9 @@
           discordToken: fields.discordToken || '',
           figmaToken: fields.figmaToken || '',
           figmaSkillPath: fields.figmaSkillPath || '',
+          figmaModel: (fields.figmaModel || '').toLowerCase(),
+          figmaPrintThinking: fields.figmaPrintThinking === true,
+          figmaPrintTools: fields.figmaPrintTools !== false,
           figmaFiles: JSON.stringify(fields.figmaFiles || []),
         });
         if (sig !== savedSig) {
@@ -14713,6 +14819,9 @@
             discordToken: fields.discordToken,
             figmaToken: fields.figmaToken,
             figmaSkillPath: fields.figmaSkillPath,
+            figmaModel: fields.figmaModel,
+            figmaPrintThinking: fields.figmaPrintThinking,
+            figmaPrintTools: fields.figmaPrintTools,
             figmaFiles: fields.figmaFiles,
           });
         }
@@ -14731,6 +14840,15 @@
       }
       if (figmaSkillInput) {
         figmaSkillInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaModelInput) {
+        figmaModelInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaPrintThinkingInput) {
+        figmaPrintThinkingInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaPrintToolsInput) {
+        figmaPrintToolsInput.addEventListener('change', () => saveEditing(false));
       }
       onFigmaFilesChanged = () => saveEditing(false);
       bindSettingsCommitKey(panel, () => saveEditing(true));
@@ -15927,6 +16045,9 @@
       });
     }
     chipWrap.append(chip);
+    if (link.figmaTag && !link.url) {
+      chipWrap.append(figmaTagAlertIcon());
+    }
     if (previewLoader) {
       chipWrap.append(previewLoader);
     }
@@ -18141,11 +18262,88 @@
     button.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
 
+  function syncFigmaFilters() {
+    const onFigma = activePage()?.kind === 'figma';
+    if (figmaFilters) {
+      figmaFilters.hidden = !onFigma;
+    }
+    if (figmaFormButton) {
+      figmaFormButton.disabled = figmaFormRunning;
+      figmaFormButton.textContent = t('figmaForm');
+    }
+    if (figmaFormLoader) {
+      figmaFormLoader.hidden = !figmaFormRunning;
+      if (figmaFormRunning) {
+        if (figmaFormLoader.childElementCount === 0) {
+          figmaFormLoader.append(reviewProgressIcon());
+        }
+      } else {
+        figmaFormLoader.replaceChildren();
+      }
+    }
+    if (figmaFormStatus) {
+      figmaFormStatus.hidden = !figmaFormStatusText;
+      figmaFormStatus.textContent = figmaFormStatusText;
+    }
+  }
+
+  function openFigmaFormDialog() {
+    if (figmaFormRunning || activePage()?.kind !== 'figma') {
+      return;
+    }
+    removeOverlay('figma-form-panel');
+    const panel = el('div', 'review-mr-panel figma-form-panel');
+    panel.id = 'figma-form-panel';
+    /** @type {'mcp' | 'api'} */
+    let via = 'mcp';
+    const tabs = el('div', 'figma-form-tabs');
+    const mcpTab = el('button', 'history-btn review-filter', t('figmaFormMcp'));
+    const apiTab = el('button', 'history-btn review-filter', t('figmaFormApi'));
+    mcpTab.type = 'button';
+    apiTab.type = 'button';
+    const note = el('p', 'figma-form-note');
+    const show = (next) => {
+      via = next;
+      mcpTab.setAttribute('aria-pressed', next === 'mcp' ? 'true' : 'false');
+      apiTab.setAttribute('aria-pressed', next === 'api' ? 'true' : 'false');
+      note.textContent = t(next === 'mcp' ? 'figmaFormMcpBody' : 'figmaFormApiBody');
+    };
+    mcpTab.addEventListener('click', () => show('mcp'));
+    apiTab.addEventListener('click', () => show('api'));
+    tabs.append(mcpTab, apiTab);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => removeOverlay('figma-form-panel'));
+    const go = el('button', 'review-btn is-primary', t('figmaFormContinue'));
+    go.type = 'button';
+    go.addEventListener('click', () => {
+      const page = activePage();
+      if (!page || page.kind !== 'figma' || figmaFormRunning) {
+        return;
+      }
+      vscode.postMessage({ type: 'figmaFormTags', pageId: page.id, via });
+      removeOverlay('figma-form-panel');
+    });
+    actions.append(cancel, go);
+    panel.append(tabs, note, actions);
+    show('mcp');
+    mountSettingsOverlay(panel, () => removeOverlay('figma-form-panel'));
+  }
+
+  figmaFormButton?.addEventListener('click', () => {
+    if (figmaFormRunning) {
+      return;
+    }
+    openFigmaFormDialog();
+  });
+
   function syncReviewFilters() {
     const onReview = activePage()?.kind === 'review';
     if (reviewFilters) {
       reviewFilters.hidden = !onReview;
     }
+    syncFigmaFilters();
     const flags = currentReviewFilters();
     setReviewFilterPressed(reviewFilterCheckout, flags.checkout);
     setReviewFilterPressed(reviewFilterGeneral, flags.general);

@@ -236,6 +236,12 @@ export interface ProjectProfileEntry {
   scenarioSkillPath?: string;
   /** Absolute or workspace-relative path to the Figma tag skill. */
   figmaSkillPath?: string;
+  /** Optional Cursor Agent model for the Figma tag scan. Empty → CLI default. */
+  figmaModel?: string;
+  /** Print model reasoning in the Figma tag terminal. Absent means off. */
+  figmaPrintThinking?: boolean;
+  /** Print tool calls in the Figma tag terminal. Absent means on; false hides them. */
+  figmaPrintTools?: boolean;
   /** Optional model for the scenarios chat. */
   scenarioModel?: string;
   /** Keep reasoning out of the scenario md. Absent means off. */

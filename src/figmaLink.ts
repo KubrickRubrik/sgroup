@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { hitsFromSharedTree, type FigmaTagHit } from './figmaTags';
 
 /**
  * Hover rendering of figma.com frames.
@@ -247,6 +248,15 @@ export interface FigmaPreviewHit {
 let limitedUntil = 0;
 let limitedQuota = false;
 
+/** True while a 429 cooldown from any Figma call is still running. */
+export function figmaRequestPaused(): { retryAfterSec: number } | undefined {
+  const hit = rateLimitActive();
+  if (!hit?.limited) {
+    return undefined;
+  }
+  return { retryAfterSec: hit.retryAfterSec ?? 60 };
+}
+
 function rateLimitActive(): RenderHit | undefined {
   const leftMs = limitedUntil - Date.now();
   if (leftMs <= 0) {
@@ -468,6 +478,61 @@ async function figmaGet(
     return { detail };
   } catch {
     return { shrink: true };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export type FigmaSharedHits =
+  | { ok: true; hits: FigmaTagHit[] }
+  | { ok: false; limited?: boolean; denied?: boolean };
+
+/**
+ * File JSON with shared plugin data. No `depth`: a shallow file drops nested tags.
+ * A 429 starts the same cooldown as image previews and does not wait to retry.
+ */
+export async function loadFigmaSharedHits(
+  fileUrl: string,
+  fileKey: string,
+  nodeId: string | undefined,
+  token: string,
+): Promise<FigmaSharedHits> {
+  const clean = normalizeFigmaToken(token);
+  if (!clean) {
+    return { ok: false, denied: true };
+  }
+  if (figmaRequestPaused()) {
+    return { ok: false, limited: true };
+  }
+  const params = new URLSearchParams({ plugin_data: 'shared' });
+  if (nodeId) {
+    params.set('ids', nodeId);
+  }
+  const endpoint = `https://api.figma.com/v1/files/${encodeURIComponent(fileKey)}?${params}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  try {
+    const response = await fetch(endpoint, {
+      signal: controller.signal,
+      headers: figmaHeaders(clean),
+    });
+    if (response.status === 429) {
+      blockForRateLimit(response);
+      return { ok: false, limited: true };
+    }
+    if (response.status === 401 || response.status === 403 || response.status === 404) {
+      return { ok: false, denied: true };
+    }
+    if (!response.ok) {
+      return { ok: false };
+    }
+    const body = (await response.json()) as unknown;
+    return {
+      ok: true,
+      hits: hitsFromSharedTree(fileUrl, (id) => canonicalFigmaLink(fileKey, id), body),
+    };
+  } catch {
+    return { ok: false };
   } finally {
     clearTimeout(timer);
   }

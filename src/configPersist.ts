@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import { normalizeStoredFigmaFiles } from './figmaLink';
+import { readFigmaLinkMeta, type FigmaTagSource } from './figmaTags';
 import {
   type BaseConfigFile,
   type BaseProfileEntry,
@@ -215,6 +216,8 @@ export interface PageLinkEntry {
   color?: string;
   order: number;
   locked?: true;
+  figmaTag?: string;
+  figmaSources?: FigmaTagSource[];
 }
 
 /** Assembled workspace from base snapshot + content files. */
@@ -424,6 +427,9 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(typeof source.figmaSkillPath === 'string' && source.figmaSkillPath.trim()
       ? { figmaSkillPath: source.figmaSkillPath.trim() }
       : {}),
+    ...(typeof source.figmaModel === 'string' && source.figmaModel.trim()
+      ? { figmaModel: source.figmaModel.trim().toLowerCase() }
+      : {}),
     ...(typeof source.reviewDirPath === 'string' && source.reviewDirPath.trim()
       ? { reviewDirPath: source.reviewDirPath.trim() }
       : {}),
@@ -440,6 +446,8 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
       : {}),
     ...(source.reviewPrintThinking === true ? { reviewPrintThinking: true } : {}),
     ...(source.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+    ...(source.figmaPrintThinking === true ? { figmaPrintThinking: true } : {}),
+    ...(source.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
     ...(() => {
       const scheme = normalizeReviewScheme(source.reviewScheme);
       return scheme === REVIEW_SCHEME_DEFAULT ? {} : { reviewScheme: scheme };
@@ -1049,6 +1057,13 @@ export function normalizePageContent(raw: unknown): PageContentFile {
       if (typeof def.url === 'string') {
         entry.url = def.url;
       }
+      const tagMeta = readFigmaLinkMeta(def);
+      if (tagMeta.figmaTag) {
+        entry.figmaTag = tagMeta.figmaTag;
+      }
+      if (tagMeta.figmaSources) {
+        entry.figmaSources = tagMeta.figmaSources;
+      }
       if (typeof def.parent === 'string') {
         entry.parent = def.parent;
       }
@@ -1114,8 +1129,11 @@ export function packProfileEntry(opts: {
       : {}),
     ...(opts.profile.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(opts.profile.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+    ...(opts.profile.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
+    ...(opts.profile.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
     ...(opts.profile.scenarioSkillPath ? { scenarioSkillPath: opts.profile.scenarioSkillPath } : {}),
     ...(opts.profile.figmaSkillPath ? { figmaSkillPath: opts.profile.figmaSkillPath } : {}),
+    ...(opts.profile.figmaModel ? { figmaModel: opts.profile.figmaModel } : {}),
     ...(opts.profile.scenarioModel ? { scenarioModel: opts.profile.scenarioModel } : {}),
     ...(opts.profile.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
     ...(opts.profile.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
@@ -1163,8 +1181,11 @@ export function unpackProfilesFromBase(
         : {}),
       ...(data?.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
       ...(data?.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+      ...(data?.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
+      ...(data?.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
       ...(data?.scenarioSkillPath ? { scenarioSkillPath: data.scenarioSkillPath } : {}),
       ...(data?.figmaSkillPath ? { figmaSkillPath: data.figmaSkillPath } : {}),
+      ...(data?.figmaModel ? { figmaModel: data.figmaModel } : {}),
       ...(data?.scenarioModel ? { scenarioModel: data.scenarioModel } : {}),
       ...(data?.scenarioPrintThinking ? { scenarioPrintThinking: true } : {}),
       ...(data?.scenarioPrintTools === false ? { scenarioPrintTools: false } : {}),
@@ -1328,6 +1349,7 @@ export function assembleSplitWorkspace(
           order: def.order,
           ...(def.description ? { description: def.description } : {}),
           ...(def.url ? { url: def.url } : {}),
+          ...readFigmaLinkMeta(def),
           ...(def.parent ? { parent: def.parent } : {}),
           ...(def.page ? { page: def.page } : {}),
           ...(def.color ? { color: def.color } : {}),
@@ -1387,12 +1409,15 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
     ...(entry.explainSkillPath ? { explainSkillPath: entry.explainSkillPath } : {}),
     ...(entry.studySkillPath ? { studySkillPath: entry.studySkillPath } : {}),
     ...(entry.figmaSkillPath ? { figmaSkillPath: entry.figmaSkillPath } : {}),
+    ...(entry.figmaModel ? { figmaModel: entry.figmaModel } : {}),
     ...(entry.reviewDirPath ? { reviewDirPath: entry.reviewDirPath } : {}),
     ...(adoptReviewModel(entry.reviewModel, entry.reviewFixModel)
       ? { reviewModel: adoptReviewModel(entry.reviewModel, entry.reviewFixModel) }
       : {}),
     ...(entry.reviewPrintThinking ? { reviewPrintThinking: true } : {}),
     ...(entry.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
+    ...(entry.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
+    ...(entry.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
     ...(entry.mapFilters ? { map_filters: entry.mapFilters } : {}),
     ...(entry.reviewScheme && entry.reviewScheme !== REVIEW_SCHEME_DEFAULT
       ? { reviewScheme: entry.reviewScheme }

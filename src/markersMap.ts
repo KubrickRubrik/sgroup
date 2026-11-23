@@ -66,11 +66,16 @@ import {
 import {
   collectFigmaLinks,
   FigmaStoredLink,
+  figmaLinkFromInput,
   figmaLinkPreviewEnabled,
   figmaPreviewCacheKey,
+  figmaRequestPaused,
   loadFigmaPreview,
+  loadFigmaSharedHits,
   parseFigmaFrame,
 } from './figmaLink';
+import { figmaScanPrompt, parseFigmaScanAnswer } from './figmaTags';
+import { runFigmaTagAgent } from './reviewAgent';
 import { isReviewHostProvider, recognizedRepoProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 import { listProjectDirectory } from './projectNav';
 import type { CatalogChannels } from './configFormat';
@@ -187,6 +192,8 @@ interface MapLink {
   lastRoot?: true;
   /** True when delete is allowed. */
   canDelete: boolean;
+  /** Tag path without parentheses. Empty url plus this field draws the alert icon. */
+  figmaTag?: string;
 }
 
 interface EditorGroupLayout {
@@ -431,6 +438,7 @@ type IncomingMessage =
   | { type: 'reviewSkillFile'; which: 'review' | 'explain' | 'study'; action: 'open' | 'copy' | 'save' }
   | { type: 'figmaSkillFile'; action: 'open' | 'copy' | 'save' }
   | { type: 'figmaOpenSetupDoc' }
+  | { type: 'figmaFormTags'; pageId: string; via: 'mcp' | 'api' }
   | { type: 'reviewClearFocus'; pageId: string }
   | {
       type: 'reviewCreateMr';
@@ -557,6 +565,9 @@ type IncomingMessage =
       figmaToken?: string;
       figmaFiles?: { url: string; label?: string }[];
       figmaSkillPath?: string;
+      figmaModel?: string;
+      figmaPrintThinking?: boolean;
+      figmaPrintTools?: boolean;
     }
   | {
       type: 'reviewUpdatePage';
@@ -3014,6 +3025,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.onFigmaSkillFile(webview, message.action);
       return;
     }
+    if (message.type === 'figmaFormTags') {
+      await this.onFigmaFormTags(webview, message.pageId, message.via);
+      return;
+    }
     if (message.type === 'reviewClearFocus') {
       this.review.clearFocus(message.pageId);
       await this.pushReviewState(webview, this.review.snapshot(message.pageId));
@@ -4527,7 +4542,145 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (script === undefined) {
       return;
     }
-    await this.saveSkillIntoFolder('figma-tag', text, [{ name: 'lookup.js', text: script }]);
+    const scan = await this.readDocFile('figma-tag-scan.js');
+    if (scan === undefined) {
+      return;
+    }
+    await this.saveSkillIntoFolder('figma-tag', text, [
+      { name: 'lookup.js', text: script },
+      { name: 'scan.js', text: scan },
+    ]);
+  }
+
+  private figmaFormRunning = false;
+
+  private postFigmaForm(running: boolean, status: string): void {
+    const message = { type: 'figmaFormState' as const, running, status };
+    for (const webview of this.webviews) {
+      void webview.postMessage(message);
+    }
+  }
+
+  private figmaFileLabel(file: { url: string; label?: string }): string {
+    const label = file.label?.trim();
+    return label || file.url;
+  }
+
+  private async onFigmaFormTags(
+    webview: vscode.Webview,
+    pageId: string,
+    via: 'mcp' | 'api',
+  ): Promise<void> {
+    if (this.figmaFormRunning) {
+      this.postFigmaForm(true, '');
+      return;
+    }
+    const page = this.store.page(pageId);
+    const locale = normalizeLocale(this.store.appearance.language);
+    if (!page || page.kind !== 'figma' || !this.webviews.has(webview)) {
+      this.postFigmaForm(false, '');
+      return;
+    }
+    const files = page.figmaFiles ?? [];
+    if (files.length === 0) {
+      this.postFigmaForm(false, t(locale, 'figmaFormNoFiles'));
+      return;
+    }
+    this.figmaFormRunning = true;
+    this.postFigmaForm(true, '');
+    try {
+      if (via === 'api') {
+        await this.formFigmaTagsApi(pageId, files, locale);
+      } else {
+        await this.formFigmaTagsMcp(pageId, files, locale);
+      }
+    } catch {
+      this.postFigmaForm(false, t(locale, 'figmaFormBadAnswer'));
+    } finally {
+      this.figmaFormRunning = false;
+    }
+  }
+
+  private async formFigmaTagsApi(
+    pageId: string,
+    files: { url: string; label?: string }[],
+    locale: ReturnType<typeof normalizeLocale>,
+  ): Promise<void> {
+    const token = await readFigmaToken(this.hostSecrets, this.store.activeProfileId);
+    if (!token) {
+      this.postFigmaForm(false, t(locale, 'figmaTokenMissing'));
+      return;
+    }
+    if (figmaRequestPaused()) {
+      this.postFigmaForm(false, t(locale, 'figmaFormLimited'));
+      return;
+    }
+    let failed = '';
+    for (const file of files) {
+      const ref = figmaLinkFromInput(file.url);
+      if (!ref) {
+        failed = this.figmaFileLabel(file);
+        break;
+      }
+      const loaded = await loadFigmaSharedHits(file.url, ref.fileKey, ref.nodeId, token);
+      if (!loaded.ok) {
+        failed = this.figmaFileLabel(file);
+        break;
+      }
+      await this.store.mergeFigmaTagHits(pageId, loaded.hits);
+    }
+    this.postFigmaForm(false, failed ? t(locale, 'figmaFormFileFailed', { file: failed }) : '');
+  }
+
+  private async formFigmaTagsMcp(
+    pageId: string,
+    files: { url: string; label?: string }[],
+    locale: ReturnType<typeof normalizeLocale>,
+  ): Promise<void> {
+    const skillRaw = this.store.activeFigmaSkillPath();
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!skillRaw) {
+      this.postFigmaForm(false, t(locale, 'figmaFormNoSkill'));
+      return;
+    }
+    if (!folder && !path.isAbsolute(skillRaw)) {
+      this.postFigmaForm(false, t(locale, 'figmaFormNoWorkspace'));
+      return;
+    }
+    const cwd = folder || path.dirname(skillRaw);
+    const skillAbs = path.isAbsolute(skillRaw) ? skillRaw : path.join(cwd, skillRaw);
+    const print = this.store.activeFigmaPrint();
+    const agent = await runFigmaTagAgent({
+      cwd,
+      prompt: figmaScanPrompt(skillAbs, files.map((file) => file.url)),
+      model: this.store.activeFigmaModel(),
+      printThinking: print.printThinking,
+      printTools: print.printTools,
+    });
+    if (!agent.ok) {
+      const missing = agent.message.includes('not found');
+      this.postFigmaForm(
+        false,
+        missing ? t(locale, 'figmaFormAgentMissing') : agent.message.slice(0, 240),
+      );
+      return;
+    }
+    const parsed = parseFigmaScanAnswer(agent.answer);
+    if (!parsed) {
+      this.postFigmaForm(false, t(locale, 'figmaFormBadAnswer'));
+      return;
+    }
+    const byUrl = new Map(parsed.map((file) => [file.url, file]));
+    let failed = '';
+    for (const file of files) {
+      const row = byUrl.get(file.url);
+      if (!row?.ok) {
+        failed = this.figmaFileLabel(file);
+        break;
+      }
+      await this.store.mergeFigmaTagHits(pageId, row.hits);
+    }
+    this.postFigmaForm(false, failed ? t(locale, 'figmaFormFileFailed', { file: failed }) : '');
   }
 
   private scenarioSkillUri(): vscode.Uri {
@@ -4790,6 +4943,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           colorId: def.parent ? undefined : resolvedHex,
           lastRoot: this.store.isLastRootLink(id) ? true : undefined,
           canDelete: this.store.canDeleteLink(id),
+          figmaTag: def.figmaTag,
         };
       });
     return { groups, notes, links };
@@ -6235,7 +6389,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       hasDiscord: status.hasDiscord,
       ...(figmaToken !== undefined ? { figmaToken } : {}),
       ...(figmaFiles !== undefined ? { figmaFiles } : {}),
-      ...(figmaPage ? { figmaSkillPath: this.store.activeFigmaSkillPath() } : {}),
+      ...(figmaPage
+        ? {
+            figmaSkillPath: this.store.activeFigmaSkillPath(),
+            figmaModel: this.store.activeFigmaModel(),
+            figmaPrintThinking: this.store.activeFigmaPrint().printThinking,
+            figmaPrintTools: this.store.activeFigmaPrint().printTools,
+          }
+        : {}),
     });
   }
 
@@ -6479,6 +6640,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       figmaToken?: string;
       figmaFiles?: { url: string; label?: string }[];
       figmaSkillPath?: string;
+      figmaModel?: string;
+      figmaPrintThinking?: boolean;
+      figmaPrintTools?: boolean;
     },
   ): Promise<void> {
     const name = message.name.trim();
@@ -6511,6 +6675,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       if (typeof message.figmaSkillPath === 'string') {
         await this.store.setActiveFigmaSkillPath(message.figmaSkillPath);
+      }
+      if (typeof message.figmaModel === 'string') {
+        await this.store.setActiveFigmaModel(message.figmaModel);
+      }
+      if (
+        typeof message.figmaPrintThinking === 'boolean' ||
+        typeof message.figmaPrintTools === 'boolean'
+      ) {
+        await this.store.setActiveFigmaPrint({
+          ...(typeof message.figmaPrintThinking === 'boolean'
+            ? { figmaPrintThinking: message.figmaPrintThinking }
+            : {}),
+          ...(typeof message.figmaPrintTools === 'boolean'
+            ? { figmaPrintTools: message.figmaPrintTools }
+            : {}),
+        });
       }
     }
     if (message.pageId) {
@@ -7676,6 +7856,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     <button id="review-filter-checkout" class="history-btn review-filter" type="button" aria-pressed="false">checkout</button>
     <button id="review-filter-general" class="history-btn review-filter" type="button" aria-pressed="true">Общие</button>
     <button id="review-filter-discussions" class="history-btn review-filter" type="button" aria-pressed="true">Обсуждения</button>
+  </div>
+  <div id="figma-filters" class="review-filters figma-filters" hidden>
+    <button id="figma-form" class="history-btn review-filter" type="button"></button>
+    <span id="figma-form-loader" class="pager-cloud-loader" hidden></span>
+    <span id="figma-form-status" class="figma-form-status" hidden></span>
   </div>
   </div>
   <div id="stage" class="page-stage">
