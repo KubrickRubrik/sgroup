@@ -3134,23 +3134,30 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewRereview') {
       const selection = normalizeRereviewSelection(message.selection);
+      const idle = () =>
+        webview.postMessage({
+          type: 'reviewRereviewIdle',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
       if (!selection) {
+        await idle();
         return;
       }
       if (this.review.isAgentBusy()) {
         void vscode.window.showErrorMessage(
           `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
         );
+        await idle();
         return;
       }
-      const parentId = this.review.threadParentId(message.pageId, message.messageId);
       const result = await this.withReviewAgentPlaceholder(
         webview,
-        () => this.review.beginReviewSkeleton(message.pageId, parentId),
-        () => this.review.endReviewSkeleton(message.pageId, parentId),
+        () => this.review.beginRereviewSkeleton(message.pageId, message.messageId),
+        () => this.review.endRereviewSkeleton(message.pageId, message.messageId),
         () => this.review.startRereview(message.pageId, message.messageId, selection),
       );
-      await this.handleReviewFileResult(webview, message.pageId, parentId, result);
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
       return;
     }
     if (message.type === 'reviewStudy') {

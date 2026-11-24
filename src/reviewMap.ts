@@ -300,6 +300,8 @@ export interface ReviewPageState {
   pendingNeurofixId?: string;
   /** Review message whose thread shows an «Изучено» chip until the agent finishes. */
   pendingStudyId?: string;
+  /** Review message whose rereview note shows a loader until the agent finishes. */
+  pendingRereviewId?: string;
   /** Bumps when a placeholder starts or ends. Older snapshots stay behind this. */
   skeletonSeq?: number;
   /** Branch checked out in this window. Empty when git has no branch name. */
@@ -795,6 +797,8 @@ export class ReviewMapController {
   private readonly neurofixSkeleton = new Map<string, string>();
   /** «Изучено» chip placeholder: page id → review message id. */
   private readonly studySkeleton = new Map<string, string>();
+  /** Rereview note placeholder: page id → review message id. */
+  private readonly rereviewSkeleton = new Map<string, string>();
   /** Monotonic per page so the map can drop a snapshot from before the placeholder. */
   private readonly skeletonSeq = new Map<string, number>();
   /** Cached pill labels from message text, keyed by reply message id. */
@@ -1049,6 +1053,21 @@ export class ReviewMapController {
     return this.snapshot(pageId);
   }
 
+  /** Show the rereview note under this review until the agent finishes. */
+  beginRereviewSkeleton(pageId: string, messageId: string): ReviewPageState {
+    this.rereviewSkeleton.set(pageId, messageId);
+    this.bumpSkeleton(pageId);
+    return this.snapshot(pageId);
+  }
+
+  endRereviewSkeleton(pageId: string, messageId: string): ReviewPageState {
+    if (messageId && this.rereviewSkeleton.get(pageId) === messageId) {
+      this.rereviewSkeleton.delete(pageId);
+      this.bumpSkeleton(pageId);
+    }
+    return this.snapshot(pageId);
+  }
+
   private mrSkeletonTitle(title: string): string {
     return title.trim() || 'MR';
   }
@@ -1077,6 +1096,7 @@ export class ReviewMapController {
     | 'pendingExplainId'
     | 'pendingNeurofixId'
     | 'pendingStudyId'
+    | 'pendingRereviewId'
     | 'skeletonSeq'
   > {
     return {
@@ -1087,6 +1107,7 @@ export class ReviewMapController {
       pendingExplainId: this.explainSkeleton.get(pageId),
       pendingNeurofixId: this.neurofixSkeleton.get(pageId),
       pendingStudyId: this.studySkeleton.get(pageId),
+      pendingRereviewId: this.rereviewSkeleton.get(pageId),
       skeletonSeq: this.skeletonSeq.get(pageId) ?? 0,
     };
   }
@@ -1124,6 +1145,7 @@ export class ReviewMapController {
     this.explainSkeleton.clear();
     this.neurofixSkeleton.clear();
     this.studySkeleton.clear();
+    this.rereviewSkeleton.clear();
   }
 
   /** Remember the project review channel so posts work without an access.json page row. */
@@ -5627,6 +5649,31 @@ export class ReviewMapController {
   }
 
   /**
+   * A talk in an MR thread, including a reply to a review inside that MR, is an
+   * «Обсуждения» row. A channel root and any other parent thread are «Общие».
+   */
+  private talkFilterError(
+    win: ReviewWindow,
+    located:
+      | { kind: 'channel'; found: DiscordMessage; channelId: string }
+      | { kind: 'thread'; found: DiscordMessage; channelId: string }
+      | undefined,
+    filters: ReviewFilterContext,
+  ): string | undefined {
+    let inMrThread = false;
+    if (located?.kind === 'channel') {
+      inMrThread = isMrMessage(located.found.content);
+    } else if (located?.kind === 'thread') {
+      const owner = win.messages.find((item) => item.thread?.id === located.channelId);
+      inMrThread = !!owner && isMrMessage(owner.content);
+    }
+    if (inMrThread) {
+      return filters.discussions ? undefined : 'Необходимо включить «Обсуждения»';
+    }
+    return filters.general ? undefined : 'Необходимо включить «Общие»';
+  }
+
+  /**
    * Post an MS_SYN3 message. No parent: channel root. Channel parent: reply in that
    * MR, root review, or root talk thread (created as `reviews` or `messages`).
    * A thread chip replies at the end of the thread it already belongs to.
@@ -5652,8 +5699,13 @@ export class ReviewMapController {
       profileName: profile.profileName,
       text: body,
     });
+    const filters = await this.resolvedFilters();
     const parentId = (parentMessageId || '').trim();
     if (!parentId) {
+      const blocked = this.talkFilterError(win, undefined, filters);
+      if (blocked) {
+        return { kind: 'error', message: blocked };
+      }
       const posted = await postChannelMessage(token, access.channelId, content);
       if (!posted.ok) {
         return { kind: 'error', message: posted.message };
@@ -5664,6 +5716,10 @@ export class ReviewMapController {
     const located = this.findReviewMessage(win, parentId);
     if (!located) {
       return { kind: 'error', message: 'Message not found on the map' };
+    }
+    const blocked = this.talkFilterError(win, located, filters);
+    if (blocked) {
+      return { kind: 'error', message: blocked };
     }
     if (located.kind === 'thread') {
       return this.postTalkOnThreadChip(pageId, win, token, located.found, located.channelId, body);

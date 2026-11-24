@@ -232,6 +232,17 @@ textarea.review-mr-title::-webkit-scrollbar,
   background: color-mix(in srgb, var(--vscode-foreground) 30%, transparent);
 }
 
+#review-filters .history-btn.review-filter[aria-pressed='true'] {
+  background: #2f7d4a;
+  border-color: transparent;
+  color: #f4fff6;
+}
+
+#review-filters .history-btn.review-filter[aria-pressed='true']:hover:not(:disabled) {
+  background: #389656;
+  color: #f4fff6;
+}
+
 /* Grows on the first row so the right section stays at the end while it fits.
    When the section does not fit, it wraps as one item onto the next row. */
 .toolbar-spacer {
@@ -4207,6 +4218,11 @@ body.is-dragging .note-card.is-note-editing > .note-header > .lock-btn {
 
 .review-node.has-gap {
   padding-top: 10px;
+}
+
+.review-node.is-mr.has-gap,
+.review-node.is-review-root.has-gap {
+  padding-top: 16px;
 }
 
 .review-node.is-collapsed > .review-body > .review-children,
