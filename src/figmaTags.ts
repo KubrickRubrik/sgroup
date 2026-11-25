@@ -33,7 +33,33 @@ export function figmaDepthLabel(depth: number): string {
 /** Path segment that names this chip when the tag has no `(Название)`. */
 export function figmaSegmentLabel(key: string): string {
   const segment = key.split('/').pop()?.trim() || key.trim();
-  return segment;
+  return figmaSegmentDisplay(segment);
+}
+
+/** Identity of a tag path. `Главная/MOBILE` and `главная/mobile` fold together. */
+export function foldFigmaTag(key: string): string {
+  return key.trim().toLocaleLowerCase();
+}
+
+/**
+ * Chip text is always `Главная/Mobile`: the first letter is capital, the rest is lower.
+ * `ГЛАВНАЯ`, `главная` and `widgetPlaceholeders` become `Главная` and `Widgetplaceholeders`.
+ */
+export function figmaSegmentDisplay(segment: string): string {
+  const trimmed = segment.trim().toLocaleLowerCase();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return trimmed.charAt(0).toLocaleUpperCase() + trimmed.slice(1);
+}
+
+/** Display form of a whole path: `главная/MOBILE` → `Главная/Mobile`. */
+export function canonicalFigmaTag(raw: string): string {
+  return raw
+    .split('/')
+    .map((part) => figmaSegmentDisplay(part))
+    .filter(Boolean)
+    .join('/');
 }
 
 export interface ParsedFigmaTagStep {
@@ -120,12 +146,14 @@ export function parseIconTaggerValue(raw: unknown): string[] {
 export function readFigmaLinkMeta(raw: {
   figmaTag?: unknown;
   figmaSources?: unknown;
-}): { figmaTag?: string; figmaSources?: FigmaTagSource[] } {
+  figmaUnsynced?: unknown;
+}): { figmaTag?: string; figmaSources?: FigmaTagSource[]; figmaUnsynced?: true } {
   const figmaTag = typeof raw.figmaTag === 'string' ? raw.figmaTag.trim() : '';
   const figmaSources = normalizeFigmaSources(raw.figmaSources);
   return {
     ...(figmaTag ? { figmaTag } : {}),
     ...(figmaSources ? { figmaSources } : {}),
+    ...(raw.figmaUnsynced === true ? { figmaUnsynced: true as const } : {}),
   };
 }
 

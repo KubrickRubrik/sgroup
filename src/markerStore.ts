@@ -24,10 +24,14 @@ import {
 } from './history';
 import { normalizeLocale, Syn3Locale } from './i18n';
 import {
+  canonicalFigmaTag,
   figmaDepthLabel,
+  figmaSegmentDisplay,
   figmaSegmentLabel,
+  FIGMA_FRAME_LABEL,
   FIGMA_LAYER_LABEL,
   FIGMA_PAGE_LABEL,
+  foldFigmaTag,
   parseFigmaTag,
   readFigmaLinkMeta,
   type FigmaTagHit,
@@ -116,7 +120,7 @@ import {
   type WorkingFocus,
 } from './positions';
 import { getSecret, SECRET_DISCORD, type AccessStore } from './accessStore';
-import { FigmaStoredLink, normalizeStoredFigmaFiles } from './figmaLink';
+import { FigmaStoredLink, figmaNodeKey, normalizeStoredFigmaFiles } from './figmaLink';
 
 export type { WorkingFocus };
 
@@ -249,6 +253,8 @@ export interface StyleProfile {
   scenarioSkillPath?: string;
   /** Absolute or workspace-relative path to the Figma tag skill. */
   figmaSkillPath?: string;
+  /** Figma map links open the desktop app. Absent means on; false opens the browser. */
+  figmaOpenInApp?: boolean;
   /** Optional Cursor Agent `--model` for the Figma tag scan. Empty → CLI default. */
   figmaModel?: string;
   /** Print model reasoning in the Figma tag terminal. Absent means off. */
@@ -680,10 +686,12 @@ export interface LinkDef {
   order: number;
   /** When true, map edits to this node are blocked. Absent means open. */
   locked?: true;
-  /** Tag path without parentheses. Set by «формировать». */
+  /** Tag path without parentheses. Set by «собрать». */
   figmaTag?: string;
   /** Every file and link collected for this path. The chip `url` is the first one. */
   figmaSources?: FigmaTagSource[];
+  /** No tag, or the tag was not found on this chip's links. */
+  figmaUnsynced?: true;
 }
 
 export function defaultPage(name = 'Карта'): PageDef {
@@ -1772,6 +1780,32 @@ export class MarkerStore implements vscode.Disposable {
       printThinking: profile?.scenarioPrintThinking === true,
       printTools: profile?.scenarioPrintTools !== false,
     };
+  }
+
+  /** Figma map clicks open the desktop app. Absent on the profile means on. */
+  activeFigmaOpenInApp(): boolean {
+    const profile =
+      this.profilesData.profiles.find((p) => p.id === this.activeId) ??
+      this.profilesData.profiles.find((p) => p.id === GENERAL_PROFILE_ID);
+    return profile?.figmaOpenInApp !== false;
+  }
+
+  async setActiveFigmaOpenInApp(open: boolean): Promise<void> {
+    await this.enqueue(async () => {
+      const id = this.ensureActiveProfileId();
+      const profile = this.profilesData.profiles.find((p) => p.id === id);
+      if (!profile) {
+        return;
+      }
+      if (open) {
+        delete profile.figmaOpenInApp;
+      } else {
+        profile.figmaOpenInApp = false;
+      }
+      await this.persistProfiles();
+      await this.persistBaseOnly();
+      this.changeEmitter.fire();
+    });
   }
 
   /** Figma tag skill of the active profile. Empty until the page settings store one. */
@@ -3822,7 +3856,8 @@ export class MarkerStore implements vscode.Disposable {
       page.description = text;
     }
     this.data.pages[id] = page;
-    if (isLinkMapKind(kind)) {
+    // Figma starts empty: chips appear only after «Собрать».
+    if (kind === 'links') {
       this.insertLinkBranch(id, 2);
     }
     this.projectDirty = true;
@@ -4654,6 +4689,26 @@ export class MarkerStore implements vscode.Disposable {
   }
 
   /**
+   * Drop every chip on a Figma page, including the last root.
+   * A links page keeps its layouts.
+   */
+  async clearFigmaLinks(pageId: string): Promise<void> {
+    const page = this.data.pages[pageId];
+    if (!page || page.kind !== 'figma') {
+      return;
+    }
+    const ids = Object.keys(this.data.links).filter((id) => this.pageOfLink(id) === pageId);
+    if (ids.length === 0) {
+      return;
+    }
+    for (const id of ids) {
+      delete this.data.links[id];
+      this.forgetCollapsed(id);
+    }
+    await this.commit();
+  }
+
+  /**
    * Create a root layout «Ваш макет» with one «Ваш компонент» on a links page.
    * Returns the layout id.
    */
@@ -4688,29 +4743,38 @@ export class MarkerStore implements vscode.Disposable {
 
   /**
    * Add tag chips on a Figma page. Existing chips and manual links stay.
-   * The same path appends a link that is not already stored. The visible
-   * label and the first url are left as they are.
+   * `Главная/mobile` and `главная/MOBILE` are one path `Главная/Mobile`.
+   * Each segment is rewritten as a capital letter plus lowercase rest.
    */
   async mergeFigmaTagHits(pageId: string, hits: FigmaTagHit[]): Promise<void> {
     const page = this.data.pages[pageId];
     if (!page || page.kind !== 'figma' || hits.length === 0) {
       return;
     }
+    const unified = this.unifyFigmaPageChips(pageId);
     type Pending = {
-      key: string;
+      fold: string;
+      rawKey: string;
       depth: number;
-      parentKey?: string;
+      parentFold?: string;
       title?: string;
       sources: FigmaTagSource[];
     };
-    const byKey = new Map<string, Pending>();
-    const ensure = (key: string, depth: number, parentKey: string | undefined): Pending => {
-      const found = byKey.get(key);
+    const byFold = new Map<string, Pending>();
+    const ensure = (rawKey: string, depth: number, parentRaw: string | undefined): Pending => {
+      const fold = foldFigmaTag(rawKey);
+      const found = byFold.get(fold);
       if (found) {
         return found;
       }
-      const row: Pending = { key, depth, ...(parentKey ? { parentKey } : {}), sources: [] };
-      byKey.set(key, row);
+      const row: Pending = {
+        fold,
+        rawKey,
+        depth,
+        ...(parentRaw ? { parentFold: foldFigmaTag(parentRaw) } : {}),
+        sources: [],
+      };
+      byFold.set(fold, row);
       return row;
     };
     for (const hit of hits) {
@@ -4721,38 +4785,55 @@ export class MarkerStore implements vscode.Disposable {
         continue;
       }
       for (const step of parsed.chain) {
-        const parentKey = step.depth === 0 ? undefined : parsed.chain[step.depth - 1]?.key;
-        const row = ensure(step.key, step.depth, parentKey);
+        const parentRaw = step.depth === 0 ? undefined : parsed.chain[step.depth - 1]?.key;
+        const row = ensure(step.key, step.depth, parentRaw);
         if (step.title && !row.title) {
           row.title = step.title;
         }
       }
-      const leaf = byKey.get(parsed.key);
+      const leaf = byFold.get(foldFigmaTag(parsed.key));
       if (leaf && !leaf.sources.some((source) => source.link === link)) {
         leaf.sources.push({ fileUrl, link, tag: hit.tag.trim() });
       }
     }
-    if (byKey.size === 0) {
+    if (byFold.size === 0) {
+      if (unified) {
+        await this.commit();
+      }
       return;
     }
+    const foundNodes = this.indexFigmaHits(hits);
     const existing = new Map<string, string>();
-    for (const [id, def] of Object.entries(this.data.links)) {
-      if (def.figmaTag && this.pageOfLink(id) === pageId && !existing.has(def.figmaTag)) {
-        existing.set(def.figmaTag, id);
+    for (const id of Object.keys(this.data.links)) {
+      if (this.pageOfLink(id) !== pageId) {
+        continue;
+      }
+      const fold = this.figmaChipFold(id);
+      if (fold && !existing.has(fold)) {
+        existing.set(fold, id);
       }
     }
-    const rows = [...byKey.values()].sort(
-      (a, b) => a.depth - b.depth || a.key.localeCompare(b.key),
+    const rows = [...byFold.values()].sort(
+      (a, b) => a.depth - b.depth || a.rawKey.localeCompare(b.rawKey),
     );
-    let changed = false;
+    let changed = unified;
     for (const row of rows) {
-      const id = existing.get(row.key);
+      const tag = canonicalFigmaTag(row.rawKey);
+      const id = existing.get(row.fold);
       if (id) {
         const def = this.data.links[id];
         if (!def) {
           continue;
         }
-        let added = false;
+        const segment = row.title ? figmaSegmentDisplay(row.title) : figmaSegmentLabel(tag);
+        if (foldFigmaTag(def.label) === foldFigmaTag(segment) && def.label !== segment) {
+          def.label = segment;
+          changed = true;
+        }
+        if (def.figmaTag !== tag) {
+          def.figmaTag = tag;
+          changed = true;
+        }
         for (const source of row.sources) {
           const known = new Set((def.figmaSources ?? []).map((item) => item.link));
           if (def.url) {
@@ -4762,42 +4843,334 @@ export class MarkerStore implements vscode.Disposable {
             continue;
           }
           def.figmaSources = [...(def.figmaSources ?? []), source];
-          added = true;
+          changed = true;
         }
         if (!def.url) {
           const first = def.figmaSources?.[0]?.link;
           if (first) {
             def.url = first;
-            added = true;
+            changed = true;
           }
         }
-        if (added) {
+        if (def.figmaUnsynced && !this.figmaChipUnsynced(def, foundNodes)) {
+          delete def.figmaUnsynced;
           changed = true;
         }
         continue;
       }
-      const parentId = row.parentKey ? existing.get(row.parentKey) : undefined;
-      if (row.parentKey && !parentId) {
+      const parentId = row.parentFold ? existing.get(row.parentFold) : undefined;
+      if (row.parentFold && !parentId) {
         continue;
       }
       if (parentId && this.linkDepthOf(parentId) >= MAX_MARKER_DEPTH) {
         continue;
       }
       const newId = this.insertLinkNode({
-        label: row.title || figmaSegmentLabel(row.key),
+        label: row.title ? figmaSegmentDisplay(row.title) : figmaSegmentLabel(tag),
         page: parentId ? undefined : pageId,
         parent: parentId,
         color: parentId ? undefined : this.nextLinkColor(pageId),
         url: row.sources[0]?.link,
-        figmaTag: row.key,
+        figmaTag: tag,
         figmaSources: row.sources.length > 0 ? row.sources : undefined,
       });
-      existing.set(row.key, newId);
+      existing.set(row.fold, newId);
       changed = true;
     }
     if (changed) {
       await this.commit();
     }
+  }
+
+  /**
+   * Compare chips on a Figma page with a fresh tag scan.
+   * A chip is out of sync when it has no tag, or its tag was not found on its links.
+   */
+  async markFigmaUnsynced(pageId: string, hits: FigmaTagHit[]): Promise<void> {
+    const page = this.data.pages[pageId];
+    if (!page || page.kind !== 'figma') {
+      return;
+    }
+    const foundNodes = this.indexFigmaHits(hits);
+    let changed = false;
+    for (const [id, def] of Object.entries(this.data.links)) {
+      if (!def || this.pageOfLink(id) !== pageId) {
+        continue;
+      }
+      const unsynced = this.figmaChipUnsynced(def, foundNodes);
+      if (unsynced === !!def.figmaUnsynced) {
+        continue;
+      }
+      if (unsynced) {
+        def.figmaUnsynced = true;
+      } else {
+        delete def.figmaUnsynced;
+      }
+      changed = true;
+    }
+    if (changed) {
+      await this.commit();
+    }
+  }
+
+  /** Folded tag path → node keys where that path was collected. */
+  private indexFigmaHits(hits: FigmaTagHit[]): Map<string, Set<string>> {
+    const found = new Map<string, Set<string>>();
+    for (const hit of hits) {
+      const parsed = parseFigmaTag(hit.tag);
+      const link = hit.link.trim();
+      if (!parsed || !link) {
+        continue;
+      }
+      const key = figmaNodeKey(link);
+      for (const step of parsed.chain) {
+        const fold = foldFigmaTag(step.key);
+        const nodes = found.get(fold) ?? new Set<string>();
+        nodes.add(key);
+        found.set(fold, nodes);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * No tag, or the tag is absent from the scan.
+   * A chip that stores links is also out of sync when none of those links carry the tag.
+   * A parent path with no link of its own stays in sync when a descendant tag includes it.
+   */
+  private figmaChipUnsynced(def: LinkDef, found: Map<string, Set<string>>): boolean {
+    const tag = def.figmaTag?.trim();
+    if (!tag) {
+      return true;
+    }
+    const nodes = found.get(foldFigmaTag(tag));
+    if (!nodes || nodes.size === 0) {
+      return true;
+    }
+    const own: string[] = [];
+    if (def.url?.trim()) {
+      own.push(figmaNodeKey(def.url));
+    }
+    for (const source of def.figmaSources ?? []) {
+      if (source.link.trim()) {
+        own.push(figmaNodeKey(source.link));
+      }
+    }
+    if (own.length === 0) {
+      return false;
+    }
+    return !own.some((key) => nodes.has(key));
+  }
+
+  /**
+   * On every Figma page, chips whose tag path differs only by case become one chip.
+   * Placeholder layouts (`Ваш макет`, `Страница`) stay separate.
+   */
+  private unifyFigmaChipCases(): boolean {
+    let changed = false;
+    for (const [pageId, page] of Object.entries(this.data.pages)) {
+      if (page.kind !== 'figma') {
+        continue;
+      }
+      if (this.unifyFigmaPageChips(pageId)) {
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Merge case-variant chips on one Figma page and normalize their labels. */
+  private unifyFigmaPageChips(pageId: string): boolean {
+    let changed = false;
+    for (let pass = 0; pass < 4; pass += 1) {
+      const groups = new Map<string, string[]>();
+      for (const id of Object.keys(this.data.links)) {
+        if (this.pageOfLink(id) !== pageId || this.figmaPathIsPlaceholder(id)) {
+          continue;
+        }
+        const fold = this.figmaChipFold(id);
+        if (!fold) {
+          continue;
+        }
+        const list = groups.get(fold) ?? [];
+        list.push(id);
+        groups.set(fold, list);
+      }
+      const dups = [...groups.values()].filter((list) => list.length > 1);
+      if (dups.length === 0) {
+        break;
+      }
+      dups.sort((a, b) => this.linkDepthOf(a[0]) - this.linkDepthOf(b[0]));
+      let merged = false;
+      for (const list of dups) {
+        const alive = list.filter((id) => this.data.links[id]);
+        if (alive.length < 2) {
+          continue;
+        }
+        const keeper = this.pickFigmaChipKeeper(alive);
+        for (const id of alive) {
+          if (id === keeper || !this.data.links[id]) {
+            continue;
+          }
+          this.mergeFigmaChipInto(keeper, id);
+          merged = true;
+          changed = true;
+        }
+      }
+      if (!merged) {
+        break;
+      }
+    }
+    for (const id of Object.keys(this.data.links)) {
+      if (this.pageOfLink(id) !== pageId || this.figmaPathIsPlaceholder(id)) {
+        continue;
+      }
+      const def = this.data.links[id];
+      if (!def) {
+        continue;
+      }
+      const segment = figmaSegmentDisplay(def.label);
+      if (segment && def.label !== segment) {
+        def.label = segment;
+        changed = true;
+      }
+      const fromLabels = this.figmaLabelPath(id)
+        .map((part) => figmaSegmentDisplay(part))
+        .join('/');
+      const nextTag =
+        def.figmaTag && foldFigmaTag(def.figmaTag) !== foldFigmaTag(fromLabels)
+          ? canonicalFigmaTag(def.figmaTag)
+          : fromLabels;
+      if (nextTag && def.figmaTag !== nextTag) {
+        def.figmaTag = nextTag;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Full tag path used to match chips. A stored tag wins over the visible label. */
+  private figmaChipFold(id: string): string {
+    const tag = this.data.links[id]?.figmaTag?.trim();
+    if (tag) {
+      return foldFigmaTag(tag);
+    }
+    if (this.figmaPathIsPlaceholder(id)) {
+      return '';
+    }
+    return foldFigmaTag(this.figmaLabelPath(id).join('/'));
+  }
+
+  private figmaLabelPath(id: string): string[] {
+    const parts: string[] = [];
+    let current: string | undefined = id;
+    const seen = new Set<string>();
+    while (current && this.data.links[current] && !seen.has(current)) {
+      seen.add(current);
+      parts.unshift(this.data.links[current].label);
+      current = this.data.links[current].parent;
+    }
+    return parts;
+  }
+
+  /** Default layout names are not tags, so identical placeholders are not merged. */
+  private figmaPathIsPlaceholder(id: string): boolean {
+    return this.figmaLabelPath(id).some((label) => this.figmaPlaceholderLabel(label));
+  }
+
+  private figmaPlaceholderLabel(label: string): boolean {
+    const fold = label.trim().toLocaleLowerCase();
+    return (
+      fold === FIGMA_PAGE_LABEL.toLocaleLowerCase() ||
+      fold === FIGMA_LAYER_LABEL.toLocaleLowerCase() ||
+      fold === FIGMA_FRAME_LABEL.toLocaleLowerCase() ||
+      fold === LINK_LAYOUT_LABEL.toLocaleLowerCase() ||
+      fold === LINK_COMPONENT_LABEL.toLocaleLowerCase()
+    );
+  }
+
+  private pickFigmaChipKeeper(ids: string[]): string {
+    return [...ids].sort((a, b) => {
+      const left = this.data.links[a];
+      const right = this.data.links[b];
+      const score = (def: LinkDef | undefined): number => {
+        if (!def) {
+          return 0;
+        }
+        return (def.url ? 4 : 0) + (def.figmaSources?.length ? 2 : 0) + (def.figmaTag ? 1 : 0);
+      };
+      const diff = score(right) - score(left);
+      if (diff !== 0) {
+        return diff;
+      }
+      const order = (left?.order ?? 0) - (right?.order ?? 0);
+      if (order !== 0) {
+        return order;
+      }
+      return a.localeCompare(b);
+    })[0];
+  }
+
+  /** Move the loser's children onto the keeper, then drop the loser. */
+  private mergeFigmaChipInto(keeperId: string, loserId: string): void {
+    const keeper = this.data.links[keeperId];
+    const loser = this.data.links[loserId];
+    if (!keeper || !loser || this.linkIsAncestor(loserId, keeperId)) {
+      return;
+    }
+    const childIds = this.linkChildren(loserId).map(([childId]) => childId);
+    for (const childId of childIds) {
+      if (this.linkIsAncestor(childId, keeperId)) {
+        continue;
+      }
+      this.detachLink(childId);
+      this.setLinkHome(childId, { parent: keeperId });
+      const siblings = this.linkChildren(keeperId)
+        .map(([linkId]) => linkId)
+        .filter((linkId) => linkId !== childId);
+      siblings.push(childId);
+      this.applyLinkSiblingOrder(undefined, keeperId, siblings);
+    }
+    if (!keeper.url && loser.url) {
+      keeper.url = loser.url;
+    }
+    const known = new Set((keeper.figmaSources ?? []).map((source) => source.link));
+    if (keeper.url) {
+      known.add(keeper.url);
+    }
+    for (const source of loser.figmaSources ?? []) {
+      if (known.has(source.link)) {
+        continue;
+      }
+      keeper.figmaSources = [...(keeper.figmaSources ?? []), source];
+      known.add(source.link);
+    }
+    const tag = keeper.figmaTag || loser.figmaTag;
+    if (tag) {
+      keeper.figmaTag = canonicalFigmaTag(tag);
+    }
+    if (loser.figmaUnsynced) {
+      keeper.figmaUnsynced = true;
+    }
+    if (foldFigmaTag(keeper.label) === foldFigmaTag(loser.label)) {
+      keeper.label = figmaSegmentDisplay(keeper.label);
+    }
+    this.detachLink(loserId);
+    delete this.data.links[loserId];
+    this.forgetCollapsed(loserId);
+  }
+
+  private linkIsAncestor(ancestorId: string, id: string): boolean {
+    let current = this.data.links[id]?.parent;
+    const seen = new Set<string>();
+    while (current && this.data.links[current] && !seen.has(current)) {
+      if (current === ancestorId) {
+        return true;
+      }
+      seen.add(current);
+      current = this.data.links[current].parent;
+    }
+    return false;
   }
 
   async updateLink(
@@ -5643,7 +6016,7 @@ export class MarkerStore implements vscode.Disposable {
     }
     const previous = this.present;
     await this.reloadSplitFromDisk(false);
-    if (this.remapOutOfPaletteLinkColors()) {
+    if (this.remapOutOfPaletteLinkColors() || this.unifyFigmaChipCases()) {
       await this.commitNow();
       return;
     }
@@ -7101,6 +7474,7 @@ export class MarkerStore implements vscode.Disposable {
           ...(p.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
           ...(p.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
           ...(p.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
+          ...(p.figmaOpenInApp === false ? { figmaOpenInApp: false } : {}),
           ...(p.scenarioSkillPath ? { scenarioSkillPath: p.scenarioSkillPath } : {}),
           ...(p.figmaSkillPath ? { figmaSkillPath: p.figmaSkillPath } : {}),
           ...(p.figmaModel ? { figmaModel: p.figmaModel } : {}),
@@ -9231,6 +9605,9 @@ export class MarkerStore implements vscode.Disposable {
     if (tagMeta.figmaSources) {
       entry.figmaSources = tagMeta.figmaSources;
     }
+    if (tagMeta.figmaUnsynced) {
+      entry.figmaUnsynced = true;
+    }
     if (def.locked) {
       entry.locked = true;
     }
@@ -9625,6 +10002,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         reviewPrintTools?: unknown;
         figmaPrintThinking?: unknown;
         figmaPrintTools?: unknown;
+        figmaOpenInApp?: unknown;
         scenarioSkillPath?: unknown;
         figmaSkillPath?: unknown;
         figmaModel?: unknown;
@@ -9657,6 +10035,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
       const reviewPrintTools = item.reviewPrintTools === false ? false : undefined;
       const figmaPrintThinking = item.figmaPrintThinking === true ? true : undefined;
       const figmaPrintTools = item.figmaPrintTools === false ? false : undefined;
+      const figmaOpenInApp = item.figmaOpenInApp === false ? false : undefined;
       const scenarioSkillPath =
         typeof item.scenarioSkillPath === 'string' ? item.scenarioSkillPath.trim() : undefined;
       const figmaSkillPath =
@@ -9685,6 +10064,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
           ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
           ...(figmaPrintThinking ? { figmaPrintThinking } : {}),
           ...(figmaPrintTools === false ? { figmaPrintTools } : {}),
+          ...(figmaOpenInApp === false ? { figmaOpenInApp } : {}),
           ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
           ...(figmaSkillPath ? { figmaSkillPath } : {}),
           ...(figmaModel ? { figmaModel } : {}),
@@ -9719,6 +10099,7 @@ function normalizeProfiles(raw: unknown): ProfilesFile {
         ...(reviewPrintTools === false ? { reviewPrintTools } : {}),
         ...(figmaPrintThinking ? { figmaPrintThinking } : {}),
         ...(figmaPrintTools === false ? { figmaPrintTools } : {}),
+        ...(figmaOpenInApp === false ? { figmaOpenInApp } : {}),
         ...(scenarioSkillPath ? { scenarioSkillPath } : {}),
         ...(figmaSkillPath ? { figmaSkillPath } : {}),
         ...(figmaModel ? { figmaModel } : {}),
@@ -10160,6 +10541,9 @@ function normalize(raw: unknown): MarkersFile {
       if (rootMeta.figmaSources) {
         entry.figmaSources = rootMeta.figmaSources;
       }
+      if (rootMeta.figmaUnsynced) {
+        entry.figmaUnsynced = true;
+      }
       if (def.locked === true) {
         entry.locked = true;
       }
@@ -10199,6 +10583,9 @@ function normalize(raw: unknown): MarkersFile {
         }
         if (childMeta.figmaSources) {
           entry.figmaSources = childMeta.figmaSources;
+        }
+        if (childMeta.figmaUnsynced) {
+          entry.figmaUnsynced = true;
         }
         if (def.locked === true) {
           entry.locked = true;

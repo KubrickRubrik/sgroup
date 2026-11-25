@@ -992,9 +992,11 @@ export type LevelNoteFile = {
   filename: string;
 };
 
-/** Run counter and the level files of a rereview or a study on the parent review. */
+/** Run counter, stamp, and the level files of a rereview or a study on the parent review. */
 export type LevelNoteSet = {
   n: number;
+  /** `ДД.ММ.ГГ чч:мм` from `study-at:` / `rereview-at:`. Written when the chip is created or updated. */
+  at?: string;
   files: LevelNoteFile[];
 };
 
@@ -1027,7 +1029,7 @@ function sortedLevelFiles(files: LevelNoteFile[]): LevelNoteFile[] {
 }
 
 /**
- * `rereview-n:` / `study-n:` plus one `rereview:` / `study:` line per level.
+ * `rereview-n:` / `study-n:` counter, `rereview-at:` / `study-at:` stamp, and one `rereview:` / `study:` line per level.
  * Absent when the parent has no files of this kind.
  */
 export function parseLevelNote(content: string, kind: LevelNoteKind): LevelNoteSet | undefined {
@@ -1060,22 +1062,28 @@ export function parseLevelNote(content: string, kind: LevelNoteKind): LevelNoteS
     return undefined;
   }
   const nRaw = metaLineValue(content, `${kind}-n`);
-  const n = nRaw && /^\d+$/.test(nRaw) ? Number(nRaw) : 0;
-  return { n, files: sortedLevelFiles(files) };
+  const n = nRaw && /^\d+$/.test(nRaw.trim()) ? Number(nRaw.trim()) : 0;
+  const atRaw = metaLineValue(content, `${kind}-at`);
+  const at = atRaw && FIX_STAMP_RE.test(atRaw.trim()) ? atRaw.trim() : undefined;
+  return { n, at, files: sortedLevelFiles(files) };
 }
 
-/** Replace every `rereview:` / `study:` line and the matching `*-n:` counter. */
+/** Replace every `rereview:` / `study:` line, the `*-n:` counter, and the `*-at:` stamp. */
 export function writeLevelNote(content: string, kind: LevelNoteKind, note: LevelNoteSet): string {
   const prefix = `${kind}:`;
   const nKey = `${kind}-n:`;
+  const atKey = `${kind}-at:`;
   const lines = content
     .replace(/\r\n/g, '\n')
     .split('\n')
     .filter((line) => {
       const trimmed = line.trim().toLowerCase();
-      return !trimmed.startsWith(prefix) && !trimmed.startsWith(nKey);
+      return !trimmed.startsWith(prefix) && !trimmed.startsWith(nKey) && !trimmed.startsWith(atKey);
     });
   lines.push(`${kind}-n: ${note.n}`);
+  if (note.at) {
+    lines.push(`${kind}-at: ${note.at}`);
+  }
   for (const file of sortedLevelFiles(note.files)) {
     if (!file.indexes.length) {
       continue;

@@ -1408,7 +1408,9 @@ export class ReviewMapController {
     let reachedStop = false;
     let pastStop = false;
     let short = false;
-    for (let page = 0; page < CHANNEL_FILTER_PAGES && collected.length < CHANNEL_VISIBLE; page += 1) {
+    // `open` stays set when the page budget ends before history does, so the button remains.
+    let open = true;
+    for (let page = 0; page < CHANNEL_FILTER_PAGES && open && !more; page += 1) {
       const result = await listChannelMessages(token, channel, {
         limit: CHANNEL_SCAN,
         ...(side === 'newer' ? { after: edge } : edge ? { before: edge } : {}),
@@ -1430,33 +1432,43 @@ export class ReviewMapController {
         if (batch.some((msg) => !snowflakeLess(msg.id, stopBeforeId))) {
           reachedStop = true;
         }
-        if (batch.some((msg) => snowflakeLess(stopBeforeId, msg.id))) {
+        if (
+          batch.some(
+            (msg) => snowflakeLess(stopBeforeId, msg.id) && this.channelRootPasses(msg, ctx),
+          )
+        ) {
           pastStop = true;
         }
         passing = passing.filter((msg) => snowflakeLess(msg.id, stopBeforeId));
       }
-      const room = CHANNEL_VISIBLE - collected.length;
-      const take = side === 'newer' ? passing.slice(0, room) : passing.slice(-room);
+      const room = Math.max(CHANNEL_VISIBLE - collected.length, 0);
+      const take =
+        room > 0 ? (side === 'newer' ? passing.slice(0, room) : passing.slice(-room)) : [];
       if (side === 'newer') {
         collected.push(...take);
-      } else {
+      } else if (take.length) {
         collected.unshift(...take);
       }
-      const unused = passing.length > take.length;
-      if (collected.length >= CHANNEL_VISIBLE) {
-        more = unused || !short;
+      // A raw Discord row that the filter drops is not something to load.
+      if (passing.length > take.length) {
+        more = true;
+        open = false;
         break;
       }
       if (short || result.value.length === 0 || reachedStop) {
         more = false;
+        open = false;
         break;
       }
       const next = side === 'newer' ? result.value[result.value.length - 1]?.id : result.value[0]?.id;
       if (!next || next === edge) {
         more = false;
+        open = false;
         break;
       }
       edge = next;
+    }
+    if (open) {
       more = true;
     }
     return { messages: sortMessagesAsc(collected), more, reachedStop, pastStop, short };
@@ -1477,7 +1489,8 @@ export class ReviewMapController {
     const collected: DiscordMessage[] = [];
     let edge = cursor;
     let exhausted = false;
-    for (let page = 0; page < THREAD_FILTER_PAGES && collected.length < pageSize; page += 1) {
+    let open = true;
+    for (let page = 0; page < THREAD_FILTER_PAGES && open; page += 1) {
       const result = await listThreadMessages(token, threadId, {
         limit: pageSize + THREAD_PROBE,
         ...(side === 'newer' ? { after: edge } : { before: edge }),
@@ -1487,28 +1500,34 @@ export class ReviewMapController {
       }
       const short = result.value.length < pageSize + THREAD_PROBE;
       const passing = result.value.filter((msg) => this.threadReplyPasses(msg, ctx));
-      const room = pageSize - collected.length;
-      const take = side === 'newer' ? passing.slice(0, room) : passing.slice(-room);
+      const room = Math.max(pageSize - collected.length, 0);
+      const take =
+        room > 0 ? (side === 'newer' ? passing.slice(0, room) : passing.slice(-room)) : [];
       if (side === 'newer') {
         collected.push(...take);
-      } else {
+      } else if (take.length) {
         collected.unshift(...take);
       }
-      const unused = passing.length > take.length;
-      if (collected.length >= pageSize) {
-        exhausted = !unused && short;
+      if (passing.length > take.length) {
+        exhausted = false;
+        open = false;
         break;
       }
       if (short || result.value.length === 0) {
         exhausted = true;
+        open = false;
         break;
       }
       const next = side === 'newer' ? result.value[result.value.length - 1]?.id : result.value[0]?.id;
       if (!next || next === edge) {
         exhausted = true;
+        open = false;
         break;
       }
       edge = next;
+    }
+    if (open) {
+      exhausted = false;
     }
     return { toAdd: sortMessagesAsc(collected), exhausted };
   }
@@ -1878,9 +1897,20 @@ export class ReviewMapController {
       } else {
         const sliced = windowAroundMessage(result.value, messageId);
         const ctx = await this.resolvedFilters();
+        const sorted = sortMessagesAsc(result.value);
+        const idx = sorted.findIndex((msg) => msg.id === messageId);
         sliced.messages = sliced.messages.filter(
           (msg) => msg.id === messageId || this.channelRootPasses(msg, ctx),
         );
+        if (idx >= 0) {
+          const shown = new Set(sliced.messages.map((msg) => msg.id));
+          sliced.canLoadOlder = sorted
+            .slice(0, idx)
+            .some((msg) => this.channelRootPasses(msg, ctx) && !shown.has(msg.id));
+          sliced.canLoadNewer = sorted
+            .slice(idx + 1)
+            .some((msg) => this.channelRootPasses(msg, ctx) && !shown.has(msg.id));
+        }
         const win: ReviewWindow = {
           ...sliced,
           threads: new Map<string, ThreadBucket>(),
@@ -2168,7 +2198,8 @@ export class ReviewMapController {
     let pastStop = false;
     let short = false;
     let moreBefore = false;
-    for (let page = 0; page < THREAD_FILTER_PAGES && collected.length < THREAD_PAGE; page += 1) {
+    let open = true;
+    for (let page = 0; page < THREAD_FILTER_PAGES && open && !moreBefore; page += 1) {
       const result = await listThreadMessages(token, threadId, {
         limit: THREAD_PAGE + THREAD_PROBE,
         ...(edge ? { after: edge.id } : { before: tipId }),
@@ -2179,6 +2210,7 @@ export class ReviewMapController {
           return;
         }
         moreBefore = true;
+        open = false;
         break;
       }
       short = result.value.length < THREAD_PAGE + THREAD_PROBE;
@@ -2186,29 +2218,36 @@ export class ReviewMapController {
       if (fresh.some((msg) => !snowflakeLess(msg.id, tipId))) {
         sawTipOrPast = true;
       }
-      if (fresh.some((msg) => snowflakeLess(tipId, msg.id))) {
+      if (
+        fresh.some((msg) => snowflakeLess(tipId, msg.id) && this.threadReplyPasses(msg, ctx))
+      ) {
         pastStop = true;
       }
       const beforeTip = fresh.filter(
         (msg) => snowflakeLess(msg.id, tipId) && this.threadReplyPasses(msg, ctx),
       );
-      const room = THREAD_PAGE - collected.length;
-      const take = beforeTip.slice(0, room);
+      const room = Math.max(THREAD_PAGE - collected.length, 0);
+      const take = room > 0 ? beforeTip.slice(0, room) : [];
       collected.push(...take);
-      if (collected.length >= THREAD_PAGE) {
-        moreBefore = beforeTip.length > take.length || !short;
+      if (beforeTip.length > take.length) {
+        moreBefore = true;
+        open = false;
         break;
       }
       if (short || result.value.length === 0 || sawTipOrPast) {
         moreBefore = false;
+        open = false;
         break;
       }
       const next = result.value[result.value.length - 1];
       if (!next || next.id === edge?.id) {
         moreBefore = false;
+        open = false;
         break;
       }
       edge = next;
+    }
+    if (open) {
       moreBefore = true;
     }
     const tip = entry.replies.find((msg) => msg.id === tipId);
@@ -2232,21 +2271,44 @@ export class ReviewMapController {
     await this.enrichReplies(token, collected);
   }
 
+  /**
+   * True when a message past this edge passes `visible`.
+   * A full page of filtered-out rows is not the end: keep walking until a hit, a short page, or the budget.
+   * Undefined only when Discord itself fails.
+   */
   private async probeVisible(
     token: string,
     channelId: string,
     edge: { before?: string; after?: string },
     visible: (msg: DiscordMessage) => boolean,
+    pageBudget = CHANNEL_FILTER_PAGES,
   ): Promise<boolean | undefined> {
-    const result = await listChannelMessages(token, channelId, { ...edge, limit: CHANNEL_SCAN });
-    if (!result.ok) {
+    const before = edge.before;
+    let cursor = before || edge.after;
+    if (!cursor) {
       return undefined;
     }
-    if (result.value.some(visible)) {
-      return true;
+    for (let page = 0; page < pageBudget; page += 1) {
+      const result = await listChannelMessages(token, channelId, {
+        limit: CHANNEL_SCAN,
+        ...(before ? { before: cursor } : { after: cursor }),
+      });
+      if (!result.ok) {
+        return undefined;
+      }
+      if (result.value.some(visible)) {
+        return true;
+      }
+      if (result.value.length < CHANNEL_SCAN) {
+        return false;
+      }
+      const next = before ? result.value[0]?.id : result.value[result.value.length - 1]?.id;
+      if (!next || next === cursor) {
+        return false;
+      }
+      cursor = next;
     }
-    // A full page of notices is not proof that history ended.
-    return result.value.length < CHANNEL_SCAN ? false : undefined;
+    return true;
   }
 
   /** A failed tick must not replace a window that is already on screen. */
@@ -2312,13 +2374,15 @@ export class ReviewMapController {
   }
 
   private async probeChannelEdges(token: string, channelId: string, win: ReviewWindow): Promise<void> {
+    const ctx = this.syncFilters();
+    const passes = (msg: DiscordMessage) => this.channelRootPasses(msg, ctx);
     const span = spanBeforeGap(win.messages, win.gapBeforeId);
     const tip = win.gapBeforeId
       ? win.messages.find((msg) => msg.id === win.gapBeforeId)
       : undefined;
     const oldest = span[0] ?? tip;
     if (oldest) {
-      const older = await this.probeVisible(token, channelId, { before: oldest.id }, isVisibleChannel);
+      const older = await this.probeVisible(token, channelId, { before: oldest.id }, passes);
       if (older !== undefined) {
         win.canLoadOlder = older;
       }
@@ -2331,16 +2395,30 @@ export class ReviewMapController {
       if (!between.ok) {
         return;
       }
-      const real = between.value.filter(isVisibleChannel);
-      const hole = real.filter((msg) => snowflakeLess(msg.id, tip.id));
+      const passing = between.value.filter(passes);
+      const hole = passing.filter((msg) => snowflakeLess(msg.id, tip.id));
       const sawTip = between.value.some((msg) => !snowflakeLess(msg.id, tip.id));
       const short = between.value.length < CHANNEL_SCAN;
       if (hole.length === 0 && (sawTip || short)) {
         win.gapBeforeId = undefined;
         win.messages = sortMessagesAsc(win.messages);
-        win.canLoadNewer = real.some((msg) => snowflakeLess(tip.id, msg.id));
-      } else {
+        win.canLoadNewer = passing.some((msg) => snowflakeLess(tip.id, msg.id));
+      } else if (hole.length > 0) {
         win.canLoadNewer = true;
+      } else {
+        const next = between.value[between.value.length - 1]?.id;
+        const more = next
+          ? await this.probeVisible(token, channelId, { after: next }, (msg) =>
+              passes(msg) && snowflakeLess(msg.id, tip.id),
+            )
+          : false;
+        if (more === false) {
+          win.gapBeforeId = undefined;
+          win.messages = sortMessagesAsc(win.messages);
+          win.canLoadNewer = false;
+        } else {
+          win.canLoadNewer = true;
+        }
       }
       return;
     }
@@ -2348,7 +2426,7 @@ export class ReviewMapController {
     if (!newest) {
       return;
     }
-    const newer = await this.probeVisible(token, channelId, { after: newest.id }, isVisibleChannel);
+    const newer = await this.probeVisible(token, channelId, { after: newest.id }, passes);
     if (newer !== undefined) {
       win.canLoadNewer = newer;
     }
@@ -2413,13 +2491,21 @@ export class ReviewMapController {
         }
       }
     }
+    const ctx = this.syncFilters();
+    const passes = (msg: DiscordMessage) => this.threadReplyPasses(msg, ctx);
     const oldest = spanBeforeGap(bucket.replies, bucket.gapBeforeId)[0];
     const tipNow = bucket.gapBeforeId
       ? bucket.replies.find((msg) => msg.id === bucket.gapBeforeId)
       : undefined;
     const probeOldest = oldest ?? tipNow;
     if (probeOldest) {
-      const older = await this.probeVisible(token, threadId, { before: probeOldest.id }, isVisibleReply);
+      const older = await this.probeVisible(
+        token,
+        threadId,
+        { before: probeOldest.id },
+        passes,
+        THREAD_FILTER_PAGES,
+      );
       if (older !== undefined) {
         bucket.canLoadOlder = older;
       }
@@ -2433,14 +2519,34 @@ export class ReviewMapController {
       if (!between.ok) {
         return;
       }
-      const real = between.value.filter(isVisibleReply);
-      const hole = real.filter((msg) => snowflakeLess(msg.id, tipNow.id));
-      if (hole.length === 0) {
+      const passing = between.value.filter(passes);
+      const hole = passing.filter((msg) => snowflakeLess(msg.id, tipNow.id));
+      const sawTip = between.value.some((msg) => !snowflakeLess(msg.id, tipNow.id));
+      const short = between.value.length < 5;
+      if (hole.length === 0 && (sawTip || short)) {
         bucket.gapBeforeId = undefined;
         bucket.replies = sortMessagesAsc(bucket.replies);
-        bucket.canLoadNewer = real.some((msg) => snowflakeLess(tipNow.id, msg.id));
-      } else {
+        bucket.canLoadNewer = passing.some((msg) => snowflakeLess(tipNow.id, msg.id));
+      } else if (hole.length > 0) {
         bucket.canLoadNewer = true;
+      } else {
+        const next = between.value[between.value.length - 1]?.id;
+        const more = next
+          ? await this.probeVisible(
+              token,
+              threadId,
+              { after: next },
+              (msg) => passes(msg) && snowflakeLess(msg.id, tipNow.id),
+              THREAD_FILTER_PAGES,
+            )
+          : false;
+        if (more === false) {
+          bucket.gapBeforeId = undefined;
+          bucket.replies = sortMessagesAsc(bucket.replies);
+          bucket.canLoadNewer = false;
+        } else {
+          bucket.canLoadNewer = true;
+        }
       }
       return;
     }
@@ -2448,7 +2554,13 @@ export class ReviewMapController {
     if (!newest) {
       return;
     }
-    const newer = await this.probeVisible(token, threadId, { after: newest.id }, isVisibleReply);
+    const newer = await this.probeVisible(
+      token,
+      threadId,
+      { after: newest.id },
+      passes,
+      THREAD_FILTER_PAGES,
+    );
     if (newer !== undefined) {
       bucket.canLoadNewer = newer;
     }
@@ -4236,7 +4348,11 @@ export class ReviewMapController {
         }),
       });
     }
-    return { ok: true, note: { n: current.n + 1, files: nextFiles }, files: uploads };
+    return {
+      ok: true,
+      note: { n: current.n + 1, at: formatFixStamp(), files: nextFiles },
+      files: uploads,
+    };
   }
 
   /** One Discord edit: new level files in, replaced level ids out, the review file kept. */
@@ -4759,7 +4875,11 @@ export class ReviewMapController {
           nextFiles.push({ level, indexes: merged, filename });
         }
       }
-      content = writeLevelNote(content, kind, { n: used.length, files: nextFiles });
+      const newest = used[used.length - 1]?.timestamp;
+      const newestAt = newest ? new Date(newest) : undefined;
+      const at =
+        newestAt && !Number.isNaN(newestAt.getTime()) ? formatFixStamp(newestAt) : formatFixStamp();
+      content = writeLevelNote(content, kind, { n: used.length, at, files: nextFiles });
       folded.push(...used);
       return { ok: true };
     };

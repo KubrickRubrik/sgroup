@@ -218,6 +218,8 @@ export interface PageLinkEntry {
   locked?: true;
   figmaTag?: string;
   figmaSources?: FigmaTagSource[];
+  /** Chip tag was missing, or was not found on its links. */
+  figmaUnsynced?: true;
 }
 
 /** Assembled workspace from base snapshot + content files. */
@@ -448,6 +450,7 @@ function normalizeProjectProfileEntry(raw: unknown): ProjectProfileEntry {
     ...(source.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(source.figmaPrintThinking === true ? { figmaPrintThinking: true } : {}),
     ...(source.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
+    ...(source.figmaOpenInApp === false ? { figmaOpenInApp: false } : {}),
     ...(() => {
       const scheme = normalizeReviewScheme(source.reviewScheme);
       return scheme === REVIEW_SCHEME_DEFAULT ? {} : { reviewScheme: scheme };
@@ -866,6 +869,15 @@ export function packPageContent(opts: {
     if (src.url) {
       entry.url = src.url;
     }
+    if (src.figmaTag) {
+      entry.figmaTag = src.figmaTag;
+    }
+    if (src.figmaSources?.length) {
+      entry.figmaSources = src.figmaSources;
+    }
+    if (src.figmaUnsynced) {
+      entry.figmaUnsynced = true;
+    }
     if (src.parent) {
       entry.parent = src.parent;
     }
@@ -1064,6 +1076,9 @@ export function normalizePageContent(raw: unknown): PageContentFile {
       if (tagMeta.figmaSources) {
         entry.figmaSources = tagMeta.figmaSources;
       }
+      if (tagMeta.figmaUnsynced) {
+        entry.figmaUnsynced = true;
+      }
       if (typeof def.parent === 'string') {
         entry.parent = def.parent;
       }
@@ -1131,6 +1146,7 @@ export function packProfileEntry(opts: {
     ...(opts.profile.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(opts.profile.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
     ...(opts.profile.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
+    ...(opts.profile.figmaOpenInApp === false ? { figmaOpenInApp: false } : {}),
     ...(opts.profile.scenarioSkillPath ? { scenarioSkillPath: opts.profile.scenarioSkillPath } : {}),
     ...(opts.profile.figmaSkillPath ? { figmaSkillPath: opts.profile.figmaSkillPath } : {}),
     ...(opts.profile.figmaModel ? { figmaModel: opts.profile.figmaModel } : {}),
@@ -1183,6 +1199,7 @@ export function unpackProfilesFromBase(
       ...(data?.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
       ...(data?.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
       ...(data?.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
+      ...(data?.figmaOpenInApp === false ? { figmaOpenInApp: false } : {}),
       ...(data?.scenarioSkillPath ? { scenarioSkillPath: data.scenarioSkillPath } : {}),
       ...(data?.figmaSkillPath ? { figmaSkillPath: data.figmaSkillPath } : {}),
       ...(data?.figmaModel ? { figmaModel: data.figmaModel } : {}),
@@ -1418,6 +1435,7 @@ function packWireProfilingEntry(id: string, entry: ProjectProfileEntry): Record<
     ...(entry.reviewPrintTools === false ? { reviewPrintTools: false } : {}),
     ...(entry.figmaPrintThinking ? { figmaPrintThinking: true } : {}),
     ...(entry.figmaPrintTools === false ? { figmaPrintTools: false } : {}),
+    ...(entry.figmaOpenInApp === false ? { figmaOpenInApp: false } : {}),
     ...(entry.mapFilters ? { map_filters: entry.mapFilters } : {}),
     ...(entry.reviewScheme && entry.reviewScheme !== REVIEW_SCHEME_DEFAULT
       ? { reviewScheme: entry.reviewScheme }

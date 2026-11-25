@@ -69,7 +69,7 @@
         "openFileDuration": 1,
         "showProblemsTab": true,
         "cyclePageScroll": true,
-        "openLinksInCursor": false,
+        "openLinksInCursor": true,
         "aliasTitle": false,
         "problemsError": true,
         "problemsWarning": true,

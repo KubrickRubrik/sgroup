@@ -75,6 +75,18 @@ export interface FigmaStoredLink {
 /** Cap for the typed name above a link. */
 export const FIGMA_LINK_LABEL_MAX = 80;
 
+/**
+ * Identity of a node link. Two URLs of the same file and node compare equal,
+ * including `:` written as `-` in `node-id`.
+ */
+export function figmaNodeKey(raw: string): string {
+  const frame = parseFigmaFrame(raw);
+  if (!frame) {
+    return raw.trim();
+  }
+  return frame.nodeId ? `${frame.fileKey}\n${frame.nodeId}` : `${frame.fileKey}\n`;
+}
+
 /** `https://www.figma.com/design/{key}` plus `node-id` when the link points at a node. */
 export function canonicalFigmaLink(fileKey: string, nodeId?: string): string {
   const base = `https://www.figma.com/design/${fileKey}`;
@@ -82,6 +94,22 @@ export function canonicalFigmaLink(fileKey: string, nodeId?: string): string {
     return base;
   }
   return `${base}?node-id=${nodeId.replace(/:/g, '-')}`;
+}
+
+/**
+ * Desktop app link. Design, FigJam, slides and prototype URLs all open as `figma://file/{key}`.
+ * `node-id` stays in the web form (`:` written as `-`), so the app lands on that frame.
+ */
+export function figmaAppUrl(raw: string): string | undefined {
+  const frame = parseFigmaFrame(raw);
+  if (!frame) {
+    return undefined;
+  }
+  const base = `figma://file/${frame.fileKey}`;
+  if (!frame.nodeId) {
+    return base;
+  }
+  return `${base}?node-id=${frame.nodeId.replace(/:/g, '-')}`;
 }
 
 /**

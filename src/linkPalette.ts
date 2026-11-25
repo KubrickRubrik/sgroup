@@ -1,9 +1,10 @@
 /**
- * Fixed color set for the links map root chips. Stored as `#rrggbb` or `#rrggbbaa`
+ * Fixed color set for map chips. Stored as `#rrggbb` or `#rrggbbaa`
  * (not theme ids), so Explorer decorations and `scripts/generate-colors.mjs` stay untouched.
  *
  * `row` is the picker band: 0 is the warm→cool ramp, 1 is the red–magenta family.
- * Array order is the picker order. Assignment order is {@link LINK_PALETTE_HEX}.
+ * Array order is the picker order. Automatic assignment uses {@link LINK_PALETTE_HEX}
+ * and never picks Red, Rose, Fuchsia, Orange, or Amber — those stay selectable by hand.
  */
 export const LINK_PALETTE: ReadonlyArray<{
   id: string;
@@ -27,14 +28,11 @@ export const LINK_PALETTE: ReadonlyArray<{
 ];
 
 /**
- * Flat list of every tone hex, column-major (top → bottom per column).
- * Kept in the previous hue order so the next free chip color does not jump.
+ * Hues a new chip may receive on its own. Red, Rose, Fuchsia, Orange, and Amber stay
+ * in the picker and on chips that already have them, but never come up as the default.
+ * Remaining order is the old hue walk, so the next free color still steps lime → slate.
  */
 const LINK_ASSIGN_IDS = [
-  'red',
-  'rose',
-  'orange',
-  'amber',
   'lime',
   'green',
   'teal',
@@ -42,16 +40,18 @@ const LINK_ASSIGN_IDS = [
   'blue',
   'indigo',
   'violet',
-  'fuchsia',
   'slate',
 ] as const;
 
+/** Tones handed out automatically, column-major (top → bottom per column). */
 export const LINK_PALETTE_HEX: readonly string[] = LINK_ASSIGN_IDS.flatMap((id) => {
   const column = LINK_PALETTE.find((item) => item.id === id);
   return column ? [...column.tones] : [];
 });
 
-const LINK_HEX_SET = new Set(LINK_PALETTE_HEX.map((hex) => hex.toLowerCase()));
+const LINK_HEX_SET = new Set(
+  LINK_PALETTE.flatMap((column) => column.tones.map((hex) => hex.toLowerCase())),
+);
 
 /** True when `color` is a fixed link tone, with or without an alpha byte. */
 export function isLinkPaletteColor(color: string): boolean {
@@ -62,10 +62,10 @@ export function isLinkPaletteColor(color: string): boolean {
   return /^#[0-9a-f]{8}$/.test(hex) && LINK_HEX_SET.has(hex.slice(0, 7));
 }
 
-/** Default root color when none is stored. */
-export const LINK_PALETTE_DEFAULT = LINK_PALETTE_HEX[0] ?? '#d65156';
+/** Default root color when none is stored. First auto tone: Lime. */
+export const LINK_PALETTE_DEFAULT = LINK_PALETTE_HEX[0] ?? '#52be37';
 
-/** Random tone from the set (for one-shot migration of legacy colors). */
+/** Random auto tone. Never Red, Rose, Fuchsia, Orange, or Amber. */
 export function randomLinkPaletteColor(): string {
   const index = Math.floor(Math.random() * LINK_PALETTE_HEX.length);
   return LINK_PALETTE_HEX[index] ?? LINK_PALETTE_DEFAULT;

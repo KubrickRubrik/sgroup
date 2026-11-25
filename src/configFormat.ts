@@ -242,6 +242,8 @@ export interface ProjectProfileEntry {
   figmaPrintThinking?: boolean;
   /** Print tool calls in the Figma tag terminal. Absent means on; false hides them. */
   figmaPrintTools?: boolean;
+  /** Figma map links open the desktop app. Absent means on; false opens the browser. */
+  figmaOpenInApp?: boolean;
   /** Optional model for the scenarios chat. */
   scenarioModel?: string;
   /** Keep reasoning out of the scenario md. Absent means off. */

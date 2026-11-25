@@ -36,10 +36,14 @@
   const reviewFilters = /** @type {HTMLElement | null} */ (document.getElementById('review-filters'));
   const figmaFilters = /** @type {HTMLElement | null} */ (document.getElementById('figma-filters'));
   const figmaFormButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-form'));
+  const figmaRefreshButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-refresh'));
+  const figmaResetButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-reset'));
   const figmaFormLoader = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-loader'));
   const figmaFormStatus = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-status'));
   let figmaFormRunning = false;
   let figmaFormStatusText = '';
+  /** Empty Figma map keeps the chip skeleton up while the form dialog or the build is open. */
+  let figmaEmptySkel = false;
   const reviewFilterCheckout = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-checkout'));
   const reviewFilterGeneral = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-general'));
   const reviewFilterDiscussions = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-discussions'));
@@ -1395,7 +1399,13 @@
     } else if (message.type === 'figmaFormState') {
       figmaFormRunning = message.running === true;
       figmaFormStatusText = typeof message.status === 'string' ? message.status : '';
+      if (!figmaFormRunning) {
+        figmaEmptySkel = false;
+      }
       syncFigmaFilters();
+      if (activePage()?.kind === 'figma' && pageLinks().length === 0) {
+        paintLinksPage();
+      }
     } else if (message.type === 'reviewState') {
       const incoming = keepLoadedReview(message.review || null);
       const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
@@ -1668,6 +1678,7 @@
         figmaModel: typeof message.figmaModel === 'string' ? message.figmaModel : '',
         figmaPrintThinking: message.figmaPrintThinking === true,
         figmaPrintTools: message.figmaPrintTools !== false,
+        figmaOpenInApp: message.figmaOpenInApp !== false,
         figmaFiles: figmaFileEntries(message.figmaFiles),
       });
     } else if (message.type === 'pageSettingsError') {
@@ -6568,19 +6579,23 @@
     }
   }
 
-  /** Distinct root hues from the link palette, shuffled. */
+  /** Distinct root hues from the auto palette, shuffled. Warm defaults stay out. */
   function pageSkelParentColors(count) {
+    const skip = new Set(['red', 'rose', 'fuchsia', 'orange', 'amber']);
     const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
     /** @type {string[]} */
     const hues = [];
     for (const column of columns) {
+      if (column && skip.has(String(column.id || '').toLowerCase())) {
+        continue;
+      }
       const tone = Array.isArray(column.tones) ? column.tones[0] : '';
       if (tone) {
         hues.push(String(tone));
       }
     }
     if (hues.length < count) {
-      hues.push('#d65156', '#f46d34', '#52be37', '#37beb0', '#5173d6', '#9760c7', '#d651b3');
+      hues.push('#52be37', '#37be7f', '#37beb0', '#5173d6', '#9760c7', '#6a81a0');
     }
     for (let i = hues.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -6774,6 +6789,8 @@
           link.depth || 0,
           link.canDelete ? 1 : 0,
           link.lastRoot ? 1 : 0,
+          link.figmaTag || '',
+          link.figmaUnsynced ? 1 : 0,
           (link.children || []).join(','),
         ].join('\u001f'),
       )
@@ -8275,10 +8292,14 @@
 
   /** assets/alert.svg — Figma tag chip that has no node link. */
   function figmaTagAlertIcon() {
+    const button = el('button', 'figma-tag-alert');
+    button.type = 'button';
+    const label = t('figmaNoLinkError');
+    button.title = label;
+    button.setAttribute('aria-label', label);
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('class', 'figma-tag-alert');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute(
       'd',
@@ -8286,7 +8307,39 @@
     );
     path.setAttribute('fill', 'currentColor');
     svg.append(path);
-    return svg;
+    button.append(svg);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      vscode.postMessage({ type: 'notifyError', text: t('figmaNoLinkError') });
+    });
+    return button;
+  }
+
+  /** assets/link-unlink-m.svg — Figma chip whose tag is missing or was not found on its links. */
+  function figmaUnsyncIcon() {
+    const button = el('button', 'figma-tag-unsync');
+    button.type = 'button';
+    const label = t('figmaUnsyncedError');
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M17.657 14.8284L16.2428 13.4142L17.657 12C19.2191 10.4379 19.2191 7.90526 17.657 6.34316C16.0949 4.78106 13.5622 4.78106 12.0001 6.34316L10.5859 7.75737L9.17171 6.34316L10.5859 4.92895C12.9291 2.5858 16.7281 2.5858 19.0712 4.92895C21.4143 7.27209 21.4143 11.0711 19.0712 13.4142L17.657 14.8284ZM14.8286 17.6569L13.4143 19.0711C11.0712 21.4142 7.27221 21.4142 4.92907 19.0711C2.58592 16.7279 2.58592 12.9289 4.92907 10.5858L6.34328 9.17159L7.75749 10.5858L6.34328 12C4.78118 13.5621 4.78118 16.0948 6.34328 17.6569C7.90538 19.219 10.438 19.219 12.0001 17.6569L13.4143 16.2427L14.8286 17.6569ZM14.8286 7.75737L16.2428 9.17159L9.17171 16.2427L7.75749 14.8284L14.8286 7.75737ZM5.77539 2.29291L7.70724 1.77527L8.74252 5.63897L6.81067 6.15661L5.77539 2.29291ZM15.2578 18.3611L17.1896 17.8434L18.2249 21.7071L16.293 22.2248L15.2578 18.3611ZM2.29303 5.77527L6.15673 6.81054L5.63909 8.7424L1.77539 7.70712L2.29303 5.77527ZM18.3612 15.2576L22.2249 16.2929L21.7072 18.2248L17.8435 17.1895L18.3612 15.2576Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    button.append(svg);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      vscode.postMessage({ type: 'notifyError', text: t('figmaUnsyncedError') });
+    });
+    return button;
   }
 
   /** assets/loader-2-fill.svg — review status in progress. */
@@ -8932,15 +8985,20 @@
     const skel = kind === 'rereview' ? 'rereview' : 'study';
     const row = el('div', 'review-reply-node is-note has-gap is-skel');
     row.dataset.reviewSkel = skel;
-    row.style.setProperty('--link-color', reviewRoleColor('note'));
+    row.style.setProperty('--link-color', reviewRoleColor(skel));
     row.setAttribute('aria-busy', 'true');
     row.append(
       linkElbow(
-        reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }),
+        reviewElbowMid({ leadingGap: true, hasStamp: true, contentHalf: 17 }),
         nextColor,
       ),
     );
     const body = el('div', 'review-body');
+    const stamp = el('div', 'review-stamp');
+    const dateBar = reviewSkeletonBar('72px', 0);
+    dateBar.classList.add('review-stamp-date');
+    stamp.append(dateBar);
+    body.append(stamp);
     const chip = el('div', 'review-chip is-review-pill is-note is-skel');
     chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
     body.append(chip);
@@ -10515,19 +10573,26 @@
    * @param {string} pageId
    * @param {string} messageId
    * @param {'rereview' | 'study'} kind
-   * @param {{ n?: number, files?: Array<{ level: string, indexes: number[], filename: string }> }} note
+   * @param {{ n?: number, at?: string, files?: Array<{ level: string, indexes: number[], filename: string }> }} note
    * @param {string} nextColor
    * @param {boolean} [busy] this note's run is in progress; loader sits to the right of the chip
    */
   function renderLevelNoteNode(pageId, messageId, kind, note, nextColor, busy) {
+    const stampDate = (note && note.at) || '';
     const row = el('div', 'review-reply-node is-note has-gap');
     row.dataset.reviewNoteFor = messageId;
     row.dataset.reviewNoteKind = kind;
-    row.style.setProperty('--link-color', reviewRoleColor('note'));
+    row.style.setProperty('--link-color', reviewRoleColor(kind));
     row.append(
-      linkElbow(reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 17 }), nextColor),
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: !!stampDate, contentHalf: 17 }),
+        nextColor,
+      ),
     );
     const body = el('div', 'review-body');
+    if (stampDate) {
+      body.append(el('div', 'review-stamp', stampDate));
+    }
     const chip = el('div', 'review-chip is-review-pill is-note');
     const label = el('span', 'review-chip-label');
     const title = levelNoteLabel(kind, note);
@@ -10536,7 +10601,7 @@
       onLevel: (bit) => openLevelNoteView(pageId, messageId, bit, levelNoteFileList(note, bit)),
     });
     chip.append(label);
-    dressReviewChip(chip, 'note');
+    dressReviewChip(chip, kind);
     chip.addEventListener('click', (event) => {
       if (event.target instanceof Element && event.target.closest('button')) {
         return;
@@ -14102,6 +14167,7 @@
    *   figmaModel?: string,
    *   figmaPrintThinking?: boolean,
    *   figmaPrintTools?: boolean,
+   *   figmaOpenInApp?: boolean,
    *   figmaFiles?: string[]
    * }} opts
    */
@@ -14263,6 +14329,8 @@
     let figmaPrintThinkingInput = null;
     /** @type {HTMLInputElement | null} */
     let figmaPrintToolsInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaOpenInAppInput = null;
     /** @type {{ label: HTMLElement, input: HTMLInputElement, nameInput: HTMLInputElement }[]} */
     const figmaFileRows = [];
     /** @type {HTMLButtonElement | null} */
@@ -14271,6 +14339,16 @@
     /** @type {(markInvalid: boolean) => { invalid: boolean, duplicate: boolean, links: { url: string, label: string }[] }} */
     let noteFigmaLinkRows = () => ({ invalid: false, duplicate: false, links: [] });
     const figmaFileMax = 20;
+    /**
+     * @param {string} value
+     */
+    function figmaScopeCaption(value) {
+      const text = String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 80);
+      return text || t('figmaLinkLabel');
+    }
     if (selectedKind === 'figma') {
       const figmaLabel = el('label', 'review-mr-field', t('figmaTokenField'));
       const figmaRow = el('div', 'figma-token-row');
@@ -14304,6 +14382,21 @@
       figmaLabel.append(figmaRow);
       panel.append(figmaLabel, figmaHint);
       figmaInput = figmaTokenInput;
+
+      /**
+       * @param {string} labelKey
+       * @param {boolean} checked
+       */
+      function figmaTerminalFlag(labelKey, checked) {
+        const label = el('label', 'review-terminal-flag');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        label.append(input, el('span', 'review-terminal-flag-text', t(labelKey)));
+        panel.append(label);
+        return input;
+      }
+      figmaOpenInAppInput = figmaTerminalFlag('figmaOpenInApp', opts.figmaOpenInApp !== false);
 
       const skillLabel = el('label', 'review-mr-field', t('figmaSkillPath'));
       const skillRow = el('div', 'review-path-field');
@@ -14346,19 +14439,6 @@
       panel.append(modelLabel);
       figmaModelInput = modelInput;
 
-      /**
-       * @param {string} labelKey
-       * @param {boolean} checked
-       */
-      function figmaTerminalFlag(labelKey, checked) {
-        const label = el('label', 'review-terminal-flag');
-        const input = document.createElement('input');
-        input.type = 'checkbox';
-        input.checked = checked;
-        label.append(input, el('span', 'review-terminal-flag-text', t(labelKey)));
-        panel.append(label);
-        return input;
-      }
       figmaPrintThinkingInput = figmaTerminalFlag(
         'labelReviewPrintThinking',
         opts.figmaPrintThinking === true,
@@ -14511,7 +14591,7 @@
 
       const figmaScopeSection = el('div', 'figma-scope-section');
       figmaScopeSection.append(el('div', 'figma-scope-title', t('figmaScopeSection')));
-      const figmaScopeScroll = el('div', 'figma-scope-scroll');
+      const figmaScopeList = el('div', 'figma-scope-list');
       figmaAdd = el('button', 'review-btn figma-scope-add', t('figmaFilesAdd'));
       figmaAdd.type = 'button';
       figmaAdd.addEventListener('click', (event) => {
@@ -14520,9 +14600,10 @@
         const last = figmaFileRows[figmaFileRows.length - 1];
         if (last) {
           last.nameInput.focus();
+          last.nameInput.select();
         }
       });
-      figmaScopeSection.append(figmaScopeScroll, figmaAdd);
+      figmaScopeSection.append(figmaScopeList, figmaAdd);
       panel.append(figmaScopeSection);
       /**
        * @param {string} value
@@ -14534,13 +14615,16 @@
         }
         const label = el('div', 'review-mr-field figma-scope-row');
         const nameInput = document.createElement('input');
-        nameInput.className = 'review-mr-title figma-scope-label';
+        nameInput.className = 'figma-scope-label';
         nameInput.type = 'text';
         nameInput.maxLength = 80;
         nameInput.spellcheck = false;
-        nameInput.placeholder = t('figmaLinkLabel');
-        nameInput.setAttribute('aria-label', t('figmaLinkLabel'));
-        nameInput.value = name || '';
+        nameInput.autocomplete = 'off';
+        nameInput.setAttribute('aria-label', t('figmaScopeSection'));
+        nameInput.value = figmaScopeCaption(name);
+        nameInput.addEventListener('blur', () => {
+          nameInput.value = figmaScopeCaption(nameInput.value);
+        });
         const row = el('div', 'figma-token-row');
         const input = document.createElement('input');
         input.className = 'review-mr-title';
@@ -14572,7 +14656,7 @@
         });
         row.append(input, remove);
         label.append(nameInput, row);
-        figmaScopeScroll.append(label);
+        figmaScopeList.append(label);
         figmaFileRows.push(entry);
         syncFigmaAdd();
       }
@@ -14695,7 +14779,7 @@
           nodeId: ref.nodeId,
           label: row.label,
           url: ref.url,
-          name: row.nameInput.value.trim().replace(/\s+/g, ' ').slice(0, 80),
+          name: figmaScopeCaption(row.nameInput.value),
         });
       }
       for (let i = 0; i < described.length; i += 1) {
@@ -14727,7 +14811,7 @@
 
     /**
      * @param {boolean} report
-     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaSkillPath: string | undefined, figmaModel: string | undefined, figmaPrintThinking: boolean | undefined, figmaPrintTools: boolean | undefined, figmaFiles: { url: string, label?: string }[] | undefined } | null}
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaSkillPath: string | undefined, figmaModel: string | undefined, figmaPrintThinking: boolean | undefined, figmaPrintTools: boolean | undefined, figmaOpenInApp: boolean | undefined, figmaFiles: { url: string, label?: string }[] | undefined } | null}
      */
     function readPageForm(report) {
       const name = nameInput.value.trim();
@@ -14793,6 +14877,7 @@
         figmaModel: figmaModelInput ? figmaModelInput.value.trim().toLowerCase() : undefined,
         figmaPrintThinking: figmaPrintThinkingInput ? figmaPrintThinkingInput.checked : undefined,
         figmaPrintTools: figmaPrintToolsInput ? figmaPrintToolsInput.checked : undefined,
+        figmaOpenInApp: figmaOpenInAppInput ? figmaOpenInAppInput.checked : undefined,
         figmaFiles,
       };
     }
@@ -14846,6 +14931,7 @@
           figmaModel: fields.figmaModel,
           figmaPrintThinking: fields.figmaPrintThinking,
           figmaPrintTools: fields.figmaPrintTools,
+          figmaOpenInApp: fields.figmaOpenInApp,
           figmaFiles: fields.figmaFiles,
         });
       };
@@ -14864,6 +14950,7 @@
         figmaModel: figmaModelInput ? figmaModelInput.value.trim().toLowerCase() : '',
         figmaPrintThinking: figmaPrintThinkingInput ? figmaPrintThinkingInput.checked : false,
         figmaPrintTools: !figmaPrintToolsInput || figmaPrintToolsInput.checked,
+        figmaOpenInApp: !figmaOpenInAppInput || figmaOpenInAppInput.checked,
         figmaFiles: JSON.stringify(selectedKind === 'figma' ? noteFigmaLinkRows(false).links : []),
       });
       /**
@@ -14884,6 +14971,7 @@
           figmaModel: (fields.figmaModel || '').toLowerCase(),
           figmaPrintThinking: fields.figmaPrintThinking === true,
           figmaPrintTools: fields.figmaPrintTools !== false,
+          figmaOpenInApp: fields.figmaOpenInApp !== false,
           figmaFiles: JSON.stringify(fields.figmaFiles || []),
         });
         if (sig !== savedSig) {
@@ -14900,6 +14988,7 @@
             figmaModel: fields.figmaModel,
             figmaPrintThinking: fields.figmaPrintThinking,
             figmaPrintTools: fields.figmaPrintTools,
+            figmaOpenInApp: fields.figmaOpenInApp,
             figmaFiles: fields.figmaFiles,
           });
         }
@@ -14927,6 +15016,9 @@
       }
       if (figmaPrintToolsInput) {
         figmaPrintToolsInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaOpenInAppInput) {
+        figmaOpenInAppInput.addEventListener('change', () => saveEditing(false));
       }
       onFigmaFilesChanged = () => saveEditing(false);
       bindSettingsCommitKey(panel, () => saveEditing(true));
@@ -15885,11 +15977,19 @@
   function paintLinksPage() {
     const links = pageLinks();
     const key = linkStructureKey(links);
+    const page = activePage();
     const tree = root.querySelector(':scope > .links-tree');
+    const figmaEmpty = root.querySelector(':scope > .figma-empty');
+    const showFormSkel = page?.kind === 'figma' && links.length === 0 && (figmaFormRunning || figmaEmptySkel);
+    const showingFormSkel = root.querySelector(':scope > .links-tree.figma-form-skel');
+    const paintedOk = showFormSkel
+      ? !!showingFormSkel
+      : !!((tree && !tree.classList.contains('page-skel')) || figmaEmpty);
     if (
       key === linksStructureKey &&
-      tree &&
-      !tree.classList.contains('page-skel') &&
+      root.dataset.linksPageId === (page?.id || '') &&
+      root.dataset.linksKind === (page?.kind || '') &&
+      paintedOk &&
       !root.classList.contains('is-page-skeleton') &&
       root.classList.contains('links-page') &&
       !data?.error
@@ -15908,11 +16008,23 @@
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page links-page';
+    root.removeAttribute('aria-busy');
     clearDropHighlights();
     if (data.error) {
       root.append(el('div', 'error', data.error));
     }
+    root.dataset.linksPageId = page?.id || '';
+    root.dataset.linksKind = page?.kind || '';
     const roots = links.filter((link) => !link.parent).sort((a, b) => a.order - b.order);
+    if (page?.kind === 'figma' && links.length === 0) {
+      if (figmaFormRunning || figmaEmptySkel) {
+        paintFigmaFormSkeleton();
+      } else {
+        paintFigmaEmpty();
+      }
+      mountLinkPanel(links);
+      return;
+    }
     if (roots.length === 0) {
       root.append(el('div', 'empty', 'Пока пусто. Нажми «Создать», чтобы добавить макет.'));
       return;
@@ -15926,6 +16038,58 @@
     root.append(nextTree);
     mountLinkPanel(links);
     playFolds(folds);
+  }
+
+  /** Empty Figma map: caption with a normal button directly under it. */
+  function paintFigmaEmpty() {
+    root.classList.add('is-figma-empty');
+    syncFigmaChromeHeight();
+    const box = el('div', 'figma-empty');
+    box.append(el('p', 'figma-empty-text', t('figmaEmpty')));
+    const button = el('button', 'review-btn', t('figmaForm'));
+    button.id = 'figma-empty-form';
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      if (figmaFormRunning) {
+        return;
+      }
+      openFigmaFormDialog();
+    });
+    box.append(button);
+    root.append(box);
+  }
+
+  /** Two parent chips, two children each, while an empty Figma map is forming. */
+  function paintFigmaFormSkeleton() {
+    const colors = pageSkelParentColors(2);
+    const tree = el('div', 'links-tree page-skel figma-form-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    root.setAttribute('aria-busy', 'true');
+    for (let parent = 0; parent < 2; parent += 1) {
+      tree.append(
+        pageSkelLinkNode({
+          depth: 0,
+          layout: true,
+          leadingGap: parent > 0,
+          width: '150px',
+          delay: parent * 90,
+          color: colors[parent] || '#6e6e6e',
+          nextColor: parent < 1 ? colors[parent + 1] || '' : '',
+          children: 2,
+        }),
+      );
+    }
+    root.append(tree);
+  }
+
+  function syncFigmaChromeHeight() {
+    if (!root.classList.contains('is-figma-empty')) {
+      return;
+    }
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      document.documentElement.style.setProperty('--syn3-chrome-h', chrome.offsetHeight + 'px');
+    }
   }
 
   const LINK_BRANCH_GAP = 18;
@@ -16126,6 +16290,9 @@
     chipWrap.append(chip);
     if (link.figmaTag && !link.url) {
       chipWrap.append(figmaTagAlertIcon());
+    }
+    if (activePage()?.kind === 'figma' && link.figmaUnsynced) {
+      chipWrap.append(figmaUnsyncIcon());
     }
     if (previewLoader) {
       chipWrap.append(previewLoader);
@@ -18358,6 +18525,18 @@
       figmaFormButton.disabled = figmaFormRunning;
       figmaFormButton.textContent = t('figmaForm');
     }
+    if (figmaRefreshButton) {
+      figmaRefreshButton.disabled = figmaFormRunning || pageLinks().length === 0;
+      figmaRefreshButton.textContent = t('figmaRefresh');
+    }
+    if (figmaResetButton) {
+      figmaResetButton.disabled = figmaFormRunning || pageLinks().length === 0;
+      figmaResetButton.textContent = t('figmaReset');
+    }
+    const emptyForm = document.getElementById('figma-empty-form');
+    if (emptyForm instanceof HTMLButtonElement) {
+      emptyForm.textContent = t('figmaForm');
+    }
     if (figmaFormLoader) {
       figmaFormLoader.hidden = !figmaFormRunning;
       if (figmaFormRunning) {
@@ -18372,13 +18551,29 @@
       figmaFormStatus.hidden = !figmaFormStatusText;
       figmaFormStatus.textContent = figmaFormStatusText;
     }
+    syncFigmaChromeHeight();
   }
 
-  function openFigmaFormDialog() {
+  function dismissFigmaFormDialog() {
+    removeOverlay('figma-form-panel');
+    if (figmaFormRunning || !figmaEmptySkel) {
+      return;
+    }
+    figmaEmptySkel = false;
+    if (activePage()?.kind === 'figma' && pageLinks().length === 0) {
+      paintLinksPage();
+    }
+  }
+
+  function openFigmaFormDialog(purpose = 'form') {
     if (figmaFormRunning || activePage()?.kind !== 'figma') {
       return;
     }
     removeOverlay('figma-form-panel');
+    if (pageLinks().length === 0) {
+      figmaEmptySkel = true;
+      paintLinksPage();
+    }
     const panel = el('div', 'review-mr-panel figma-form-panel');
     panel.id = 'figma-form-panel';
     /** @type {'mcp' | 'api'} */
@@ -18401,7 +18596,7 @@
     const actions = el('div', 'review-mr-actions');
     const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
     cancel.type = 'button';
-    cancel.addEventListener('click', () => removeOverlay('figma-form-panel'));
+    cancel.addEventListener('click', () => dismissFigmaFormDialog());
     const go = el('button', 'review-btn is-primary', t('figmaFormContinue'));
     go.type = 'button';
     go.addEventListener('click', () => {
@@ -18409,20 +18604,43 @@
       if (!page || page.kind !== 'figma' || figmaFormRunning) {
         return;
       }
-      vscode.postMessage({ type: 'figmaFormTags', pageId: page.id, via });
+      vscode.postMessage({
+        type: purpose === 'refresh' ? 'figmaRefreshTags' : 'figmaFormTags',
+        pageId: page.id,
+        via,
+      });
       removeOverlay('figma-form-panel');
     });
     actions.append(cancel, go);
     panel.append(tabs, note, actions);
     show('mcp');
-    mountSettingsOverlay(panel, () => removeOverlay('figma-form-panel'));
+    mountSettingsOverlay(panel, () => dismissFigmaFormDialog());
   }
 
   figmaFormButton?.addEventListener('click', () => {
     if (figmaFormRunning) {
       return;
     }
-    openFigmaFormDialog();
+    openFigmaFormDialog('form');
+  });
+
+  figmaRefreshButton?.addEventListener('click', () => {
+    if (figmaFormRunning || activePage()?.kind !== 'figma' || pageLinks().length === 0) {
+      return;
+    }
+    openFigmaFormDialog('refresh');
+  });
+
+  figmaResetButton?.addEventListener('click', () => {
+    const page = activePage();
+    if (!page || page.kind !== 'figma' || figmaFormRunning || pageLinks().length === 0) {
+      return;
+    }
+    vscode.postMessage({ type: 'clearFigmaLinks', pageId: page.id });
+  });
+
+  window.addEventListener('resize', () => {
+    syncFigmaChromeHeight();
   });
 
   function syncReviewFilters() {
@@ -27601,7 +27819,6 @@
     '.review-mr-people',
     '.review-file-body',
     '.review-path-nav-list',
-    '.figma-scope-scroll',
     '.link-panel',
     '.color-panel',
     '.dir-popover-list',

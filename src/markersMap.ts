@@ -66,6 +66,7 @@ import {
 import {
   collectFigmaLinks,
   FigmaStoredLink,
+  figmaAppUrl,
   figmaLinkFromInput,
   figmaLinkPreviewEnabled,
   figmaPreviewCacheKey,
@@ -74,7 +75,7 @@ import {
   loadFigmaSharedHits,
   parseFigmaFrame,
 } from './figmaLink';
-import { figmaScanPrompt, parseFigmaScanAnswer } from './figmaTags';
+import { figmaScanPrompt, parseFigmaScanAnswer, type FigmaTagHit } from './figmaTags';
 import { runFigmaTagAgent } from './reviewAgent';
 import { isReviewHostProvider, recognizedRepoProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
 import { listProjectDirectory } from './projectNav';
@@ -194,6 +195,8 @@ interface MapLink {
   canDelete: boolean;
   /** Tag path without parentheses. Empty url plus this field draws the alert icon. */
   figmaTag?: string;
+  /** No tag, or the tag was not on this chip's links. */
+  figmaUnsynced?: true;
 }
 
 interface EditorGroupLayout {
@@ -237,6 +240,7 @@ type ColumnSide = 'left' | 'right';
 type IncomingMessage =
   | { type: 'ready'; pageId?: string; rev?: string }
   | { type: 'assetsFailed'; rev?: string }
+  | { type: 'notifyError'; text: string }
   | { type: 'activePage'; pageId: string }
   | { type: 'mapFocus'; pageId?: string }
   | { type: 'open'; relPath: string }
@@ -439,6 +443,8 @@ type IncomingMessage =
   | { type: 'figmaSkillFile'; action: 'open' | 'copy' | 'save' }
   | { type: 'figmaOpenSetupDoc' }
   | { type: 'figmaFormTags'; pageId: string; via: 'mcp' | 'api' }
+  | { type: 'figmaRefreshTags'; pageId: string; via: 'mcp' | 'api' }
+  | { type: 'clearFigmaLinks'; pageId: string }
   | { type: 'reviewClearFocus'; pageId: string }
   | {
       type: 'reviewCreateMr';
@@ -568,6 +574,7 @@ type IncomingMessage =
       figmaModel?: string;
       figmaPrintThinking?: boolean;
       figmaPrintTools?: boolean;
+      figmaOpenInApp?: boolean;
     }
   | {
       type: 'reviewUpdatePage';
@@ -1742,6 +1749,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return all.length > 0 && all.every((id) => !!flags[id]);
   }
 
+  /** Figma map clicks open the desktop app. False when the link is not a file URL or the app did not take it. */
+  private async openFigmaApp(url: string): Promise<boolean> {
+    const app = figmaAppUrl(url);
+    if (!app) {
+      return false;
+    }
+    try {
+      return await vscode.env.openExternal(vscode.Uri.parse(app));
+    } catch {
+      return false;
+    }
+  }
+
   private async openLinkUrl(url: string): Promise<void> {
     try {
       const uri = vscode.Uri.parse(url);
@@ -2701,6 +2721,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       this.scheduleAssetRetry(webview);
       return;
     }
+    if (message.type === 'notifyError') {
+      const text = typeof message.text === 'string' ? message.text.trim() : '';
+      if (text) {
+        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      }
+      return;
+    }
     if (message.type === 'ready') {
       if (message.rev !== this.htmlRevByWebview.get(webview)) {
         return;
@@ -3026,7 +3053,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'figmaFormTags') {
-      await this.onFigmaFormTags(webview, message.pageId, message.via);
+      await this.onFigmaTagPass(webview, message.pageId, message.via, 'form');
+      return;
+    }
+    if (message.type === 'figmaRefreshTags') {
+      await this.onFigmaTagPass(webview, message.pageId, message.via, 'refresh');
+      return;
+    }
+    if (message.type === 'clearFigmaLinks') {
+      await this.clearFigmaLinks(message.pageId);
       return;
     }
     if (message.type === 'reviewClearFocus') {
@@ -3793,6 +3828,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'confirmOpenLinkUrl') {
+      const page = this.store.page(this.pageIdFor(webview));
+      if (
+        page?.kind === 'figma' &&
+        this.store.activeFigmaOpenInApp() &&
+        (await this.openFigmaApp(message.url))
+      ) {
+        return;
+      }
       if (this.store.appearance.openLinksInCursor) {
         await this.openLinkUrl(message.url);
         return;
@@ -4573,10 +4616,31 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return label || file.url;
   }
 
-  private async onFigmaFormTags(
+  private async clearFigmaLinks(pageId: string): Promise<void> {
+    const page = this.store.page(pageId);
+    if (!page || page.kind !== 'figma' || this.figmaFormRunning) {
+      return;
+    }
+    if (this.store.rootLinks(pageId).length === 0) {
+      return;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    const confirm = await vscode.window.showWarningMessage(
+      t(locale, 'figmaResetConfirm'),
+      { modal: true },
+      t(locale, 'figmaReset'),
+    );
+    if (confirm !== t(locale, 'figmaReset')) {
+      return;
+    }
+    await this.store.clearFigmaLinks(pageId);
+  }
+
+  private async onFigmaTagPass(
     webview: vscode.Webview,
     pageId: string,
     via: 'mcp' | 'api',
+    mode: 'form' | 'refresh',
   ): Promise<void> {
     if (this.figmaFormRunning) {
       this.postFigmaForm(true, '');
@@ -4596,11 +4660,29 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.figmaFormRunning = true;
     this.postFigmaForm(true, '');
     try {
-      if (via === 'api') {
-        await this.formFigmaTagsApi(pageId, files, locale);
-      } else {
-        await this.formFigmaTagsMcp(pageId, files, locale);
+      const collected =
+        via === 'api'
+          ? await this.collectFigmaTagsApi(files, locale)
+          : await this.collectFigmaTagsMcp(files, locale);
+      if (!collected) {
+        return;
       }
+      const failed = collected.failed
+        ? t(locale, 'figmaFormFileFailed', { file: collected.failed })
+        : '';
+      if (mode === 'refresh') {
+        if (collected.failed) {
+          this.postFigmaForm(false, failed);
+          return;
+        }
+        await this.store.markFigmaUnsynced(pageId, collected.hits);
+        this.postFigmaForm(false, '');
+        return;
+      }
+      if (collected.hits.length > 0) {
+        await this.store.mergeFigmaTagHits(pageId, collected.hits);
+      }
+      this.postFigmaForm(false, failed);
     } catch {
       this.postFigmaForm(false, t(locale, 'figmaFormBadAnswer'));
     } finally {
@@ -4608,20 +4690,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
   }
 
-  private async formFigmaTagsApi(
-    pageId: string,
+  private async collectFigmaTagsApi(
     files: { url: string; label?: string }[],
     locale: ReturnType<typeof normalizeLocale>,
-  ): Promise<void> {
+  ): Promise<{ hits: FigmaTagHit[]; failed: string } | undefined> {
     const token = await readFigmaToken(this.hostSecrets, this.store.activeProfileId);
     if (!token) {
       this.postFigmaForm(false, t(locale, 'figmaTokenMissing'));
-      return;
+      return undefined;
     }
     if (figmaRequestPaused()) {
       this.postFigmaForm(false, t(locale, 'figmaFormLimited'));
-      return;
+      return undefined;
     }
+    const hits: FigmaTagHit[] = [];
     let failed = '';
     for (const file of files) {
       const ref = figmaLinkFromInput(file.url);
@@ -4634,25 +4716,24 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         failed = this.figmaFileLabel(file);
         break;
       }
-      await this.store.mergeFigmaTagHits(pageId, loaded.hits);
+      hits.push(...loaded.hits);
     }
-    this.postFigmaForm(false, failed ? t(locale, 'figmaFormFileFailed', { file: failed }) : '');
+    return { hits, failed };
   }
 
-  private async formFigmaTagsMcp(
-    pageId: string,
+  private async collectFigmaTagsMcp(
     files: { url: string; label?: string }[],
     locale: ReturnType<typeof normalizeLocale>,
-  ): Promise<void> {
+  ): Promise<{ hits: FigmaTagHit[]; failed: string } | undefined> {
     const skillRaw = this.store.activeFigmaSkillPath();
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!skillRaw) {
       this.postFigmaForm(false, t(locale, 'figmaFormNoSkill'));
-      return;
+      return undefined;
     }
     if (!folder && !path.isAbsolute(skillRaw)) {
       this.postFigmaForm(false, t(locale, 'figmaFormNoWorkspace'));
-      return;
+      return undefined;
     }
     const cwd = folder || path.dirname(skillRaw);
     const skillAbs = path.isAbsolute(skillRaw) ? skillRaw : path.join(cwd, skillRaw);
@@ -4670,14 +4751,15 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         false,
         missing ? t(locale, 'figmaFormAgentMissing') : agent.message.slice(0, 240),
       );
-      return;
+      return undefined;
     }
     const parsed = parseFigmaScanAnswer(agent.answer);
     if (!parsed) {
       this.postFigmaForm(false, t(locale, 'figmaFormBadAnswer'));
-      return;
+      return undefined;
     }
     const byUrl = new Map(parsed.map((file) => [file.url, file]));
+    const hits: FigmaTagHit[] = [];
     let failed = '';
     for (const file of files) {
       const row = byUrl.get(file.url);
@@ -4685,9 +4767,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         failed = this.figmaFileLabel(file);
         break;
       }
-      await this.store.mergeFigmaTagHits(pageId, row.hits);
+      hits.push(...row.hits);
     }
-    this.postFigmaForm(false, failed ? t(locale, 'figmaFormFileFailed', { file: failed }) : '');
+    return { hits, failed };
   }
 
   private scenarioSkillUri(): vscode.Uri {
@@ -4951,6 +5033,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           lastRoot: this.store.isLastRootLink(id) ? true : undefined,
           canDelete: this.store.canDeleteLink(id),
           figmaTag: def.figmaTag,
+          figmaUnsynced: def.figmaUnsynced,
         };
       });
     return { groups, notes, links };
@@ -6402,6 +6485,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             figmaModel: this.store.activeFigmaModel(),
             figmaPrintThinking: this.store.activeFigmaPrint().printThinking,
             figmaPrintTools: this.store.activeFigmaPrint().printTools,
+            figmaOpenInApp: this.store.activeFigmaOpenInApp(),
           }
         : {}),
     });
@@ -6650,6 +6734,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       figmaModel?: string;
       figmaPrintThinking?: boolean;
       figmaPrintTools?: boolean;
+      figmaOpenInApp?: boolean;
     },
   ): Promise<void> {
     const name = message.name.trim();
@@ -6685,6 +6770,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       if (typeof message.figmaModel === 'string') {
         await this.store.setActiveFigmaModel(message.figmaModel);
+      }
+      if (typeof message.figmaOpenInApp === 'boolean') {
+        await this.store.setActiveFigmaOpenInApp(message.figmaOpenInApp);
       }
       if (
         typeof message.figmaPrintThinking === 'boolean' ||
@@ -7866,6 +7954,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   </div>
   <div id="figma-filters" class="review-filters figma-filters" hidden>
     <button id="figma-form" class="history-btn review-filter" type="button"></button>
+    <button id="figma-refresh" class="history-btn review-filter" type="button"></button>
+    <button id="figma-reset" class="history-btn review-filter" type="button"></button>
     <span id="figma-form-loader" class="pager-cloud-loader" hidden></span>
     <span id="figma-form-status" class="figma-form-status" hidden></span>
   </div>
