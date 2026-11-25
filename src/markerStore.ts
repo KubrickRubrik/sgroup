@@ -24,6 +24,14 @@ import {
 } from './history';
 import { normalizeLocale, Syn3Locale } from './i18n';
 import {
+  FIGMA_ICON_GRAY,
+  figmaIconPageFields,
+  normalizeFigmaIconBindings,
+  normalizeFigmaIconMatch,
+  type FigmaIconBinding,
+  type FigmaIconMatch,
+} from './figmaIconBindings';
+import {
   canonicalFigmaTag,
   figmaDepthLabel,
   figmaSegmentDisplay,
@@ -623,6 +631,10 @@ export interface PageDef {
   description?: string;
   /** Figma links and the name typed above each one. Only on kind `figma`. */
   figmaFiles?: { url: string; label?: string }[];
+  /** Icon-to-name rows. Absent means the ten starter rows. Only on kind `figma`. */
+  figmaIconBindings?: FigmaIconBinding[];
+  /** Absent means case-insensitive substring. Only on kind `figma`. */
+  figmaIconMatch?: FigmaIconMatch;
   order: number;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
@@ -681,7 +693,7 @@ export interface LinkDef {
   parent?: string;
   /** Page id for top-level layouts only. */
   page?: string;
-  /** Theme color id, `#rrggbb`, or `#rrggbbaa`. Only meaningful on roots. */
+  /** Theme color id, `#rrggbb`, or `#rrggbbaa`. On links, roots only. On Figma, any chip with children. */
   color?: string;
   order: number;
   /** When true, map edits to this node are blocked. Absent means open. */
@@ -3908,6 +3920,26 @@ export class MarkerStore implements vscode.Disposable {
     await this.bumpPageSettings(pageId);
   }
 
+  /** Icon bindings for a Figma page. Replaces the list. Bumps page settings, not map content. */
+  async setPageFigmaIcons(
+    pageId: string,
+    bindings: FigmaIconBinding[],
+    match: FigmaIconMatch | undefined,
+  ): Promise<void> {
+    const page = this.data.pages[pageId];
+    if (!page || page.kind !== 'figma') {
+      return;
+    }
+    page.figmaIconBindings = bindings;
+    if (match?.caseSensitive || match?.whole) {
+      page.figmaIconMatch = match;
+    } else {
+      delete page.figmaIconMatch;
+    }
+    await this.bumpPageSettings(pageId);
+    this.changeEmitter.fire();
+  }
+
   /** Review-map chip scheme for the active profile in the active project. */
   reviewScheme(): ReviewSchemeId {
     const id = this.activeId || GENERAL_PROFILE_ID;
@@ -3953,6 +3985,17 @@ export class MarkerStore implements vscode.Disposable {
           entry.figmaFiles = page.figmaFiles;
         } else {
           delete entry.figmaFiles;
+        }
+        const icons = figmaIconPageFields(page ?? { kind: entry.kind });
+        if (icons.figmaIconBindings) {
+          entry.figmaIconBindings = icons.figmaIconBindings;
+        } else {
+          delete entry.figmaIconBindings;
+        }
+        if (icons.figmaIconMatch) {
+          entry.figmaIconMatch = icons.figmaIconMatch;
+        } else {
+          delete entry.figmaIconMatch;
         }
         entry.order = page?.order ?? entry.order;
       }
@@ -4621,6 +4664,27 @@ export class MarkerStore implements vscode.Disposable {
     return color || undefined;
   }
 
+  /**
+   * Color of the elbow into a Figma chip: the nearest ancestor that has children
+   * and its own color. The chip's own color paints the lines under it, not this elbow.
+   */
+  figmaThreadColor(id: string): string {
+    let current = this.data.links[id]?.parent;
+    const seen = new Set<string>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const def = this.data.links[current];
+      if (!def) {
+        break;
+      }
+      if (this.linkChildren(current).length > 0 && def.color) {
+        return normalizeHex(def.color) ?? def.color;
+      }
+      current = def.parent;
+    }
+    return FIGMA_ICON_GRAY;
+  }
+
   isLinkLocked(id: string): boolean {
     return this.data.links[id]?.locked === true;
   }
@@ -4869,7 +4933,10 @@ export class MarkerStore implements vscode.Disposable {
         label: row.title ? figmaSegmentDisplay(row.title) : figmaSegmentLabel(tag),
         page: parentId ? undefined : pageId,
         parent: parentId,
-        color: parentId ? undefined : this.nextLinkColor(pageId),
+        color:
+          parentId || this.data.pages[pageId]?.kind === 'figma'
+            ? undefined
+            : this.nextLinkColor(pageId),
         url: row.sources[0]?.link,
         figmaTag: tag,
         figmaSources: row.sources.length > 0 ? row.sources : undefined,
@@ -5175,7 +5242,7 @@ export class MarkerStore implements vscode.Disposable {
 
   async updateLink(
     id: string,
-    patch: { label?: string; description?: string | null; url?: string | null; color?: string },
+    patch: { label?: string; description?: string | null; url?: string | null; color?: string | null },
   ): Promise<void> {
     const current = this.data.links[id];
     if (!current) {
@@ -5201,10 +5268,23 @@ export class MarkerStore implements vscode.Disposable {
         current.url = patch.url.trim();
       }
     }
-    if (patch.color !== undefined && !current.parent) {
-      const next = normalizeHex(patch.color);
-      if (next && isLinkPaletteColor(next)) {
-        current.color = next;
+    if (patch.color !== undefined) {
+      const pageId = this.pageOfLink(id);
+      const figma = !!pageId && this.data.pages[pageId]?.kind === 'figma';
+      if (figma) {
+        if (patch.color === null || this.linkChildren(id).length === 0) {
+          delete current.color;
+        } else {
+          const next = normalizeHex(patch.color);
+          if (next) {
+            current.color = next;
+          }
+        }
+      } else if (!current.parent && patch.color) {
+        const next = normalizeHex(patch.color);
+        if (next && isLinkPaletteColor(next)) {
+          current.color = next;
+        }
       }
     }
     await this.commit();
@@ -5272,7 +5352,7 @@ export class MarkerStore implements vscode.Disposable {
         this.setLinkHome(childId, { parent: parentId });
       } else if (pageId) {
         this.setLinkHome(childId, { page: pageId });
-        if (!this.data.links[childId]?.color) {
+        if (!this.data.links[childId]?.color && this.data.pages[pageId]?.kind !== 'figma') {
           this.data.links[childId].color = this.nextLinkColor(pageId, childId);
         }
       }
@@ -5351,7 +5431,7 @@ export class MarkerStore implements vscode.Disposable {
       this.setLinkHome(workingId, { parent: newParent });
     } else if (newPage) {
       this.setLinkHome(workingId, { page: newPage });
-      if (!this.data.links[workingId].color) {
+      if (!this.data.links[workingId].color && this.data.pages[newPage]?.kind !== 'figma') {
         this.data.links[workingId].color = this.nextLinkColor(newPage, workingId);
       }
     }
@@ -5416,7 +5496,9 @@ export class MarkerStore implements vscode.Disposable {
       this.applyLinkSiblingOrder(undefined, parent.parent, siblings);
     } else if (parent.page) {
       this.setLinkHome(id, { page: parent.page });
-      this.data.links[id].color = this.nextLinkColor(parent.page, id);
+      if (this.data.pages[parent.page]?.kind !== 'figma') {
+        this.data.links[id].color = this.nextLinkColor(parent.page, id);
+      }
       const siblings = this.rootLinks(parent.page)
         .map(([linkId]) => linkId)
         .filter((linkId) => linkId !== id);
@@ -6016,7 +6098,7 @@ export class MarkerStore implements vscode.Disposable {
     }
     const previous = this.present;
     await this.reloadSplitFromDisk(false);
-    if (this.remapOutOfPaletteLinkColors() || this.unifyFigmaChipCases()) {
+    if (this.remapOutOfPaletteLinkColors() || this.clearFigmaLeafColors() || this.unifyFigmaChipCases()) {
       await this.commitNow();
       return;
     }
@@ -6938,6 +7020,7 @@ export class MarkerStore implements vscode.Disposable {
           ? { description: meta?.description || legacyPage?.description }
           : {}),
         ...(meta?.kind === 'figma' && meta.figmaFiles?.length ? { figmaFiles: meta.figmaFiles } : {}),
+        ...figmaIconPageFields(meta ?? {}),
       };
     }
     const page = this.data.pages[pageId];
@@ -6954,6 +7037,17 @@ export class MarkerStore implements vscode.Disposable {
         page.figmaFiles = meta.figmaFiles;
       } else {
         delete page.figmaFiles;
+      }
+      const icons = figmaIconPageFields(meta);
+      if (icons.figmaIconBindings) {
+        page.figmaIconBindings = icons.figmaIconBindings;
+      } else {
+        delete page.figmaIconBindings;
+      }
+      if (icons.figmaIconMatch) {
+        page.figmaIconMatch = icons.figmaIconMatch;
+      } else {
+        delete page.figmaIconMatch;
       }
     } else if (page && legacyPage) {
       page.name = legacyPage.name || page.name;
@@ -8038,6 +8132,7 @@ export class MarkerStore implements vscode.Disposable {
     if (this.suspended) {
       return;
     }
+    this.clearFigmaLeafColors();
     const previousPages = { ...this.pagePresent };
     const previousPageIds = new Set(Object.keys(previousPages));
     const next = this.capture();
@@ -8651,7 +8746,9 @@ export class MarkerStore implements vscode.Disposable {
           continue;
         }
         entry.parent = parent;
-        delete entry.color;
+        if (this.data.pages[pageId]?.kind !== 'figma') {
+          delete entry.color;
+        }
       } else {
         entry.page = pageId;
       }
@@ -9343,7 +9440,7 @@ export class MarkerStore implements vscode.Disposable {
     const rootId = this.insertLinkNode({
       label: figma ? FIGMA_PAGE_LABEL : LINK_LAYOUT_LABEL,
       page: pageId,
-      color: this.nextLinkColor(pageId),
+      color: figma ? undefined : this.nextLinkColor(pageId),
     });
     for (let i = 0; i < childCount; i++) {
       this.insertLinkNode({
@@ -9432,8 +9529,12 @@ export class MarkerStore implements vscode.Disposable {
    */
   private remapOutOfPaletteLinkColors(): boolean {
     let changed = false;
-    for (const def of Object.values(this.data.links)) {
+    for (const [id, def] of Object.entries(this.data.links)) {
       if (def.parent) {
+        continue;
+      }
+      const pageId = this.pageOfLink(id);
+      if (pageId && this.data.pages[pageId]?.kind === 'figma') {
         continue;
       }
       const current = def.color ? normalizeHex(def.color) ?? def.color : '';
@@ -9450,6 +9551,25 @@ export class MarkerStore implements vscode.Disposable {
     return changed;
   }
 
+  /** Figma chips without children do not keep a thread color. */
+  private clearFigmaLeafColors(): boolean {
+    let changed = false;
+    for (const [id, def] of Object.entries(this.data.links)) {
+      if (!def.color) {
+        continue;
+      }
+      const pageId = this.pageOfLink(id);
+      if (!pageId || this.data.pages[pageId]?.kind !== 'figma') {
+        continue;
+      }
+      if (this.linkChildren(id).length === 0) {
+        delete def.color;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   private setLinkHome(id: string, home: { page: string; parent?: undefined } | { parent: string; page?: undefined }): void {
     const def = this.data.links[id];
     if (!def) {
@@ -9459,7 +9579,10 @@ export class MarkerStore implements vscode.Disposable {
     delete def.parent;
     if (home.parent) {
       def.parent = home.parent;
-      delete def.color;
+      const pageId = this.pageOfLink(id);
+      if (!pageId || this.data.pages[pageId]?.kind !== 'figma') {
+        delete def.color;
+      }
     } else {
       def.page = home.page;
     }
@@ -9518,6 +9641,7 @@ export class MarkerStore implements vscode.Disposable {
     if (!pageId) {
       return undefined;
     }
+    const figma = this.data.pages[pageId]?.kind === 'figma';
     const idMap = new Map<string, string>();
     const visit = (srcId: string, parentClone?: string): string => {
       const src = this.data.links[srcId];
@@ -9538,9 +9662,18 @@ export class MarkerStore implements vscode.Disposable {
       }
       if (parentClone) {
         entry.parent = parentClone;
+        if (figma && src.color && this.linkChildren(srcId).length > 0) {
+          entry.color = src.color;
+        }
       } else if (options.asRoot || !src.parent) {
         entry.page = pageId;
-        entry.color = this.nextLinkColor(pageId);
+        if (figma) {
+          if (src.color && this.linkChildren(srcId).length > 0) {
+            entry.color = src.color;
+          }
+        } else {
+          entry.color = this.nextLinkColor(pageId);
+        }
       }
       this.data.links[newId] = entry;
       for (const [childId] of this.linkChildren(srcId)) {
@@ -10210,11 +10343,15 @@ function normalize(raw: unknown): MarkersFile {
         typeof def.name === 'string' && def.name.trim() ? capitalize(def.name.trim()) : capitalize(id);
       const description = normalizeGroupDescription(def.description);
       const figmaFiles = kind === 'figma' ? normalizeStoredFigmaFiles(def.figmaFiles) : undefined;
+      const figmaIconBindings = kind === 'figma' ? normalizeFigmaIconBindings(def.figmaIconBindings) : undefined;
+      const figmaIconMatch = kind === 'figma' ? normalizeFigmaIconMatch(def.figmaIconMatch) : undefined;
       result.pages[id] = {
         name,
         kind,
         ...(description ? { description } : {}),
         ...(figmaFiles ? { figmaFiles } : {}),
+        ...(figmaIconBindings ? { figmaIconBindings } : {}),
+        ...(figmaIconMatch ? { figmaIconMatch } : {}),
         order: typeof def.order === 'number' ? def.order : index,
         layout: normalizeMapLayout(def.layout),
         groupsLayout: normalizeGroupsLayout(def.groupsLayout),
@@ -10589,6 +10726,21 @@ function normalize(raw: unknown): MarkersFile {
         }
         if (def.locked === true) {
           entry.locked = true;
+        }
+        let cursor: string | undefined = parent;
+        const seenParents = new Set<string>();
+        let keepColor = false;
+        while (cursor && result.links[cursor] && !seenParents.has(cursor)) {
+          seenParents.add(cursor);
+          const current: LinkDef = result.links[cursor];
+          if (current.page) {
+            keepColor = result.pages[current.page]?.kind === 'figma';
+            break;
+          }
+          cursor = current.parent;
+        }
+        if (keepColor && typeof def.color === 'string' && def.color) {
+          entry.color = migrateColorId(normalizeHex(def.color) ?? def.color);
         }
         result.links[id] = entry;
         changed = true;

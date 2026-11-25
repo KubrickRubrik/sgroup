@@ -119,6 +119,10 @@ export interface ProjectPageEntry {
   description?: string;
   /** Figma links and the name typed above each one. Only meaningful when `kind` is `figma`. */
   figmaFiles?: { url: string; label?: string }[];
+  /** Icon-to-name rows for Figma chips. Only meaningful when `kind` is `figma`. */
+  figmaIconBindings?: import('./figmaIconBindings').FigmaIconBinding[];
+  /** How those rows compare to a chip name. Absent means case-insensitive substring. */
+  figmaIconMatch?: import('./figmaIconBindings').FigmaIconMatch;
   order: number;
 }
 

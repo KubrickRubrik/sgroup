@@ -75,6 +75,7 @@ import {
   loadFigmaSharedHits,
   parseFigmaFrame,
 } from './figmaLink';
+import { matchFigmaIcon, prepareFigmaIconBindings, resolveFigmaIconBindings } from './figmaIconBindings';
 import { figmaScanPrompt, parseFigmaScanAnswer, type FigmaTagHit } from './figmaTags';
 import { runFigmaTagAgent } from './reviewAgent';
 import { isReviewHostProvider, recognizedRepoProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
@@ -164,6 +165,9 @@ interface MapPage {
   layout: MapLayout;
   groupsLayout: GroupsLayout;
   collapsed: Record<string, boolean>;
+  /** Resolved icon rows for a Figma page. Starter ten when nothing is stored yet. */
+  figmaIconBindings?: { icon: string; text: string; color?: string; builtin?: true }[];
+  figmaIconMatch?: { caseSensitive?: true; whole?: true };
 }
 
 /** Groups, notes, and links of a single map page. */
@@ -197,6 +201,10 @@ interface MapLink {
   figmaTag?: string;
   /** No tag, or the tag was not on this chip's links. */
   figmaUnsynced?: true;
+  /** Lucide icon for a Figma chip avatar. */
+  figmaIcon?: string;
+  /** Avatar color. Light gray when no binding color is set. */
+  figmaIconColor?: string;
 }
 
 interface EditorGroupLayout {
@@ -575,6 +583,7 @@ type IncomingMessage =
       figmaPrintTools?: boolean;
       figmaOpenInApp?: boolean;
     }
+  | { type: 'saveFigmaIconBindings'; pageId?: string; bindings?: unknown; match?: unknown }
   | {
       type: 'reviewUpdatePage';
       pageId: string;
@@ -3720,6 +3729,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.savePageSettingsFromPanel(webview, message);
       return;
     }
+    if (message.type === 'saveFigmaIconBindings') {
+      await this.saveFigmaIconBindings(webview, message);
+      return;
+    }
     if (message.type === 'pageOpenSettings') {
       await this.openMapPageSettings(webview, message.pageId);
       return;
@@ -5030,13 +5043,22 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         order: def.order,
         color: this.noteColor(id),
       }));
+    const pageKind = this.store.page(pageId)?.kind;
+    const figma = pageKind === 'figma';
+    const iconRows = figma ? resolveFigmaIconBindings(this.store.page(pageId)?.figmaIconBindings) : [];
+    const iconMatch = figma ? this.store.page(pageId)?.figmaIconMatch : undefined;
     const links: MapLink[] = this.store
       .links()
       .filter(([id]) => this.store.pageOfLink(id) === pageId)
       .map(([id, def]) => {
-        const colorId = this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
+        const ownHex = def.color ? normalizeHex(def.color) ?? def.color : undefined;
+        const colorId = figma
+          ? this.store.figmaThreadColor(id)
+          : this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
         const resolvedHex =
           normalizeHex(colorId) ?? PALETTE.find((swatch) => swatch.id === colorId)?.hex ?? colorId;
+        const icon = figma ? matchFigmaIcon(def.label, iconRows, iconMatch) : undefined;
+        const childCount = this.store.linkChildren(id).length;
         return {
           id,
           label: def.label,
@@ -5050,11 +5072,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           children: this.store.linkChildren(id).map(([childId]) => childId),
           order: def.order,
           color: cssColor(resolvedHex),
-          colorId: def.parent ? undefined : resolvedHex,
+          colorId: figma ? (childCount > 0 ? ownHex : undefined) : def.parent ? undefined : resolvedHex,
           lastRoot: this.store.isLastRootLink(id) ? true : undefined,
           canDelete: this.store.canDeleteLink(id),
           figmaTag: def.figmaTag,
           figmaUnsynced: def.figmaUnsynced,
+          ...(icon ? { figmaIcon: icon.icon, figmaIconColor: icon.color } : {}),
         };
       });
     return { groups, notes, links };
@@ -5094,6 +5117,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       layout: def.layout,
       groupsLayout: def.groupsLayout,
       collapsed: { ...def.collapsed[surface] },
+      ...(def.kind === 'figma'
+        ? {
+            figmaIconBindings: resolveFigmaIconBindings(def.figmaIconBindings),
+            ...(def.figmaIconMatch ? { figmaIconMatch: def.figmaIconMatch } : {}),
+          }
+        : {}),
     }));
     if (restorePage) {
       this.persistSurfacePage(webview, pageId);
@@ -6740,6 +6769,32 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     await this.store.setCatalogChannels({ [key]: channelId.trim() });
   }
 
+  private async saveFigmaIconBindings(
+    webview: vscode.Webview,
+    message: { pageId?: string; bindings?: unknown; match?: unknown },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const pageId = typeof message.pageId === 'string' ? message.pageId : '';
+    const page = this.store.page(pageId);
+    if (!page || page.kind !== 'figma') {
+      await webview.postMessage({
+        type: 'figmaIconBindingsError',
+        message: t(locale, 'figmaIconDuplicate'),
+      });
+      return;
+    }
+    const prepared = prepareFigmaIconBindings(message.bindings, page.figmaIconBindings, message.match);
+    if (!prepared.ok) {
+      await webview.postMessage({
+        type: 'figmaIconBindingsError',
+        message: t(locale, prepared.reason === 'builtin' ? 'figmaIconBuiltin' : 'figmaIconDuplicate'),
+      });
+      return;
+    }
+    await this.store.setPageFigmaIcons(pageId, prepared.bindings, prepared.match);
+    await webview.postMessage({ type: 'figmaIconBindingsSaved' });
+  }
+
   private async savePageSettingsFromPanel(
     webview: vscode.Webview,
     message: {
@@ -7824,6 +7879,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const noteIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-dark.svg'));
     const groupIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-light.svg'));
     const groupIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-dark.svg'));
+    const lucideBase = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'lucide')).toString().replace(/\/?$/, '/');
     const icon = (name: string, mode?: string, hidden = false) => this.toolIcon(webview, name, mode, hidden);
     const glyph = (d: string) =>
       `<svg class="review-file-ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="${d}"></path></svg>`;
@@ -7842,11 +7898,11 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${css}">
 </head>
-<body class="chrome-${chrome}" data-boot-rev="${rev}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+<body class="chrome-${chrome}" data-boot-rev="${rev}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-lucide-base="${lucideBase}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="map-chrome">
   <div class="history-bar">
     <div class="toolbar-profile">

@@ -1809,6 +1809,20 @@
     } else if (message.type === 'pageSettingsSaved') {
       setPanelBusy(document.getElementById('page-settings-panel'), false);
       closePageSettingsPanel();
+    } else if (message.type === 'figmaIconBindingsSaved') {
+      setPanelBusy(document.getElementById('figma-icon-panel'), false);
+      if (figmaIconCloseSeq !== 0 && figmaIconCloseSeq === figmaIconSaveSeq) {
+        figmaIconCloseSeq = 0;
+        closeFigmaIconPanel();
+      }
+    } else if (message.type === 'figmaIconBindingsError') {
+      const panel = document.getElementById('figma-icon-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
     } else if (message.type === 'reviewCreatePagePanel') {
       openReviewCreatePagePanel({
         origin: typeof message.origin === 'string' ? message.origin : '',
@@ -6842,15 +6856,17 @@
   /**
    * Shared color picker panel.
    * @type {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon',
    *   id?: string,
    *   pageId?: string,
+   *   index?: number,
    *   currentHex: string,
    *   rgb: string,
    *   alpha: number,
    *   allowNone: boolean,
    *   noneDisabled?: boolean,
    *   locked?: boolean,
+   *   figma?: boolean,
    * } | null}
    */
   let openColorPanel = null;
@@ -6908,6 +6924,8 @@
           link.lastRoot ? 1 : 0,
           link.figmaTag || '',
           link.figmaUnsynced ? 1 : 0,
+          link.figmaIcon || '',
+          link.figmaIconColor || '',
           (link.children || []).join(','),
         ].join('\u001f'),
       )
@@ -7111,13 +7129,15 @@
 
   /**
    * @param {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon',
    *   id?: string,
    *   pageId?: string,
+   *   index?: number,
    *   currentHex?: string,
    *   allowNone?: boolean,
    *   noneDisabled?: boolean,
    *   locked?: boolean,
+   *   figma?: boolean,
    * }} opts
    */
   function openColorsPanel(opts) {
@@ -7134,6 +7154,8 @@
       allowNone: opts.allowNone !== false,
       noneDisabled: !!opts.noneDisabled,
       locked: !!opts.locked,
+      figma: !!opts.figma,
+      index: Number.isInteger(opts.index) ? opts.index : undefined,
     };
     mountColorPanel();
   }
@@ -7166,8 +7188,16 @@
       finish();
       return;
     }
+    if (target.kind === 'figma-icon' && Number.isInteger(target.index)) {
+      setFigmaIconRowColor(target.index, value || '');
+      finish();
+      return;
+    }
     if (target.kind === 'link' && target.id) {
       if (!value) {
+        if (target.figma) {
+          vscode.postMessage({ type: 'updateLink', linkId: target.id, color: null });
+        }
         finish();
         return;
       }
@@ -7239,6 +7269,8 @@
       colorTarget = { kind: 'note', id: target.id };
     } else if (target.kind === 'link' && target.id) {
       colorTarget = { kind: 'link', id: target.id };
+    } else if (target.kind === 'figma-icon' && Number.isInteger(target.index)) {
+      colorTarget = { kind: 'figma-icon', index: target.index };
     } else if (target.kind === 'marker' && target.id) {
       colorTarget = { kind: 'marker', id: target.id };
     } else if (target.kind === 'review' && target.id && target.pageId) {
@@ -7341,6 +7373,97 @@
     }
   }
 
+  /**
+   * Soft tones for each column. Used when the host has not sent `pastels` yet.
+   * Keep in step with `pastels` in src/linkPalette.ts.
+   */
+  const PALETTE_PASTELS = {
+    orange: ['#e6c2b3', '#e3b4a1', '#d09880'],
+    amber: ['#e6ceb3', '#e3c4a1', '#d0ab80'],
+    lime: ['#bde6b3', '#aee3a1', '#90d080'],
+    green: ['#b3e6ce', '#a1e3c4', '#80d0ab'],
+    teal: ['#b3e6e0', '#a1e3dc', '#80d0c8'],
+    sky: ['#b3d4e6', '#a1cde3', '#80b6d0'],
+    blue: ['#b3bfe6', '#a1b2e3', '#8095d0'],
+    indigo: ['#beb3e6', '#aea1e3', '#9180d0'],
+    violet: ['#ceb3e6', '#c4a1e3', '#ab80d0'],
+    slate: ['#becada', '#afbfd4', '#95a5bb'],
+    red: ['#e6b3b4', '#e3a1a3', '#d08083'],
+    rose: ['#e6b3c3', '#e3a1b7', '#d0809b'],
+    fuchsia: ['#e6b3d8', '#e3a1d1', '#d080bb'],
+  };
+
+  /**
+   * @param {any} column
+   * @param {'vivid' | 'pastel'} shade
+   * @returns {string[]}
+   */
+  function columnShadeTones(column, shade) {
+    if (shade === 'pastel') {
+      const sent = column && Array.isArray(column.pastels) ? column.pastels : null;
+      const fallback = PALETTE_PASTELS[String(column?.id || '').toLowerCase()];
+      const source = sent && sent.length ? sent : fallback || [];
+      return source.map((tone) => String(tone).toLowerCase());
+    }
+    const tones = column && Array.isArray(column.tones) ? column.tones : [];
+    return tones.map((tone) => String(tone).toLowerCase());
+  }
+
+  /**
+   * @param {string} hex
+   * @param {'vivid' | 'pastel'} shade
+   */
+  function paletteShadeHas(hex, shade) {
+    const wanted = String(hex || '').toLowerCase();
+    if (!wanted) {
+      return false;
+    }
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    return columns.some((column) => columnShadeTones(column, shade).includes(wanted));
+  }
+
+  /**
+   * @param {HTMLElement} palettes
+   * @param {{ rgb: string, alpha: number, locked?: boolean }} target
+   * @param {'vivid' | 'pastel'} shade
+   */
+  function fillColorPalettes(palettes, target, shade) {
+    palettes.replaceChildren();
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    for (const band of paletteBands(columns)) {
+      const inline = band.some((column) => column && column.row === 1);
+      const sets = el('div', 'link-color-sets' + (inline ? ' is-inline' : ''));
+      for (const column of band) {
+        const set = el('div', 'link-color-set' + (inline ? ' is-inline' : ''));
+        const name = el('span', 'link-color-set-name');
+        name.textContent = column.label || '';
+        set.append(name);
+        const tonesWrap = el('div', 'link-color-tones');
+        for (const hex of columnShadeTones(column, shade)) {
+          const swatch = el('button', 'link-color-swatch');
+          swatch.type = 'button';
+          swatch.disabled = !!target.locked;
+          swatch.dataset.hex = hex;
+          swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
+          swatch.setAttribute('aria-pressed', hex === target.rgb ? 'true' : 'false');
+          swatch.addEventListener('click', () => {
+            if (target.locked) {
+              return;
+            }
+            target.rgb = hex;
+            const next = hexWithAlpha(hex, target.alpha);
+            target.currentHex = next;
+            applyColorPanelChoice(next);
+          });
+          tonesWrap.append(swatch);
+        }
+        set.append(tonesWrap);
+        sets.append(set);
+      }
+      palettes.append(sets);
+    }
+  }
+
   function mountColorPanel() {
     removeColorPanelBackdrop();
     if (!openColorPanel) {
@@ -7377,42 +7500,45 @@
       panel.append(noneBtn);
     }
 
+    const shade = paletteShadeHas(target.rgb, 'pastel') ? 'pastel' : 'vivid';
+    const tabs = el('div', 'color-panel-tabs');
+    tabs.setAttribute('role', 'tablist');
     const palettes = el('div', 'color-panel-palettes');
-    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
-    for (const band of paletteBands(columns)) {
-      const inline = band.some((column) => column && column.row === 1);
-      const sets = el('div', 'link-color-sets' + (inline ? ' is-inline' : ''));
-      for (const column of band) {
-        const set = el('div', 'link-color-set' + (inline ? ' is-inline' : ''));
-        const name = el('span', 'link-color-set-name');
-        name.textContent = column.label || '';
-        set.append(name);
-        const tonesWrap = el('div', 'link-color-tones');
-        const tones = Array.isArray(column.tones) ? column.tones : [];
-        for (const tone of tones) {
-          const hex = String(tone).toLowerCase();
-          const swatch = el('button', 'link-color-swatch');
-          swatch.type = 'button';
-          swatch.disabled = !!target.locked;
-          swatch.dataset.hex = hex;
-          swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
-          swatch.setAttribute('aria-pressed', hex === target.rgb ? 'true' : 'false');
-          swatch.addEventListener('click', () => {
-            if (target.locked) {
-              return;
-            }
-            target.rgb = hex;
-            const next = hexWithAlpha(hex, target.alpha);
-            target.currentHex = next;
-            applyColorPanelChoice(next);
-          });
-          tonesWrap.append(swatch);
+    /**
+     * @param {'vivid' | 'pastel'} nextShade
+     */
+    const selectShade = (nextShade) => {
+      tabs.querySelectorAll('.color-panel-tab').forEach((node) => {
+        if (!(node instanceof HTMLElement)) {
+          return;
         }
-        set.append(tonesWrap);
-        sets.append(set);
-      }
-      palettes.append(sets);
+        const on = node.dataset.shade === nextShade;
+        node.classList.toggle('is-selected', on);
+        node.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      fillColorPalettes(palettes, target, nextShade);
+      paintColorAlpha(panel, target);
+    };
+    for (const item of [
+      { id: 'vivid', label: t('paletteVivid') },
+      { id: 'pastel', label: t('palettePastel') },
+    ]) {
+      const tab = el('button', 'color-panel-tab' + (item.id === shade ? ' is-selected' : ''));
+      tab.type = 'button';
+      tab.dataset.shade = item.id;
+      tab.textContent = item.label;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', item.id === shade ? 'true' : 'false');
+      tab.addEventListener('click', () => {
+        if (tab.classList.contains('is-selected')) {
+          return;
+        }
+        selectShade(/** @type {'vivid' | 'pastel'} */ (item.id));
+      });
+      tabs.append(tab);
     }
+    panel.append(tabs);
+    fillColorPalettes(palettes, target, shade);
     panel.append(palettes);
 
     const alpha = el('label', 'color-panel-alpha');
@@ -8399,6 +8525,157 @@
   /** assets/bolt.svg — review chip with empty status. */
   function reviewBoltIcon() {
     return reviewSvgIcon('review-ico-bolt', 'M13 10H20L11 23V14H4L13 1V10Z');
+  }
+
+  const FIGMA_ICON_GRAY = '#c5c8ce';
+  const FIGMA_ICON_MINT = '#47f5dc';
+  const FIGMA_ICON_LIGHT = '#f7f9fc';
+  const FIGMA_ICON_AMBER = '#ffb224';
+  const FIGMA_ICON_FALLBACK = 'tag';
+  /** Previous starter hexes, so a saved list picks up the brighter palette. */
+  const FIGMA_ICON_COLOR_REFRESH = {
+    '#7ed9cc': FIGMA_ICON_MINT,
+    '#e7eaee': FIGMA_ICON_LIGHT,
+    '#f0a040': FIGMA_ICON_AMBER,
+  };
+
+  /**
+   * @param {string | undefined} color
+   */
+  function freshenFigmaIconColor(color) {
+    const key = String(color || '').trim().toLowerCase();
+    return FIGMA_ICON_COLOR_REFRESH[key] || color || '';
+  }
+
+  /** @type {Map<string, string>} */
+  const lucideSvgCache = new Map();
+  /** @type {Map<string, Promise<string>>} */
+  const lucideSvgPending = new Map();
+  /** @type {string[] | null} */
+  let lucideNames = null;
+  /** @type {Promise<string[]> | null} */
+  let lucideNamesTask = null;
+
+  function lucideBase() {
+    return document.body?.dataset.lucideBase || '';
+  }
+
+  /**
+   * @param {string} name
+   */
+  function lucideFileUrl(name) {
+    const base = lucideBase();
+    if (!base) {
+      return '';
+    }
+    const rev = document.body?.dataset.bootRev || '';
+    return base + encodeURIComponent(name) + '.svg' + (rev ? '?rev=' + encodeURIComponent(rev) : '');
+  }
+
+  /**
+   * @param {string} name
+   * @returns {Promise<string>}
+   */
+  function lucideSvg(name) {
+    const safe = String(name || '').trim().toLowerCase();
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(safe)) {
+      return Promise.resolve('');
+    }
+    const cached = lucideSvgCache.get(safe);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
+    const pending = lucideSvgPending.get(safe);
+    if (pending) {
+      return pending;
+    }
+    const url = lucideFileUrl(safe);
+    if (!url) {
+      return Promise.resolve('');
+    }
+    const task = fetch(url)
+      .then((res) => (res.ok ? res.text() : ''))
+      .then((text) => {
+        const svg = text.includes('<svg') ? text : '';
+        lucideSvgCache.set(safe, svg);
+        lucideSvgPending.delete(safe);
+        return svg;
+      })
+      .catch(() => {
+        lucideSvgPending.delete(safe);
+        return '';
+      });
+    lucideSvgPending.set(safe, task);
+    return task;
+  }
+
+  /**
+   * @param {HTMLElement} host
+   * @param {string} name
+   */
+  function mountLucide(host, name) {
+    const wanted = String(name || FIGMA_ICON_FALLBACK);
+    host.dataset.icon = wanted;
+    host.replaceChildren();
+    lucideSvg(wanted).then((text) => {
+      if (!host.isConnected || host.dataset.icon !== wanted) {
+        return;
+      }
+      const markup = text || '';
+      const finish = (svgText) => {
+        if (!host.isConnected || host.dataset.icon !== wanted || !svgText) {
+          return;
+        }
+        const wrap = document.createElement('div');
+        wrap.innerHTML = svgText;
+        const svg = wrap.querySelector('svg');
+        if (!svg) {
+          return;
+        }
+        svg.setAttribute('aria-hidden', 'true');
+        svg.removeAttribute('width');
+        svg.removeAttribute('height');
+        host.replaceChildren(svg);
+      };
+      if (markup) {
+        finish(markup);
+        return;
+      }
+      if (wanted === FIGMA_ICON_FALLBACK) {
+        return;
+      }
+      lucideSvg(FIGMA_ICON_FALLBACK).then((fallback) => {
+        finish(fallback);
+      });
+    });
+  }
+
+  /** @returns {Promise<string[]>} */
+  function loadLucideNames() {
+    if (lucideNames) {
+      return Promise.resolve(lucideNames);
+    }
+    if (lucideNamesTask) {
+      return lucideNamesTask;
+    }
+    const base = lucideBase();
+    const rev = document.body?.dataset.bootRev || '';
+    const url = base ? base + 'names.json' + (rev ? '?rev=' + encodeURIComponent(rev) : '') : '';
+    if (!url) {
+      lucideNames = [];
+      return Promise.resolve(lucideNames);
+    }
+    lucideNamesTask = fetch(url)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((list) => {
+        lucideNames = Array.isArray(list) ? list.filter((item) => typeof item === 'string') : [];
+        return lucideNames;
+      })
+      .catch(() => {
+        lucideNames = [];
+        return lucideNames;
+      });
+    return lucideNamesTask;
   }
 
   /** assets/alert.svg — Figma tag chip that has no node link. */
@@ -14079,6 +14356,7 @@
   let detachFigmaPathNav = null;
 
   function closePageSettingsPanel() {
+    closeFigmaIconPanel();
     if (detachFigmaPathNav) {
       detachFigmaPathNav();
       detachFigmaPathNav = null;
@@ -14362,6 +14640,530 @@
       return false;
     }
     return !left.nodeId || !right.nodeId || left.nodeId === right.nodeId;
+  }
+
+  /** @type {{ pageId: string, rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean, whole: boolean } | null} */
+  let figmaIconDraft = null;
+  /** Latest save post. A reply closes the panel only when it matches a save that asked to close. */
+  let figmaIconSaveSeq = 0;
+  let figmaIconCloseSeq = 0;
+
+  function closeFigmaIconPicker() {
+    const picker = document.getElementById('figma-icon-picker');
+    if (picker) {
+      picker.remove();
+    }
+  }
+
+  function closeFigmaIconPanel() {
+    closeFigmaIconPicker();
+    removeOverlay('figma-icon-panel');
+    figmaIconDraft = null;
+  }
+
+  /**
+   * @param {string} text
+   * @param {boolean} caseSensitive
+   */
+  function figmaIconTextKey(text, caseSensitive) {
+    const trimmed = text.trim();
+    return caseSensitive ? trimmed : trimmed.toLocaleLowerCase();
+  }
+
+  /**
+   * @param {{ text: string }[]} rows
+   * @param {boolean} caseSensitive
+   */
+  function figmaIconDraftDuplicate(rows, caseSensitive) {
+    const seen = new Set();
+    for (const row of rows) {
+      const key = figmaIconTextKey(row.text, caseSensitive);
+      if (seen.has(key)) {
+        return true;
+      }
+      seen.add(key);
+    }
+    return false;
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} hex
+   */
+  function setFigmaIconRowColor(index, hex) {
+    const row = figmaIconDraft?.rows[index];
+    if (!row) {
+      return;
+    }
+    const next = String(hex || '').trim().toLowerCase();
+    if (!next || next === FIGMA_ICON_GRAY) {
+      delete row.color;
+    } else {
+      row.color = next;
+    }
+    const swatch = document.querySelector(
+      '#figma-icon-panel [data-icon-index="' + index + '"] .link-color-well',
+    );
+    if (swatch instanceof HTMLElement) {
+      swatch.style.setProperty('--swatch', row.color || FIGMA_ICON_GRAY);
+    }
+    const avatar = document.querySelector(
+      '#figma-icon-panel [data-icon-index="' + index + '"] .figma-chip-avatar',
+    );
+    if (avatar instanceof HTMLElement) {
+      avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+    }
+    scheduleFigmaIconSave();
+  }
+
+  /**
+   * Longest matching text wins. Equal length keeps the earlier row.
+   * @param {string} label
+   * @param {{ icon: string, text: string, color?: string }[]} rows
+   * @param {boolean} caseSensitive
+   * @param {boolean} whole
+   */
+  function figmaIconMatchForLabel(label, rows, caseSensitive, whole) {
+    const hay = caseSensitive ? label : label.toLocaleLowerCase();
+    /** @type {{ icon: string, color: string, length: number, index: number } | undefined} */
+    let best;
+    rows.forEach((row, index) => {
+      const needleRaw = String(row.text || '').trim();
+      if (!needleRaw) {
+        return;
+      }
+      const needle = caseSensitive ? needleRaw : needleRaw.toLocaleLowerCase();
+      const hit = whole ? hay === needle : hay.includes(needle);
+      if (!hit) {
+        return;
+      }
+      if (!best || needleRaw.length > best.length || (needleRaw.length === best.length && index < best.index)) {
+        const color = String(row.color || '').trim().toLowerCase();
+        best = {
+          icon: row.icon || FIGMA_ICON_FALLBACK,
+          color: color && color !== FIGMA_ICON_GRAY ? color : FIGMA_ICON_GRAY,
+          length: needleRaw.length,
+          index,
+        };
+      }
+    });
+    return {
+      icon: best ? best.icon : FIGMA_ICON_FALLBACK,
+      color: best ? best.color : FIGMA_ICON_GRAY,
+    };
+  }
+
+  /**
+   * Paint the open draft onto the chips and remember it on the page, so a reopen
+   * before the next state still shows the chosen color.
+   * @param {{ pageId: string, rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean, whole: boolean }} draft
+   */
+  function paintFigmaIconsOntoLinks(draft) {
+    if (data && Array.isArray(data.links)) {
+      for (const link of data.links) {
+        if (pageOfLink(link) !== draft.pageId) {
+          continue;
+        }
+        const matched = figmaIconMatchForLabel(
+          link.label || '',
+          draft.rows,
+          draft.caseSensitive,
+          draft.whole,
+        );
+        link.figmaIcon = matched.icon;
+        link.figmaIconColor = matched.color;
+      }
+    }
+    const page = pages().find((item) => item.id === draft.pageId);
+    if (page) {
+      page.figmaIconBindings = draft.rows.map((row) => ({
+        icon: row.icon,
+        text: row.text,
+        ...(row.color ? { color: row.color } : {}),
+        ...(row.builtin ? { builtin: true } : {}),
+      }));
+      if (draft.caseSensitive || draft.whole) {
+        page.figmaIconMatch = {
+          ...(draft.caseSensitive ? { caseSensitive: true } : {}),
+          ...(draft.whole ? { whole: true } : {}),
+        };
+      } else {
+        delete page.figmaIconMatch;
+      }
+    }
+    paintLinksPage();
+  }
+
+  /**
+   * @param {{ pageId: string, rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean, whole: boolean }} draft
+   * @param {boolean} closeOnSave
+   */
+  function postFigmaIconBindings(draft, closeOnSave) {
+    if (figmaIconDraftDuplicate(draft.rows, draft.caseSensitive)) {
+      showFigmaIconError(t('figmaIconDuplicate'));
+      return false;
+    }
+    showFigmaIconError('');
+    const seq = ++figmaIconSaveSeq;
+    if (closeOnSave) {
+      figmaIconCloseSeq = seq;
+    }
+    paintFigmaIconsOntoLinks(draft);
+    vscode.postMessage({
+      type: 'saveFigmaIconBindings',
+      pageId: draft.pageId,
+      bindings: draft.rows.map((row) => ({
+        icon: row.icon,
+        text: row.text.trim(),
+        ...(row.color ? { color: row.color } : {}),
+        ...(row.builtin ? { builtin: true } : {}),
+      })),
+      match: {
+        ...(draft.caseSensitive ? { caseSensitive: true } : {}),
+        ...(draft.whole ? { whole: true } : {}),
+      },
+    });
+    return true;
+  }
+
+  function scheduleFigmaIconSave() {
+    const draft = figmaIconDraft;
+    const panel = document.getElementById('figma-icon-panel');
+    if (!draft || panel?.classList.contains('is-busy')) {
+      return;
+    }
+    postFigmaIconBindings(draft, false);
+  }
+
+  function showFigmaIconError(text) {
+    const error = document.querySelector('#figma-icon-panel .review-panel-error');
+    if (!(error instanceof HTMLElement)) {
+      return;
+    }
+    if (!text) {
+      error.hidden = true;
+      error.textContent = '';
+      return;
+    }
+    error.hidden = false;
+    error.textContent = text;
+  }
+
+  /**
+   * @param {'fill' | 'stroke'} mode
+   * @param {string} d
+   */
+  function figmaFlagGlyph(mode, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    if (mode === 'stroke') {
+      svg.setAttribute('fill', 'none');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('stroke-linejoin', 'round');
+    } else {
+      path.setAttribute('fill', 'currentColor');
+    }
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {*} page
+   */
+  function cloneFigmaIconRows(page) {
+    const source =
+      page && Array.isArray(page.figmaIconBindings) && page.figmaIconBindings.length
+        ? page.figmaIconBindings
+        : [
+            { icon: 'house', text: 'Главная', color: FIGMA_ICON_MINT, builtin: true },
+            { icon: 'image', text: 'Баннеры', color: FIGMA_ICON_MINT, builtin: true },
+            { icon: 'smartphone', text: 'Мобайл', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'monitor', text: 'Веб', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'tag', text: 'Жанры', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'file-text', text: 'Список', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'puzzle', text: 'Футер', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'box', text: 'Заглушки', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'tag', text: 'Теги', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'layout-grid', text: 'LayoutPage', color: FIGMA_ICON_AMBER, builtin: true },
+          ];
+    return source.map((row) => {
+      const color = freshenFigmaIconColor(typeof row.color === 'string' ? row.color : '');
+      return {
+        icon: typeof row.icon === 'string' && row.icon ? row.icon : FIGMA_ICON_FALLBACK,
+        text: typeof row.text === 'string' ? row.text : '',
+        ...(color ? { color } : {}),
+        ...(row.builtin ? { builtin: true } : {}),
+      };
+    });
+  }
+
+  /**
+   * @param {HTMLButtonElement} anchor
+   * @param {number} index
+   */
+  function openFigmaIconPicker(anchor, index) {
+    closeFigmaIconPicker();
+    const picker = el('div', 'figma-icon-picker');
+    picker.id = 'figma-icon-picker';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'review-mr-title';
+    search.placeholder = t('figmaIconSearch');
+    search.setAttribute('aria-label', t('figmaIconSearch'));
+    const list = el('div', 'figma-icon-picker-list');
+    picker.append(search, list);
+    const rect = anchor.getBoundingClientRect();
+    picker.style.left = Math.max(8, rect.left) + 'px';
+    picker.style.top = Math.min(window.innerHeight - 280, rect.bottom + 4) + 'px';
+    document.body.append(picker);
+    /**
+     * @param {string[]} names
+     */
+    const paint = (names) => {
+      const query = search.value.trim().toLowerCase();
+      const matches = (query ? names.filter((name) => name.includes(query)) : names).slice(0, 48);
+      list.replaceChildren();
+      for (const name of matches) {
+        const button = el('button', 'figma-icon-choice');
+        button.type = 'button';
+        button.title = name;
+        button.setAttribute('aria-label', name);
+        const glyph = el('span', 'figma-chip-avatar');
+        mountLucide(glyph, name);
+        button.append(glyph, el('span', 'figma-icon-choice-name', name));
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const row = figmaIconDraft?.rows[index];
+          if (row) {
+            row.icon = name;
+          }
+          const host = anchor.querySelector('.figma-chip-avatar');
+          if (host instanceof HTMLElement) {
+            mountLucide(host, name);
+          }
+          closeFigmaIconPicker();
+        });
+        list.append(button);
+      }
+    };
+    loadLucideNames().then((names) => {
+      if (!picker.isConnected) {
+        return;
+      }
+      paint(names);
+    });
+    search.addEventListener('input', () => {
+      loadLucideNames().then((names) => {
+        if (picker.isConnected) {
+          paint(names);
+        }
+      });
+    });
+    search.focus();
+    window.setTimeout(() => {
+      const onPointer = (event) => {
+        const target = event.target;
+        if (target instanceof Node && (picker.contains(target) || anchor.contains(target))) {
+          return;
+        }
+        closeFigmaIconPicker();
+        document.removeEventListener('pointerdown', onPointer, true);
+      };
+      document.addEventListener('pointerdown', onPointer, true);
+    }, 0);
+  }
+
+  function paintFigmaIconRows() {
+    const draft = figmaIconDraft;
+    const list = document.querySelector('#figma-icon-panel .figma-icon-scroll');
+    if (!draft || !(list instanceof HTMLElement)) {
+      return;
+    }
+    list.replaceChildren();
+    draft.rows.forEach((row, index) => {
+      const line = el('div', 'figma-icon-row');
+      line.dataset.iconIndex = String(index);
+      const pick = el('button', 'figma-icon-pick');
+      pick.type = 'button';
+      pick.title = t('figmaIconPick');
+      pick.setAttribute('aria-label', t('figmaIconPick'));
+      const avatar = el('span', 'figma-chip-avatar');
+      avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+      mountLucide(avatar, row.icon);
+      pick.append(avatar);
+      pick.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openFigmaIconPicker(pick, index);
+      });
+      const well = el('button', 'link-color-well');
+      well.type = 'button';
+      well.style.setProperty('--swatch', row.color || FIGMA_ICON_GRAY);
+      well.title = t('figmaIconColor');
+      well.setAttribute('aria-label', t('figmaIconColor'));
+      well.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openColorsPanel({
+          kind: 'figma-icon',
+          index,
+          currentHex: row.color || FIGMA_ICON_GRAY,
+          allowNone: true,
+          noneDisabled: false,
+          locked: false,
+        });
+      });
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'review-mr-title';
+      input.maxLength = 80;
+      input.spellcheck = false;
+      input.placeholder = t('figmaIconWord');
+      input.setAttribute('aria-label', t('figmaIconWord'));
+      input.value = row.text;
+      input.addEventListener('input', () => {
+        row.text = input.value;
+        showFigmaIconError('');
+      });
+      line.append(pick, well, input);
+      if (!row.builtin) {
+        const remove = el('button', 'figma-icon-remove', '×');
+        remove.type = 'button';
+        remove.title = t('figmaIconRemove');
+        remove.setAttribute('aria-label', t('figmaIconRemove'));
+        remove.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          draft.rows.splice(index, 1);
+          paintFigmaIconRows();
+        });
+        line.append(remove);
+      }
+      list.append(line);
+    });
+  }
+
+  /**
+   * @param {string} pageId
+   */
+  function openFigmaIconPanel(pageId) {
+    closeFigmaIconPanel();
+    const page = pages().find((item) => item.id === pageId);
+    const match = page?.figmaIconMatch || {};
+    figmaIconDraft = {
+      pageId,
+      rows: cloneFigmaIconRows(page),
+      caseSensitive: match.caseSensitive === true,
+      whole: match.whole === true,
+    };
+    const panel = el('div', 'review-mr-panel figma-icon-panel');
+    panel.id = 'figma-icon-panel';
+    panel.append(el('div', 'review-mr-people-title', t('figmaIconBindings')));
+    const flags = el('div', 'figma-icon-flags');
+    /**
+     * @param {'caseSensitive' | 'whole'} key
+     * @param {string} label
+     * @param {SVGElement} icon
+     */
+    const flagButton = (key, label, icon) => {
+      const button = el('button', 'figma-icon-flag');
+      button.type = 'button';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', figmaIconDraft && figmaIconDraft[key] ? 'true' : 'false');
+      button.append(icon);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        const draft = figmaIconDraft;
+        if (!draft) {
+          return;
+        }
+        const next = !draft[key];
+        const probe = { caseSensitive: draft.caseSensitive, whole: draft.whole, [key]: next };
+        if (figmaIconDraftDuplicate(draft.rows, probe.caseSensitive)) {
+          showFigmaIconError(t('figmaIconDuplicate'));
+          return;
+        }
+        draft[key] = next;
+        button.setAttribute('aria-pressed', next ? 'true' : 'false');
+        showFigmaIconError('');
+      });
+      return button;
+    };
+    flags.append(
+      flagButton(
+        'caseSensitive',
+        t('figmaIconMatchCase'),
+        figmaFlagGlyph(
+          'fill',
+          'M11.246 15H4.75416L2.75416 20H0.600098L7.0001 4H9.0001L15.4001 20H13.246L11.246 15ZM10.446 13L8.0001 6.88516L5.55416 13H10.446ZM21.0001 12.5351V12H23.0001V20H21.0001V19.4649C20.4118 19.8052 19.7287 20 19.0001 20C16.791 20 15.0001 18.2091 15.0001 16C15.0001 13.7909 16.791 12 19.0001 12C19.7287 12 20.4118 12.1948 21.0001 12.5351ZM19.0001 18C20.1047 18 21.0001 17.1046 21.0001 16C21.0001 14.8954 20.1047 14 19.0001 14C17.8955 14 17.0001 14.8954 17.0001 16C17.0001 17.1046 17.8955 18 19.0001 18Z',
+        ),
+      ),
+      flagButton(
+        'whole',
+        t('figmaIconMatchWhole'),
+        figmaFlagGlyph('stroke', 'M22 17v1c0 .5-.5 1-1 1H3c-.5 0-1-.5-1-1v-1'),
+      ),
+    );
+    panel.append(flags);
+    const scroll = el('div', 'figma-icon-scroll');
+    panel.append(scroll);
+    const add = el('button', 'review-btn figma-icon-add', t('figmaIconAdd'));
+    add.type = 'button';
+    add.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (!figmaIconDraft || figmaIconDraft.rows.length >= 80) {
+        return;
+      }
+      figmaIconDraft.rows.push({ icon: FIGMA_ICON_FALLBACK, text: '' });
+      paintFigmaIconRows();
+      const inputs = scroll.querySelectorAll('input');
+      const last = inputs[inputs.length - 1];
+      if (last instanceof HTMLInputElement) {
+        last.focus();
+      }
+    });
+    panel.append(add);
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => {
+      if (!panel.classList.contains('is-busy')) {
+        closeFigmaIconPanel();
+      }
+    });
+    const save = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+    save.type = 'button';
+    const commit = () => {
+      const draft = figmaIconDraft;
+      if (!draft || panel.classList.contains('is-busy')) {
+        return;
+      }
+      if (!postFigmaIconBindings(draft, true)) {
+        return;
+      }
+      setPanelBusy(panel, true);
+    };
+    save.addEventListener('click', commit);
+    bindSettingsCommitKey(panel, commit);
+    actions.append(cancel, save);
+    panel.append(actions);
+    mountSettingsOverlay(panel, () => {
+      if (!panel.classList.contains('is-busy')) {
+        closeFigmaIconPanel();
+      }
+    });
+    paintFigmaIconRows();
   }
 
   function openPageSettingsPanel(opts) {
@@ -14715,6 +15517,15 @@
         }
       });
       figmaScopeSection.append(figmaScopeList, figmaAdd);
+      if (!creating && opts.pageId) {
+        const openIcons = el('button', 'review-btn figma-icon-open', t('figmaIconBindings'));
+        openIcons.type = 'button';
+        openIcons.addEventListener('click', (event) => {
+          event.preventDefault();
+          openFigmaIconPanel(opts.pageId);
+        });
+        figmaScopeSection.append(openIcons);
+      }
       panel.append(figmaScopeSection);
       /**
        * @param {string} value
@@ -16280,12 +17091,92 @@
    * @param {boolean} leadingGap
    * @param {string} [nextColor] color of the following sibling; paints the spine below this turn
    */
+  /**
+   * Second row exists when a parent lock, an alert, or an unsync mark has to show.
+   * @param {*} link
+   */
+  function figmaChipHasMeta(link) {
+    const children = link.children || [];
+    if (children.length > 0) {
+      return true;
+    }
+    if (link.figmaTag && !link.url) {
+      return true;
+    }
+    return !!link.figmaUnsynced;
+  }
+
+  /**
+   * @param {HTMLElement} chip
+   * @param {*} link
+   * @param {string[]} childIds
+   * @param {boolean} collapsed
+   * @param {boolean} locked
+   * @param {HTMLElement} chipWrap
+   */
+  function fillFigmaChip(chip, link, childIds, collapsed, locked, chipWrap) {
+    const avatarColor = freshenFigmaIconColor(link.figmaIconColor) || FIGMA_ICON_GRAY;
+    chip.style.setProperty('--avatar-color', avatarColor);
+    const avatar = el('span', 'figma-chip-avatar');
+    avatar.style.setProperty('--avatar-color', avatarColor);
+    mountLucide(avatar, link.figmaIcon || FIGMA_ICON_FALLBACK);
+    const main = el('span', 'figma-chip-main');
+    main.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
+    const metaBits = [];
+    if (childIds.length > 0) {
+      metaBits.push(el('span', 'link-child-count', String(childIds.length)));
+    }
+    if (link.figmaTag && !link.url) {
+      metaBits.push(figmaTagAlertIcon());
+    }
+    if (link.figmaUnsynced) {
+      metaBits.push(figmaUnsyncIcon());
+    }
+    if (childIds.length > 0) {
+      const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+      lock.type = 'button';
+      lock.title = locked ? t('unlockLink') : t('lockLink');
+      lock.setAttribute('aria-label', lock.title);
+      lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+      lock.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
+      });
+      metaBits.push(lock);
+      const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+      tri.append(linkCaretIcon());
+      tri.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (locked) {
+          flashLock(link.id, chipWrap);
+          return;
+        }
+        toggleLinkCollapsed(link.id);
+      });
+      tri.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      metaBits.push(tri);
+    }
+    if (metaBits.length > 0) {
+      const meta = el('span', 'figma-chip-meta');
+      meta.append(...metaBits);
+      main.append(meta);
+    }
+    chip.append(avatar, main);
+  }
+
   function renderLinkNode(link, byId, leadingGap, nextColor) {
     const childIds = link.children || [];
     const children = childIds.map((id) => byId[id]).filter(Boolean);
     const collapsed = childIds.length > 0 && isCollapsed(link.id);
     const locked = isLocked(link);
     const depth = link.depth || 0;
+    const figmaChip = activePage()?.kind === 'figma';
+    const figmaMeta = figmaChip && figmaChipHasMeta(link);
     const row = el(
       'div',
       'link-node depth-' +
@@ -16293,19 +17184,29 @@
         (leadingGap ? ' has-gap' : '') +
         (collapsed ? ' is-collapsed' : '') +
         (locked ? ' is-locked' : '') +
-        (!link.parent ? ' is-layout' : ' is-component'),
+        (!link.parent ? ' is-layout' : ' is-component') +
+        (figmaChip ? ' is-figma-chip' : '') +
+        (figmaMeta ? ' has-figma-meta' : ''),
     );
     row.dataset.linkId = link.id;
     row.dataset.depth = String(depth);
-    row.style.setProperty('--link-color', link.color || 'var(--vscode-foreground)');
-    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + linkChipHalf(depth), nextColor));
+    row.style.setProperty('--link-color', link.color || (figmaChip ? FIGMA_ICON_GRAY : 'var(--vscode-foreground)'));
+    if (figmaChip && childIds.length > 0) {
+      row.style.setProperty('--figma-thread', link.colorId || link.color || FIGMA_ICON_GRAY);
+    }
+    const chipHalf = figmaChip ? 23 : linkChipHalf(depth);
+    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + chipHalf, nextColor));
 
     const body = el('div', 'link-body');
     const chipWrap = el('div', 'link-chip-wrap');
-    const chip = el('button', 'link-chip' + (entityLinkIsBroken(link.url) ? ' is-broken' : ''));
-    chip.type = 'button';
-    chip.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
-    if (childIds.length > 0) {
+    const chip = el(figmaChip ? 'div' : 'button', 'link-chip' + (entityLinkIsBroken(link.url) ? ' is-broken' : ''));
+    if (figmaChip) {
+      fillFigmaChip(chip, link, childIds, collapsed, locked, chipWrap);
+    } else {
+      chip.type = 'button';
+      chip.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
+    }
+    if (!figmaChip && childIds.length > 0) {
       const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
       tri.append(linkCaretIcon());
       tri.addEventListener('click', (event) => {
@@ -16333,7 +17234,10 @@
         return;
       }
       const target = event.target;
-      if (target instanceof Element && target.closest('.link-chip-tri')) {
+      if (
+        target instanceof Element &&
+        target.closest('.link-chip-tri, .lock-btn, .figma-tag-alert, .figma-tag-unsync')
+      ) {
         return;
       }
       if (!link.url) {
@@ -16351,6 +17255,13 @@
     chip.addEventListener('dblclick', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      const dblTarget = event.target;
+      if (
+        dblTarget instanceof Element &&
+        dblTarget.closest('.link-chip-tri, .lock-btn, .figma-tag-alert, .figma-tag-unsync')
+      ) {
+        return;
+      }
       window.clearTimeout(openTimer);
       openTimer = 0;
       openLinkPanelId = link.id;
@@ -16399,31 +17310,33 @@
       });
     }
     chipWrap.append(chip);
-    if (link.figmaTag && !link.url) {
+    if (!figmaChip && link.figmaTag && !link.url) {
       chipWrap.append(figmaTagAlertIcon());
     }
-    if (activePage()?.kind === 'figma' && link.figmaUnsynced) {
+    if (!figmaChip && activePage()?.kind === 'figma' && link.figmaUnsynced) {
       chipWrap.append(figmaUnsyncIcon());
     }
     if (previewLoader) {
       chipWrap.append(previewLoader);
     }
 
-    const side = el('div', 'link-side');
-    const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
-    lock.type = 'button';
-    lock.title = locked ? t('unlockLink') : t('lockLink');
-    lock.setAttribute('aria-label', lock.title);
-    lock.append(locked ? lockClosedIcon() : lockOpenIcon());
-    lock.addEventListener('click', (event) => {
-      event.stopPropagation();
-      vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
-    });
-    if (childIds.length > 0) {
-      side.append(el('span', 'link-child-count', String(childIds.length)));
+    if (!figmaChip) {
+      const side = el('div', 'link-side');
+      const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+      lock.type = 'button';
+      lock.title = locked ? t('unlockLink') : t('lockLink');
+      lock.setAttribute('aria-label', lock.title);
+      lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+      lock.addEventListener('click', (event) => {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
+      });
+      if (childIds.length > 0) {
+        side.append(el('span', 'link-child-count', String(childIds.length)));
+      }
+      side.append(lock);
+      chipWrap.append(side);
     }
-    side.append(lock);
-    chipWrap.append(side);
     body.append(chipWrap);
 
     if (!locked) {
@@ -16962,14 +17875,20 @@
     }
     panel.append(descWrap);
 
-    if (!link.parent) {
+    const figmaPage = activePage()?.kind === 'figma';
+    const figmaThread = figmaPage && (link.children || []).length > 0;
+    if (figmaPage ? figmaThread : !link.parent) {
       const colorField = el('div', 'link-panel-field link-panel-color');
       const colorRow = el('div', 'link-color-row');
       const colorCaption = el('span', 'link-color-caption');
       colorCaption.textContent = t('changeColor');
-      const raw = String(link.colorId || link.color || '');
+      const raw = String(figmaThread ? link.colorId || '' : link.colorId || link.color || '');
       const parsed = splitHexAlpha(raw);
-      const currentHex = parsed ? hexWithAlpha(parsed.rgb, parsed.alpha) : '#3658d3';
+      const currentHex = parsed
+        ? hexWithAlpha(parsed.rgb, parsed.alpha)
+        : figmaThread
+          ? FIGMA_ICON_GRAY
+          : '#3658d3';
       const well = el('button', 'link-color-well');
       well.type = 'button';
       well.disabled = locked;
@@ -16984,7 +17903,8 @@
           id: link.id,
           currentHex,
           allowNone: true,
-          noneDisabled: true,
+          noneDisabled: !figmaThread,
+          figma: figmaThread,
           locked: false,
         });
       });
@@ -27526,11 +28446,16 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review', id?: string, pageId?: string, section?: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review' | 'figma-icon', id?: string, pageId?: string, index?: number, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
-    if (colorTarget?.kind === 'text' || colorTarget?.kind === 'link' || colorTarget?.kind === 'group-draft') {
+    if (
+      colorTarget?.kind === 'text' ||
+      colorTarget?.kind === 'link' ||
+      colorTarget?.kind === 'group-draft' ||
+      colorTarget?.kind === 'figma-icon'
+    ) {
       return;
     }
     colorTarget?.section?.style.setProperty(
@@ -27551,6 +28476,8 @@
         mountGroupPanel();
       } else if (colorTarget.kind === 'link' && colorTarget.id) {
         vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: picked });
+      } else if (colorTarget.kind === 'figma-icon' && Number.isInteger(colorTarget.index)) {
+        setFigmaIconRowColor(colorTarget.index, picked);
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: picked });
       } else if (colorTarget.kind === 'review' && colorTarget.id && colorTarget.pageId) {
@@ -27931,6 +28858,8 @@
     '.review-file-body',
     '.review-path-nav-list',
     '.link-panel',
+    '.figma-icon-scroll',
+    '.figma-icon-picker-list',
     '.color-panel',
     '.dir-popover-list',
     '.toolbar-profile-list',

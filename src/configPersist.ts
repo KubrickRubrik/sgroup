@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { figmaIconPageFields, normalizeFigmaIconBindings, normalizeFigmaIconMatch } from './figmaIconBindings';
 import { normalizeStoredFigmaFiles } from './figmaLink';
 import { readFigmaLinkMeta, type FigmaTagSource } from './figmaTags';
 import {
@@ -251,6 +252,7 @@ export function projectPageEntryFromPage(page: PageDef, version = 1): ProjectPag
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
     ...(page.kind === 'figma' && page.figmaFiles?.length ? { figmaFiles: page.figmaFiles } : {}),
+    ...figmaIconPageFields(page),
   };
 }
 
@@ -512,6 +514,8 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
   const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : id;
   const description = normalizeGroupDescriptionLocal(source.description);
   const figmaFiles = kind === 'figma' ? normalizeStoredFigmaFiles(source.figmaFiles) : undefined;
+  const figmaIconBindings = kind === 'figma' ? normalizeFigmaIconBindings(source.figmaIconBindings) : undefined;
+  const figmaIconMatch = kind === 'figma' ? normalizeFigmaIconMatch(source.figmaIconMatch) : undefined;
   const version =
     typeof source.version === 'number' && Number.isFinite(source.version) && source.version >= 1
       ? Math.floor(source.version)
@@ -523,6 +527,8 @@ function normalizePageEntry(id: string, raw: unknown, index: number): ProjectPag
     order: typeof source.order === 'number' && Number.isFinite(source.order) ? source.order : index,
     ...(description ? { description } : {}),
     ...(figmaFiles ? { figmaFiles } : {}),
+    ...(figmaIconBindings ? { figmaIconBindings } : {}),
+    ...(figmaIconMatch ? { figmaIconMatch } : {}),
   };
 }
 
@@ -1309,6 +1315,7 @@ export function assembleSplitWorkspace(
         collapsed: emptyCollapsedLocal(),
         ...(meta.description ? { description: meta.description } : {}),
         ...(meta.kind === 'figma' && meta.figmaFiles?.length ? { figmaFiles: meta.figmaFiles } : {}),
+        ...figmaIconPageFields(meta),
       };
       if (file.cloud) {
         pageCloud[pageId] = file.cloud;
@@ -1403,6 +1410,7 @@ function packWirePageEntry(page: ProjectPageEntry): Record<string, unknown> {
     order: page.order,
     ...(page.description ? { description: page.description } : {}),
     ...(page.kind === 'figma' && page.figmaFiles?.length ? { figmaFiles: page.figmaFiles } : {}),
+    ...figmaIconPageFields(page),
   };
 }
 

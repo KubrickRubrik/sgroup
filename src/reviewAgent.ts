@@ -398,6 +398,15 @@ function stripStudyMarker(stdout: string, selection: string): string {
 const ITEM_ANCHOR_RE = /^(H|M|L):(\d+)\s*$/i;
 
 /**
+ * Agent `result` joins turns with no newline, so a progress sentence sticks to the
+ * first anchor (`….M:1`). An anchor has to be the whole line. Split only a join
+ * that has no space before `H:1` / `M:2` / `L:4`.
+ */
+function detachGluedAnchors(text: string): string {
+  return text.replace(/(\S)((?:H|M|L):\d+)\s*$/gim, '$1\n$2');
+}
+
+/**
  * Split an agent answer into per-item bodies.
  * A line that is only `L:2` starts that item. One item with no anchor keeps the whole text.
  */
@@ -405,7 +414,7 @@ export function splitLevelItemBodies(
   text: string,
   items: Array<{ level: ReviewLevel; index: number }>,
 ): { ok: true; bodies: Array<{ level: ReviewLevel; index: number; body: string }> } | { ok: false; message: string } {
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const lines = detachGluedAnchors(text.replace(/\r\n/g, '\n')).split('\n');
   const anchors: Array<{ level: ReviewLevel; index: number; line: number }> = [];
   lines.forEach((line, index) => {
     const match = ITEM_ANCHOR_RE.exec(line.trim());
