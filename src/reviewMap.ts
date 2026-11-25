@@ -2680,11 +2680,12 @@ export class ReviewMapController {
     this.errors.delete(pageId);
   }
 
-  async listTargetBranches(): Promise<{ current: string; parent: string; branches: string[] } | undefined> {
+  async listTargetBranches(): Promise<
+    { current: string; parent: string; branches: string[] } | { error: string }
+  > {
     const branch = await currentBranch(this.cwd());
     if (!branch.ok) {
-      void vscode.window.showErrorMessage(branch.message);
-      return undefined;
+      return { error: branch.message };
     }
     const parent = (await detectParentBranch(this.cwd())) || 'development';
     const branches = await collectMrTargetBranches(this.cwd(), branch.value, parent);

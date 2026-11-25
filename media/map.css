@@ -138,6 +138,154 @@ textarea.review-mr-title::-webkit-scrollbar,
   z-index: 30;
 }
 
+.map-notices {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  left: 8px;
+  margin-top: 4px;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  top: 100%;
+  z-index: 5;
+}
+
+.map-notice {
+  animation: map-notice-in 180ms ease-out;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  box-sizing: border-box;
+  max-width: min(400px, 100%);
+  padding: 6px 8px;
+  pointer-events: auto;
+  width: max-content;
+}
+
+.map-notice.is-error {
+  background: color-mix(
+    in srgb,
+    var(--vscode-editorError-foreground, var(--vscode-errorForeground)) 16%,
+    var(--vscode-sideBar-background, var(--vscode-editor-background))
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--vscode-editorError-foreground, var(--vscode-errorForeground)) 55%,
+    transparent
+  );
+  color: var(--vscode-editorError-foreground, var(--vscode-errorForeground));
+}
+
+.map-notice.is-info {
+  background: color-mix(
+    in srgb,
+    var(--vscode-editorInfo-foreground, var(--vscode-notificationsInfoIcon-foreground, #3794ff)) 16%,
+    var(--vscode-sideBar-background, var(--vscode-editor-background))
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--vscode-editorInfo-foreground, var(--vscode-notificationsInfoIcon-foreground, #3794ff)) 55%,
+    transparent
+  );
+  color: var(--vscode-editorInfo-foreground, var(--vscode-notificationsInfoIcon-foreground, #3794ff));
+}
+
+.map-notice.is-warning {
+  background: color-mix(
+    in srgb,
+    var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700)) 16%,
+    var(--vscode-sideBar-background, var(--vscode-editor-background))
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700)) 55%,
+    transparent
+  );
+  color: var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700));
+}
+
+.map-notice-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.map-notice-icon {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 1.35em;
+  justify-content: center;
+  width: 14px;
+}
+
+.map-notice-icon svg {
+  display: block;
+  height: 14px;
+  width: 14px;
+}
+
+.map-notice-text {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  line-height: 1.35;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.map-notice.is-open .map-notice-text,
+.map-notice-text.is-measuring {
+  -webkit-line-clamp: unset;
+  display: block;
+}
+
+.map-notice-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  height: 1.35em;
+}
+
+.map-notice-expand,
+.map-notice-close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 14px;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  width: 14px;
+}
+
+.map-notice-expand svg,
+.map-notice-close svg {
+  display: block;
+  height: 14px;
+  pointer-events: none;
+  width: 14px;
+}
+
+@keyframes map-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .map-chrome:not(:has(#pager:not([hidden]))) .history-bar {
   border-bottom: none;
 }

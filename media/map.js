@@ -15,6 +15,117 @@
     return i18nBag[key] || key;
   }
 
+  const MAP_NOTICE_MS = 3000;
+
+  /**
+   * @param {string} className
+   * @param {string} label
+   * @param {string} pathD
+   */
+  function mapNoticeButton(className, label, pathD) {
+    const button = el('button', className);
+    button.type = 'button';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathD);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    button.append(svg);
+    return button;
+  }
+
+  /** @param {string} pathD */
+  function mapNoticeIcon(pathD) {
+    const icon = el('span', 'map-notice-icon');
+    icon.setAttribute('aria-hidden', 'true');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathD);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    icon.append(svg);
+    return icon;
+  }
+
+  /**
+   * Snackbar under the map toolbar. Each notice hides itself after 3s.
+   * @param {string} text
+   * @param {'error' | 'warning' | 'info'} [tone]
+   */
+  function showMapNotice(text, tone) {
+    const body = String(text || '').replace(/^Syn3:\s*/, '').trim();
+    if (!body || !mapNotices) {
+      return;
+    }
+    const kind = tone === 'info' ? 'info' : tone === 'warning' ? 'warning' : 'error';
+    const notice = el('div', `map-notice is-${kind}`);
+    notice.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    const row = el('div', 'map-notice-row');
+    const icon = mapNoticeIcon(
+      kind === 'info'
+        ? 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z'
+        : kind === 'warning'
+          ? 'M12.8659 3.00017L22.3922 19.5002C22.6684 19.9785 22.5045 20.5901 22.0262 20.8662C21.8742 20.954 21.7017 21.0002 21.5262 21.0002H2.47363C1.92135 21.0002 1.47363 20.5525 1.47363 20.0002C1.47363 19.8246 1.51984 19.6522 1.60761 19.5002L11.1339 3.00017C11.41 2.52187 12.0216 2.358 12.4999 2.63414C12.6519 2.72191 12.7782 2.84815 12.8659 3.00017ZM4.20568 19.0002H19.7941L11.9999 5.50017L4.20568 19.0002ZM10.9999 16.0002H12.9999V18.0002H10.9999V16.0002ZM10.9999 9.00017H12.9999V14.0002H10.9999V9.00017Z'
+          : 'M17.5 2.47363L23 11.9999L17.5 21.5262H6.5L1 11.9999L6.5 2.47363H17.5ZM8.63398 8.16979L13.634 16.83L15.366 15.83L10.366 7.16979L8.63398 8.16979Z',
+    );
+    const textEl = el('div', 'map-notice-text');
+    textEl.textContent = body;
+    const actions = el('div', 'map-notice-actions');
+    const close = mapNoticeButton(
+      'map-notice-close',
+      t('mapNoticeClose'),
+      'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z',
+    );
+    actions.append(close);
+    row.append(icon, textEl, actions);
+    notice.append(row);
+    mapNotices.prepend(notice);
+    /** @type {number} */
+    let timer = window.setTimeout(dismiss, MAP_NOTICE_MS);
+    function dismiss() {
+      window.clearTimeout(timer);
+      notice.remove();
+    }
+    close.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    });
+    requestAnimationFrame(() => {
+      if (!notice.isConnected) {
+        return;
+      }
+      const clamped = textEl.clientHeight;
+      textEl.classList.add('is-measuring');
+      const full = textEl.scrollHeight;
+      textEl.classList.remove('is-measuring');
+      if (full <= clamped + 1) {
+        return;
+      }
+      const expand = mapNoticeButton(
+        'map-notice-expand',
+        t('mapNoticeExpand'),
+        'M11.9999 13.1714L16.9497 8.22168L18.3639 9.63589L11.9999 15.9999L5.63599 9.63589L7.0502 8.22168L11.9999 13.1714Z',
+      );
+      expand.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (notice.classList.contains('is-open')) {
+          return;
+        }
+        notice.classList.add('is-open');
+        window.clearTimeout(timer);
+      });
+      actions.insertBefore(expand, close);
+    });
+  }
+
   historyBack?.addEventListener('click', () => {
     vscode.postMessage({ type: 'history', direction: 'back', pageId: uiState.activePageId });
   });
@@ -40,6 +151,7 @@
   const figmaResetButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-reset'));
   const figmaFormLoader = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-loader'));
   const figmaFormStatus = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-status'));
+  const mapNotices = /** @type {HTMLElement | null} */ (document.getElementById('map-notices'));
   let figmaFormRunning = false;
   let figmaFormStatusText = '';
   /** Empty Figma map keeps the chip skeleton up while the form dialog or the build is open. */
@@ -1340,7 +1452,12 @@
 
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'reviewSkillCopied' || message.type === 'scenarioSkillCopied') {
+    if (message.type === 'mapNotice') {
+      showMapNotice(
+        message.text,
+        message.tone === 'info' || message.tone === 'warning' ? message.tone : 'error',
+      );
+    } else if (message.type === 'reviewSkillCopied' || message.type === 'scenarioSkillCopied') {
       const note = document.getElementById(
         message.type === 'scenarioSkillCopied' ? 'scenario-skill-copied' : 'review-skill-copied',
       );
@@ -8161,23 +8278,15 @@
     return svg;
   }
 
+  /** Paths from assets/var-instance-fill.svg — «Изучено» chip avatar and the open-file row. */
+  const REVIEW_VAR_INSTANCE_PATHS = [
+    'M11.293 1.39348C11.6835 1.00295 12.3165 1.00295 12.707 1.39348L22.6064 11.2929C22.9969 11.6834 22.9969 12.3165 22.6064 12.707L12.707 22.6064C12.3165 22.9967 11.6834 22.9968 11.293 22.6064L3.68652 14.9999H9.35742C10.0598 15.6197 10.9837 15.9999 12 15.9999C14.209 15.9999 15.9999 14.2089 16 11.9999C16 9.79082 14.2091 7.99998 12 7.99993C10.9836 7.99997 10.0598 8.38012 9.35742 8.99993H3.68652L11.293 1.39348Z',
+    'M12.2051 10.0097C12.9445 10.085 13.5646 10.5636 13.8428 11.2216C13.8933 11.3412 13.9333 11.4665 13.96 11.5966C13.9866 11.7268 14 11.8618 14 11.9999C14 12.5333 13.7895 13.0164 13.4492 13.3749C13.3932 13.4339 13.3353 13.4911 13.2725 13.5429C12.9267 13.8283 12.4834 13.9999 12 13.9999C11.3063 13.9999 10.6964 13.6458 10.3379 13.1093L10.2695 12.9999H1.09961L1.10059 10.9999H10.2695C10.6155 10.4026 11.2601 9.99993 12 9.99993L12.2051 10.0097Z',
+  ];
+
   /** Paths from assets/var-instance-fill.svg — open full review file from a list row. */
   function reviewVarInstanceIcon() {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('class', 'review-ico');
-    const paths = [
-      'M11.293 1.39348C11.6835 1.00295 12.3165 1.00295 12.707 1.39348L22.6064 11.2929C22.9969 11.6834 22.9969 12.3165 22.6064 12.707L12.707 22.6064C12.3165 22.9967 11.6834 22.9968 11.293 22.6064L3.68652 14.9999H9.35742C10.0598 15.6197 10.9837 15.9999 12 15.9999C14.209 15.9999 15.9999 14.2089 16 11.9999C16 9.79082 14.2091 7.99998 12 7.99993C10.9836 7.99997 10.0598 8.38012 9.35742 8.99993H3.68652L11.293 1.39348Z',
-      'M12.2051 10.0097C12.9445 10.085 13.5646 10.5636 13.8428 11.2216C13.8933 11.3412 13.9333 11.4665 13.96 11.5966C13.9866 11.7268 14 11.8618 14 11.9999C14 12.5333 13.7895 13.0164 13.4492 13.3749C13.3932 13.4339 13.3353 13.4911 13.2725 13.5429C12.9267 13.8283 12.4834 13.9999 12 13.9999C11.3063 13.9999 10.6964 13.6458 10.3379 13.1093L10.2695 12.9999H1.09961L1.10059 10.9999H10.2695C10.6155 10.4026 11.2601 9.99993 12 9.99993L12.2051 10.0097Z',
-    ];
-    for (const d of paths) {
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('d', d);
-      path.setAttribute('fill', 'currentColor');
-      svg.append(path);
-    }
-    return svg;
+    return reviewSvgIcon('', REVIEW_VAR_INSTANCE_PATHS);
   }
 
   /** Paths from assets/blog-line.svg — plain message / comment glyph. */
@@ -8227,17 +8336,19 @@
 
   /**
    * @param {string} className
-   * @param {string} d
+   * @param {string | string[]} d
    */
   function reviewSvgIcon(className, d) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('class', 'review-ico ' + className);
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', d);
-    path.setAttribute('fill', 'currentColor');
-    svg.append(path);
+    svg.setAttribute('class', 'review-ico' + (className ? ' ' + className : ''));
+    for (const part of Array.isArray(d) ? d : [d]) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', part);
+      path.setAttribute('fill', 'currentColor');
+      svg.append(path);
+    }
     return svg;
   }
 
@@ -8311,7 +8422,7 @@
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      vscode.postMessage({ type: 'notifyError', text: t('figmaNoLinkError') });
+      showMapNotice(t('figmaNoLinkError'), 'error');
     });
     return button;
   }
@@ -8337,7 +8448,7 @@
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      vscode.postMessage({ type: 'notifyError', text: t('figmaUnsyncedError') });
+      showMapNotice(t('figmaUnsyncedError'), 'error');
     });
     return button;
   }
@@ -8435,8 +8546,8 @@
       line: 'M5 18.89H6.41421L15.7279 9.57627L14.3137 8.16206L5 17.4758V18.89ZM21 20.89H3V16.6473L16.435 3.21231C16.8256 2.82179 17.4587 2.82179 17.8492 3.21231L20.6777 6.04074C21.0682 6.43126 21.0682 7.06443 20.6777 7.45495L9.24264 18.89H21V20.89ZM15.7279 6.74785L17.1421 8.16206L18.5563 6.74785L17.1421 5.33363L15.7279 6.74785Z',
     },
     study: {
-      fill: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
-      line: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+      fill: REVIEW_VAR_INSTANCE_PATHS,
+      line: REVIEW_VAR_INSTANCE_PATHS,
     },
     note: {
       fill: 'M15 14L14.8834 14.0067C14.4243 14.0601 14.0601 14.4243 14.0067 14.8834L14 15V21H3.99826C3.44694 21 3 20.5551 3 20.0066V3.9934C3 3.44476 3.44495 3 3.9934 3H20.0066C20.5552 3 21 3.44749 21 3.9985V14H15ZM21 16L16 20.997V16H21Z',

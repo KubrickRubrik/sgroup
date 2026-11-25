@@ -98,9 +98,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     languages,
     context.secrets,
   );
-  const settings = new SettingsPanel(store, context.extensionUri, context.secrets, (profileId) => {
-    void map.showProfileSettings(profileId);
-  });
+  const settings = new SettingsPanel(
+    store,
+    context.extensionUri,
+    context.secrets,
+    (profileId) => {
+      void map.showProfileSettings(profileId);
+    },
+    (text, tone) => map.notify(text, tone),
+  );
 
   function requireStarted(): boolean {
     if (store.ready) {
@@ -203,9 +209,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       } catch (error) {
-        void vscode.window.showWarningMessage(
+        map.notify(
           'Syn3: панель Syn3 Map не найдена. Сделай Reload Window. ' +
             (error instanceof Error ? error.message : String(error)),
+          'warning',
         );
       }
     }),
@@ -283,8 +290,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await vscode.commands.executeCommand('workbench.view.explorer');
         await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
       } catch (error) {
-        void vscode.window.showErrorMessage(
+        map.notify(
           'Syn3: не удалось запустить. ' + (error instanceof Error ? error.message : String(error)),
+          'error',
         );
       }
     }),

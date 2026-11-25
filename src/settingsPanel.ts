@@ -80,6 +80,7 @@ export class SettingsPanel implements vscode.Disposable {
     private readonly extensionUri: vscode.Uri,
     private readonly secrets: vscode.SecretStorage,
     private readonly openProfileEditor?: (profileId?: string) => void,
+    private readonly notifyMap?: (text: string, tone: 'error' | 'warning' | 'info') => void,
   ) {
     this.subscriptions = [
       store.onDidChange(() => {
@@ -98,6 +99,22 @@ export class SettingsPanel implements vscode.Disposable {
   dispose(): void {
     this.panel?.dispose();
     this.subscriptions.forEach((s) => s.dispose());
+  }
+
+  private toast(text: string, tone: 'error' | 'warning' | 'info' = 'error'): void {
+    if (this.notifyMap) {
+      this.notifyMap(text, tone);
+      return;
+    }
+    if (tone === 'info') {
+      void vscode.window.showInformationMessage(text);
+      return;
+    }
+    if (tone === 'warning') {
+      void vscode.window.showWarningMessage(text);
+      return;
+    }
+    void vscode.window.showErrorMessage(text);
   }
 
   open(): void {
@@ -204,7 +221,7 @@ export class SettingsPanel implements vscode.Disposable {
     await clearAllSyn3Secrets(this.secrets, profileIds);
     await this.store.clearAllData();
     await this.postState();
-    void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'clearAllDone')}`);
+    this.toast(`Syn3: ${t(locale, 'clearAllDone')}`, 'info');
   }
 
   private async onProfile(
@@ -283,7 +300,7 @@ export class SettingsPanel implements vscode.Disposable {
     if (action === 'syncPush') {
       const profileChannel = this.store.catalogChannels().profile?.trim() || '';
       if (!profileChannel) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'channelProfileRequired')}`);
+        this.toast(`Syn3: ${t(this.locale(), 'channelProfileRequired')}`);
         return;
       }
       const result = await this.store.pushProfileConfig();
@@ -292,14 +309,14 @@ export class SettingsPanel implements vscode.Disposable {
           result.message === 'cloudPullFirst'
             ? t(this.locale(), 'cloudPullFirst')
             : result.message;
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        this.toast(`Syn3: ${text}`);
       }
       return;
     }
     if (action === 'syncPull') {
       const result = await this.store.pullProfileConfig();
       if (!result.ok && result.message) {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.toast(`Syn3: ${result.message}`);
       }
     }
   }
@@ -353,7 +370,7 @@ export class SettingsPanel implements vscode.Disposable {
     for (const value of values) {
       const trimmed = (value ?? '').trim();
       if (trimmed && !isValidChannelId(trimmed)) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'reviewFieldChannelId')}`);
+        this.toast(`Syn3: ${t(this.locale(), 'reviewFieldChannelId')}`);
         return;
       }
     }
@@ -367,7 +384,7 @@ export class SettingsPanel implements vscode.Disposable {
         links: message.channelLinks,
       })
     ) {
-      void vscode.window.showErrorMessage(`Syn3: ${t(this.locale(), 'channelReviewMustBeDistinct')}`);
+      this.toast(`Syn3: ${t(this.locale(), 'channelReviewMustBeDistinct')}`);
       return;
     }
     if (message.discordToken?.trim()) {

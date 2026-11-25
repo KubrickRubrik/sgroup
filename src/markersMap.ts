@@ -240,7 +240,6 @@ type ColumnSide = 'left' | 'right';
 type IncomingMessage =
   | { type: 'ready'; pageId?: string; rev?: string }
   | { type: 'assetsFailed'; rev?: string }
-  | { type: 'notifyError'; text: string }
   | { type: 'activePage'; pageId: string }
   | { type: 'mapFocus'; pageId?: string }
   | { type: 'open'; relPath: string }
@@ -984,6 +983,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
   private lastFocusedWebview?: vscode.Webview;
+  /** Panel that is handling the current webview message, so its notices stay on that panel. */
+  private noticeWebview?: vscode.Webview;
   /** Batch push/pull of page configs is in flight. */
   private pageCloudBatch = false;
   private baseConfigBatch = false;
@@ -1782,7 +1783,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.isLinkLocked(linkId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: макет закрыт');
+    this.notify('Syn3: макет закрыт', 'warning');
     return true;
   }
 
@@ -1790,7 +1791,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.isLocked(markerId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: группа закрыта');
+    this.notify('Syn3: группа закрыта', 'warning');
     return true;
   }
 
@@ -1798,7 +1799,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.isNoteLocked(noteId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+    this.notify('Syn3: заметка закрыта', 'warning');
     return true;
   }
 
@@ -1992,7 +1993,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return true;
     }
     const locale = normalizeLocale(this.store.appearance.language);
-    void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'discordGateOpenMap')}`);
+    this.notify(`Syn3: ${t(locale, 'discordGateOpenMap')}`, 'info');
     return true;
   }
 
@@ -2700,12 +2701,59 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private reportColumnError(error: unknown): void {
-    void vscode.window.showWarningMessage(
-      `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    this.notify(error instanceof Error ? error.message : String(error), 'warning');
+  }
+
+  /**
+   * Map snackbar. An explicit webview stays on that panel. Otherwise the panel
+   * of the message in flight, then the focused map. IDE toast when none is ready.
+   */
+  notify(text: string, tone: 'error' | 'warning' | 'info' = 'error', webview?: vscode.Webview): void {
+    const body = text.replace(/^Syn3:\s*/, '').trim();
+    if (!body) {
+      return;
+    }
+    const explicit = webview !== undefined;
+    const candidate = webview ?? this.noticeWebview ?? this.lastFocusedWebview;
+    if (candidate && this.webviews.has(candidate) && this.readyWebviews.has(candidate)) {
+      void candidate.postMessage({ type: 'mapNotice', text: body, tone });
+      return;
+    }
+    if (!explicit) {
+      const focused = this.lastFocusedWebview;
+      if (
+        focused &&
+        focused !== candidate &&
+        this.webviews.has(focused) &&
+        this.readyWebviews.has(focused)
+      ) {
+        void focused.postMessage({ type: 'mapNotice', text: body, tone });
+        return;
+      }
+    }
+    const line = `Syn3: ${body}`;
+    if (tone === 'info') {
+      void vscode.window.showInformationMessage(line);
+      return;
+    }
+    if (tone === 'warning') {
+      void vscode.window.showWarningMessage(line);
+      return;
+    }
+    void vscode.window.showErrorMessage(line);
   }
 
   private async onMessage(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
+    const previousNotice = this.noticeWebview;
+    this.noticeWebview = webview;
+    try {
+      await this.onMessageBody(webview, message);
+    } finally {
+      this.noticeWebview = previousNotice;
+    }
+  }
+
+  private async onMessageBody(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
     if (message.type === 'discordGateSave') {
       await this.onDiscordGateSave(webview, message);
       return;
@@ -2719,13 +2767,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       this.scheduleAssetRetry(webview);
-      return;
-    }
-    if (message.type === 'notifyError') {
-      const text = typeof message.text === 'string' ? message.text.trim() : '';
-      if (text) {
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
-      }
       return;
     }
     if (message.type === 'ready') {
@@ -2779,7 +2820,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           (message.action === 'syncPush' || message.action === 'syncPull')
         ) {
           const locale = normalizeLocale(this.store.appearance.language);
-          void vscode.window.showWarningMessage(`Syn3: ${t(locale, 'discordGateTitle')}`);
+          this.notify(`Syn3: ${t(locale, 'discordGateTitle')}`, 'warning');
         }
         return;
       }
@@ -2988,7 +3029,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.parentMessageId,
       );
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         await webview.postMessage({ type: 'reviewTalkResult', ok: false });
         return;
       }
@@ -3093,7 +3134,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         draft: message.draft,
       });
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushReviewState(webview, result.state);
@@ -3106,7 +3147,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.locked === true,
       );
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushReviewState(webview, result.state);
@@ -3115,7 +3156,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'reviewCloseMr') {
       const result = await this.review.closeMr(message.pageId, message.messageId);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushReviewState(webview, result.state);
@@ -3124,7 +3165,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'reviewDeleteReview') {
       const result = await this.review.deleteReviewMessage(message.pageId, message.messageId);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushReviewState(webview, result.state);
@@ -3137,7 +3178,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const result = await this.review.setReviewStatus(message.pageId, message.messageId, status);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushReviewState(webview, result.state);
@@ -3180,9 +3221,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(
-          `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
-        );
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         await idle();
         return;
       }
@@ -3208,9 +3247,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(
-          `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
-        );
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         await idle();
         return;
       }
@@ -3229,7 +3266,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       const result = await this.withReviewAgentPlaceholder(
@@ -3253,13 +3290,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       this.review.bindReviewChannel(this.store.catalogChannels().review || '');
       const branch = await this.review.peekCurrentBranch();
       if (!branch.ok) {
-        void vscode.window.showErrorMessage(`Syn3: ${branch.message}`);
+        this.notify(`Syn3: ${branch.message}`, 'error');
         return;
       }
       const result = await this.withReviewAgentPlaceholder(
@@ -3277,7 +3314,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         typeof message.page === 'number' ? message.page : 1,
       );
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
       }
       await webview.postMessage({
         type: 'reviewBranches',
@@ -3297,7 +3334,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         typeof message.page === 'number' ? message.page : 1,
       );
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
       }
       await webview.postMessage({
         type: 'reviewOpenRequests',
@@ -3314,7 +3351,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'reviewResolveParent') {
       const result = await this.review.resolveHostParent(message.pageId, message.branch);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
       }
       await webview.postMessage({
         type: 'reviewParent',
@@ -3338,7 +3375,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       this.review.bindReviewChannel(this.store.catalogChannels().review || '');
@@ -3362,7 +3399,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       const result = await this.withReviewAgentPlaceholder(
@@ -3386,13 +3423,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       this.review.bindReviewChannel(this.store.catalogChannels().review || '');
       const branch = await this.review.peekCurrentBranch();
       if (!branch.ok) {
-        void vscode.window.showErrorMessage(`Syn3: ${branch.message}`);
+        this.notify(`Syn3: ${branch.message}`, 'error');
         return;
       }
       const result = await this.withReviewAgentPlaceholder(
@@ -3411,7 +3448,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       this.review.bindReviewChannel(this.store.catalogChannels().review || '');
@@ -3443,7 +3480,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'explainRetryFile') {
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       const result = await this.withReviewAgentPlaceholder(
@@ -3457,7 +3494,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewRetryFile') {
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`);
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         return;
       }
       const result = await this.withReviewAgentPlaceholder(
@@ -3506,7 +3543,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         await this.pushReviewState(webview, result.state);
       }
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
       }
       return;
     }
@@ -3521,12 +3558,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.filenames,
       );
       if (!result.ok) {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await vscode.env.clipboard.writeText(result.path);
       const locale = normalizeLocale(this.store.appearance.language);
-      void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'reviewFileLinkCopied')}`);
+      this.notify(`Syn3: ${t(locale, 'reviewFileLinkCopied')}`, 'info', webview);
       return;
     }
     if (message.type === 'reviewOpenFileTab') {
@@ -3536,7 +3573,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.filenames,
       );
       if (!result.ok) {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
       }
       return;
     }
@@ -3555,7 +3592,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'scenarioCreate') {
       const result = await this.scenarios.createScenario(message.pageId, message.groupId);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3564,7 +3601,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'scenarioCreateGroup') {
       const result = await this.scenarios.createGroup(message.pageId);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3573,7 +3610,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'scenarioRename') {
       const result = await this.scenarios.renameScenario(message.pageId, message.messageId, message.title);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3582,7 +3619,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'scenarioUpdateGroup') {
       const result = await this.scenarios.updateGroup(message.pageId, message.groupId, message);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3591,7 +3628,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'scenarioDelete') {
       const result = await this.scenarios.deleteMessage(message.pageId, message.messageId);
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3604,7 +3641,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         message.orderedIds,
       );
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3616,7 +3653,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         copy: !!message.copy,
       });
       if (result.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+        this.notify(`Syn3: ${result.message}`, 'error');
         return;
       }
       await this.pushScenarioState(webview, result.state);
@@ -3625,7 +3662,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'scenarioForm') {
       const begun = this.scenarios.beginForm(message.pageId, message.messageId);
       if (begun.kind === 'error') {
-        void vscode.window.showErrorMessage(`Syn3: ${begun.message}`);
+        this.notify(`Syn3: ${begun.message}`, 'error');
         return;
       }
       try {
@@ -3645,12 +3682,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           return;
         }
         if (asked.kind === 'error') {
-          void vscode.window.showErrorMessage(`Syn3: ${asked.message}`);
+          this.notify(`Syn3: ${asked.message}`, 'error');
         }
       } catch (error) {
         this.scenarios.clearForm();
         const text = error instanceof Error ? error.message : String(error);
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        this.notify(`Syn3: ${text}`, 'error');
       }
       await webview.postMessage({ type: 'scenarioFormIdle' });
       return;
@@ -3665,12 +3702,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         const result = await this.scenarios.answerForm(message.pageId, message.messageId, answers);
         if (result.kind === 'error') {
-          void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+          this.notify(`Syn3: ${result.message}`, 'error');
         }
       } catch (error) {
         this.scenarios.clearForm();
         const text = error instanceof Error ? error.message : String(error);
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        this.notify(`Syn3: ${text}`, 'error');
       }
       await webview.postMessage({ type: 'scenarioFormIdle' });
       return;
@@ -3716,7 +3753,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'reviewNeurofixDenied') {
       const locale = normalizeLocale(this.store.appearance.language);
-      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'neurofixForeignBranch')}`);
+      this.notify(`Syn3: ${t(locale, 'neurofixForeignBranch')}`, 'error');
       return;
     }
     if (message.type === 'reviewNeurofix') {
@@ -3738,14 +3775,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       if (await this.review.neurofixNeedsCheckout(message.pageId, message.messageId)) {
         const locale = normalizeLocale(this.store.appearance.language);
-        void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'neurofixForeignBranch')}`);
+        this.notify(`Syn3: ${t(locale, 'neurofixForeignBranch')}`, 'error');
         await idle();
         return;
       }
       if (this.review.isAgentBusy()) {
-        void vscode.window.showErrorMessage(
-          `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`,
-        );
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
         await idle();
         return;
       }
@@ -3774,7 +3809,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             result.message === 'neurofixForeignBranch'
               ? t(locale, 'neurofixForeignBranch')
               : result.message;
-          void vscode.window.showErrorMessage(`Syn3: ${text}`);
+          this.notify(`Syn3: ${text}`, 'error');
         }
         return;
       }
@@ -3870,7 +3905,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await vscode.env.clipboard.writeText(message.text);
       if (message.notice === 'branchCopied' && message.text) {
         const locale = normalizeLocale(this.store.appearance.language);
-        void vscode.window.showInformationMessage(`Syn3: ${t(locale, 'branchCopied')}`);
+        this.notify(`Syn3: ${t(locale, 'branchCopied')}`, 'info', webview);
       }
       if (message.languageId && message.label && message.text) {
         this.languages.setStamp({
@@ -3991,9 +4026,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           message.position,
         );
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -4013,9 +4046,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           noteId: message.noteId,
         });
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -4077,7 +4108,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         const token = await readFigmaToken(this.hostSecrets, this.store.activeProfileId);
         if (!token) {
           const locale = normalizeLocale(this.store.appearance.language);
-          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'figmaTokenMissing')}`);
+          this.notify(`Syn3: ${t(locale, 'figmaTokenMissing')}`, 'error');
         }
       }
       return;
@@ -4104,7 +4135,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const result = await this.store.deleteLink(message.linkId);
       if (!result.ok) {
-        void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
+        this.notify(`Syn3: ${result.reason}`, 'warning');
       }
       return;
     }
@@ -4127,7 +4158,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const result = await this.store.deleteLinkLift(message.linkId);
       if (!result.ok) {
-        void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
+        this.notify(`Syn3: ${result.reason}`, 'warning');
       }
       return;
     }
@@ -4142,9 +4173,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ? message.parentId
           : undefined;
       if (parentId !== undefined && this.store.depthOf(parentId) >= MAX_MARKER_DEPTH) {
-        void vscode.window.showWarningMessage(
-          `Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`,
-        );
+        this.notify(`Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`, 'warning');
         this.settleGroupDraft(message.requestId, undefined);
         return;
       }
@@ -4183,9 +4212,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         });
         this.settleGroupDraft(message.requestId, id);
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
         this.settleGroupDraft(message.requestId, undefined);
       }
       return;
@@ -4224,9 +4251,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           copy: !!message.copy,
         });
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -4239,9 +4264,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       } catch (error) {
         const locale = normalizeLocale(this.store.appearance.language);
         const text = error instanceof Error ? error.message : String(error);
-        void vscode.window.showWarningMessage(
-          text.includes('Maximum nesting') ? t(locale, 'linkNestDepthWarn') : `Syn3: ${text}`,
-        );
+        this.notify(text.includes('Maximum nesting') ? t(locale, 'linkNestDepthWarn') : `Syn3: ${text}`, 'warning');
       }
       return;
     }
@@ -4326,7 +4349,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'openClass') {
       const def = this.store.classDef(message.classId);
       if (def) {
-        await openClassAt(this.store, def, this.targetColumn());
+        await openClassAt(this.store, def, this.targetColumn(), (text, tone) => this.notify(text, tone, webview));
       }
       return;
     }
@@ -4340,7 +4363,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
       } catch (error) {
-        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -4355,7 +4378,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         await this.store.placeMarkerAtNote(message.id, message.targetNoteId, message.position);
       } catch (error) {
-        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -4368,13 +4391,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const check = this.store.canNest(message.id, message.parent);
       if (!check.ok) {
-        void vscode.window.showWarningMessage(`Syn3: ${check.reason}`);
+        this.notify(`Syn3: ${check.reason}`, 'warning');
         return;
       }
       try {
         await this.store.nestMarker(message.id, message.parent);
       } catch (error) {
-        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -4392,9 +4415,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         })
         .filter((p): p is string => p !== undefined);
       if (relPaths.length === 0) {
-        void vscode.window.showWarningMessage(
-          'Syn3: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
-        );
+        this.notify('Syn3: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.', 'warning');
         return;
       }
       const added = await this.store.assign(relPaths, message.to);
@@ -4449,7 +4470,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
       await webview.postMessage({ type: 'dirListing', relPath, entries });
     } catch {
-      void vscode.window.showWarningMessage(`Syn3: cannot read folder ${relPath}`);
+      this.notify(`Syn3: cannot read folder ${relPath}`, 'warning');
       await webview.postMessage({ type: 'dirListing', relPath, entries: [], error: true });
     }
   }
@@ -4502,7 +4523,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return Buffer.from(bytes).toString('utf8');
     } catch {
       const locale = normalizeLocale(this.store.appearance.language);
-      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
+      this.notify(`Syn3: ${t(locale, 'reviewSkillFileFail')}`, 'error');
       return undefined;
     }
   }
@@ -4510,7 +4531,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private async saveReviewAttachment(pageId: string, messageId: string): Promise<void> {
     const read = await this.review.readReviewAttachment(pageId, messageId);
     if (!read.ok) {
-      void vscode.window.showErrorMessage(`Syn3: ${read.message}`);
+      this.notify(`Syn3: ${read.message}`, 'error');
       return;
     }
     const safeName = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
@@ -4563,7 +4584,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return Buffer.from(bytes).toString('utf8');
     } catch {
       const locale = normalizeLocale(this.store.appearance.language);
-      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
+      this.notify(`Syn3: ${t(locale, 'reviewSkillFileFail')}`, 'error');
       return undefined;
     }
   }
@@ -4782,7 +4803,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return Buffer.from(bytes).toString('utf8');
     } catch {
       const locale = normalizeLocale(this.store.appearance.language);
-      void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewSkillFileFail')}`);
+      this.notify(`Syn3: ${t(locale, 'reviewSkillFileFail')}`, 'error');
       return undefined;
     }
   }
@@ -4853,7 +4874,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.closeInstructionSource(uri);
     } catch (error) {
       const detail = error instanceof Error ? `: ${error.message}` : '';
-      void vscode.window.showErrorMessage(`Syn3: не удалось открыть инструкцию${detail}`);
+      this.notify(`Syn3: не удалось открыть инструкцию${detail}`, 'error');
     }
   }
 
@@ -6116,7 +6137,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         const result = await this.store.publishNewProject(trimmedName, nextChannel, repo);
         if (!result.ok) {
           const text = result.message || 'Failed to post base.json';
-          void vscode.window.showErrorMessage(`Syn3: ${text}`);
+          this.notify(`Syn3: ${text}`, 'error');
           await webview.postMessage({
             type: 'projectCreateError',
             message: result.canRetry ? t(locale, 'projectCreateRetryHint') : text,
@@ -6127,7 +6148,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         await webview.postMessage({ type: 'projectCreateDone' });
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        this.notify(`Syn3: ${text}`, 'error');
         await webview.postMessage({
           type: 'projectCreateError',
           message: text,
@@ -6171,7 +6192,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         const pull = await this.store.pullBaseFromChannel(ch);
         if (!pull.ok && pull.message && pull.message !== 'Nothing to pull') {
-          void vscode.window.showErrorMessage(`Syn3: ${pull.message}`);
+          this.notify(`Syn3: ${pull.message}`, 'error');
           await webview.postMessage({
             type: 'projectCreateError',
             message: pull.message,
@@ -6187,7 +6208,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         }
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
-        void vscode.window.showErrorMessage(`Syn3: ${text}`);
+        this.notify(`Syn3: ${text}`, 'error');
         await webview.postMessage({
           type: 'projectCreateError',
           message: text,
@@ -6221,7 +6242,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         if (!pull.ok && pull.message) {
           const text =
             pull.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : pull.message;
-          void vscode.window.showErrorMessage(`Syn3: ${text}`);
+          this.notify(`Syn3: ${text}`, 'error');
         }
       });
       return;
@@ -6251,7 +6272,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private showBaseConfigError(message: string): void {
     const locale = normalizeLocale(this.store.appearance.language);
     const text = message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : message;
-    void vscode.window.showErrorMessage(`Syn3: ${text}`);
+    this.notify(`Syn3: ${text}`, 'error');
   }
 
   private postBaseConfigBusy(busy: boolean): void {
@@ -6300,7 +6321,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!result.ok && result.message) {
       const text =
         result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
-      void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      this.notify(`Syn3: ${text}`, 'error');
     }
   }
 
@@ -6325,7 +6346,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           this.showBaseConfigError(result.message);
           return;
         }
-        void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'error');
       }
     });
   }
@@ -6343,7 +6364,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       pushed = result.pushed;
       ok = result.ok;
       if (!result.ok && result.message) {
-        void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'error');
       }
     } finally {
       this.pageCloudBatch = false;
@@ -6364,7 +6385,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     try {
       const result = await this.store.pullNewerPageConfigs();
       if (!result.ok && result.message) {
-        void vscode.window.showErrorMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'error');
       }
     } finally {
       this.pageCloudBatch = false;
@@ -6381,7 +6402,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     try {
       const result = await this.store.checkCloud();
       if (!result.ok && result.message) {
-        void vscode.window.showWarningMessage(`Syn3: ${this.formatCloudFailures(result.message)}`);
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'warning');
       }
     } finally {
       this.pageCloudBatch = false;
@@ -6400,7 +6421,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (pageKind === 'review') {
       const defaults = await this.review.createPageDefaults();
       if ('error' in defaults) {
-        void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+        this.notify(`Syn3: ${defaults.error}`, 'error');
         return;
       }
       const projectRepo = this.store.projectRepo();
@@ -6535,7 +6556,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const locale = normalizeLocale(this.store.appearance.language);
     const fail = async (text: string) => {
       await webview.postMessage({ type: 'scenarioPageError', message: text });
-      void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      this.notify(`Syn3: ${text}`, 'error');
     };
     const name = message.name.trim();
     if (!name) {
@@ -6833,7 +6854,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const hello = await this.postPageChannelHello(kind, channelId);
     if (!hello.ok) {
-      void vscode.window.showErrorMessage(`Syn3: ${hello.message}`);
+      this.notify(`Syn3: ${hello.message}`, 'error');
       await webview.postMessage({
         type: 'pageSettingsError',
         message: hello.message,
@@ -6874,7 +6895,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   ): Promise<void> {
     const fail = async (text: string) => {
       await webview.postMessage({ type: 'reviewCreatePageError', message: text });
-      void vscode.window.showErrorMessage(`Syn3: ${text}`);
+      this.notify(`Syn3: ${text}`, 'error');
     };
     if (this.store.pages().length >= MAX_PAGES) {
       await fail('Too many pages');
@@ -6960,7 +6981,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const defaults = await this.review.createPageDefaults();
     if ('error' in defaults) {
-      void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+      this.notify(`Syn3: ${defaults.error}`, 'error');
       return;
     }
     const access = await this.review.getAccess(pageId);
@@ -7015,12 +7036,12 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     const name = message.name.trim();
     if (!name) {
-      void vscode.window.showErrorMessage('Syn3: page name is required');
+      this.notify('Syn3: page name is required', 'error');
       return;
     }
     const defaults = await this.review.createPageDefaults();
     if ('error' in defaults) {
-      void vscode.window.showErrorMessage(`Syn3: ${defaults.error}`);
+      this.notify(`Syn3: ${defaults.error}`, 'error');
       return;
     }
     const storedRepo = this.store.projectRepo();
@@ -7030,7 +7051,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       (previous?.repoUrl ? previous.provider : undefined) ||
       (isReviewHostProvider(message.provider) ? message.provider : undefined);
     if (!provider) {
-      void vscode.window.showErrorMessage('Syn3: choose GitLab or GitHub');
+      this.notify('Syn3: choose GitLab or GitHub', 'error');
       return;
     }
     const repoUrl = storedRepo?.repoUrl || previous?.repoUrl || (message.repoUrl || '').trim();
@@ -7041,7 +7062,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       origin: defaults.origin,
     });
     if (accessError) {
-      void vscode.window.showErrorMessage(`Syn3: ${accessError}`);
+      this.notify(`Syn3: ${accessError}`, 'error');
       return;
     }
     const secrets = await this.review.applyCreatePageSecrets({
@@ -7051,15 +7072,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       discordToken: message.discordToken,
     });
     if (!secrets.ok) {
-      void vscode.window.showErrorMessage(`Syn3: ${secrets.message}`);
+      this.notify(`Syn3: ${secrets.message}`, 'error');
       return;
     }
     await this.store.setPageMeta(message.pageId, name, message.description);
     const channelId = message.channelId.trim();
     if (!repoUrl) {
-      void vscode.window.showErrorMessage(
-        `Syn3: ${t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired')}`,
-      );
+      this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired')}`, 'error');
       return;
     }
     await this.store.setCatalogChannels({ review: channelId });
@@ -7352,7 +7371,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       | { kind: 'error'; message: string },
   ): Promise<void> {
     if (result.kind === 'error') {
-      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      this.notify(`Syn3: ${result.message}`, 'error');
       return;
     }
     if (result.kind === 'fileFail') {
@@ -7363,7 +7382,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       );
       if (choice === t(locale, 'reviewRetry')) {
         if (this.review.isAgentBusy()) {
-          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
           return;
         }
         const retry = await this.withReviewAgentPlaceholder(
@@ -7389,7 +7408,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       | { kind: 'error'; message: string },
   ): Promise<void> {
     if (result.kind === 'error') {
-      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      this.notify(`Syn3: ${result.message}`, 'error');
       return;
     }
     if (result.kind === 'fileFail') {
@@ -7400,7 +7419,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       );
       if (choice === t(locale, 'reviewRetry')) {
         if (this.review.isAgentBusy()) {
-          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
           return;
         }
         this.review.bindReviewChannel(this.store.catalogChannels().review || '');
@@ -7438,7 +7457,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private toastReviewEdgeNotice(pageId: string): void {
     const message = this.review.takeEdgeNotice(pageId);
     if (message) {
-      void vscode.window.showErrorMessage(`Syn3: ${message}`);
+      this.notify(`Syn3: ${message}`, 'error');
     }
   }
 
@@ -7460,7 +7479,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       this.toastReviewNotice(result.provider, result.code);
       return;
     }
-    void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+    this.notify(`Syn3: ${result.message}`, 'error');
   }
 
   private async handleReviewPull(
@@ -7504,7 +7523,9 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
             : github
               ? 'reviewPrAdded'
               : 'reviewMrAdded';
-    void vscode.window.showInformationMessage(`Syn3: ${t(locale, key)}`);
+    const line = `Syn3: ${t(locale, key)}`;
+    const tone = code === 'noOpen' || code === 'alreadyInChannel' ? 'warning' : 'info';
+    this.notify(line, tone);
   }
 
   private async handleReviewMrResult(
@@ -7517,7 +7538,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     announceAdded = false,
   ): Promise<void> {
     if (result.kind === 'error') {
-      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      this.notify(`Syn3: ${result.message}`, 'error');
       return;
     }
     if (result.kind === 'discordFail') {
@@ -7559,7 +7580,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       | { kind: 'error'; message: string },
   ): Promise<void> {
     if (result.kind === 'error') {
-      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      this.notify(`Syn3: ${result.message}`, 'error');
       return;
     }
     if (result.kind === 'fileFail') {
@@ -7570,7 +7591,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       );
       if (choice === t(locale, 'reviewRetry')) {
         if (this.review.isAgentBusy()) {
-          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
           return;
         }
         const retry = await this.withReviewAgentPlaceholder(
@@ -7596,7 +7617,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       | { kind: 'error'; message: string },
   ): Promise<void> {
     if (result.kind === 'error') {
-      void vscode.window.showErrorMessage(`Syn3: ${result.message}`);
+      this.notify(`Syn3: ${result.message}`, 'error');
       return;
     }
     if (result.kind === 'fileFail') {
@@ -7607,7 +7628,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       );
       if (choice === t(locale, 'reviewRetry')) {
         if (this.review.isAgentBusy()) {
-          void vscode.window.showErrorMessage(`Syn3: ${t(locale, 'reviewAgentBusy')}`);
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
           return;
         }
         this.review.bindReviewChannel(this.store.catalogChannels().review || '');
@@ -7879,8 +7900,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         <div id="toolbar-view-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Вид"></div>
       </div>
       <button id="toolbar-collapse" class="history-btn" type="button" title="Свернуть все группы" aria-label="Свернуть все группы">
-        ${icon('collapse-all', 'collapse')}
-        ${icon('expand-all', 'expand', true)}
+        ${icon('contract-up-down-fill', 'collapse')}
+        ${icon('expand-up-down-fill', 'expand', true)}
       </button>
       <div class="toolbar-view toolbar-create">
         <button id="toolbar-create" class="history-btn" type="button" title="Создать" aria-label="Создать" aria-haspopup="menu" aria-expanded="false">
@@ -7959,6 +7980,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     <span id="figma-form-loader" class="pager-cloud-loader" hidden></span>
     <span id="figma-form-status" class="figma-form-status" hidden></span>
   </div>
+  <div id="map-notices" class="map-notices"></div>
   </div>
   <div id="stage" class="page-stage">
     <div id="root" class="map-page"></div>

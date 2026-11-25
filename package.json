@@ -2,7 +2,7 @@
   "name": "syn3",
   "displayName": "Syn3",
   "description": "Mark files and folders with markers to keep semantically related items side by side, regardless of alphabetical order.",
-  "version": "18.3.19",
+  "version": "18.3.25",
   "publisher": "easybusy",
   "license": "MIT",
   "engines": {
@@ -152,8 +152,8 @@
         "title": "Свернуть все группы",
         "category": "Syn3",
         "icon": {
-          "light": "media/icons/collapse-all-light.svg",
-          "dark": "media/icons/collapse-all-dark.svg"
+          "light": "media/icons/contract-up-down-fill-light.svg",
+          "dark": "media/icons/contract-up-down-fill-dark.svg"
         }
       },
       {
@@ -161,8 +161,8 @@
         "title": "Развернуть все группы",
         "category": "Syn3",
         "icon": {
-          "light": "media/icons/expand-all-light.svg",
-          "dark": "media/icons/expand-all-dark.svg"
+          "light": "media/icons/expand-up-down-fill-light.svg",
+          "dark": "media/icons/expand-up-down-fill-dark.svg"
         }
       },
       {

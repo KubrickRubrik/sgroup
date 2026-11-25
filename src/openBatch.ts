@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ClassDef, MarkerStore } from './markerStore';
-import { openClassAt } from './openClass';
+import { MapNotice, openClassAt } from './openClass';
 
 export const OPEN_BATCH_LIMIT = 30;
 
@@ -65,6 +65,7 @@ export async function openTargets(
   store: MarkerStore,
   targets: OpenTarget[],
   viewColumn?: vscode.ViewColumn,
+  notice?: MapNotice,
 ): Promise<void> {
   const filesOnly = targets.filter((t) => t.kind === 'file');
   const classes = targets.filter((t) => t.kind === 'class');
@@ -89,14 +90,22 @@ export async function openTargets(
 
   const ordered = [...fileTargets, ...classes];
   if (ordered.length === 0) {
-    void vscode.window.showInformationMessage('Syn3: nothing to open.');
+    const empty = 'Syn3: nothing to open.';
+    if (notice) {
+      notice(empty, 'info');
+    } else {
+      void vscode.window.showInformationMessage(empty);
+    }
     return;
   }
   let list = ordered;
   if (list.length > OPEN_BATCH_LIMIT) {
-    void vscode.window.showWarningMessage(
-      `Syn3: opening first ${OPEN_BATCH_LIMIT} of ${list.length} items.`,
-    );
+    const limited = `Syn3: opening first ${OPEN_BATCH_LIMIT} of ${list.length} items.`;
+    if (notice) {
+      notice(limited, 'warning');
+    } else {
+      void vscode.window.showWarningMessage(limited);
+    }
     list = list.slice(0, OPEN_BATCH_LIMIT);
   }
 
@@ -109,7 +118,7 @@ export async function openTargets(
         preserveFocus: true,
       });
     } else {
-      await openClassAt(store, target.def, viewColumn);
+      await openClassAt(store, target.def, viewColumn, notice);
     }
   }
 }
