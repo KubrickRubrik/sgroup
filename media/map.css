@@ -1392,6 +1392,64 @@ button.toolbar-lock.is-fixed:hover {
   width: 20px;
 }
 
+/* Child chips are 93% of the parent. Counter and the icons beside it stay put. */
+.link-node.is-figma-chip.is-component > .link-body > .link-chip-wrap > .link-chip {
+  border-radius: 11.16px;
+  font-size: 13.02px;
+  gap: 7.44px;
+  height: 42.78px;
+  min-height: 42.78px;
+  padding: 5.58px 18.6px 5.58px 5.58px;
+}
+
+.link-node.is-figma-chip.is-component .link-chip-label {
+  line-height: 14.88px;
+}
+
+.link-node.is-figma-chip.is-component .figma-chip-avatar {
+  border-radius: 8.37px;
+  height: 31.62px;
+  width: 31.62px;
+}
+
+.link-node.is-figma-chip.is-component .figma-chip-avatar svg {
+  height: 18.6px;
+  width: 18.6px;
+}
+
+.link-node.is-figma-chip.is-component .figma-chip-main {
+  gap: 1.86px;
+}
+
+/* Grandchildren are 93% of the child chip. Counter and the icons beside it stay put. */
+.link-node.is-figma-chip.depth-2 > .link-body > .link-chip-wrap > .link-chip {
+  border-radius: 10.38px;
+  font-size: 12.11px;
+  gap: 6.92px;
+  height: 39.79px;
+  min-height: 39.79px;
+  padding: 5.19px 17.3px 5.19px 5.19px;
+}
+
+.link-node.is-figma-chip.depth-2 .link-chip-label {
+  line-height: 13.84px;
+}
+
+.link-node.is-figma-chip.depth-2 .figma-chip-avatar {
+  border-radius: 7.78px;
+  height: 29.41px;
+  width: 29.41px;
+}
+
+.link-node.is-figma-chip.depth-2 .figma-chip-avatar svg {
+  height: 17.3px;
+  width: 17.3px;
+}
+
+.link-node.is-figma-chip.depth-2 .figma-chip-main {
+  gap: 1.73px;
+}
+
 .figma-chip-main {
   display: flex;
   flex: 1 1 auto;

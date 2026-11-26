@@ -17299,6 +17299,17 @@
     return 16;
   }
 
+  /** Half of a Figma chip. Root 46px, child 42.78px, grandchild 39.79px. */
+  function figmaChipHalf(depth) {
+    if (!depth) {
+      return 23;
+    }
+    if (depth === 1) {
+      return 21.39;
+    }
+    return 19.895;
+  }
+
   /**
    * Rounded elbow into the chip. This branch's color stops at the turn.
    * The spine below that point is the next sibling's color.
@@ -17527,7 +17538,7 @@
     if (figmaChip && childIds.length > 0) {
       row.style.setProperty('--figma-thread', figmaChipAvatarColor(link));
     }
-    const chipHalf = figmaChip ? 23 : linkChipHalf(depth);
+    const chipHalf = figmaChip ? figmaChipHalf(depth) : linkChipHalf(depth);
     row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + chipHalf, nextColor));
 
     const body = el('div', 'link-body');
