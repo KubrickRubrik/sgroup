@@ -6856,7 +6856,7 @@
   /**
    * Shared color picker panel.
    * @type {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon' | 'figma-chip',
    *   id?: string,
    *   pageId?: string,
    *   index?: number,
@@ -6962,6 +6962,7 @@
     if (!openLinkPanelId) {
       return;
     }
+    closeFigmaIconPicker();
     openLinkPanelId = null;
     paintLinksPage();
   }
@@ -7070,6 +7071,7 @@
       return;
     }
     if (existing instanceof HTMLElement && existing.dataset.linkId === openLinkPanelId) {
+      syncOpenChipBinding(existing, byId[openLinkPanelId]);
       if (focusLinkNameOnOpen) {
         focusLinkNameOnOpen = false;
         focusLinkPanelName(existing);
@@ -7085,6 +7087,7 @@
     });
     backdrop.addEventListener('click', (event) => {
       if (pressedBackdrop && event.target === backdrop) {
+        closeFigmaIconPicker();
         openLinkPanelId = null;
         paintLinksPage();
       }
@@ -7094,6 +7097,45 @@
     if (focusLinkNameOnOpen) {
       focusLinkNameOnOpen = false;
       focusLinkPanelName(backdrop);
+    }
+  }
+
+  /**
+   * The card stays mounted across repaints. Refresh the binding row from the chip
+   * unless a name edit or a picker is in progress.
+   * @param {HTMLElement} backdrop
+   * @param {*} link
+   */
+  function syncOpenChipBinding(backdrop, link) {
+    if (!link || figmaIconDirty || openColorPanel?.kind === 'figma-chip' || document.getElementById('figma-icon-picker')) {
+      return;
+    }
+    const typing = document.activeElement;
+    if (typing instanceof HTMLInputElement && typing.classList.contains('link-panel-input')) {
+      return;
+    }
+    const host = backdrop.querySelector('.figma-chip-binding');
+    if (!(host instanceof HTMLElement)) {
+      return;
+    }
+    const label = String(link.label || '');
+    host.dataset.bindingLabel = label.trim();
+    const name = host.querySelector('.figma-chip-binding-name');
+    if (name instanceof HTMLInputElement) {
+      name.value = label;
+    }
+    const color = freshenFigmaIconColor(link.figmaIconColor) || FIGMA_ICON_GRAY;
+    const avatar = host.querySelector('.figma-chip-avatar');
+    const iconName = link.figmaIcon || FIGMA_ICON_FALLBACK;
+    if (avatar instanceof HTMLElement) {
+      avatar.style.setProperty('--avatar-color', color);
+      if (avatar.dataset.icon !== iconName) {
+        mountLucide(avatar, iconName);
+      }
+    }
+    const well = host.querySelector('.link-color-well');
+    if (well instanceof HTMLElement) {
+      well.style.setProperty('--swatch', color);
     }
   }
 
@@ -7129,7 +7171,7 @@
 
   /**
    * @param {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon' | 'figma-chip',
    *   id?: string,
    *   pageId?: string,
    *   index?: number,
@@ -7190,6 +7232,11 @@
     }
     if (target.kind === 'figma-icon' && Number.isInteger(target.index)) {
       setFigmaIconRowColor(target.index, value || '');
+      finish();
+      return;
+    }
+    if (target.kind === 'figma-chip' && target.id) {
+      commitFigmaChipColor(target.id, value || '');
       finish();
       return;
     }
@@ -7271,6 +7318,8 @@
       colorTarget = { kind: 'link', id: target.id };
     } else if (target.kind === 'figma-icon' && Number.isInteger(target.index)) {
       colorTarget = { kind: 'figma-icon', index: target.index };
+    } else if (target.kind === 'figma-chip' && target.id) {
+      colorTarget = { kind: 'figma-chip', id: target.id };
     } else if (target.kind === 'marker' && target.id) {
       colorTarget = { kind: 'marker', id: target.id };
     } else if (target.kind === 'review' && target.id && target.pageId) {
@@ -14664,6 +14713,9 @@
    * @param {{ rows: { text: string }[] }} draft
    */
   function syncFigmaIconInputs(draft) {
+    if (draft !== figmaIconDraft) {
+      return;
+    }
     const inputs = document.querySelectorAll('#figma-icon-panel .figma-icon-scroll input');
     inputs.forEach((input, index) => {
       const row = draft.rows[index];
@@ -14740,6 +14792,168 @@
     );
     if (avatar instanceof HTMLElement) {
       avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+    }
+    paintLinkPanelBinding(row);
+    scheduleFigmaIconSave();
+  }
+
+  /**
+   * Draft for the open icon list, or a fresh copy of the active Figma page.
+   * @param {*} page
+   */
+  function figmaChipBindingDraft(page) {
+    if (figmaIconDraft && figmaIconDraft.pageId === page.id) {
+      return figmaIconDraft;
+    }
+    const match = page.figmaIconMatch || {};
+    const draft = {
+      pageId: page.id,
+      rows: cloneFigmaIconRows(page),
+      caseSensitive: match.caseSensitive === true,
+      whole: match.whole === true,
+    };
+    if (!document.getElementById('figma-icon-panel')) {
+      figmaIconDraft = draft;
+    }
+    return draft;
+  }
+
+  /**
+   * Exact binding for this chip label. Creates one when `create` is set.
+   * @param {{ rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean }} draft
+   * @param {string} label
+   * @param {boolean} create
+   * @param {{ icon: string, color?: string }} [seed]
+   */
+  function figmaChipBindingIndex(draft, label, create, seed) {
+    const key = figmaIconTextKey(label, draft.caseSensitive);
+    if (!key) {
+      return -1;
+    }
+    const found = draft.rows.findIndex((row) => figmaIconTextKey(row.text, draft.caseSensitive) === key);
+    if (found >= 0 || !create) {
+      return found;
+    }
+    if (draft.rows.length >= 80) {
+      return -1;
+    }
+    const color = freshenFigmaIconColor(seed?.color || '');
+    draft.rows.push({
+      icon: seed?.icon || FIGMA_ICON_FALLBACK,
+      text: label.trim(),
+      ...(color && color.toLowerCase() !== FIGMA_ICON_GRAY ? { color: color.toLowerCase() } : {}),
+    });
+    if (draft === figmaIconDraft && document.getElementById('figma-icon-panel')) {
+      paintFigmaIconRows();
+    }
+    return draft.rows.length - 1;
+  }
+
+  /** Name shown in the open chip card. Falls back to the saved label. */
+  function figmaChipBindingLabel(link) {
+    const host = document.querySelector('.link-panel .figma-chip-binding');
+    const shown = host instanceof HTMLElement ? String(host.dataset.bindingLabel || '').trim() : '';
+    return shown || String(link?.label || '').trim();
+  }
+
+  /**
+   * Keep the card row in step with the binding it edits.
+   * @param {{ icon: string, text: string, color?: string }} row
+   * @param {boolean} [caseSensitive]
+   */
+  function paintLinkPanelBinding(row, caseSensitive) {
+    const host = document.querySelector('.link-panel .figma-chip-binding');
+    if (!(host instanceof HTMLElement)) {
+      return;
+    }
+    const matchCase = caseSensitive ?? figmaIconDraft?.caseSensitive === true;
+    const shown = figmaIconTextKey(host.dataset.bindingLabel || '', matchCase);
+    if (!shown || shown !== figmaIconTextKey(row.text, matchCase)) {
+      return;
+    }
+    const avatar = host.querySelector('.figma-chip-avatar');
+    if (avatar instanceof HTMLElement) {
+      avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+      if (avatar.dataset.icon !== row.icon) {
+        mountLucide(avatar, row.icon);
+      }
+    }
+    const well = host.querySelector('.link-color-well');
+    if (well instanceof HTMLElement) {
+      well.style.setProperty('--swatch', row.color || FIGMA_ICON_GRAY);
+    }
+  }
+
+  /**
+   * @param {string} linkId
+   * @param {string} hex
+   */
+  function commitFigmaChipColor(linkId, hex) {
+    const link = linkRecord(linkId);
+    const page = activePage();
+    if (!link || page?.kind !== 'figma') {
+      return;
+    }
+    const label = figmaChipBindingLabel(link);
+    if (!label) {
+      return;
+    }
+    const draft = figmaChipBindingDraft(page);
+    const index = figmaChipBindingIndex(draft, label, true, {
+      icon: link.figmaIcon || FIGMA_ICON_FALLBACK,
+      color: freshenFigmaIconColor(link.figmaIconColor),
+    });
+    if (index < 0) {
+      return;
+    }
+    if (draft !== figmaIconDraft) {
+      const row = draft.rows[index];
+      const next = String(hex || '').trim().toLowerCase();
+      if (!next || next === FIGMA_ICON_GRAY) {
+        delete row.color;
+      } else {
+        row.color = next;
+      }
+      paintLinkPanelBinding(row, draft.caseSensitive);
+      postFigmaIconBindings(draft, false);
+      return;
+    }
+    setFigmaIconRowColor(index, hex);
+  }
+
+  /**
+   * @param {*} link
+   * @param {string} iconName
+   */
+  function commitFigmaChipIcon(link, iconName) {
+    const page = activePage();
+    if (!link || page?.kind !== 'figma' || !iconName) {
+      return;
+    }
+    const label = figmaChipBindingLabel(link);
+    if (!label) {
+      return;
+    }
+    const draft = figmaChipBindingDraft(page);
+    const index = figmaChipBindingIndex(draft, label, true, {
+      icon: iconName,
+      color: freshenFigmaIconColor(link.figmaIconColor),
+    });
+    const row = index >= 0 ? draft.rows[index] : undefined;
+    if (!row) {
+      return;
+    }
+    row.icon = iconName;
+    paintLinkPanelBinding(row, draft.caseSensitive);
+    if (draft !== figmaIconDraft) {
+      postFigmaIconBindings(draft, false);
+      return;
+    }
+    const panelAvatar = document.querySelector(
+      '#figma-icon-panel [data-icon-index="' + index + '"] .figma-chip-avatar',
+    );
+    if (panelAvatar instanceof HTMLElement) {
+      mountLucide(panelAvatar, iconName);
     }
     scheduleFigmaIconSave();
   }
@@ -14955,8 +15169,9 @@
   /**
    * @param {HTMLButtonElement} anchor
    * @param {number} index
+   * @param {(name: string) => void} [onPick]
    */
-  function openFigmaIconPicker(anchor, index) {
+  function openFigmaIconPicker(anchor, index, onPick) {
     closeFigmaIconPicker();
     const picker = el('div', 'figma-icon-picker');
     picker.id = 'figma-icon-picker';
@@ -14989,16 +15204,21 @@
         button.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
-          const row = figmaIconDraft?.rows[index];
-          if (row) {
-            row.icon = name;
-          }
-          const host = anchor.querySelector('.figma-chip-avatar');
-          if (host instanceof HTMLElement) {
-            mountLucide(host, name);
+          if (onPick) {
+            onPick(name);
+          } else {
+            const row = figmaIconDraft?.rows[index];
+            if (row) {
+              row.icon = name;
+              paintLinkPanelBinding(row);
+            }
+            const host = anchor.querySelector('.figma-chip-avatar');
+            if (host instanceof HTMLElement) {
+              mountLucide(host, name);
+            }
+            scheduleFigmaIconSave();
           }
           closeFigmaIconPicker();
-          scheduleFigmaIconSave();
         });
         list.append(button);
       }
@@ -17008,9 +17228,12 @@
       return;
     }
     const byId = Object.fromEntries(links.map((link) => [link.id, link]));
+    const figmaPage = page?.kind === 'figma';
     const nextTree = el('div', 'links-tree');
     roots.forEach((link, index) => {
-      nextTree.append(renderLinkNode(link, byId, index > 0, roots[index + 1]?.color || ''));
+      const next = roots[index + 1];
+      const stem = figmaPage ? (next ? figmaThreadColorOf(next, byId) : '') : next?.color || '';
+      nextTree.append(renderLinkNode(link, byId, index > 0, stem));
     });
     nextTree.append(renderLinkTail(roots[roots.length - 1]));
     root.append(nextTree);
@@ -17108,6 +17331,21 @@
     svg.append(turn);
     elbow.append(svg);
     return elbow;
+  }
+
+  /** assets/lock-2-fill.svg — name in the chip card cannot be edited. @returns {SVGSVGElement} */
+  function figmaBindingLockIcon() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute(
+      'd',
+      'M18 8H20C20.5523 8 21 8.44772 21 9V21C21 21.5523 20.5523 22 20 22H4C3.44772 22 3 21.5523 3 21V9C3 8.44772 3.44772 8 4 8H6V7C6 3.68629 8.68629 1 12 1C15.3137 1 18 3.68629 18 7V8ZM11 15.7324V18H13V15.7324C13.5978 15.3866 14 14.7403 14 14C14 12.8954 13.1046 12 12 12C10.8954 12 10 12.8954 10 14C10 14.7403 10.4022 15.3866 11 15.7324ZM16 8V7C16 4.79086 14.2091 3 12 3C9.79086 3 8 4.79086 8 7V8H16Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
   }
 
   /**
@@ -17234,6 +17472,33 @@
     chip.append(avatar, main);
   }
 
+  /** @param {*} link */
+  function figmaChipAvatarColor(link) {
+    return freshenFigmaIconColor(link && link.figmaIconColor) || FIGMA_ICON_GRAY;
+  }
+
+  /**
+   * Elbow into a Figma chip: avatar color of the nearest ancestor that has children.
+   * @param {*} link
+   * @param {Record<string, *>} byId
+   */
+  function figmaThreadColorOf(link, byId) {
+    let parentId = link && link.parent;
+    const seen = new Set();
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId[parentId];
+      if (!parent) {
+        break;
+      }
+      if ((parent.children || []).length > 0) {
+        return figmaChipAvatarColor(parent);
+      }
+      parentId = parent.parent;
+    }
+    return FIGMA_ICON_GRAY;
+  }
+
   function renderLinkNode(link, byId, leadingGap, nextColor) {
     const childIds = link.children || [];
     const children = childIds.map((id) => byId[id]).filter(Boolean);
@@ -17255,9 +17520,12 @@
     );
     row.dataset.linkId = link.id;
     row.dataset.depth = String(depth);
-    row.style.setProperty('--link-color', link.color || (figmaChip ? FIGMA_ICON_GRAY : 'var(--vscode-foreground)'));
+    row.style.setProperty(
+      '--link-color',
+      figmaChip ? figmaThreadColorOf(link, byId) : link.color || 'var(--vscode-foreground)',
+    );
     if (figmaChip && childIds.length > 0) {
-      row.style.setProperty('--figma-thread', link.colorId || link.color || FIGMA_ICON_GRAY);
+      row.style.setProperty('--figma-thread', figmaChipAvatarColor(link));
     }
     const chipHalf = figmaChip ? 23 : linkChipHalf(depth);
     row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + chipHalf, nextColor));
@@ -17489,7 +17757,9 @@
       });
       const ordered = children.slice().sort((a, b) => a.order - b.order);
       ordered.forEach((child, index) => {
-        slide.append(renderLinkNode(child, byId, true, ordered[index + 1]?.color || ''));
+        const next = ordered[index + 1];
+        const stem = figmaChip ? (next ? figmaThreadColorOf(next, byId) : '') : next?.color || '';
+        slide.append(renderLinkNode(child, byId, true, stem));
       });
       clip.append(slide);
       kids.append(foldRail, clip);
@@ -17940,20 +18210,72 @@
     }
     panel.append(descWrap);
 
-    const figmaPage = activePage()?.kind === 'figma';
-    const figmaThread = figmaPage && (link.children || []).length > 0;
-    if (figmaPage ? figmaThread : !link.parent) {
+    if (activePage()?.kind === 'figma') {
+      const avatarColor = freshenFigmaIconColor(link.figmaIconColor) || FIGMA_ICON_GRAY;
+      const binding = el('div', 'figma-icon-row figma-chip-binding');
+      binding.dataset.bindingLabel = String(link.label || '').trim();
+      const pick = el('button', 'figma-icon-pick');
+      pick.type = 'button';
+      pick.disabled = locked;
+      pick.title = t('figmaIconPick');
+      pick.setAttribute('aria-label', t('figmaIconPick'));
+      const avatar = el('span', 'figma-chip-avatar');
+      avatar.style.setProperty('--avatar-color', avatarColor);
+      mountLucide(avatar, link.figmaIcon || FIGMA_ICON_FALLBACK);
+      pick.append(avatar);
+      pick.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pick.disabled) {
+          return;
+        }
+        openFigmaIconPicker(pick, -1, (name) => {
+          commitFigmaChipIcon(link, name);
+        });
+      });
+      const well = el('button', 'link-color-well');
+      well.type = 'button';
+      well.disabled = locked;
+      well.style.setProperty('--swatch', avatarColor);
+      well.title = t('figmaIconColor');
+      well.setAttribute('aria-label', t('figmaIconColor'));
+      well.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (well.disabled) {
+          return;
+        }
+        openColorsPanel({
+          kind: 'figma-chip',
+          id: link.id,
+          currentHex: well.style.getPropertyValue('--swatch') || avatarColor,
+          allowNone: true,
+          noneDisabled: false,
+          locked: false,
+        });
+      });
+      const bindingName = document.createElement('input');
+      bindingName.type = 'text';
+      bindingName.className = 'review-mr-title figma-chip-binding-name';
+      bindingName.readOnly = true;
+      bindingName.tabIndex = -1;
+      bindingName.value = link.label || '';
+      bindingName.setAttribute('aria-label', t('figmaIconWord'));
+      const lock = el('span', 'figma-chip-binding-lock');
+      lock.title = 'Нельзя изменить название';
+      lock.append(figmaBindingLockIcon());
+      binding.append(pick, well, bindingName, lock);
+      panel.append(binding);
+    }
+
+    if (activePage()?.kind !== 'figma' && !link.parent) {
       const colorField = el('div', 'link-panel-field link-panel-color');
       const colorRow = el('div', 'link-color-row');
       const colorCaption = el('span', 'link-color-caption');
       colorCaption.textContent = t('changeColor');
-      const raw = String(figmaThread ? link.colorId || '' : link.colorId || link.color || '');
+      const raw = String(link.colorId || link.color || '');
       const parsed = splitHexAlpha(raw);
-      const currentHex = parsed
-        ? hexWithAlpha(parsed.rgb, parsed.alpha)
-        : figmaThread
-          ? FIGMA_ICON_GRAY
-          : '#3658d3';
+      const currentHex = parsed ? hexWithAlpha(parsed.rgb, parsed.alpha) : '#3658d3';
       const well = el('button', 'link-color-well');
       well.type = 'button';
       well.disabled = locked;
@@ -17968,8 +18290,7 @@
           id: link.id,
           currentHex,
           allowNone: true,
-          noneDisabled: !figmaThread,
-          figma: figmaThread,
+          noneDisabled: true,
           locked: false,
         });
       });
@@ -28507,7 +28828,7 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review' | 'figma-icon', id?: string, pageId?: string, index?: number, section?: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review' | 'figma-icon' | 'figma-chip', id?: string, pageId?: string, index?: number, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
@@ -28515,7 +28836,8 @@
       colorTarget?.kind === 'text' ||
       colorTarget?.kind === 'link' ||
       colorTarget?.kind === 'group-draft' ||
-      colorTarget?.kind === 'figma-icon'
+      colorTarget?.kind === 'figma-icon' ||
+      colorTarget?.kind === 'figma-chip'
     ) {
       return;
     }
@@ -28539,6 +28861,8 @@
         vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: picked });
       } else if (colorTarget.kind === 'figma-icon' && Number.isInteger(colorTarget.index)) {
         setFigmaIconRowColor(colorTarget.index, picked);
+      } else if (colorTarget.kind === 'figma-chip' && colorTarget.id) {
+        commitFigmaChipColor(colorTarget.id, picked);
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
         vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: picked });
       } else if (colorTarget.kind === 'review' && colorTarget.id && colorTarget.pageId) {

@@ -189,9 +189,9 @@ interface MapLink {
   subtreeHeight: number;
   children: string[];
   order: number;
-  /** Resolved CSS color from the branch root. */
+  /** Elbow into the chip. On a Figma page this is the ancestor avatar color. */
   color: string;
-  /** Stored color id / hex for the settings panel (roots only). */
+  /** Outgoing thread on a Figma chip with children; palette hex on other roots. */
   colorId?: string;
   /** True when this is the only root layout on its page. */
   lastRoot?: true;
@@ -5051,7 +5051,6 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       .links()
       .filter(([id]) => this.store.pageOfLink(id) === pageId)
       .map(([id, def]) => {
-        const ownHex = def.color ? normalizeHex(def.color) ?? def.color : undefined;
         const colorId = figma
           ? this.store.figmaThreadColor(id)
           : this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
@@ -5072,7 +5071,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           children: this.store.linkChildren(id).map(([childId]) => childId),
           order: def.order,
           color: cssColor(resolvedHex),
-          colorId: figma ? (childCount > 0 ? ownHex : undefined) : def.parent ? undefined : resolvedHex,
+          colorId: figma
+            ? childCount > 0
+              ? icon?.color
+              : undefined
+            : def.parent
+              ? undefined
+              : resolvedHex,
           lastRoot: this.store.isLastRootLink(id) ? true : undefined,
           canDelete: this.store.canDeleteLink(id),
           figmaTag: def.figmaTag,

@@ -1794,6 +1794,45 @@ body.vscode-high-contrast-light .link-drop-slot {
   opacity: 1;
 }
 
+.link-panel .figma-chip-binding .review-mr-title {
+  border-color: color-mix(in srgb, var(--vscode-foreground) 32%, transparent);
+  box-shadow: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  outline: none;
+  width: 0;
+}
+
+.link-panel .figma-chip-binding .review-mr-title[readonly] {
+  cursor: default;
+}
+
+.link-panel .figma-chip-binding .review-mr-title:focus,
+.link-panel .figma-chip-binding .review-mr-title:focus-visible {
+  border-color: color-mix(in srgb, var(--vscode-foreground) 32%, transparent);
+  box-shadow: none;
+  outline: none;
+}
+
+.figma-chip-binding-lock {
+  align-items: center;
+  color: var(--vscode-descriptionForeground, #8b8b8b);
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+}
+
+.figma-chip-binding-lock svg {
+  display: block;
+  height: 16px;
+  width: 16px;
+}
+
+.link-panel .figma-icon-pick:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .link-panel-field {
   display: flex;
   flex-direction: column;

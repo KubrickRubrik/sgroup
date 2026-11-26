@@ -26,8 +26,10 @@ import { normalizeLocale, Syn3Locale } from './i18n';
 import {
   FIGMA_ICON_GRAY,
   figmaIconPageFields,
+  matchFigmaIcon,
   normalizeFigmaIconBindings,
   normalizeFigmaIconMatch,
+  resolveFigmaIconBindings,
   type FigmaIconBinding,
   type FigmaIconMatch,
 } from './figmaIconBindings';
@@ -73,6 +75,7 @@ import {
   packReviewMapFilters,
   resolveReviewMapFilters,
   type ReviewMapFilterFlags,
+  pageKindPostsContent,
   pageKindToConfigKind,
   parseConfigHeader,
   resolveProjectChannel,
@@ -1406,7 +1409,7 @@ export class MarkerStore implements vscode.Disposable {
       return true;
     }
     for (const [id, page] of this.pages()) {
-      if (page.kind === 'review') {
+      if (!pageKindPostsContent(page.kind)) {
         continue;
       }
       if (this.dirtyPages.has(id)) {
@@ -2289,11 +2292,17 @@ export class MarkerStore implements vscode.Disposable {
     });
   }
 
+  /** Review and scenarios are not Discord page files. */
+  private pagePostsContent(pageId: string): boolean {
+    const kind = this.data.pages[pageId]?.kind;
+    return !!kind && pageKindPostsContent(kind);
+  }
+
   configSync(pageId: string): ConfigSyncFlags {
     const lockedOut = this.pageContentLockedOut();
     const page = this.data.pages[pageId];
-    // Review pages have no content config push; MR messages are polled separately.
-    if (page?.kind === 'review') {
+    // Review and scenarios have no page-file push. Their order lives in base.
+    if (!page || !pageKindPostsContent(page.kind)) {
       return configSyncFlags({
         dirty: false,
         cloudNewer: false,
@@ -2323,7 +2332,7 @@ export class MarkerStore implements vscode.Disposable {
     const sections: DebugSendDiffSection[] = [];
     const needBase = this.projectConfigSync().canPush || this.profileConfigSync().canPush;
     const dirtyPageIds = this.pages()
-      .filter(([id, page]) => page.kind !== 'review' && this.configSync(id).canPush)
+      .filter(([id]) => this.configSync(id).canPush)
       .map(([id]) => id);
     if (!needBase && dirtyPageIds.length === 0) {
       return { sections };
@@ -4108,7 +4117,7 @@ export class MarkerStore implements vscode.Disposable {
         entry.version = (entry.version || 1) + 1;
       }
       this.projectDirty = true;
-      if (page.kind !== 'review') {
+      if (pageKindPostsContent(page.kind)) {
         this.dirtyPages.add(pageId);
       }
       await this.persistSplitConfig();
@@ -4664,9 +4673,21 @@ export class MarkerStore implements vscode.Disposable {
     return color || undefined;
   }
 
+  /** Avatar color of a Figma chip: the icon binding that matches its label. */
+  private figmaAvatarColor(id: string): string {
+    const def = this.data.links[id];
+    if (!def) {
+      return FIGMA_ICON_GRAY;
+    }
+    const pageId = this.pageOfLink(id);
+    const page = pageId ? this.data.pages[pageId] : undefined;
+    return matchFigmaIcon(def.label, resolveFigmaIconBindings(page?.figmaIconBindings), page?.figmaIconMatch)
+      .color;
+  }
+
   /**
-   * Color of the elbow into a Figma chip: the nearest ancestor that has children
-   * and its own color. The chip's own color paints the lines under it, not this elbow.
+   * Color of the elbow into a Figma chip: the nearest ancestor that has children.
+   * That ancestor's avatar color paints the lines under it, not this elbow.
    */
   figmaThreadColor(id: string): string {
     let current = this.data.links[id]?.parent;
@@ -4677,8 +4698,8 @@ export class MarkerStore implements vscode.Disposable {
       if (!def) {
         break;
       }
-      if (this.linkChildren(current).length > 0 && def.color) {
-        return normalizeHex(def.color) ?? def.color;
+      if (this.linkChildren(current).length > 0) {
+        return this.figmaAvatarColor(current);
       }
       current = def.parent;
     }
@@ -6581,8 +6602,15 @@ export class MarkerStore implements vscode.Disposable {
     if (!page) {
       return { ok: false, message: 'Page not found' };
     }
-    if (page.kind === 'review') {
-      return { ok: false, message: 'Review pages have no content push' };
+    if (!pageKindPostsContent(page.kind)) {
+      // A stale dirty bit must not keep Send lit: these kinds are never posted.
+      this.dirtyPages.delete(pageId);
+      this.rememberPageClean(pageId);
+      await this.persistPosLocal();
+      return {
+        ok: false,
+        message: page.kind === 'review' ? 'Review pages have no content push' : 'Unsupported page kind',
+      };
     }
     if (this.pageCloudNewer[pageId]) {
       return { ok: false, message: 'cloudPullFirst' };
@@ -8062,6 +8090,11 @@ export class MarkerStore implements vscode.Disposable {
     const clean: Record<string, string> = { ...(this.posLocal.pageClean ?? {}) };
     let persist = false;
     for (const [pageId, snapshot] of Object.entries(this.pagePresent)) {
+      // No page file is posted for these kinds, so a fingerprint mismatch must
+      // not light Send. Order and page settings travel with the base snapshot.
+      if (!this.pagePostsContent(pageId)) {
+        continue;
+      }
       const fp = fingerprint(this.pageDirtyKey(snapshot));
       const saved = clean[pageId];
       if (saved) {
@@ -8147,13 +8180,17 @@ export class MarkerStore implements vscode.Disposable {
     for (const [pageId, curr] of Object.entries(nextPages)) {
       const prev = previousPages[pageId];
       if (prev !== undefined && this.pageDirtyKey(prev) !== this.pageDirtyKey(curr)) {
-        this.dirtyPages.add(pageId);
+        if (this.pagePostsContent(pageId)) {
+          this.dirtyPages.add(pageId);
+        }
         pageDirty = true;
         if (this.historyReady) {
           remember(pageStacks(this.history, pageId), prev);
         }
       } else if (prev === undefined) {
-        this.dirtyPages.add(pageId);
+        if (this.pagePostsContent(pageId)) {
+          this.dirtyPages.add(pageId);
+        }
         pageDirty = true;
       }
     }

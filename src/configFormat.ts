@@ -322,6 +322,16 @@ export function pageKindToConfigKind(kind: PageKind): ConfigMessageKind | undefi
   return undefined;
 }
 
+/**
+ * Page file posted to Discord. Review and scenarios are not: review is polled
+ * as MR messages, scenarios as their own channel messages. Tab order for both
+ * still travels in the base snapshot.
+ */
+export function pageKindPostsContent(kind: PageKind): boolean {
+  const configKind = pageKindToConfigKind(kind);
+  return configKind !== undefined && configKind !== 'REVIEW';
+}
+
 export function configKindToPageKind(kind: ConfigMessageKind): PageKind | undefined {
   if (kind === 'EXPLORER') {
     return 'files';
