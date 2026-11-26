@@ -1314,7 +1314,7 @@ button.toolbar-lock.is-fixed:hover {
       color-mix(in srgb, white var(--hover-wash), transparent)
     ),
     linear-gradient(
-      calc(135deg + var(--gradient-turn) * 3.6deg),
+      135deg,
       color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-fill-0), transparent) 0%,
       color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-fill-1), transparent) 55%,
       color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-fill-2), transparent) 100%
@@ -1332,7 +1332,7 @@ button.toolbar-lock.is-fixed:hover {
 
 .link-node.is-figma-chip > .link-body > .link-chip-wrap > .link-chip::before {
   background: linear-gradient(
-    calc(135deg + var(--gradient-turn) * 3.6deg),
+    135deg,
     color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-border-0), transparent) 0%,
     color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-border-1), transparent) 50%,
     color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-border-2), transparent) 100%
