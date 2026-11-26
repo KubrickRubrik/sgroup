@@ -6941,7 +6941,7 @@
       const collapsed = isCollapsed(node.dataset.linkId);
       node.classList.toggle('is-collapsed', collapsed);
       const tri = node.querySelector(
-        ':scope > .link-body > .link-chip-wrap > .link-chip > .link-chip-tri',
+        ':scope > .link-body > .link-chip-wrap .link-chip-tri',
       );
       if (tri) {
         tri.classList.toggle('is-collapsed', collapsed);
@@ -14647,6 +14647,10 @@
   /** Latest save post. A reply closes the panel only when it matches a save that asked to close. */
   let figmaIconSaveSeq = 0;
   let figmaIconCloseSeq = 0;
+  /** @type {number} */
+  let figmaIconSaveTimer = 0;
+  /** Name or icon edited since the last successful post. */
+  let figmaIconDirty = false;
 
   function closeFigmaIconPicker() {
     const picker = document.getElementById('figma-icon-picker');
@@ -14655,10 +14659,34 @@
     }
   }
 
+  /**
+   * The field is the source of the name. The draft can lag a keystroke behind it.
+   * @param {{ rows: { text: string }[] }} draft
+   */
+  function syncFigmaIconInputs(draft) {
+    const inputs = document.querySelectorAll('#figma-icon-panel .figma-icon-scroll input');
+    inputs.forEach((input, index) => {
+      const row = draft.rows[index];
+      if (row && input instanceof HTMLInputElement) {
+        row.text = input.value;
+      }
+    });
+  }
+
   function closeFigmaIconPanel() {
+    window.clearTimeout(figmaIconSaveTimer);
+    figmaIconSaveTimer = 0;
+    const draft = figmaIconDraft;
+    const panel = document.getElementById('figma-icon-panel');
+    if (draft && figmaIconDirty && panel && !panel.classList.contains('is-busy')) {
+      if (!postFigmaIconBindings(draft, false)) {
+        return;
+      }
+    }
     closeFigmaIconPicker();
     removeOverlay('figma-icon-panel');
     figmaIconDraft = null;
+    figmaIconDirty = false;
   }
 
   /**
@@ -14799,6 +14827,7 @@
    * @param {boolean} closeOnSave
    */
   function postFigmaIconBindings(draft, closeOnSave) {
+    syncFigmaIconInputs(draft);
     if (figmaIconDraftDuplicate(draft.rows, draft.caseSensitive)) {
       showFigmaIconError(t('figmaIconDuplicate'));
       return false;
@@ -14823,16 +14852,36 @@
         ...(draft.whole ? { whole: true } : {}),
       },
     });
+    figmaIconDirty = false;
     return true;
   }
 
-  function scheduleFigmaIconSave() {
+  /**
+   * @param {number} [delayMs] Pause while the name is still being typed.
+   */
+  function scheduleFigmaIconSave(delayMs = 0) {
     const draft = figmaIconDraft;
     const panel = document.getElementById('figma-icon-panel');
     if (!draft || panel?.classList.contains('is-busy')) {
       return;
     }
-    postFigmaIconBindings(draft, false);
+    figmaIconDirty = true;
+    window.clearTimeout(figmaIconSaveTimer);
+    figmaIconSaveTimer = 0;
+    const run = () => {
+      figmaIconSaveTimer = 0;
+      const current = figmaIconDraft;
+      const host = document.getElementById('figma-icon-panel');
+      if (!current || host?.classList.contains('is-busy')) {
+        return;
+      }
+      postFigmaIconBindings(current, false);
+    };
+    if (delayMs > 0) {
+      figmaIconSaveTimer = window.setTimeout(run, delayMs);
+      return;
+    }
+    run();
   }
 
   function showFigmaIconError(text) {
@@ -14949,6 +14998,7 @@
             mountLucide(host, name);
           }
           closeFigmaIconPicker();
+          scheduleFigmaIconSave();
         });
         list.append(button);
       }
@@ -15031,6 +15081,7 @@
       input.addEventListener('input', () => {
         row.text = input.value;
         showFigmaIconError('');
+        scheduleFigmaIconSave(300);
       });
       line.append(pick, well, input);
       if (!row.builtin) {
@@ -15043,6 +15094,7 @@
           event.stopPropagation();
           draft.rows.splice(index, 1);
           paintFigmaIconRows();
+          scheduleFigmaIconSave();
         });
         line.append(remove);
       }
@@ -15094,6 +15146,7 @@
         draft[key] = next;
         button.setAttribute('aria-pressed', next ? 'true' : 'false');
         showFigmaIconError('');
+        scheduleFigmaIconSave();
       });
       return button;
     };
@@ -15124,6 +15177,7 @@
       }
       figmaIconDraft.rows.push({ icon: FIGMA_ICON_FALLBACK, text: '' });
       paintFigmaIconRows();
+      scheduleFigmaIconSave();
       const inputs = scroll.querySelectorAll('input');
       const last = inputs[inputs.length - 1];
       if (last instanceof HTMLInputElement) {
@@ -15149,6 +15203,8 @@
       if (!draft || panel.classList.contains('is-busy')) {
         return;
       }
+      window.clearTimeout(figmaIconSaveTimer);
+      figmaIconSaveTimer = 0;
       if (!postFigmaIconBindings(draft, true)) {
         return;
       }
@@ -16962,22 +17018,12 @@
     playFolds(folds);
   }
 
-  /** Empty Figma map: caption with a normal button directly under it. */
+  /** Empty Figma map: caption only. Assemble stays on the filter bar. */
   function paintFigmaEmpty() {
     root.classList.add('is-figma-empty');
     syncFigmaChromeHeight();
     const box = el('div', 'figma-empty');
     box.append(el('p', 'figma-empty-text', t('figmaEmpty')));
-    const button = el('button', 'review-btn', t('figmaForm'));
-    button.id = 'figma-empty-form';
-    button.type = 'button';
-    button.addEventListener('click', () => {
-      if (figmaFormRunning) {
-        return;
-      }
-      openFigmaFormDialog();
-    });
-    box.append(button);
     root.append(box);
   }
 
@@ -17064,6 +17110,25 @@
     return elbow;
   }
 
+  /**
+   * assets/arrow-down-s-line.svg — Figma thread fold.
+   * Points down while the thread can be expanded; CSS flips it while the thread can be collapsed.
+   * @returns {SVGSVGElement}
+   */
+  function figmaFoldIcon() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute(
+      'd',
+      'M11.9999 13.1714L16.9497 8.22168L18.3639 9.63589L11.9999 15.9999L5.63599 9.63589L7.0502 8.22168L11.9999 13.1714Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
   /** Rounded down-triangle: group color, thick white rim. @returns {SVGSVGElement} */
   function linkCaretIcon() {
     const svg = document.createElementNS(SVG_NS, 'svg');
@@ -17145,7 +17210,7 @@
       });
       metaBits.push(lock);
       const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
-      tri.append(linkCaretIcon());
+      tri.append(figmaFoldIcon());
       tri.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -19563,10 +19628,6 @@
     if (figmaResetButton) {
       figmaResetButton.disabled = figmaFormRunning || pageLinks().length === 0;
       figmaResetButton.textContent = t('figmaReset');
-    }
-    const emptyForm = document.getElementById('figma-empty-form');
-    if (emptyForm instanceof HTMLButtonElement) {
-      emptyForm.textContent = t('figmaForm');
     }
     if (figmaFormLoader) {
       figmaFormLoader.hidden = !figmaFormRunning;

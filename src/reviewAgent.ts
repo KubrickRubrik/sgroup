@@ -292,7 +292,8 @@ function buildPrompt(opts: {
       `Selection: ${opts.rereview.selection}`,
       'Это ревью родительского Ревью ' + String(opts.rereview.parentNumber) + '.',
       'Каждый пункт начинай отдельной строкой ровно из буквы и номера, как в списке: L:2.',
-      'Сразу после неё пиши только текст этого пункта. Не пиши ##, шапку файла и строку счётчиков.',
+      'Сразу после неё — таблица как в ревью: Уровень, Что сломано, Что чинить, Где. Одна строка на пункт.',
+      'Уровень — буква и номер пункта: L-1, H-2. Не пиши ##, шапку файла и строку счётчиков.',
       '«Что сломано» сохрани. Если пункт исправлен, в «Что чинить» напиши ровно: исправлено',
       'Если нет — поясни, что ещё чинить. «Где» сохрани или дополни.',
       'На чужой ветке пути «Где» ищи внутри host-diff. Локальное дерево не открывай, если в запуске есть host-diff.',
@@ -327,7 +328,7 @@ function buildPrompt(opts: {
   if (opts.rereview) {
     lines.push(
       'Answer in ask mode. Do not write a severity count line.',
-      'Start each item with its anchor line, then only that item text. Syn3 writes the headings.',
+      'Start each item with its anchor line, then the same four-column table as a review. Syn3 writes the headings.',
     );
   } else if (opts.study) {
     lines.push('Answer in ask mode. Do not write a severity count line. Syn3 writes the chip line.');
@@ -355,7 +356,13 @@ function stripRereviewMarker(stdout: string): string {
         continue;
       }
       const bare = trimmed.replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
-      if (findSeverityLine(trimmed) || parseRereviewSelection(bare)) {
+      // A lone `L:2` is the first item anchor, not a selection header. Dropping it
+      // leaves the parser without that item.
+      const anchor = /^(?:H|M|L):\d+\s*$/i.test(bare);
+      if (
+        !anchor &&
+        (findSeverityLine(trimmed) || parseRereviewSelection(bare) || /^Selection:/i.test(trimmed))
+      ) {
         started = true;
         continue;
       }

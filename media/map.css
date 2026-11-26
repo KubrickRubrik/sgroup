@@ -1120,9 +1120,11 @@ button.toolbar-lock.is-fixed:hover {
   align-items: center;
   box-sizing: border-box;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  justify-content: flex-start;
   min-height: calc(100vh - var(--syn3-chrome-h, 80px) - 14px);
-  padding: 24px 16px;
+  padding: 100px 16px 24px;
+  width: 100%;
 }
 
 .figma-empty {
@@ -1304,15 +1306,46 @@ button.toolbar-lock.is-fixed:hover {
 }
 
 .link-node.is-figma-chip > .link-body > .link-chip-wrap > .link-chip {
+  --hover-wash: 0%;
   align-items: center;
-  background: #2c313a;
-  border: 0.5px solid color-mix(in srgb, var(--avatar-color, #c5c8ce) 34%, #2c313a);
+  background:
+    linear-gradient(
+      color-mix(in srgb, white var(--hover-wash), transparent),
+      color-mix(in srgb, white var(--hover-wash), transparent)
+    ),
+    linear-gradient(
+      calc(135deg + var(--gradient-turn) * 3.6deg),
+      color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-fill-0), transparent) 0%,
+      color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-fill-1), transparent) 55%,
+      color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-fill-2), transparent) 100%
+    );
+  border: 1px solid transparent;
   box-sizing: border-box;
   color: var(--vscode-foreground);
   gap: 8px;
   height: 46px;
   min-height: 46px;
-  padding: 6px 10px 6px 6px;
+  padding: 6px 20px 6px 6px;
+  position: relative;
+  transition: --hover-wash 120ms ease, color 0.15s ease;
+}
+
+.link-node.is-figma-chip > .link-body > .link-chip-wrap > .link-chip::before {
+  background: linear-gradient(
+    calc(135deg + var(--gradient-turn) * 3.6deg),
+    color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-border-0), transparent) 0%,
+    color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-border-1), transparent) 50%,
+    color-mix(in srgb, var(--avatar-color, #c5c8ce) var(--card-border-2), transparent) 100%
+  );
+  border-radius: inherit;
+  content: '';
+  inset: -1px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  pointer-events: none;
+  position: absolute;
 }
 
 .link-node.is-figma-chip .link-chip-label {
@@ -1321,8 +1354,7 @@ button.toolbar-lock.is-fixed:hover {
 
 .link-node.is-figma-chip > .link-body > .link-chip-wrap:hover > .link-chip,
 .link-node.is-figma-chip > .link-body > .link-chip-wrap > .link-chip:hover {
-  background: #383e48;
-  border-color: color-mix(in srgb, var(--avatar-color, #c5c8ce) 46%, #383e48);
+  --hover-wash: var(--bg-hover);
   color: var(--vscode-foreground);
 }
 
@@ -1384,7 +1416,19 @@ button.toolbar-lock.is-fixed:hover {
 
 .figma-chip-meta .link-chip-tri {
   color: var(--vscode-descriptionForeground);
+  height: 14px;
   margin-left: auto;
+  width: 14px;
+}
+
+.figma-chip-meta .link-chip-tri svg {
+  height: 14px;
+  transform: rotate(180deg);
+  width: 14px;
+}
+
+.figma-chip-meta .link-chip-tri.is-collapsed svg {
+  transform: rotate(0deg);
 }
 
 .figma-icon-panel {
@@ -6767,7 +6811,8 @@ button.review-talk-btn svg {
 .map-settings-backdrop {
   inset: 0;
   position: fixed;
-  z-index: 40;
+  /* Above .review-talk (45), so page settings cover the message composer. */
+  z-index: 46;
 }
 
 .discord-gate-backdrop {
