@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { CodeLanguageService, CodeStamp } from './codeLanguage';
 import { DirtyPathWatcher } from './gitDirty';
+import { currentBranch } from './gitOps';
 import {
   Appearance,
   ColumnsMode,
@@ -19,11 +20,67 @@ import {
   normalizeGroupsLayout,
   normalizeMapLayout,
   normalizePageKind,
+  isLinkMapKind,
+  snapReviewRefreshSec,
 } from './markerStore';
 import { normalizeLocale, stringsFor, t } from './i18n';
+import { instructionPageHtml, instructionTitle, reviewFileHtml, reviewFixTableHtml } from './instructionPreview';
 import { openClassAt } from './openClass';
 import { LINK_PALETTE, LINK_PALETTE_DEFAULT, randomLinkPaletteColor } from './linkPalette';
+import { normalizeReviewScheme } from './reviewThemes';
 import { cssColor, normalizeHex, PALETTE } from './palette';
+import { postChannelMessage, ReviewChipStatus } from './discordApi';
+import {
+  ensureSetupProbe,
+  isValidChannelId,
+  reviewChannelConflicts,
+  setupHelloText,
+  type SetupChannelKind,
+} from './discordSetup';
+import { ReviewDepth, ReviewKind } from './reviewPending';
+import {
+  normalizeFixPicks,
+  normalizeNeuroFixScope,
+  normalizeRereviewSelection,
+  ReviewLoadEdge,
+  ReviewMapController,
+  ReviewPageState,
+} from './reviewMap';
+import { ScenarioMapController, ScenarioPageState } from './scenarioMap';
+import {
+  createRepositoryTokenKey,
+  deleteFigmaToken,
+  deleteProfileHostToken,
+  deleteRepositoryToken,
+  getSecret,
+  readFigmaToken,
+  readProfileHostToken,
+  readRepositoryToken,
+  SECRET_DISCORD,
+  secretsStatus,
+  storeSecrets,
+  writeFigmaToken,
+  writeRepositoryToken,
+  writeProfileHostToken,
+} from './accessStore';
+import {
+  collectFigmaLinks,
+  FigmaStoredLink,
+  figmaAppUrl,
+  figmaLinkFromInput,
+  figmaLinkPreviewEnabled,
+  figmaPreviewCacheKey,
+  figmaRequestPaused,
+  loadFigmaPreview,
+  loadFigmaSharedHits,
+  parseFigmaFrame,
+} from './figmaLink';
+import { matchFigmaIcon, prepareFigmaIconBindings, resolveFigmaIconBindings } from './figmaIconBindings';
+import { figmaScanPrompt, parseFigmaScanAnswer, type FigmaTagHit } from './figmaTags';
+import { runFigmaTagAgent } from './reviewAgent';
+import { isReviewHostProvider, recognizedRepoProvider, ReviewHostProvider, ReviewMr } from './reviewHost';
+import { listProjectDirectory } from './projectNav';
+import type { CatalogChannels } from './configFormat';
 
 const COLUMN_SIDE_KEY = 'syn3.map.columnSide';
 /** Legacy workspace keys for active page per surface (migrated into syn3.json once). */
@@ -103,10 +160,14 @@ interface MapNote {
 interface MapPage {
   id: string;
   name: string;
+  description?: string;
   kind: PageKind;
   layout: MapLayout;
   groupsLayout: GroupsLayout;
   collapsed: Record<string, boolean>;
+  /** Resolved icon rows for a Figma page. Starter ten when nothing is stored yet. */
+  figmaIconBindings?: { icon: string; text: string; color?: string; builtin?: true }[];
+  figmaIconMatch?: { caseSensitive?: true; whole?: true };
 }
 
 /** Groups, notes, and links of a single map page. */
@@ -128,14 +189,22 @@ interface MapLink {
   subtreeHeight: number;
   children: string[];
   order: number;
-  /** Resolved CSS color from the branch root. */
+  /** Elbow into the chip. On a Figma page this is the ancestor avatar color. */
   color: string;
-  /** Stored color id / hex for the settings panel (roots only). */
+  /** Outgoing thread on a Figma chip with children; palette hex on other roots. */
   colorId?: string;
   /** True when this is the only root layout on its page. */
   lastRoot?: true;
   /** True when delete is allowed. */
   canDelete: boolean;
+  /** Tag path without parentheses. Empty url plus this field draws the alert icon. */
+  figmaTag?: string;
+  /** No tag, or the tag was not on this chip's links. */
+  figmaUnsynced?: true;
+  /** Lucide icon for a Figma chip avatar. */
+  figmaIcon?: string;
+  /** Avatar color. Light gray when no binding color is set. */
+  figmaIconColor?: string;
 }
 
 interface EditorGroupLayout {
@@ -162,16 +231,23 @@ type IncomingToolbarAction =
   | 'createPageFiles'
   | 'createPageNotes'
   | 'createPageLinks'
+  | 'createPageFigma'
+  | 'createPageReview'
+  | 'createPageScenarios'
+  | 'createMr'
+  | 'pullMr'
   | 'renamePage'
   | 'deletePage'
   | 'toggleBottom'
   | 'toggleLeft'
-  | 'toggleRight';
+  | 'toggleRight'
+  | 'toggleExplorer';
 
 type ColumnSide = 'left' | 'right';
 
 type IncomingMessage =
-  | { type: 'ready'; pageId?: string }
+  | { type: 'ready'; pageId?: string; rev?: string }
+  | { type: 'assetsFailed'; rev?: string }
   | { type: 'activePage'; pageId: string }
   | { type: 'mapFocus'; pageId?: string }
   | { type: 'open'; relPath: string }
@@ -187,7 +263,13 @@ type IncomingMessage =
   | { type: 'openExternal'; url: string }
   | { type: 'previewLink'; url: string; requestId: string }
   | { type: 'clipboardRead'; requestId: string }
-  | { type: 'clipboardWrite'; text: string; languageId?: string; label?: string }
+  | {
+      type: 'clipboardWrite';
+      text: string;
+      languageId?: string;
+      label?: string;
+      notice?: 'branchCopied';
+    }
   | { type: 'highlightCode'; requestId: string; text: string; languageId: string }
   | { type: 'reveal'; relPath: string }
   | { type: 'listDir'; relPath: string }
@@ -317,7 +399,293 @@ type IncomingMessage =
       id?: string;
       name?: string;
     }
-  | { type: 'setAppearance'; appearance: Partial<Appearance> };
+  | {
+      type: 'project';
+      action: 'select' | 'create' | 'createSubmit' | 'selectSubmit' | 'syncPush' | 'syncPull' | 'join';
+      id?: string;
+      name?: string;
+      channelId?: string;
+      discordToken?: string;
+      mode?: 'create' | 'select';
+      repoUrl?: string;
+      githubToken?: string;
+      gitlabToken?: string;
+    }
+  | { type: 'pageCloud'; action: 'push' | 'pull'; pageId: string }
+  | { type: 'pageCloud'; action: 'pushAll' }
+  | { type: 'pageCloud'; action: 'pullAll' }
+  | { type: 'pageCloud'; action: 'check' }
+  | { type: 'debugDiff' }
+  | { type: 'workspaceCloud'; action: 'push' | 'pull' }
+  | { type: 'setPagesFixed'; fixed: boolean }
+  | { type: 'projectOpenSettings'; id: string }
+  | {
+      type: 'projectSaveSettings';
+      id: string;
+      name: string;
+      githubToken?: string;
+      gitlabToken?: string;
+    }
+  | { type: 'projectDelete'; id: string; name: string }
+  | { type: 'profileOpenSettings'; id?: string }
+  | {
+      type: 'profileSaveSettings';
+      id?: string;
+      name: string;
+      githubNick: string;
+      gitlabNick: string;
+      githubToken: string;
+      gitlabToken: string;
+    }
+  | { type: 'setAppearance'; appearance: Partial<Appearance> }
+  | { type: 'reviewLoad'; pageId: string; force?: boolean }
+  | { type: 'reviewSetFilters'; pageId: string; checkout: boolean; general: boolean; discussions: boolean }
+  | { type: 'reviewTalk'; pageId: string; text: string; parentMessageId?: string }
+  | { type: 'reviewLoadOlder'; pageId: string }
+  | { type: 'reviewLoadNewer'; pageId: string }
+  | { type: 'reviewLoadThread'; pageId: string; messageId: string; direction?: 'older' | 'newer' }
+  | { type: 'reviewExpandPlain'; pageId: string; messageId: string }
+  | { type: 'reviewOpenPromptExample' }
+  | { type: 'reviewSkillFile'; which: 'review' | 'explain' | 'study'; action: 'open' | 'copy' | 'save' }
+  | { type: 'figmaSkillFile'; action: 'open' | 'copy' | 'save' }
+  | { type: 'figmaOpenSetupDoc' }
+  | { type: 'figmaFormTags'; pageId: string; via: 'mcp' | 'api' }
+  | { type: 'figmaRefreshTags'; pageId: string; via: 'mcp' | 'api' }
+  | { type: 'clearFigmaLinks'; pageId: string }
+  | { type: 'reviewClearFocus'; pageId: string }
+  | {
+      type: 'reviewCreateMr';
+      pageId: string;
+      title: string;
+      draft: boolean;
+      targetBranch: string;
+      reviewers: string[];
+      assignees: string[];
+      squash: boolean;
+    }
+  | {
+      type: 'reviewUpdateMr';
+      pageId: string;
+      messageId: string;
+      title?: string;
+      draft?: boolean;
+      color?: string;
+    }
+  | { type: 'reviewCloseMr'; pageId: string; messageId: string }
+  | { type: 'reviewSetLock'; pageId: string; messageId: string; locked: boolean }
+  | { type: 'reviewDeleteReview'; pageId: string; messageId: string }
+  | {
+      type: 'reviewSetStatus';
+      pageId: string;
+      messageId: string;
+      status: ReviewChipStatus;
+    }
+  | { type: 'reviewDiscordRefresh'; pageId: string; webUrl: string; sourceBranch: string }
+  | {
+      type: 'reviewStart';
+      pageId: string;
+      messageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'reviewStartRoot';
+      pageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'reviewListBranches';
+      pageId: string;
+      page?: number;
+      requestId: string;
+    }
+  | {
+      type: 'reviewListOpenRequests';
+      pageId: string;
+      page?: number;
+      requestId: string;
+    }
+  | {
+      type: 'reviewResolveParent';
+      pageId: string;
+      branch: string;
+      requestId: string;
+    }
+  | {
+      type: 'reviewPullOther';
+      pageId: string;
+      branch: string;
+    }
+  | {
+      type: 'reviewStartOther';
+      pageId: string;
+      branch: string;
+      baseBranch: string;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'explainStart';
+      pageId: string;
+      messageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'explainStartRoot';
+      pageId: string;
+      kind: ReviewKind;
+      depth?: ReviewDepth;
+    }
+  | {
+      type: 'explainStartOther';
+      pageId: string;
+      branch: string;
+      baseBranch: string;
+      depth?: ReviewDepth;
+      parentMessageId?: string;
+    }
+  | { type: 'explainRetryFile'; pageId: string; messageId: string }
+  | { type: 'reviewRetryFile'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFile'; pageId: string; messageId: string; filenames?: string[] }
+  | { type: 'reviewMigrate'; pageId: string; messageId: string }
+  | { type: 'reviewOpenFixes'; pageId: string; messageId: string }
+  | { type: 'reviewSaveFile'; pageId: string; messageId: string }
+  | { type: 'reviewCopyFileLink'; pageId: string; messageId: string; filenames?: string[] }
+  | { type: 'reviewOpenFileTab'; pageId: string; messageId: string; filenames?: string[] }
+  | {
+      type: 'reviewCreatePage';
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      description?: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    }
+  | { type: 'reviewSetScheme'; scheme: string }
+  | { type: 'reviewOpenPageSettings'; pageId: string }
+  | { type: 'pageOpenSettings'; pageId: string }
+  | {
+      type: 'pageSaveSettings';
+      pageId?: string;
+      kind?: PageKind;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+      figmaToken?: string;
+      figmaFiles?: { url: string; label?: string }[];
+      figmaSkillPath?: string;
+      figmaModel?: string;
+      figmaPrintThinking?: boolean;
+      figmaPrintTools?: boolean;
+      figmaOpenInApp?: boolean;
+    }
+  | { type: 'saveFigmaIconBindings'; pageId?: string; bindings?: unknown; match?: unknown }
+  | {
+      type: 'reviewUpdatePage';
+      pageId: string;
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      description?: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    }
+  | { type: 'reviewOpenSetupDoc' }
+  | { type: 'discordGateOpenHowTo' }
+  | {
+      type: 'setReviewPaths';
+      reviewSkillPath?: string;
+      reviewFixSkillPath?: string;
+      explainSkillPath?: string;
+      studySkillPath?: string;
+      reviewDirPath?: string;
+      reviewModel?: string;
+      reviewFixModel?: string;
+      reviewPrintThinking?: boolean;
+      reviewPrintTools?: boolean;
+    }
+  | {
+      type: 'reviewNeurofix';
+      pageId: string;
+      messageId: string;
+      scope: string;
+      itemIndex?: number;
+      picks?: { H?: number[]; M?: number[]; L?: number[] };
+    }
+  | {
+      type: 'reviewRereview';
+      pageId: string;
+      messageId: string;
+      selection: { H?: number[] | 'all'; M?: number[] | 'all'; L?: number[] | 'all' };
+    }
+  | {
+      type: 'reviewStudy';
+      pageId: string;
+      messageId: string;
+      selection: { H?: number[] | 'all'; M?: number[] | 'all'; L?: number[] | 'all' };
+    }
+  | { type: 'reviewNeurofixDenied' }
+  | { type: 'listProjectDir'; seq: number; rel?: string }
+  | {
+      type: 'discordGateSave';
+      profile: string;
+      explorer: string;
+      notes: string;
+      links: string;
+      review: string;
+      discordToken?: string;
+      dirty: SetupChannelKind[];
+    }
+  | {
+      type: 'scenarioSavePage';
+      pageId?: string;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+      scenarioSkillPath?: string;
+      scenarioModel?: string;
+      scenarioPrintThinking?: boolean;
+      scenarioPrintTools?: boolean;
+    }
+  | { type: 'scenarioSkillFile'; action: 'open' | 'copy' | 'save' }
+  | { type: 'scenarioCreate'; pageId: string; groupId?: string }
+  | { type: 'scenarioCreateGroup'; pageId: string }
+  | { type: 'scenarioRename'; pageId: string; messageId: string; title: string }
+  | {
+      type: 'scenarioUpdateGroup';
+      pageId: string;
+      groupId: string;
+      title?: string;
+      alias?: string;
+      description?: string;
+      color?: string | null;
+      status?: 'open' | 'lock';
+    }
+  | { type: 'scenarioDelete'; pageId: string; messageId: string }
+  | { type: 'scenarioReorder'; pageId: string; groupId: string; orderedIds: string[] }
+  | {
+      type: 'scenarioTransfer';
+      pageId: string;
+      messageId: string;
+      targetGroupId?: string;
+      copy?: boolean;
+    }
+  | { type: 'scenarioForm'; pageId: string; messageId: string }
+  | {
+      type: 'scenarioFormAnswer';
+      pageId: string;
+      messageId: string;
+      answers: { id: string; optionId: string }[];
+    }
+  | { type: 'scenarioFormCancel'; pageId: string; messageId: string }
+  | { type: 'scenarioReload'; pageId: string };
 
 interface DirListingEntry {
   name: string;
@@ -494,11 +862,39 @@ async function fetchTextLimited(
   }
 }
 
+function sniffImageMime(buffer: Buffer): string | undefined {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer.toString('ascii', 1, 4) === 'PNG') {
+    return 'image/png';
+  }
+  if (
+    buffer.length >= 6 &&
+    (buffer.toString('ascii', 0, 6) === 'GIF87a' || buffer.toString('ascii', 0, 6) === 'GIF89a')
+  ) {
+    return 'image/gif';
+  }
+  if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return undefined;
+}
+
 async function fetchImageDataUrl(
   url: string,
   maxBytes: number,
   timeoutMs: number,
 ): Promise<string | undefined> {
+  const result = await downloadPreviewImage(url, maxBytes, timeoutMs);
+  return 'dataUrl' in result ? result.dataUrl : undefined;
+}
+
+async function downloadPreviewImage(
+  url: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ dataUrl: string } | { tooBig: true } | { failed: true }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -507,22 +903,46 @@ async function fetchImageDataUrl(
       redirect: 'follow',
     });
     if (!response.ok) {
-      return undefined;
+      return { failed: true };
     }
-    const mime = (response.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
-    if (!mime.startsWith('image/')) {
-      return undefined;
-    }
+    const headerMime = (response.headers.get('content-type') || '').split(';')[0].trim();
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength === 0 || buffer.byteLength > maxBytes) {
-      return undefined;
+    if (buffer.byteLength === 0) {
+      return { failed: true };
     }
-    return `data:${mime};base64,${buffer.toString('base64')}`;
+    if (buffer.byteLength > maxBytes) {
+      return { tooBig: true };
+    }
+    const mime = sniffImageMime(buffer) || (headerMime.startsWith('image/') ? headerMime : undefined);
+    if (!mime) {
+      return { failed: true };
+    }
+    return { dataUrl: `data:${mime};base64,${buffer.toString('base64')}` };
   } catch {
-    return undefined;
+    return { failed: true };
   } finally {
     clearTimeout(timer);
   }
+}
+
+interface CheckoutGitExtension {
+  getAPI(version: 1): CheckoutGitAPI;
+}
+
+interface CheckoutGitAPI {
+  state: 'uninitialized' | 'initialized';
+  onDidChangeState: vscode.Event<'uninitialized' | 'initialized'>;
+  repositories: CheckoutGitRepo[];
+  onDidOpenRepository: vscode.Event<CheckoutGitRepo>;
+  onDidCloseRepository: vscode.Event<CheckoutGitRepo>;
+}
+
+interface CheckoutGitRepo {
+  rootUri: vscode.Uri;
+  state: {
+    HEAD?: { name?: string };
+    onDidChange: vscode.Event<void>;
+  };
 }
 
 export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
@@ -536,24 +956,47 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly surfaceByWebview = new WeakMap<vscode.Webview, MapSurface>();
   /** Script has posted `ready`, so postMessage will be received. */
   private readonly readyWebviews = new WeakSet<vscode.Webview>();
+  private readonly chromeByWebview = new WeakMap<vscode.Webview, 'view' | 'panel'>();
+  /** Document generation. Messages from a replaced document are ignored. */
+  private readonly htmlRevByWebview = new Map<vscode.Webview, string>();
+  private readonly htmlMountedAt = new Map<vscode.Webview, number>();
+  /** How many times css/js were loaded again after a failed boot. */
+  private readonly assetRetries = new Map<vscode.Webview, number>();
+  private readonly assetRetryTimers = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
+  /** Short retry already queued. The 8s watch uses the same timer map without this flag. */
+  private readonly assetRetrySoon = new Set<vscode.Webview>();
+  /** Failed while the view was hidden; load again on the next show. */
+  private readonly assetRetryOnShow = new Set<vscode.Webview>();
+  private static readonly assetRetryLimit = 3;
   /** First state after load should open the page saved for this surface. */
   private readonly needsPageRestore = new WeakSet<vscode.Webview>();
   private readonly subscriptions: vscode.Disposable[];
   private readonly media: vscode.Uri;
   private leftPanel?: vscode.WebviewPanel;
   private rightPanel?: vscode.WebviewPanel;
+  private explorerView?: vscode.WebviewView;
   private bottomView?: vscode.WebviewView;
   private lastEditorColumn?: vscode.ViewColumn;
-  /** In-memory OG preview cache keyed by page URL. */
+  /** Rendered setup docs, one tab per file. */
+  private readonly instructionPanels = new Map<string, vscode.WebviewPanel>();
+  /** In-memory link preview cache. Figma keys also include a token stamp. */
   private readonly linkPreviewCache = new Map<
     string,
     { image?: string; description?: string; empty?: true }
   >();
-  private readonly linkPreviewInflight = new Map<string, Promise<void>>();
+  private readonly linkPreviewInflight = new Map<
+    string,
+    Promise<{ image?: string; description?: string; empty?: true } | undefined>
+  >();
   /** Workspace file that last had the editor. Kept when focus moves to the map. */
   private lastFocusedRel?: string;
   /** Webview that last talked to the host — drives view-title layout/collapse. */
   private lastFocusedWebview?: vscode.Webview;
+  /** Panel that is handling the current webview message, so its notices stay on that panel. */
+  private noticeWebview?: vscode.Webview;
+  /** Batch push/pull of page configs is in flight. */
+  private pageCloudBatch = false;
+  private baseConfigBatch = false;
   /** Explorer «New marker» draft: resolve with created id or undefined on cancel. */
   private readonly pendingGroupDrafts = new Map<
     string,
@@ -577,6 +1020,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private lastSyncedOpenKey = '';
   /** Note id to focus in the next state push (after create). */
   private focusNoteId?: string;
+  /** Active project and its review channel. A change drops the review window. */
+  private reviewProjectKey = '';
   private readonly languages: CodeLanguageService;
   private readonly ownsLanguages: boolean;
   /** On-disk uncommitted paths from the built-in Git extension. */
@@ -597,17 +1042,74 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   private readonly stateSeq = new WeakMap<vscode.Webview, number>();
   /** Coalesces refresh bursts and lets the caller finish switching the active page first. */
   private readonly stateDelay = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
+  private readonly review: ReviewMapController;
+  private readonly scenarios: ScenarioMapController;
+  private readonly hostSecrets: vscode.SecretStorage;
+  /** MR waiting for Discord retry after a failed post. */
+  private pendingDiscordMr?: { pageId: string; mr: ReviewMr };
+  /** Per-webview interval for review page Discord poll. */
+  private readonly reviewRefreshTimers = new Map<vscode.Webview, ReturnType<typeof setInterval>>();
+  /** Last checkout name pushed to review stamps. Empty means no branch name. */
+  private checkoutName = '';
+  /** Bumps when the IDE checkout changes, so a slower git read cannot overwrite it. */
+  private checkoutGen = 0;
+  /** First git HEAD sample only fills the cache. Later changes refresh the stamps. */
+  private checkoutSeeded = false;
+  private readonly checkoutDisposables: vscode.Disposable[] = [];
+  private readonly checkoutRepoDisposables = new Map<string, vscode.Disposable>();
+  /** Workspace-wide auto-fetch for project lock and content checks. */
+  private projectFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private filesFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private notesFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private linksFetchTimer: ReturnType<typeof setInterval> | undefined;
+  private syncFetchKey = '';
 
   constructor(
     private readonly store: MarkerStore,
-    extensionUri: vscode.Uri,
+    private readonly extensionUri: vscode.Uri,
     private readonly memento: vscode.Memento,
     private readonly workspaceState: vscode.Memento,
     languages?: CodeLanguageService,
+    secrets?: vscode.SecretStorage,
   ) {
     this.media = vscode.Uri.joinPath(extensionUri, 'media');
     this.ownsLanguages = !languages;
     this.languages = languages ?? new CodeLanguageService(extensionUri.fsPath);
+    this.hostSecrets = secrets ?? {
+      get: async () => undefined,
+      store: async () => undefined,
+      delete: async () => undefined,
+      onDidChange: () => ({ dispose() {} }),
+    };
+    this.review = new ReviewMapController(
+      store.root,
+      this.hostSecrets,
+      () => {
+        const paths = this.store.activeReviewPaths();
+        const nicks = this.store.activeGitNicks();
+        return {
+          ...paths,
+          profileId: this.store.activeProfileId,
+          profileName: this.store.activeProfileName,
+          githubNick: nicks.githubNick,
+          gitlabNick: nicks.gitlabNick,
+          repositoryTokenKey: this.store.repositoryTokenKey(this.store.activeProfileId) || '',
+        };
+      },
+      () => ({
+        ...this.store.reviewMapFilters(),
+        checkoutName: this.checkoutName,
+      }),
+    );
+    this.scenarios = new ScenarioMapController(store, this.hostSecrets, () => store.root.fsPath);
+    this.scenarios.setChangeHandler((pageId, state) => {
+      for (const webview of this.webviews) {
+        if (this.activePageByWebview.get(webview) === pageId) {
+          void this.pushScenarioState(webview, state);
+        }
+      }
+    });
+    this.scenarios.bindChannel(this.store.catalogChannels().scenarios || '');
     this.lastEditorColumn = vscode.window.activeTextEditor?.viewColumn;
     this.lastFocusedRel = this.activeRelPath();
     this.dirtyWatcher = new DirtyPathWatcher(store, (paths) => {
@@ -632,6 +1134,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         }
         this.postOpenFlags();
         void this.syncOpenSurfacesIfNeeded();
+        this.armSyncFetchTimersIfNeeded();
+        void this.reloadReviewOnProjectChange();
       }),
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.viewColumn !== undefined) {
@@ -646,11 +1150,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         this.postTabs();
       }),
     ];
+    void this.watchCheckout();
   }
 
   /** Cmd/Ctrl+C while a text editor is focused. */
   copyFromEditor(): Thenable<void> {
     return this.languages.copyFromEditor();
+  }
+
+  /** Shared access.json store used by review pages and Discord config sync. */
+  reviewAccessStore() {
+    return this.review.accessStore();
   }
 
   dispose(): void {
@@ -661,7 +1171,134 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       clearTimeout(timer);
     }
     this.stateDelay.clear();
+    for (const timer of this.reviewRefreshTimers.values()) {
+      clearInterval(timer);
+    }
+    this.reviewRefreshTimers.clear();
+    this.clearSyncFetchTimers();
+    for (const timer of this.assetRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.assetRetryTimers.clear();
+    this.assetRetrySoon.clear();
+    this.assetRetryOnShow.clear();
     this.subscriptions.forEach((s) => s.dispose());
+    this.checkoutDisposables.forEach((item) => item.dispose());
+    this.checkoutDisposables.length = 0;
+    for (const item of this.checkoutRepoDisposables.values()) {
+      item.dispose();
+    }
+    this.checkoutRepoDisposables.clear();
+    for (const panel of this.instructionPanels.values()) {
+      panel.dispose();
+    }
+    this.instructionPanels.clear();
+    this.scenarios.dispose();
+  }
+
+  private clearReviewRefresh(webview: vscode.Webview): void {
+    const timer = this.reviewRefreshTimers.get(webview);
+    if (timer) {
+      clearInterval(timer);
+      this.reviewRefreshTimers.delete(webview);
+    }
+  }
+
+  private armReviewRefresh(webview: vscode.Webview): void {
+    this.clearReviewRefresh(webview);
+    if (!this.readyWebviews.has(webview) || !this.webviews.has(webview)) {
+      return;
+    }
+    const pageId = this.pageIdFor(webview);
+    if (this.store.page(pageId)?.kind !== 'review') {
+      return;
+    }
+    const sec = snapReviewRefreshSec(this.store.appearance.reviewRefreshSec);
+    const timer = setInterval(() => {
+      void this.tickReviewRefresh(webview);
+    }, sec * 1000);
+    this.reviewRefreshTimers.set(webview, timer);
+  }
+
+  private rearmAllReviewRefresh(): void {
+    for (const webview of this.webviews) {
+      this.armReviewRefresh(webview);
+    }
+  }
+
+  private async tickReviewRefresh(webview: vscode.Webview): Promise<void> {
+    if (!this.webviews.has(webview) || !this.readyWebviews.has(webview)) {
+      this.clearReviewRefresh(webview);
+      return;
+    }
+    const pageId = this.pageIdFor(webview);
+    if (this.store.page(pageId)?.kind !== 'review') {
+      this.clearReviewRefresh(webview);
+      return;
+    }
+    await this.pushReviewState(webview, await this.review.pollRefresh(pageId));
+  }
+
+  private clearSyncFetchTimers(): void {
+    if (this.projectFetchTimer) {
+      clearInterval(this.projectFetchTimer);
+      this.projectFetchTimer = undefined;
+    }
+    if (this.filesFetchTimer) {
+      clearInterval(this.filesFetchTimer);
+      this.filesFetchTimer = undefined;
+    }
+    if (this.notesFetchTimer) {
+      clearInterval(this.notesFetchTimer);
+      this.notesFetchTimer = undefined;
+    }
+    if (this.linksFetchTimer) {
+      clearInterval(this.linksFetchTimer);
+      this.linksFetchTimer = undefined;
+    }
+  }
+
+  /** Arm workspace auto-fetch for lock + content checks from profile appearance. */
+  armSyncFetchTimers(): void {
+    this.clearSyncFetchTimers();
+    if (!this.store.ready) {
+      this.syncFetchKey = '';
+      return;
+    }
+    const appearance = this.store.appearance;
+    const projectSec = snapReviewRefreshSec(appearance.projectFetchSec);
+    const filesSec = snapReviewRefreshSec(appearance.filesFetchSec);
+    const notesSec = snapReviewRefreshSec(appearance.notesFetchSec);
+    const linksSec = snapReviewRefreshSec(appearance.linksFetchSec);
+    this.syncFetchKey = `${projectSec}:${filesSec}:${notesSec}:${linksSec}`;
+    this.projectFetchTimer = setInterval(() => {
+      void this.store.fetchBaseLockOnly();
+    }, projectSec * 1000);
+    this.filesFetchTimer = setInterval(() => {
+      void this.store.checkCloud();
+    }, filesSec * 1000);
+    this.notesFetchTimer = setInterval(() => {
+      void this.store.checkCloud();
+    }, notesSec * 1000);
+    this.linksFetchTimer = setInterval(() => {
+      void this.store.checkCloud();
+    }, linksSec * 1000);
+  }
+
+  private armSyncFetchTimersIfNeeded(): void {
+    if (!this.store.ready) {
+      return;
+    }
+    const appearance = this.store.appearance;
+    const key = [
+      snapReviewRefreshSec(appearance.projectFetchSec),
+      snapReviewRefreshSec(appearance.filesFetchSec),
+      snapReviewRefreshSec(appearance.notesFetchSec),
+      snapReviewRefreshSec(appearance.linksFetchSec),
+    ].join(':');
+    if (key !== this.syncFetchKey) {
+      this.armSyncFetchTimers();
+    }
   }
 
   // ---- section inside Explorer ----
@@ -670,6 +1307,8 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const surface: MapSurface = view.viewType === MarkersMapProvider.bottomViewId ? 'bottom' : 'explorer';
     if (surface === 'bottom') {
       this.bottomView = view;
+    } else {
+      this.explorerView = view;
     }
     const webview = view.webview;
     this.attach(webview, 'view', surface);
@@ -677,18 +1316,48 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (!view.visible) {
         return;
       }
+      this.onSurfaceVisible(webview);
       void this.postState(webview);
       // User selected the Syn3 tab. Switching to Terminal leaves this false.
       if (surface === 'bottom' && this.store.ready && !this.applyingBottom) {
         void this.store.setSurfaceOpen('bottom', true);
       }
+      if (this.store.ready) {
+        void this.postDiscordGate(webview);
+      }
     });
     view.onDidDispose(() => {
+      this.clearReviewRefresh(webview);
+      this.clearAssetWatch(webview);
       this.webviews.delete(webview);
       if (this.bottomView === view) {
         this.bottomView = undefined;
       }
+      if (this.explorerView === view) {
+        this.explorerView = undefined;
+      }
     });
+  }
+
+  /** Close map columns after `.syn3` is removed. Does not write config. */
+  async releaseSurfaces(): Promise<void> {
+    this.surfacesBootstrapped = false;
+    this.clearSyncFetchTimers();
+    for (const timer of this.reviewRefreshTimers.values()) {
+      clearInterval(timer);
+    }
+    this.reviewRefreshTimers.clear();
+    try {
+      if (this.leftPanel) {
+        await this.closeColumn('left');
+      }
+      if (this.rightPanel) {
+        await this.closeColumn('right');
+      }
+    } catch {
+      // The column is already gone.
+    }
+    await this.hideBottomTab();
   }
 
   /**
@@ -1090,6 +1759,19 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return all.length > 0 && all.every((id) => !!flags[id]);
   }
 
+  /** Figma map clicks open the desktop app. False when the link is not a file URL or the app did not take it. */
+  private async openFigmaApp(url: string): Promise<boolean> {
+    const app = figmaAppUrl(url);
+    if (!app) {
+      return false;
+    }
+    try {
+      return await vscode.env.openExternal(vscode.Uri.parse(app));
+    } catch {
+      return false;
+    }
+  }
+
   private async openLinkUrl(url: string): Promise<void> {
     try {
       const uri = vscode.Uri.parse(url);
@@ -1110,7 +1792,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.isLinkLocked(linkId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: макет закрыт');
+    this.notify('Syn3: макет закрыт', 'warning');
     return true;
   }
 
@@ -1118,7 +1800,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.isLocked(markerId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: группа закрыта');
+    this.notify('Syn3: группа закрыта', 'warning');
     return true;
   }
 
@@ -1126,8 +1808,25 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (!this.store.isNoteLocked(noteId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+    this.notify('Syn3: заметка закрыта', 'warning');
     return true;
+  }
+
+  private formatCloudFailures(message: string): string {
+    const locale = normalizeLocale(this.store.appearance.language);
+    return message
+      .split('\n')
+      .map((line) => {
+        const split = line.indexOf('\t');
+        if (split < 0) {
+          return line === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : line;
+        }
+        const name = line.slice(0, split);
+        const code = line.slice(split + 1);
+        const detail = code === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : code;
+        return `${name}: ${detail}`;
+      })
+      .join('; ');
   }
 
   /** CSS color for a note card: own color, else parent note / group / root slate. */
@@ -1256,6 +1955,199 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         pageId,
       });
     });
+  }
+
+  /** True when there is no base channel yet (empty start: create or connect a project). */
+  async needsDiscordGate(): Promise<boolean> {
+    if (!this.store.ready) {
+      return false;
+    }
+    return !this.store.baseChannelId().trim();
+  }
+
+  /** Focus a visible map webview; returns false when none is visible. */
+  async focusVisibleMapForGate(): Promise<boolean> {
+    if (this.explorerView?.visible) {
+      try {
+        await vscode.commands.executeCommand(`${MarkersMapProvider.viewId}.focus`);
+        return true;
+      } catch {
+        // View may be missing until reload.
+      }
+    }
+    if (this.bottomView?.visible) {
+      try {
+        await vscode.commands.executeCommand(`${MarkersMapProvider.bottomViewId}.focus`);
+        return true;
+      } catch {
+        // Bottom view may be unregistered until reload.
+      }
+    }
+    for (const panel of [this.leftPanel, this.rightPanel]) {
+      if (!panel?.visible) {
+        continue;
+      }
+      panel.reveal(panel.viewColumn, false);
+      return true;
+    }
+    return false;
+  }
+
+  async refuseIfDiscordGate(): Promise<boolean> {
+    if (!(await this.needsDiscordGate())) {
+      return false;
+    }
+    if (await this.focusVisibleMapForGate()) {
+      await this.pushDiscordGateToVisible();
+      return true;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    this.notify(`Syn3: ${t(locale, 'discordGateOpenMap')}`, 'info');
+    return true;
+  }
+
+  private async pushDiscordGateToVisible(): Promise<void> {
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      await this.postDiscordGate(webview);
+    }
+  }
+
+  private async postDiscordGate(webview: vscode.Webview): Promise<void> {
+    if (!this.webviews.has(webview) || !this.readyWebviews.has(webview) || !this.store.ready) {
+      return;
+    }
+    if (!(await this.needsDiscordGate())) {
+      await webview.postMessage({ type: 'discordGateClear' });
+      return;
+    }
+    const status = await secretsStatus(this.hostSecrets);
+    const locale = normalizeLocale(this.store.appearance.language);
+      await webview.postMessage({
+        type: 'projectCreatePanel',
+        needChannel: true,
+        hasDiscord: status.hasDiscord,
+        mode: 'create',
+        gate: true,
+        profileName: this.store.activeProfileName,
+        locale,
+        i18n: stringsFor(locale),
+      });
+  }
+
+  private async onDiscordGateSave(
+    webview: vscode.Webview,
+    message: {
+      profile: string;
+      explorer: string;
+      notes: string;
+      links: string;
+      review: string;
+      discordToken?: string;
+      dirty: SetupChannelKind[];
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (field: SetupChannelKind | 'token', text: string) => {
+      await webview.postMessage({ type: 'discordGateError', field, message: text });
+    };
+
+    const profile = (message.profile || '').trim();
+    const explorer = (message.explorer || '').trim();
+    const notes = (message.notes || '').trim();
+    const links = (message.links || '').trim();
+    const review = (message.review || '').trim();
+    const dirty = new Set(
+      (Array.isArray(message.dirty) ? message.dirty : []).filter(
+        (kind): kind is SetupChannelKind =>
+          kind === 'profile' ||
+          kind === 'explorer' ||
+          kind === 'notes' ||
+          kind === 'links' ||
+          kind === 'review',
+      ),
+    );
+
+    if (!profile || !isValidChannelId(profile)) {
+      await fail('profile', t(locale, 'reviewFieldChannelId'));
+      return;
+    }
+    for (const [kind, value] of [
+      ['explorer', explorer],
+      ['notes', notes],
+      ['links', links],
+      ['review', review],
+    ] as const) {
+      if (value && !isValidChannelId(value)) {
+        await fail(kind, t(locale, 'reviewFieldChannelId'));
+        return;
+      }
+    }
+    if (review && reviewChannelConflicts(review, { profile, explorer, notes, links })) {
+      await fail('review', t(locale, 'channelReviewMustBeDistinct'));
+      return;
+    }
+
+    const newToken = (message.discordToken || '').trim();
+    if (newToken) {
+      await storeSecrets(this.hostSecrets, { discord: newToken });
+    }
+    const token =
+      newToken || (await getSecret(this.hostSecrets, SECRET_DISCORD)) || '';
+    if (!token) {
+      await fail('token', t(locale, 'reviewFieldDiscordToken'));
+      return;
+    }
+
+    const effective: CatalogChannels = {
+      profile,
+      ...(explorer ? { explorer } : {}),
+      ...(notes ? { notes } : {}),
+      ...(links ? { links } : {}),
+      ...(review ? { review } : {}),
+    };
+    // Profile always: gate closes only when the profile channel answers.
+    // Optional channels: only when edited in this form and non-empty.
+    const toProbe: SetupChannelKind[] = ['profile'];
+    for (const kind of ['explorer', 'notes', 'links', 'review'] as const) {
+      if (!dirty.has(kind)) {
+        continue;
+      }
+      if (!(effective[kind]?.trim())) {
+        continue;
+      }
+      toProbe.push(kind);
+    }
+
+    for (const kind of toProbe) {
+      const channelId = kind === 'profile' ? profile : (effective[kind]?.trim() || '');
+      if (!channelId) {
+        continue;
+      }
+      const probed = await ensureSetupProbe(token, channelId, kind, locale);
+      if (!probed.ok) {
+        await fail(kind, probed.message);
+        return;
+      }
+    }
+
+    const partial: Partial<CatalogChannels> = { profile };
+    if (dirty.has('explorer')) {
+      partial.explorer = explorer;
+    }
+    if (dirty.has('notes')) {
+      partial.notes = notes;
+    }
+    if (dirty.has('links')) {
+      partial.links = links;
+    }
+    if (dirty.has('review')) {
+      partial.review = review;
+    }
+    await this.store.setCatalogChannels(partial);
+    await this.pushDiscordGateToVisible();
   }
 
   /** Focus an existing map surface; open the Explorer map view when none is ready. */
@@ -1453,10 +2345,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     this.attach(panel.webview, 'panel', side);
     panel.onDidChangeViewState(() => {
       if (panel.visible) {
+        this.onSurfaceVisible(panel.webview);
         void this.postState(panel.webview);
       }
     });
     panel.onDidDispose(() => {
+      this.clearReviewRefresh(panel.webview);
+      this.clearAssetWatch(panel.webview);
       this.webviews.delete(panel.webview);
       const wasSlot = this.clearPanelSlot(side, panel);
       if (wasSlot && this.closingColumn !== side && this.store.ready) {
@@ -1497,11 +2392,142 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
 
   private attach(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): void {
     this.surfaceByWebview.set(webview, surface);
-    this.needsPageRestore.add(webview);
+    this.chromeByWebview.set(webview, chrome);
     webview.options = { enableScripts: true, localResourceRoots: [this.media] };
-    webview.html = this.html(webview, chrome, surface);
-    webview.onDidReceiveMessage((message: IncomingMessage) => this.onMessage(webview, message));
     this.webviews.add(webview);
+    this.mountWebview(webview);
+    webview.onDidReceiveMessage((message: IncomingMessage) => this.onMessage(webview, message));
+  }
+
+  /**
+   * Window reload sometimes 404s css/js: the webview service worker has no parent
+   * client yet and does not retry. The document stays as raw toolbar buttons.
+   */
+  private mountWebview(webview: vscode.Webview): void {
+    const chrome = this.chromeByWebview.get(webview);
+    const surface = this.surfaceByWebview.get(webview);
+    if (!chrome || !surface || !this.webviews.has(webview)) {
+      return;
+    }
+    const rev = Date.now().toString(36);
+    this.htmlRevByWebview.set(webview, rev);
+    this.htmlMountedAt.set(webview, Date.now());
+    this.readyWebviews.delete(webview);
+    this.needsPageRestore.add(webview);
+    webview.html = this.html(webview, chrome, surface, rev);
+    this.armAssetWatch(webview);
+  }
+
+  private isWebviewVisible(webview: vscode.Webview): boolean {
+    if (this.explorerView?.webview === webview) {
+      return this.explorerView.visible;
+    }
+    if (this.bottomView?.webview === webview) {
+      return this.bottomView.visible;
+    }
+    if (this.leftPanel?.webview === webview) {
+      return this.leftPanel.visible;
+    }
+    if (this.rightPanel?.webview === webview) {
+      return this.rightPanel.visible;
+    }
+    return true;
+  }
+
+  private clearAssetTimer(webview: vscode.Webview): void {
+    const timer = this.assetRetryTimers.get(webview);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    this.assetRetryTimers.delete(webview);
+  }
+
+  private clearAssetWatch(webview: vscode.Webview): void {
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    this.assetRetryOnShow.delete(webview);
+    this.assetRetries.delete(webview);
+    this.htmlRevByWebview.delete(webview);
+    this.htmlMountedAt.delete(webview);
+  }
+
+  private noteWebviewReady(webview: vscode.Webview): void {
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    this.assetRetryOnShow.delete(webview);
+    this.assetRetries.delete(webview);
+  }
+
+  private armAssetWatch(webview: vscode.Webview): void {
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    if (!this.isWebviewVisible(webview)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.assetRetryTimers.delete(webview);
+      if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+        return;
+      }
+      this.scheduleAssetRetry(webview);
+    }, 8000);
+    this.assetRetryTimers.set(webview, timer);
+  }
+
+  private scheduleAssetRetry(webview: vscode.Webview): void {
+    if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+      return;
+    }
+    if ((this.assetRetries.get(webview) ?? 0) >= MarkersMapProvider.assetRetryLimit) {
+      return;
+    }
+    if (!this.isWebviewVisible(webview)) {
+      this.clearAssetTimer(webview);
+      this.assetRetrySoon.delete(webview);
+      this.assetRetryOnShow.add(webview);
+      return;
+    }
+    if (this.assetRetrySoon.has(webview)) {
+      return;
+    }
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.add(webview);
+    const timer = setTimeout(() => {
+      this.assetRetryTimers.delete(webview);
+      this.assetRetrySoon.delete(webview);
+      if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+        return;
+      }
+      if (!this.isWebviewVisible(webview)) {
+        this.assetRetryOnShow.add(webview);
+        return;
+      }
+      const tries = (this.assetRetries.get(webview) ?? 0) + 1;
+      this.assetRetries.set(webview, tries);
+      this.mountWebview(webview);
+    }, 300);
+    this.assetRetryTimers.set(webview, timer);
+  }
+
+  private onSurfaceVisible(webview: vscode.Webview): void {
+    if (!this.webviews.has(webview) || this.readyWebviews.has(webview)) {
+      return;
+    }
+    const forced = this.assetRetryOnShow.delete(webview);
+    const mountedAt = this.htmlMountedAt.get(webview) ?? 0;
+    if (!forced && Date.now() - mountedAt < 1500) {
+      if (!this.assetRetryTimers.has(webview)) {
+        this.armAssetWatch(webview);
+      }
+      return;
+    }
+    if ((this.assetRetries.get(webview) ?? 0) >= MarkersMapProvider.assetRetryLimit) {
+      return;
+    }
+    this.clearAssetTimer(webview);
+    this.assetRetrySoon.delete(webview);
+    this.assetRetries.set(webview, (this.assetRetries.get(webview) ?? 0) + 1);
+    this.mountWebview(webview);
   }
 
   /** Open/close left, right, and bottom to match the active profile. */
@@ -1684,29 +2710,149 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
   }
 
   private reportColumnError(error: unknown): void {
-    void vscode.window.showWarningMessage(
-      `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    this.notify(error instanceof Error ? error.message : String(error), 'warning');
+  }
+
+  /**
+   * Map snackbar. An explicit webview stays on that panel. Otherwise the panel
+   * of the message in flight, then the focused map. IDE toast when none is ready.
+   */
+  notify(text: string, tone: 'error' | 'warning' | 'info' = 'error', webview?: vscode.Webview): void {
+    const body = text.replace(/^Syn3:\s*/, '').trim();
+    if (!body) {
+      return;
+    }
+    const explicit = webview !== undefined;
+    const candidate = webview ?? this.noticeWebview ?? this.lastFocusedWebview;
+    if (candidate && this.webviews.has(candidate) && this.readyWebviews.has(candidate)) {
+      void candidate.postMessage({ type: 'mapNotice', text: body, tone });
+      return;
+    }
+    if (!explicit) {
+      const focused = this.lastFocusedWebview;
+      if (
+        focused &&
+        focused !== candidate &&
+        this.webviews.has(focused) &&
+        this.readyWebviews.has(focused)
+      ) {
+        void focused.postMessage({ type: 'mapNotice', text: body, tone });
+        return;
+      }
+    }
+    const line = `Syn3: ${body}`;
+    if (tone === 'info') {
+      void vscode.window.showInformationMessage(line);
+      return;
+    }
+    if (tone === 'warning') {
+      void vscode.window.showWarningMessage(line);
+      return;
+    }
+    void vscode.window.showErrorMessage(line);
   }
 
   private async onMessage(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
+    const previousNotice = this.noticeWebview;
+    this.noticeWebview = webview;
+    try {
+      await this.onMessageBody(webview, message);
+    } finally {
+      this.noticeWebview = previousNotice;
+    }
+  }
+
+  private async onMessageBody(webview: vscode.Webview, message: IncomingMessage): Promise<void> {
+    if (message.type === 'discordGateSave') {
+      await this.onDiscordGateSave(webview, message);
+      return;
+    }
+    if (message.type === 'setPagesFixed') {
+      await this.store.setPagesFixed(message.fixed === true);
+      return;
+    }
+    if (message.type === 'assetsFailed') {
+      if (!message.rev || message.rev !== this.htmlRevByWebview.get(webview)) {
+        return;
+      }
+      this.scheduleAssetRetry(webview);
+      return;
+    }
     if (message.type === 'ready') {
+      if (message.rev !== this.htmlRevByWebview.get(webview)) {
+        return;
+      }
+      this.noteWebviewReady(webview);
       this.readyWebviews.add(webview);
       this.rememberFocus(webview, message.pageId);
       if (!this.store.ready) {
         return;
       }
       await this.postState(webview);
+      await this.postDiscordGate(webview);
       await this.syncFocusContext();
+      const readyPage = this.pageIdFor(webview);
+      if (this.store.page(readyPage)?.kind === 'review') {
+        await this.showReviewPage(webview, readyPage);
+      }
+      if (this.store.page(readyPage)?.kind === 'scenarios') {
+        this.scenarios.bindChannel(this.store.catalogChannels().scenarios || '');
+        await this.pushScenarioState(webview, await this.scenarios.loadInitial(readyPage));
+      }
+      this.armReviewRefresh(webview);
       return;
+    }
+    if (await this.needsDiscordGate()) {
+      // Overlay owns the webview until Discord is configured.
+      // Create / select submit must reach the handler or the gate can never finish.
+      const projectSubmit =
+        message.type === 'project' &&
+        (message.action === 'createSubmit' || message.action === 'selectSubmit');
+      if (
+        !projectSubmit &&
+        message.type !== 'mapFocus' &&
+        message.type !== 'activePage' &&
+        message.type !== 'listProjectDir' &&
+        message.type !== 'clipboardRead' &&
+        message.type !== 'reviewOpenSetupDoc' &&
+        message.type !== 'figmaOpenSetupDoc' &&
+        message.type !== 'figmaSkillFile' &&
+        message.type !== 'discordGateOpenHowTo'
+      ) {
+        // Clear optimistic / leftover sync loaders before the gate takes over.
+        void webview.postMessage({ type: 'baseConfigBusy', busy: false });
+        void webview.postMessage({ type: 'pageCloudBusy', busy: false });
+        await this.postDiscordGate(webview);
+        // Sync clicks looked dead when the gate swallowed them with no toast.
+        if (
+          (message.type === 'profile' || message.type === 'project') &&
+          (message.action === 'syncPush' || message.action === 'syncPull')
+        ) {
+          const locale = normalizeLocale(this.store.appearance.language);
+          this.notify(`Syn3: ${t(locale, 'discordGateTitle')}`, 'warning');
+        }
+        return;
+      }
     }
     if (message.type === 'activePage') {
       const prev = this.pageIdFor(webview);
+      const switched = message.pageId !== prev;
       this.rememberFocus(webview, message.pageId);
-      if (this.pageIdFor(webview) !== prev) {
+      if (switched) {
         this.scheduleState(webview);
       }
       await this.syncFocusContext();
+      // Only fetch Discord when entering a review page — state churn must not re-hit the API.
+      if (switched && this.store.page(message.pageId)?.kind === 'review') {
+        await this.showReviewPage(webview, message.pageId);
+      }
+      if (switched && this.store.page(message.pageId)?.kind === 'scenarios') {
+        this.scenarios.bindChannel(this.store.catalogChannels().scenarios || '');
+        await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
+      }
+      if (switched) {
+        this.armReviewRefresh(webview);
+      }
       return;
     }
     if (message.type === 'mapFocus') {
@@ -1815,10 +2961,909 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.onProfile(message.action, message.id, message.name);
       return;
     }
+    if (message.type === 'project') {
+      await this.onProject(
+        webview,
+        message.action,
+        message.id,
+        message.name,
+        message.channelId,
+        message.discordToken,
+        message.mode,
+        message.repoUrl,
+        message.githubToken,
+        message.gitlabToken,
+      );
+      return;
+    }
+    if (message.type === 'pageCloud') {
+      if (message.action === 'pushAll') {
+        await this.onPageCloudPushAll(webview);
+        return;
+      }
+      if (message.action === 'pullAll') {
+        await this.onPageCloudPullAll(webview);
+        return;
+      }
+      if (message.action === 'check') {
+        await this.onPageCloudCheck(webview);
+        return;
+      }
+      await this.onPageCloud(message.action, message.pageId);
+      return;
+    }
+    if (message.type === 'debugDiff') {
+      const result = await this.store.debugSendDiff();
+      void webview.postMessage({ type: 'debugDiff', sections: result.sections });
+      return;
+    }
+    if (message.type === 'workspaceCloud') {
+      await this.onWorkspaceCloud(message.action);
+      return;
+    }
+    if (message.type === 'projectOpenSettings') {
+      await this.postProjectSettings(webview, message.id);
+      return;
+    }
+    if (message.type === 'projectSaveSettings') {
+      await this.saveProjectSettings(webview, message);
+      return;
+    }
+    if (message.type === 'projectDelete') {
+      await this.deleteProjectFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'profileOpenSettings') {
+      await this.postProfileSettings(webview, message.id);
+      return;
+    }
+    if (message.type === 'profileSaveSettings') {
+      await this.saveProfileSettings(webview, message);
+      return;
+    }
+    if (message.type === 'reviewLoad') {
+      if (message.force) {
+        await this.runReviewChannelLoad(webview, message.pageId, 'initial', () =>
+          this.review.loadInitial(message.pageId),
+        );
+      } else {
+        await this.showReviewPage(webview, message.pageId);
+      }
+      return;
+    }
+    if (message.type === 'reviewTalk') {
+      const result = await this.review.postTalk(
+        message.pageId,
+        typeof message.text === 'string' ? message.text : '',
+        message.parentMessageId,
+      );
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        await webview.postMessage({ type: 'reviewTalkResult', ok: false });
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      await webview.postMessage({ type: 'reviewTalkResult', ok: true });
+      return;
+    }
+    if (message.type === 'reviewSetFilters') {
+      await this.store.setReviewMapFilters({
+        checkout: message.checkout === true,
+        general: message.general !== false,
+        discussions: message.discussions !== false,
+      });
+      await this.reloadReviewPage(webview, message.pageId);
+      return;
+    }
+    if (message.type === 'reviewLoadOlder') {
+      await this.runReviewChannelLoad(webview, message.pageId, 'older', () =>
+        this.review.loadOlder(message.pageId),
+      );
+      return;
+    }
+    if (message.type === 'reviewLoadNewer') {
+      await this.runReviewChannelLoad(webview, message.pageId, 'newer', () =>
+        this.review.loadNewer(message.pageId),
+      );
+      return;
+    }
+    if (message.type === 'reviewLoadThread') {
+      await this.pushReviewState(
+        webview,
+        await this.review.loadMoreThread(
+          message.pageId,
+          message.messageId,
+          message.direction === 'newer' ? 'newer' : 'older',
+        ),
+      );
+      this.toastReviewEdgeNotice(message.pageId);
+      return;
+    }
+    if (message.type === 'reviewExpandPlain') {
+      await this.pushReviewState(
+        webview,
+        await this.review.expandPlainThread(message.pageId, message.messageId),
+      );
+      return;
+    }
+    if (message.type === 'reviewOpenPromptExample') {
+      await this.openInstruction('review-prompt-template.md');
+      return;
+    }
+    if (message.type === 'reviewSkillFile') {
+      await this.onReviewSkillFile(webview, message.which, message.action);
+      return;
+    }
+    if (message.type === 'figmaOpenSetupDoc') {
+      await this.openInstruction('figma-tag-setup.md');
+      return;
+    }
+    if (message.type === 'figmaSkillFile') {
+      await this.onFigmaSkillFile(webview, message.action);
+      return;
+    }
+    if (message.type === 'figmaFormTags') {
+      await this.onFigmaTagPass(webview, message.pageId, message.via, 'form');
+      return;
+    }
+    if (message.type === 'figmaRefreshTags') {
+      await this.onFigmaTagPass(webview, message.pageId, message.via, 'refresh');
+      return;
+    }
+    if (message.type === 'clearFigmaLinks') {
+      await this.clearFigmaLinks(message.pageId);
+      return;
+    }
+    if (message.type === 'reviewClearFocus') {
+      this.review.clearFocus(message.pageId);
+      await this.pushReviewState(webview, this.review.snapshot(message.pageId));
+      return;
+    }
+    if (message.type === 'reviewCreateMr') {
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginMrSkeleton(message.pageId, message.title, message.draft === true),
+        () => this.review.endMrSkeleton(message.pageId, message.title),
+        () =>
+          this.review.createMrFromPanel(message.pageId, {
+            title: message.title,
+            draft: message.draft,
+            targetBranch: message.targetBranch,
+            reviewers: message.reviewers,
+            assignees: message.assignees,
+            squash: message.squash,
+          }),
+      );
+      await this.handleReviewMrResult(webview, message.pageId, result);
+      return;
+    }
+    if (message.type === 'reviewUpdateMr') {
+      const result = await this.review.updateMrChip(message.pageId, message.messageId, {
+        title: message.title,
+        draft: message.draft,
+      });
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewSetLock') {
+      const result = await this.review.setParentLock(
+        message.pageId,
+        message.messageId,
+        message.locked === true,
+      );
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewCloseMr') {
+      const result = await this.review.closeMr(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewDeleteReview') {
+      const result = await this.review.deleteReviewMessage(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewSetStatus') {
+      const status = message.status === 'inProgress' || message.status === 'done' ? message.status : undefined;
+      if (!status) {
+        return;
+      }
+      const result = await this.review.setReviewStatus(message.pageId, message.messageId, status);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'reviewDiscordRefresh') {
+      const mr =
+        this.pendingDiscordMr?.pageId === message.pageId
+          ? this.pendingDiscordMr.mr
+          : ({
+              iid: 0,
+              title: '',
+              web_url: message.webUrl,
+              draft: false,
+              source_branch: message.sourceBranch,
+              target_branch: '',
+              author: { username: '' },
+              assignees: [],
+              reviewers: [],
+            } satisfies ReviewMr);
+      const result = await this.withReviewPlaceholder(
+        webview,
+        () => this.review.beginMrSkeleton(message.pageId, mr.title, mr.draft),
+        () => this.review.endMrSkeleton(message.pageId, mr.title),
+        () => this.review.retryDiscordPost(message.pageId, mr),
+      );
+      await this.handleReviewMrResult(webview, message.pageId, result);
+      return;
+    }
+    if (message.type === 'reviewRereview') {
+      const selection = normalizeRereviewSelection(message.selection);
+      const idle = () =>
+        webview.postMessage({
+          type: 'reviewRereviewIdle',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
+      if (!selection) {
+        await idle();
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        await idle();
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginRereviewSkeleton(message.pageId, message.messageId),
+        () => this.review.endRereviewSkeleton(message.pageId, message.messageId),
+        () => this.review.startRereview(message.pageId, message.messageId, selection),
+      );
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewStudy') {
+      const selection = normalizeRereviewSelection(message.selection);
+      const idle = () =>
+        webview.postMessage({
+          type: 'reviewStudyIdle',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
+      if (!selection) {
+        await idle();
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        await idle();
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginStudySkeleton(message.pageId, message.messageId),
+        () => this.review.endStudySkeleton(message.pageId, message.messageId),
+        () => this.review.startStudy(message.pageId, message.messageId, selection),
+      );
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewStart') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginReviewSkeleton(message.pageId, message.messageId),
+        () => this.review.endReviewSkeleton(message.pageId, message.messageId),
+        () =>
+          this.review.startOrSendReview(
+            message.pageId,
+            message.messageId,
+            kind,
+            message.depth,
+          ),
+      );
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewStartRoot') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const branch = await this.review.peekCurrentBranch();
+      if (!branch.ok) {
+        this.notify(`Syn3: ${branch.message}`, 'error');
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginRootSkeleton(message.pageId, branch.value),
+        () => this.review.endRootSkeleton(message.pageId, branch.value),
+        () => this.review.startRootReview(message.pageId, kind, message.depth),
+      );
+      await this.handleReviewRootFileResult(webview, message.pageId, branch.value, result);
+      return;
+    }
+    if (message.type === 'reviewListBranches') {
+      const result = await this.review.listHostBranches(
+        message.pageId,
+        typeof message.page === 'number' ? message.page : 1,
+      );
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+      }
+      await webview.postMessage({
+        type: 'reviewBranches',
+        requestId: message.requestId,
+        ok: result.kind === 'ok',
+        branches: result.kind === 'ok' ? result.branches : [],
+        nextPage: result.kind === 'ok' ? result.nextPage : undefined,
+        currentBranch: result.kind === 'ok' ? result.currentBranch : '',
+        provider: result.kind === 'ok' ? result.provider : undefined,
+        message: result.kind === 'error' ? result.message : undefined,
+      });
+      return;
+    }
+    if (message.type === 'reviewListOpenRequests') {
+      const result = await this.review.listHostOpenRequests(
+        message.pageId,
+        typeof message.page === 'number' ? message.page : 1,
+      );
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+      }
+      await webview.postMessage({
+        type: 'reviewOpenRequests',
+        requestId: message.requestId,
+        ok: result.kind === 'ok',
+        requests: result.kind === 'ok' ? result.requests : [],
+        nextPage: result.kind === 'ok' ? result.nextPage : undefined,
+        currentBranch: result.kind === 'ok' ? result.currentBranch : '',
+        provider: result.kind === 'ok' ? result.provider : undefined,
+        message: result.kind === 'error' ? result.message : undefined,
+      });
+      return;
+    }
+    if (message.type === 'reviewResolveParent') {
+      const result = await this.review.resolveHostParent(message.pageId, message.branch);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+      }
+      await webview.postMessage({
+        type: 'reviewParent',
+        requestId: message.requestId,
+        ok: result.kind === 'ok',
+        parent: result.kind === 'ok' ? result.parent : undefined,
+        message: result.kind === 'error' ? result.message : undefined,
+      });
+      return;
+    }
+    if (message.type === 'reviewPullOther') {
+      if (this.store.page(message.pageId)?.kind === 'review') {
+        await this.handleReviewPull(webview, message.pageId, message.branch);
+      }
+      return;
+    }
+    if (message.type === 'reviewStartOther') {
+      const branch = String(message.branch || '').trim();
+      const baseBranch = String(message.baseBranch || '').trim();
+      if (!branch || !baseBranch) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginRootSkeleton(message.pageId, branch),
+        () => this.review.endRootSkeleton(message.pageId, branch),
+        () =>
+          this.review.startOtherBranchReview(message.pageId, {
+            branch,
+            baseBranch,
+            depth: message.depth,
+          }),
+      );
+      await this.handleReviewRootFileResult(webview, message.pageId, branch, result);
+      return;
+    }
+    if (message.type === 'explainStart') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginExplainSkeleton(message.pageId, message.messageId),
+        () => this.review.endExplainSkeleton(message.pageId, message.messageId),
+        () =>
+          this.review.startOrSendExplain(
+            message.pageId,
+            message.messageId,
+            kind,
+            message.depth,
+          ),
+      );
+      await this.handleExplainFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'explainStartRoot') {
+      const kind = message.kind === 'branch' || message.kind === 'changes' ? message.kind : undefined;
+      if (!kind) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const branch = await this.review.peekCurrentBranch();
+      if (!branch.ok) {
+        this.notify(`Syn3: ${branch.message}`, 'error');
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginExplainRootSkeleton(message.pageId, branch.value),
+        () => this.review.endExplainRootSkeleton(message.pageId, branch.value),
+        () => this.review.startRootExplain(message.pageId, kind, message.depth),
+      );
+      await this.handleExplainRootFileResult(webview, message.pageId, branch.value, result);
+      return;
+    }
+    if (message.type === 'explainStartOther') {
+      const branch = String(message.branch || '').trim();
+      const baseBranch = String(message.baseBranch || '').trim();
+      if (!branch || !baseBranch) {
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+      const parentMessageId = String(message.parentMessageId || '').trim();
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () =>
+          parentMessageId
+            ? this.review.beginExplainSkeleton(message.pageId, parentMessageId)
+            : this.review.beginExplainRootSkeleton(message.pageId, branch),
+        () =>
+          parentMessageId
+            ? this.review.endExplainSkeleton(message.pageId, parentMessageId)
+            : this.review.endExplainRootSkeleton(message.pageId, branch),
+        () =>
+          this.review.startOtherBranchExplain(message.pageId, {
+            branch,
+            baseBranch,
+            depth: message.depth,
+            parentMessageId: parentMessageId || undefined,
+          }),
+      );
+      if (parentMessageId) {
+        await this.handleExplainFileResult(webview, message.pageId, parentMessageId, result);
+      } else {
+        await this.handleExplainRootFileResult(webview, message.pageId, branch, result);
+      }
+      return;
+    }
+    if (message.type === 'explainRetryFile') {
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginExplainSkeleton(message.pageId, message.messageId),
+        () => this.review.endExplainSkeleton(message.pageId, message.messageId),
+        () => this.review.retryExplainFile(message.pageId, message.messageId),
+      );
+      await this.handleExplainFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewRetryFile') {
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginReviewSkeleton(message.pageId, message.messageId),
+        () => this.review.endReviewSkeleton(message.pageId, message.messageId),
+        () => this.review.retryReviewFile(message.pageId, message.messageId),
+      );
+      await this.handleReviewFileResult(webview, message.pageId, message.messageId, result);
+      return;
+    }
+    if (message.type === 'reviewOpenFixes') {
+      const table = await this.review.reviewFixRowsFor(message.pageId, message.messageId);
+      await webview.postMessage({
+        type: 'reviewFixes',
+        pageId: message.pageId,
+        messageId: message.messageId,
+        ok: table.ok,
+        html: table.ok ? reviewFixTableHtml(table.rows) : undefined,
+        message: table.ok ? undefined : table.message,
+      });
+      return;
+    }
+    if (message.type === 'reviewOpenFile') {
+      const named = message.filenames?.filter(Boolean) ?? [];
+      const result = named.length
+        ? await this.review.readNamedAttachments(message.pageId, message.messageId, named)
+        : await this.review.readReviewAttachment(message.pageId, message.messageId);
+      await webview.postMessage({
+        type: 'reviewFile',
+        pageId: message.pageId,
+        messageId: message.messageId,
+        levelNote: named.length > 0,
+        fileKey: named.join('|'),
+        ok: result.ok,
+        filename: result.ok ? result.filename : undefined,
+        text: result.ok ? result.text : undefined,
+        html: result.ok ? reviewFileHtml(result.text) : undefined,
+        message: result.ok ? undefined : result.message,
+      });
+      return;
+    }
+    if (message.type === 'reviewMigrate') {
+      const result = await this.review.migrateReviewNotes(message.pageId, message.messageId);
+      if (result.state) {
+        await this.pushReviewState(webview, result.state);
+      }
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+      }
+      return;
+    }
+    if (message.type === 'reviewSaveFile') {
+      await this.saveReviewAttachment(message.pageId, message.messageId);
+      return;
+    }
+    if (message.type === 'reviewCopyFileLink') {
+      const result = await this.review.copyReviewFileLink(
+        message.pageId,
+        message.messageId,
+        message.filenames,
+      );
+      if (!result.ok) {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await vscode.env.clipboard.writeText(result.path);
+      const locale = normalizeLocale(this.store.appearance.language);
+      this.notify(`Syn3: ${t(locale, 'reviewFileLinkCopied')}`, 'info', webview);
+      return;
+    }
+    if (message.type === 'reviewOpenFileTab') {
+      const result = await this.review.openReviewAttachmentTab(
+        message.pageId,
+        message.messageId,
+        message.filenames,
+      );
+      if (!result.ok) {
+        this.notify(`Syn3: ${result.message}`, 'error');
+      }
+      return;
+    }
+    if (message.type === 'reviewCreatePage') {
+      await this.createReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'scenarioSavePage') {
+      await this.createOrSaveScenarioPage(webview, message);
+      return;
+    }
+    if (message.type === 'scenarioSkillFile') {
+      await this.onScenarioSkillFile(webview, message.action);
+      return;
+    }
+    if (message.type === 'scenarioCreate') {
+      const result = await this.scenarios.createScenario(message.pageId, message.groupId);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioCreateGroup') {
+      const result = await this.scenarios.createGroup(message.pageId);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioRename') {
+      const result = await this.scenarios.renameScenario(message.pageId, message.messageId, message.title);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioUpdateGroup') {
+      const result = await this.scenarios.updateGroup(message.pageId, message.groupId, message);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioDelete') {
+      const result = await this.scenarios.deleteMessage(message.pageId, message.messageId);
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioReorder') {
+      const result = await this.scenarios.reorderInGroup(
+        message.pageId,
+        message.groupId,
+        message.orderedIds,
+      );
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioTransfer') {
+      const result = await this.scenarios.transferScenario(message.pageId, message.messageId, {
+        targetGroupId: message.targetGroupId,
+        copy: !!message.copy,
+      });
+      if (result.kind === 'error') {
+        this.notify(`Syn3: ${result.message}`, 'error');
+        return;
+      }
+      await this.pushScenarioState(webview, result.state);
+      return;
+    }
+    if (message.type === 'scenarioForm') {
+      const begun = this.scenarios.beginForm(message.pageId, message.messageId);
+      if (begun.kind === 'error') {
+        this.notify(`Syn3: ${begun.message}`, 'error');
+        return;
+      }
+      try {
+        await webview.postMessage({
+          type: 'scenarioFormBusy',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
+        const asked = await this.scenarios.askFormQuestions();
+        if (asked.kind === 'questions') {
+          await webview.postMessage({
+            type: 'scenarioQuestions',
+            pageId: asked.pageId,
+            messageId: asked.messageId,
+            questions: asked.questions,
+          });
+          return;
+        }
+        if (asked.kind === 'error') {
+          this.notify(`Syn3: ${asked.message}`, 'error');
+        }
+      } catch (error) {
+        this.scenarios.clearForm();
+        const text = error instanceof Error ? error.message : String(error);
+        this.notify(`Syn3: ${text}`, 'error');
+      }
+      await webview.postMessage({ type: 'scenarioFormIdle' });
+      return;
+    }
+    if (message.type === 'scenarioFormCancel') {
+      this.scenarios.cancelForm(message.pageId, message.messageId);
+      await webview.postMessage({ type: 'scenarioFormIdle' });
+      return;
+    }
+    if (message.type === 'scenarioFormAnswer') {
+      const answers = Array.isArray(message.answers) ? message.answers : [];
+      try {
+        const result = await this.scenarios.answerForm(message.pageId, message.messageId, answers);
+        if (result.kind === 'error') {
+          this.notify(`Syn3: ${result.message}`, 'error');
+        }
+      } catch (error) {
+        this.scenarios.clearForm();
+        const text = error instanceof Error ? error.message : String(error);
+        this.notify(`Syn3: ${text}`, 'error');
+      }
+      await webview.postMessage({ type: 'scenarioFormIdle' });
+      return;
+    }
+    if (message.type === 'scenarioReload') {
+      await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
+      return;
+    }
+    if (message.type === 'pageSaveSettings') {
+      await this.savePageSettingsFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'saveFigmaIconBindings') {
+      await this.saveFigmaIconBindings(webview, message);
+      return;
+    }
+    if (message.type === 'pageOpenSettings') {
+      await this.openMapPageSettings(webview, message.pageId);
+      return;
+    }
+    if (message.type === 'reviewOpenPageSettings') {
+      await this.openReviewPageSettings(webview, message.pageId);
+      return;
+    }
+    if (message.type === 'reviewUpdatePage') {
+      await this.updateReviewPageFromPanel(webview, message);
+      return;
+    }
+    if (message.type === 'reviewSetScheme') {
+      await this.store.setReviewScheme(normalizeReviewScheme(message.scheme));
+      await this.pushOpenReviewSchemes();
+      return;
+    }
+    if (message.type === 'setReviewPaths') {
+      await this.store.setActiveReviewPaths({
+        reviewSkillPath: message.reviewSkillPath,
+        reviewFixSkillPath: message.reviewFixSkillPath,
+        explainSkillPath: message.explainSkillPath,
+        studySkillPath: message.studySkillPath,
+        reviewDirPath: message.reviewDirPath,
+        reviewModel: message.reviewModel,
+        reviewFixModel: message.reviewFixModel,
+        reviewPrintThinking: message.reviewPrintThinking,
+        reviewPrintTools: message.reviewPrintTools,
+      });
+      return;
+    }
+    if (message.type === 'reviewNeurofixDenied') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      this.notify(`Syn3: ${t(locale, 'neurofixForeignBranch')}`, 'error');
+      return;
+    }
+    if (message.type === 'reviewNeurofix') {
+      const picks = normalizeFixPicks(message.picks);
+      const scope = normalizeNeuroFixScope(message.scope) || (picks ? 'all' : undefined);
+      const itemIndex =
+        typeof message.itemIndex === 'number' && Number.isInteger(message.itemIndex)
+          ? message.itemIndex
+          : undefined;
+      const idle = () =>
+        webview.postMessage({
+          type: 'reviewNeurofixIdle',
+          pageId: message.pageId,
+          messageId: message.messageId,
+        });
+      if (!scope || (!picks && itemIndex !== undefined && scope === 'all')) {
+        await idle();
+        return;
+      }
+      if (await this.review.neurofixNeedsCheckout(message.pageId, message.messageId)) {
+        const locale = normalizeLocale(this.store.appearance.language);
+        this.notify(`Syn3: ${t(locale, 'neurofixForeignBranch')}`, 'error');
+        await idle();
+        return;
+      }
+      if (this.review.isAgentBusy()) {
+        this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'reviewAgentBusy')}`, 'error');
+        await idle();
+        return;
+      }
+      const result = await this.withReviewAgentPlaceholder(
+        webview,
+        () => this.review.beginNeurofixSkeleton(message.pageId, message.messageId),
+        () => this.review.endNeurofixSkeleton(message.pageId, message.messageId),
+        async () => {
+          const ran = await this.review.runNeuroFix(
+            message.pageId,
+            message.messageId,
+            scope,
+            itemIndex,
+            picks,
+          );
+          if (!ran.ok) {
+            return { kind: 'error' as const, message: ran.message, discord: ran.discord === true };
+          }
+          return { kind: 'state' as const, state: ran.state };
+        },
+      );
+      if (result.kind === 'error') {
+        if (result.discord) {
+          const locale = normalizeLocale(this.store.appearance.language);
+          const text =
+            result.message === 'neurofixForeignBranch'
+              ? t(locale, 'neurofixForeignBranch')
+              : result.message;
+          this.notify(`Syn3: ${text}`, 'error');
+        }
+        return;
+      }
+      await this.pushReviewState(webview, result.state);
+      return;
+    }
+    if (message.type === 'listProjectDir') {
+      const listed = await listProjectDirectory(this.store, message.rel);
+      await webview.postMessage({ type: 'projectDir', seq: message.seq, ...listed });
+      return;
+    }
+    if (message.type === 'reviewOpenSetupDoc') {
+      await this.openInstruction('review-setup.md');
+      return;
+    }
+    if (message.type === 'discordGateOpenHowTo') {
+      await this.openInstruction('discord-setup.md');
+      return;
+    }
     if (message.type === 'setAppearance') {
       this.rememberFocus(webview);
       if (message.appearance && typeof message.appearance === 'object') {
+        const prev = this.store.appearance;
+        const prevRefresh = prev.reviewRefreshSec;
+        const prevProject = prev.projectFetchSec;
+        const prevFiles = prev.filesFetchSec;
+        const prevNotes = prev.notesFetchSec;
+        const prevLinks = prev.linksFetchSec;
         await this.store.setAppearance(message.appearance);
+        const next = this.store.appearance;
+        if (next.reviewRefreshSec !== prevRefresh) {
+          this.rearmAllReviewRefresh();
+        }
+        if (
+          next.projectFetchSec !== prevProject ||
+          next.filesFetchSec !== prevFiles ||
+          next.notesFetchSec !== prevNotes ||
+          next.linksFetchSec !== prevLinks
+        ) {
+          this.armSyncFetchTimers();
+        }
       }
       return;
     }
@@ -1831,6 +3876,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'confirmOpenLinkUrl') {
+      const page = this.store.page(this.pageIdFor(webview));
+      if (
+        page?.kind === 'figma' &&
+        this.store.activeFigmaOpenInApp() &&
+        (await this.openFigmaApp(message.url))
+      ) {
+        return;
+      }
       if (this.store.appearance.openLinksInCursor) {
         await this.openLinkUrl(message.url);
         return;
@@ -1863,6 +3916,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (message.type === 'clipboardWrite') {
       await vscode.env.clipboard.writeText(message.text);
+      if (message.notice === 'branchCopied' && message.text) {
+        const locale = normalizeLocale(this.store.appearance.language);
+        this.notify(`Syn3: ${t(locale, 'branchCopied')}`, 'info', webview);
+      }
       if (message.languageId && message.label && message.text) {
         this.languages.setStamp({
           text: message.text,
@@ -1982,9 +4039,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           message.position,
         );
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -2004,9 +4059,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           noteId: message.noteId,
         });
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -2039,7 +4092,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (message.type === 'createLinkLayout') {
-      if (!this.store.page(message.pageId) || this.store.page(message.pageId)?.kind !== 'links') {
+      if (!isLinkMapKind(this.store.page(message.pageId)?.kind)) {
         return;
       }
       await this.store.createLinkLayout(message.pageId);
@@ -2063,6 +4116,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         url: message.url,
         color: message.color,
       });
+      const nextUrl = typeof message.url === 'string' ? message.url.trim() : '';
+      if (figmaLinkPreviewEnabled && nextUrl && parseFigmaFrame(nextUrl)) {
+        const token = await readFigmaToken(this.hostSecrets, this.store.activeProfileId);
+        if (!token) {
+          const locale = normalizeLocale(this.store.appearance.language);
+          this.notify(`Syn3: ${t(locale, 'figmaTokenMissing')}`, 'error');
+        }
+      }
       return;
     }
     if (message.type === 'deleteLink') {
@@ -2087,7 +4148,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const result = await this.store.deleteLink(message.linkId);
       if (!result.ok) {
-        void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
+        this.notify(`Syn3: ${result.reason}`, 'warning');
       }
       return;
     }
@@ -2110,7 +4171,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const result = await this.store.deleteLinkLift(message.linkId);
       if (!result.ok) {
-        void vscode.window.showWarningMessage(`Syn3: ${result.reason}`);
+        this.notify(`Syn3: ${result.reason}`, 'warning');
       }
       return;
     }
@@ -2125,9 +4186,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           ? message.parentId
           : undefined;
       if (parentId !== undefined && this.store.depthOf(parentId) >= MAX_MARKER_DEPTH) {
-        void vscode.window.showWarningMessage(
-          `Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`,
-        );
+        this.notify(`Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`, 'warning');
         this.settleGroupDraft(message.requestId, undefined);
         return;
       }
@@ -2166,9 +4225,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         });
         this.settleGroupDraft(message.requestId, id);
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
         this.settleGroupDraft(message.requestId, undefined);
       }
       return;
@@ -2207,9 +4264,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           copy: !!message.copy,
         });
       } catch (error) {
-        void vscode.window.showWarningMessage(
-          `Syn3: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -2222,9 +4277,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       } catch (error) {
         const locale = normalizeLocale(this.store.appearance.language);
         const text = error instanceof Error ? error.message : String(error);
-        void vscode.window.showWarningMessage(
-          text.includes('Maximum nesting') ? t(locale, 'linkNestDepthWarn') : `Syn3: ${text}`,
-        );
+        this.notify(text.includes('Maximum nesting') ? t(locale, 'linkNestDepthWarn') : `Syn3: ${text}`, 'warning');
       }
       return;
     }
@@ -2309,7 +4362,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (message.type === 'openClass') {
       const def = this.store.classDef(message.classId);
       if (def) {
-        await openClassAt(this.store, def, this.targetColumn());
+        await openClassAt(this.store, def, this.targetColumn(), (text, tone) => this.notify(text, tone, webview));
       }
       return;
     }
@@ -2323,7 +4376,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         await this.store.placeMarker(message.id, message.target, message.position);
       } catch (error) {
-        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -2338,7 +4391,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       try {
         await this.store.placeMarkerAtNote(message.id, message.targetNoteId, message.position);
       } catch (error) {
-        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -2351,13 +4404,13 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       }
       const check = this.store.canNest(message.id, message.parent);
       if (!check.ok) {
-        void vscode.window.showWarningMessage(`Syn3: ${check.reason}`);
+        this.notify(`Syn3: ${check.reason}`, 'warning');
         return;
       }
       try {
         await this.store.nestMarker(message.id, message.parent);
       } catch (error) {
-        void vscode.window.showWarningMessage(`Syn3: ${error instanceof Error ? error.message : String(error)}`);
+        this.notify(`Syn3: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
       return;
     }
@@ -2375,9 +4428,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         })
         .filter((p): p is string => p !== undefined);
       if (relPaths.length === 0) {
-        void vscode.window.showWarningMessage(
-          'Syn3: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.',
-        );
+        this.notify('Syn3: drop files from the workspace Explorer. In the editor column, hold Shift while dropping.', 'warning');
         return;
       }
       const added = await this.store.assign(relPaths, message.to);
@@ -2432,18 +4483,483 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
       await webview.postMessage({ type: 'dirListing', relPath, entries });
     } catch {
-      void vscode.window.showWarningMessage(`Syn3: cannot read folder ${relPath}`);
+      this.notify(`Syn3: cannot read folder ${relPath}`, 'warning');
       await webview.postMessage({ type: 'dirListing', relPath, entries: [], error: true });
     }
   }
 
-  /** Files must never open inside a map column. */
-  private targetColumn(): vscode.ViewColumn | undefined {
-    const mapColumns = new Set(
+  private skillDocName(which: 'review' | 'explain' | 'study'): { file: string; folder: string } {
+    if (which === 'explain') {
+      return { file: 'explain-skill.md', folder: 'explain' };
+    }
+    if (which === 'study') {
+      return { file: 'study-skill.md', folder: 'study' };
+    }
+    return { file: 'review-prompt-template.md', folder: 'review' };
+  }
+
+  /** User picks a directory. The skill folder and SKILL.md are created inside it. */
+  private async saveSkillIntoFolder(
+    folderName: string,
+    text: string,
+    extras?: Array<{ name: string; text: string }>,
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      openLabel: t(locale, 'reviewSkillDownload'),
+      title: t(locale, 'reviewSkillDownload'),
+    });
+    const parent = picked?.[0];
+    if (!parent) {
+      return;
+    }
+    const dir = vscode.Uri.joinPath(parent, folderName);
+    await vscode.workspace.fs.createDirectory(dir);
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'SKILL.md'), Buffer.from(text, 'utf8'));
+    for (const extra of extras || []) {
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.joinPath(dir, extra.name),
+        Buffer.from(extra.text, 'utf8'),
+      );
+    }
+  }
+
+  private async readSkillDoc(which: 'review' | 'explain' | 'study'): Promise<string | undefined> {
+    const { file } = this.skillDocName(which);
+    const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', file);
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      const locale = normalizeLocale(this.store.appearance.language);
+      this.notify(`Syn3: ${t(locale, 'reviewSkillFileFail')}`, 'error');
+      return undefined;
+    }
+  }
+
+  private async saveReviewAttachment(pageId: string, messageId: string): Promise<void> {
+    const read = await this.review.readReviewAttachment(pageId, messageId);
+    if (!read.ok) {
+      this.notify(`Syn3: ${read.message}`, 'error');
+      return;
+    }
+    const safeName = read.filename.replace(/[^\w.\-]+/g, '_') || 'review.md';
+    const safe = /\.md$/i.test(safeName) ? safeName : `${safeName}.md`;
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const defaultUri = folder ? vscode.Uri.joinPath(folder, safe) : vscode.Uri.file(safe);
+    const locale = normalizeLocale(this.store.appearance.language);
+    const target = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { Markdown: ['md'] },
+      saveLabel: t(locale, 'reviewFileSave'),
+    });
+    if (!target) {
+      return;
+    }
+    await vscode.workspace.fs.writeFile(target, Buffer.from(read.text, 'utf8'));
+  }
+
+  private async onReviewSkillFile(
+    webview: vscode.Webview,
+    which: 'review' | 'explain' | 'study',
+    action: 'open' | 'copy' | 'save',
+  ): Promise<void> {
+    if (which !== 'review' && which !== 'explain' && which !== 'study') {
+      return;
+    }
+    if (action === 'open') {
+      await this.openInstruction(this.skillDocName(which).file);
+      return;
+    }
+    const text = await this.readSkillDoc(which);
+    if (text === undefined) {
+      return;
+    }
+    if (action === 'copy') {
+      await vscode.env.clipboard.writeText(text);
+      await webview.postMessage({ type: 'reviewSkillCopied' });
+      return;
+    }
+    if (action !== 'save') {
+      return;
+    }
+    await this.saveSkillIntoFolder(this.skillDocName(which).folder, text);
+  }
+
+  private async readDocFile(fileName: string): Promise<string | undefined> {
+    const uri = vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      const locale = normalizeLocale(this.store.appearance.language);
+      this.notify(`Syn3: ${t(locale, 'reviewSkillFileFail')}`, 'error');
+      return undefined;
+    }
+  }
+
+  private async onFigmaSkillFile(
+    webview: vscode.Webview,
+    action: 'open' | 'copy' | 'save',
+  ): Promise<void> {
+    if (action !== 'open' && action !== 'copy' && action !== 'save') {
+      return;
+    }
+    if (action === 'open') {
+      await this.openInstruction('figma-tag-skill.md');
+      return;
+    }
+    const text = await this.readDocFile('figma-tag-skill.md');
+    if (text === undefined) {
+      return;
+    }
+    if (action === 'copy') {
+      await vscode.env.clipboard.writeText(text);
+      await webview.postMessage({ type: 'reviewSkillCopied' });
+      return;
+    }
+    const script = await this.readDocFile('figma-tag-lookup.js');
+    if (script === undefined) {
+      return;
+    }
+    const scan = await this.readDocFile('figma-tag-scan.js');
+    if (scan === undefined) {
+      return;
+    }
+    await this.saveSkillIntoFolder('figma-tag', text, [
+      { name: 'lookup.js', text: script },
+      { name: 'scan.js', text: scan },
+    ]);
+  }
+
+  private figmaFormRunning = false;
+
+  private postFigmaForm(running: boolean, status: string): void {
+    const message = { type: 'figmaFormState' as const, running, status };
+    for (const webview of this.webviews) {
+      void webview.postMessage(message);
+    }
+  }
+
+  private figmaFileLabel(file: { url: string; label?: string }): string {
+    const label = file.label?.trim();
+    return label || file.url;
+  }
+
+  private async clearFigmaLinks(pageId: string): Promise<void> {
+    const page = this.store.page(pageId);
+    if (!page || page.kind !== 'figma' || this.figmaFormRunning) {
+      return;
+    }
+    if (this.store.rootLinks(pageId).length === 0) {
+      return;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    const confirm = await vscode.window.showWarningMessage(
+      t(locale, 'figmaResetConfirm'),
+      { modal: true },
+      t(locale, 'figmaReset'),
+    );
+    if (confirm !== t(locale, 'figmaReset')) {
+      return;
+    }
+    await this.store.clearFigmaLinks(pageId);
+  }
+
+  private async onFigmaTagPass(
+    webview: vscode.Webview,
+    pageId: string,
+    via: 'mcp' | 'api',
+    mode: 'form' | 'refresh',
+  ): Promise<void> {
+    if (this.figmaFormRunning) {
+      this.postFigmaForm(true, '');
+      return;
+    }
+    const page = this.store.page(pageId);
+    const locale = normalizeLocale(this.store.appearance.language);
+    if (!page || page.kind !== 'figma' || !this.webviews.has(webview)) {
+      this.postFigmaForm(false, '');
+      return;
+    }
+    const files = page.figmaFiles ?? [];
+    if (files.length === 0) {
+      this.postFigmaForm(false, t(locale, 'figmaFormNoFiles'));
+      return;
+    }
+    this.figmaFormRunning = true;
+    this.postFigmaForm(true, '');
+    try {
+      const collected =
+        via === 'api'
+          ? await this.collectFigmaTagsApi(files, locale)
+          : await this.collectFigmaTagsMcp(files, locale);
+      if (!collected) {
+        return;
+      }
+      const failed = collected.failed
+        ? t(locale, 'figmaFormFileFailed', { file: collected.failed })
+        : '';
+      if (mode === 'refresh') {
+        if (collected.failed) {
+          this.postFigmaForm(false, failed);
+          return;
+        }
+        await this.store.markFigmaUnsynced(pageId, collected.hits);
+        this.postFigmaForm(false, '');
+        return;
+      }
+      if (collected.hits.length > 0) {
+        await this.store.mergeFigmaTagHits(pageId, collected.hits);
+      }
+      this.postFigmaForm(false, failed);
+    } catch {
+      this.postFigmaForm(false, t(locale, 'figmaFormBadAnswer'));
+    } finally {
+      this.figmaFormRunning = false;
+    }
+  }
+
+  private async collectFigmaTagsApi(
+    files: { url: string; label?: string }[],
+    locale: ReturnType<typeof normalizeLocale>,
+  ): Promise<{ hits: FigmaTagHit[]; failed: string } | undefined> {
+    const token = await readFigmaToken(this.hostSecrets, this.store.activeProfileId);
+    if (!token) {
+      this.postFigmaForm(false, t(locale, 'figmaTokenMissing'));
+      return undefined;
+    }
+    if (figmaRequestPaused()) {
+      this.postFigmaForm(false, t(locale, 'figmaFormLimited'));
+      return undefined;
+    }
+    const hits: FigmaTagHit[] = [];
+    let failed = '';
+    for (const file of files) {
+      const ref = figmaLinkFromInput(file.url);
+      if (!ref) {
+        failed = this.figmaFileLabel(file);
+        break;
+      }
+      const loaded = await loadFigmaSharedHits(file.url, ref.fileKey, ref.nodeId, token);
+      if (!loaded.ok) {
+        failed = this.figmaFileLabel(file);
+        break;
+      }
+      hits.push(...loaded.hits);
+    }
+    return { hits, failed };
+  }
+
+  private async collectFigmaTagsMcp(
+    files: { url: string; label?: string }[],
+    locale: ReturnType<typeof normalizeLocale>,
+  ): Promise<{ hits: FigmaTagHit[]; failed: string } | undefined> {
+    const skillRaw = this.store.activeFigmaSkillPath();
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!skillRaw) {
+      this.postFigmaForm(false, t(locale, 'figmaFormNoSkill'));
+      return undefined;
+    }
+    if (!folder && !path.isAbsolute(skillRaw)) {
+      this.postFigmaForm(false, t(locale, 'figmaFormNoWorkspace'));
+      return undefined;
+    }
+    const cwd = folder || path.dirname(skillRaw);
+    const skillAbs = path.isAbsolute(skillRaw) ? skillRaw : path.join(cwd, skillRaw);
+    const print = this.store.activeFigmaPrint();
+    const agent = await runFigmaTagAgent({
+      cwd,
+      prompt: figmaScanPrompt(skillAbs, files.map((file) => file.url)),
+      model: this.store.activeFigmaModel(),
+      printThinking: print.printThinking,
+      printTools: print.printTools,
+    });
+    if (!agent.ok) {
+      const missing = agent.message.includes('not found');
+      this.postFigmaForm(
+        false,
+        missing ? t(locale, 'figmaFormAgentMissing') : agent.message.slice(0, 240),
+      );
+      return undefined;
+    }
+    const parsed = parseFigmaScanAnswer(agent.answer);
+    if (!parsed) {
+      this.postFigmaForm(false, t(locale, 'figmaFormBadAnswer'));
+      return undefined;
+    }
+    const byUrl = new Map(parsed.map((file) => [file.url, file]));
+    const hits: FigmaTagHit[] = [];
+    let failed = '';
+    for (const file of files) {
+      const row = byUrl.get(file.url);
+      if (!row?.ok) {
+        failed = this.figmaFileLabel(file);
+        break;
+      }
+      hits.push(...row.hits);
+    }
+    return { hits, failed };
+  }
+
+  private scenarioSkillUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.extensionUri, '.cursor', 'skills', 'scenarios', 'SKILL.md');
+  }
+
+  private async readScenarioSkill(): Promise<string | undefined> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this.scenarioSkillUri());
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      const locale = normalizeLocale(this.store.appearance.language);
+      this.notify(`Syn3: ${t(locale, 'reviewSkillFileFail')}`, 'error');
+      return undefined;
+    }
+  }
+
+  private async onScenarioSkillFile(
+    webview: vscode.Webview,
+    action: 'open' | 'copy' | 'save',
+  ): Promise<void> {
+    if (action !== 'open' && action !== 'copy' && action !== 'save') {
+      return;
+    }
+    if (action === 'open') {
+      await this.openInstruction('scenarios/SKILL.md', this.scenarioSkillUri());
+      return;
+    }
+    const text = await this.readScenarioSkill();
+    if (text === undefined) {
+      return;
+    }
+    if (action === 'copy') {
+      await vscode.env.clipboard.writeText(text);
+      await webview.postMessage({ type: 'scenarioSkillCopied' });
+      return;
+    }
+    await this.saveSkillIntoFolder('scenarios', text);
+  }
+
+  /** Opens a docs markdown file as a rendered page in an editor tab, outside the map column. */
+  private async openInstruction(fileName: string, source?: vscode.Uri): Promise<void> {
+    const uri = source ?? vscode.Uri.joinPath(this.extensionUri, 'docs', fileName);
+    const column = this.instructionColumn();
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const markdown = Buffer.from(bytes).toString('utf8');
+      const existing = this.instructionPanels.get(fileName);
+      if (existing) {
+        existing.reveal(column, false);
+      } else {
+        const panel = vscode.window.createWebviewPanel(
+          'syn3Instruction',
+          instructionTitle(markdown),
+          { viewColumn: column, preserveFocus: false },
+          { enableScripts: true, retainContextWhenHidden: true },
+        );
+        this.instructionPanels.set(fileName, panel);
+        panel.onDidDispose(() => {
+          if (this.instructionPanels.get(fileName) === panel) {
+            this.instructionPanels.delete(fileName);
+          }
+        });
+        panel.webview.onDidReceiveMessage((message: { type?: string; href?: string }) => {
+          if (message?.type !== 'openLink' || !message.href) {
+            return;
+          }
+          let target: vscode.Uri;
+          try {
+            target = vscode.Uri.parse(message.href);
+          } catch {
+            return;
+          }
+          if (target.scheme === 'http' || target.scheme === 'https') {
+            void vscode.env.openExternal(target);
+          }
+        });
+        panel.webview.html = instructionPageHtml(markdown);
+        await this.movePanelOutOfMap(panel);
+      }
+      await this.closeInstructionSource(uri);
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : '';
+      this.notify(`Syn3: не удалось открыть инструкцию${detail}`, 'error');
+    }
+  }
+
+  /** Editor column that is not a locked map. */
+  private instructionColumn(): vscode.ViewColumn {
+    const mapColumns = this.mapColumns();
+    const preferred =
+      this.lastEditorColumn !== undefined && !mapColumns.has(this.lastEditorColumn)
+        ? this.lastEditorColumn
+        : undefined;
+    const group = vscode.window.tabGroups.all.find((item) => {
+      if (item.viewColumn < 1 || mapColumns.has(item.viewColumn)) {
+        return false;
+      }
+      if (preferred !== undefined && item.viewColumn !== preferred) {
+        return false;
+      }
+      return item.tabs.some((tab) => tab.input instanceof vscode.TabInputText);
+    });
+    if (group) {
+      return group.viewColumn;
+    }
+    const other = vscode.window.tabGroups.all.find(
+      (item) => item.viewColumn > 0 && !mapColumns.has(item.viewColumn),
+    );
+    return other?.viewColumn ?? vscode.ViewColumn.Beside;
+  }
+
+  /** Webview opened inside the locked map. Move that tab into a neighboring group. */
+  private async movePanelOutOfMap(panel: vscode.WebviewPanel): Promise<void> {
+    const column = panel.viewColumn;
+    const mapColumns = this.mapColumns();
+    if (column === undefined || !mapColumns.has(column)) {
+      return;
+    }
+    panel.reveal(column, false);
+    const hasLower = vscode.window.tabGroups.all.some(
+      (group) => group.viewColumn > 0 && group.viewColumn < column && !mapColumns.has(group.viewColumn),
+    );
+    await vscode.commands.executeCommand(
+      hasLower ? 'workbench.action.moveEditorToPreviousGroup' : 'workbench.action.moveEditorToNextGroup',
+    );
+  }
+
+  /** Drops the raw markdown tab so the rendered page is the one on screen. */
+  private async closeInstructionSource(uri: vscode.Uri): Promise<void> {
+    const key = uri.toString();
+    const tabs: vscode.Tab[] = [];
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === key) {
+          tabs.push(tab);
+        }
+      }
+    }
+    if (tabs.length > 0) {
+      await vscode.window.tabGroups.close(tabs, true);
+    }
+  }
+
+  /** Columns that hold a Syn3 map. Those groups are locked so files open elsewhere. */
+  private mapColumns(): Set<vscode.ViewColumn> {
+    return new Set(
       [this.leftPanel?.viewColumn, this.rightPanel?.viewColumn].filter(
         (column): column is vscode.ViewColumn => column !== undefined,
       ),
     );
+  }
+
+  /** Files must never open inside a map column. */
+  private targetColumn(): vscode.ViewColumn | undefined {
+    const mapColumns = this.mapColumns();
     if (mapColumns.size === 0) {
       return undefined;
     }
@@ -2527,13 +5043,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         order: def.order,
         color: this.noteColor(id),
       }));
+    const pageKind = this.store.page(pageId)?.kind;
+    const figma = pageKind === 'figma';
+    const iconRows = figma ? resolveFigmaIconBindings(this.store.page(pageId)?.figmaIconBindings) : [];
+    const iconMatch = figma ? this.store.page(pageId)?.figmaIconMatch : undefined;
     const links: MapLink[] = this.store
       .links()
       .filter(([id]) => this.store.pageOfLink(id) === pageId)
       .map(([id, def]) => {
-        const colorId = this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
+        const colorId = figma
+          ? this.store.figmaThreadColor(id)
+          : this.store.linkColorOf(id) ?? LINK_PALETTE_DEFAULT;
         const resolvedHex =
           normalizeHex(colorId) ?? PALETTE.find((swatch) => swatch.id === colorId)?.hex ?? colorId;
+        const icon = figma ? matchFigmaIcon(def.label, iconRows, iconMatch) : undefined;
+        const childCount = this.store.linkChildren(id).length;
         return {
           id,
           label: def.label,
@@ -2547,9 +5071,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
           children: this.store.linkChildren(id).map(([childId]) => childId),
           order: def.order,
           color: cssColor(resolvedHex),
-          colorId: def.parent ? undefined : resolvedHex,
+          colorId: figma
+            ? childCount > 0
+              ? icon?.color
+              : undefined
+            : def.parent
+              ? undefined
+              : resolvedHex,
           lastRoot: this.store.isLastRootLink(id) ? true : undefined,
           canDelete: this.store.canDeleteLink(id),
+          figmaTag: def.figmaTag,
+          figmaUnsynced: def.figmaUnsynced,
+          ...(icon ? { figmaIcon: icon.icon, figmaIconColor: icon.color } : {}),
         };
       });
     return { groups, notes, links };
@@ -2584,10 +5117,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     const pages: MapPage[] = this.store.pages().map(([id, def]) => ({
       id,
       name: def.name,
+      ...(def.description ? { description: def.description } : {}),
       kind: def.kind,
       layout: def.layout,
       groupsLayout: def.groupsLayout,
       collapsed: { ...def.collapsed[surface] },
+      ...(def.kind === 'figma'
+        ? {
+            figmaIconBindings: resolveFigmaIconBindings(def.figmaIconBindings),
+            ...(def.figmaIconMatch ? { figmaIconMatch: def.figmaIconMatch } : {}),
+          }
+        : {}),
     }));
     if (restorePage) {
       this.persistSurfacePage(webview, pageId);
@@ -2601,6 +5141,16 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         this.focusNoteId = focusNoteId;
       }
       return;
+    }
+    let reviewProvider: ReviewHostProvider | undefined;
+    if (page?.kind === 'review') {
+      reviewProvider = (await this.review.getAccess(pageId))?.provider;
+      if (!this.webviews.has(webview) || this.stateSeq.get(webview) !== seq) {
+        if (focusNoteId) {
+          this.focusNoteId = focusNoteId;
+        }
+        return;
+      }
     }
     this.needsPageRestore.delete(webview);
     await webview.postMessage({
@@ -2616,15 +5166,31 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       links: body.links,
       focusNoteId,
       maxPages: MAX_PAGES,
+      usedPageKinds: this.store.pages().map(([, p]) => p.kind),
       layout: page?.layout ?? 'chips',
       groupsLayout: page?.groupsLayout ?? 'flow',
       appearance: this.store.appearance,
       locale,
+      ...(reviewProvider ? { reviewProvider } : {}),
       i18n: stringsFor(locale),
       linkPalette: LINK_PALETTE,
       profiles: this.store.profiles(),
       activeProfileId: this.store.activeProfileId,
       positionSync: this.store.positionSync(),
+      profileConfigSync: this.store.profileConfigSync(),
+      projects: this.store.projects(),
+      activeProjectId: this.store.activeProjectId(),
+      projectConfigSync: this.store.projectConfigSync(),
+      canToggleProjectLock: this.store.canToggleProjectLock(),
+      pageConfigSync: this.store.allPageConfigSync(),
+      pendingRemoteCount: this.store.pendingRemoteCount(),
+      hasConfigChannel: this.store.hasConfigChannel(),
+      pagesFixed: this.store.pagesFixed(),
+      pagesFixedSent: this.store.pagesFixedSent(),
+      pageDrafts: Object.fromEntries(
+        this.store.pages().map(([id]) => [id, this.store.pageDraftIds(id)]),
+      ),
+      catalogChannels: this.store.catalogChannels(),
       focus: this.store.workingFocus ?? null,
       active: this.activeRelPath(),
       ...this.tabSnapshot(),
@@ -2642,6 +5208,7 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       themeGeneration: this.languages.getThemeGeneration(),
       problems: this.problems,
     });
+    await this.postDiscordGate(webview);
   }
 
   private pageKindOfMarker(markerId: string): PageKind | undefined {
@@ -2942,6 +5509,10 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       await this.toggleRight();
       return;
     }
+    if (action === 'toggleExplorer') {
+      await vscode.commands.executeCommand('workbench.action.toggleSidebarVisibility');
+      return;
+    }
     const activePage = pageId && this.store.page(pageId) ? pageId : this.pageIdFor(webview);
     if (action === 'setLayout') {
       if (this.store.page(activePage)) {
@@ -3019,8 +5590,20 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'createLinkLayout') {
-      if (this.store.page(activePage)?.kind === 'links') {
+      if (isLinkMapKind(this.store.page(activePage)?.kind)) {
         await this.store.createLinkLayout(activePage);
+      }
+      return;
+    }
+    if (action === 'createMr') {
+      if (this.store.page(activePage)?.kind === 'review') {
+        await this.handleReviewPlus(webview, activePage);
+      }
+      return;
+    }
+    if (action === 'pullMr') {
+      if (this.store.page(activePage)?.kind === 'review') {
+        await this.handleReviewPull(webview, activePage);
       }
       return;
     }
@@ -3028,15 +5611,42 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       action === 'createPage' ||
       action === 'createPageFiles' ||
       action === 'createPageNotes' ||
-      action === 'createPageLinks'
+      action === 'createPageLinks' ||
+      action === 'createPageFigma' ||
+      action === 'createPageReview' ||
+      action === 'createPageScenarios'
     ) {
       const kind: PageKind =
-        action === 'createPageNotes' ? 'notes' : action === 'createPageLinks' ? 'links' : 'files';
+        action === 'createPageNotes'
+          ? 'notes'
+          : action === 'createPageLinks'
+            ? 'links'
+            : action === 'createPageFigma'
+              ? 'figma'
+              : action === 'createPageReview'
+              ? 'review'
+              : action === 'createPageScenarios'
+                ? 'scenarios'
+                : 'files';
       await this.createPageFlow(webview, kind);
       return;
     }
     if (action === 'renamePage') {
-      await this.renamePageFlow(activePage);
+      const page = this.store.page(activePage);
+      if (!page) {
+        return;
+      }
+      if (page.kind === 'review') {
+        await this.openReviewPageSettings(webview, activePage);
+        return;
+      }
+      await this.postPageSettingsPanel(webview, {
+        mode: 'edit',
+        pageId: activePage,
+        kind: page.kind,
+        name: page.name,
+        description: page.description || '',
+      });
       return;
     }
     if (action === 'deletePage') {
@@ -3049,6 +5659,297 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     }
     if (action === 'openSettings') {
       await vscode.commands.executeCommand('syn3.openSettings');
+      return;
+    }
+    if (action === 'whySyn3') {
+      await this.openInstruction('why-syn3.md');
+    }
+  }
+
+  private async postProjectSettings(webview: vscode.Webview, projectId: string): Promise<void> {
+    const project = this.store.projectRecord(projectId);
+    if (!project) {
+      return;
+    }
+    const profileId = this.store.activeProfileId;
+    const tokenKey = this.store.repositoryTokenKey(profileId);
+    const opaqueToken = tokenKey
+      ? (await readRepositoryToken(this.hostSecrets, tokenKey)) || ''
+      : '';
+    const provider = project.repo?.provider;
+    let githubToken = (await readProfileHostToken(this.hostSecrets, profileId, 'github')) || '';
+    let gitlabToken = (await readProfileHostToken(this.hostSecrets, profileId, 'gitlab')) || '';
+    if (opaqueToken && provider === 'github') {
+      githubToken = opaqueToken;
+    }
+    if (opaqueToken && provider === 'gitlab') {
+      gitlabToken = opaqueToken;
+    }
+    await webview.postMessage({
+      type: 'projectSettingsPanel',
+      id: projectId,
+      name: project.name,
+      repoUrl: project.repo?.repoUrl || '',
+      profileName: this.store.activeProfileName,
+      githubToken,
+      gitlabToken,
+    });
+  }
+
+  private async saveProjectSettings(
+    webview: vscode.Webview,
+    message: {
+      id: string;
+      name: string;
+      githubToken?: string;
+      gitlabToken?: string;
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'projectSettingsError', message: text });
+    };
+    const record = this.store.projectRecord(message.id);
+    if (!record) {
+      await fail(t(locale, 'projectNameEmpty'));
+      return;
+    }
+    const name = message.name.trim();
+    if (!name) {
+      await fail(t(locale, 'projectNameEmpty'));
+      return;
+    }
+    const provider = record.repo?.provider;
+    if (provider) {
+      const hostToken = (provider === 'github' ? message.githubToken : message.gitlabToken)?.trim();
+      if (!hostToken) {
+        await fail(
+          t(locale, provider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab', {
+            name: this.store.activeProfileName,
+          }),
+        );
+        return;
+      }
+      await storeSecrets(this.hostSecrets, {
+        profileId: this.store.activeProfileId,
+        github: provider === 'github' ? hostToken : undefined,
+        gitlab: provider === 'gitlab' ? hostToken : undefined,
+      });
+    }
+    const saved = await this.store.updateProjectDetails(message.id, name);
+    if (!saved) {
+      await fail(t(locale, 'projectNameEmpty'));
+      return;
+    }
+    await webview.postMessage({ type: 'projectSettingsSaved' });
+  }
+
+  private async deleteProjectFromPanel(
+    webview: vscode.Webview,
+    message: { id: string; name: string },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'projectSettingsError', message: text });
+    };
+    const record = this.store.projectRecord(message.id);
+    if (!record || record.name.trim() !== message.name.trim()) {
+      await fail(t(locale, 'projectDeleteMismatch'));
+      return;
+    }
+    const removed = await this.store.deleteProject(message.id);
+    if (!removed) {
+      await fail(t(locale, 'projectDeleteMismatch'));
+      return;
+    }
+    await webview.postMessage({ type: 'projectSettingsSaved' });
+  }
+
+  /** Open the in-map profile editor. Omit id to create a profile. */
+  async showProfileSettings(profileId?: string): Promise<void> {
+    await this.ensureMapWebview();
+    const webview = this.lastFocusedWebview;
+    if (!webview) {
+      return;
+    }
+    await this.postProfileSettings(webview, profileId);
+  }
+
+  private async postProfileSettings(webview: vscode.Webview, profileId?: string): Promise<void> {
+    const profile = profileId ? this.store.profiles().find((p) => p.id === profileId) : undefined;
+    if (profileId && !profile) {
+      return;
+    }
+    const nicks = profile ? this.store.gitNicks(profile.id) : { githubNick: '', gitlabNick: '' };
+    const host = this.store.projectRepo()?.provider;
+    const tokenKey = profile ? this.store.repositoryTokenKey(profile.id) : undefined;
+    const opaqueToken = tokenKey
+      ? (await readRepositoryToken(this.hostSecrets, tokenKey)) || ''
+      : '';
+    const githubToken = opaqueToken
+      ? host === 'github'
+        ? opaqueToken
+        : ''
+      : profile
+        ? (await readProfileHostToken(this.hostSecrets, profile.id, 'github')) || ''
+        : '';
+    const gitlabToken = opaqueToken
+      ? host === 'gitlab'
+        ? opaqueToken
+        : ''
+      : profile
+        ? (await readProfileHostToken(this.hostSecrets, profile.id, 'gitlab')) || ''
+        : '';
+    await webview.postMessage({
+      type: 'profileSettingsPanel',
+      id: profile?.id ?? '',
+      creating: !profile,
+      nameLocked: profile?.id === GENERAL_PROFILE_ID,
+      name: profile?.name ?? '',
+      githubNick: nicks.githubNick,
+      gitlabNick: nicks.gitlabNick,
+      githubToken,
+      gitlabToken,
+      projectHost: host || '',
+    });
+  }
+
+  private async saveProfileSettings(
+    webview: vscode.Webview,
+    message: {
+      id?: string;
+      name: string;
+      githubNick: string;
+      gitlabNick: string;
+      githubToken: string;
+      gitlabToken: string;
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const name = message.name.trim();
+    let id = message.id?.trim() || '';
+    const creating = !id;
+    const host = this.store.projectRepo()?.provider;
+    const nick =
+      host === 'gitlab' ? message.gitlabNick.trim() : message.githubNick.trim();
+    const token =
+      host === 'gitlab' ? message.gitlabToken.trim() : message.githubToken.trim();
+    if (creating) {
+      if (!name) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameEmpty'),
+        });
+        return;
+      }
+      if (!this.store.isValidProfileName(name)) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameTaken'),
+        });
+        return;
+      }
+      if (!host) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'projectRepositoryRequired'),
+        });
+        return;
+      }
+      if (!nick) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNickRequired'),
+        });
+        return;
+      }
+      if (!token) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileTokenRequired'),
+        });
+        return;
+      }
+      const created = await this.store.createProfile(name);
+      if (!created) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameTaken'),
+        });
+        return;
+      }
+      id = created;
+    } else if (id !== GENERAL_PROFILE_ID) {
+      const current = this.store.profiles().find((p) => p.id === id);
+      if (!current) {
+        return;
+      }
+      if (!name) {
+        await webview.postMessage({
+          type: 'profileSettingsError',
+          message: t(locale, 'profileNameEmpty'),
+        });
+        return;
+      }
+      if (current.name !== name) {
+        if (!this.store.isValidProfileName(name, id)) {
+          await webview.postMessage({
+            type: 'profileSettingsError',
+            message: t(locale, 'profileNameTaken'),
+          });
+          return;
+        }
+        const renamed = await this.store.renameProfile(id, name);
+        if (!renamed) {
+          await webview.postMessage({
+            type: 'profileSettingsError',
+            message: t(locale, 'profileNameTaken'),
+          });
+          return;
+        }
+      }
+    }
+    await this.store.setProfileGitNicks(id, {
+      githubNick: message.githubNick,
+      gitlabNick: message.gitlabNick,
+    });
+    await this.storeProfileRepositoryToken(id, host, token);
+    if (!this.store.machineIsBound() || creating) {
+      await this.store.setActiveProfile(id);
+    }
+    await this.withBaseConfigBusy(async () => {
+      const result = await this.store.pushProfileConfig();
+      if (!result.ok && result.message && result.message !== 'Nothing to push') {
+        this.showBaseConfigResult(result);
+      }
+    });
+    await webview.postMessage({ type: 'profileSettingsSaved' });
+  }
+
+  private async storeProfileRepositoryToken(
+    profileId: string,
+    host: 'github' | 'gitlab' | undefined,
+    token: string,
+  ): Promise<void> {
+    const trimmed = token.trim();
+    let key = this.store.repositoryTokenKey(profileId);
+    if (!trimmed) {
+      if (key) {
+        await deleteRepositoryToken(this.hostSecrets, key);
+        await this.store.setRepositoryTokenKey(profileId, undefined);
+      }
+      if (host) {
+        await deleteProfileHostToken(this.hostSecrets, profileId, host);
+      }
+      return;
+    }
+    if (!key) {
+      key = createRepositoryTokenKey();
+      await this.store.setRepositoryTokenKey(profileId, key);
+    }
+    await writeRepositoryToken(this.hostSecrets, key, trimmed);
+    if (host) {
+      await writeProfileHostToken(this.hostSecrets, profileId, host, trimmed);
     }
   }
 
@@ -3061,15 +5962,18 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       if (id) {
         await this.store.setActiveProfile(id);
         await this.syncOpenSurfacesIfNeeded(true);
+        await this.pushOpenReviewSchemes();
+        await this.withBaseConfigBusy(async () => {
+          const result = await this.store.pushProfileConfig();
+          if (!result.ok && result.message && result.message !== 'Nothing to push') {
+            this.showBaseConfigResult(result);
+          }
+        });
       }
       return;
     }
     if (action === 'create') {
-      const trimmed = (name ?? '').trim();
-      if (!trimmed || !this.store.isValidProfileName(trimmed)) {
-        return;
-      }
-      await this.store.createProfile(trimmed);
+      await this.showProfileSettings();
       return;
     }
     if (action === 'rename') {
@@ -3124,11 +6028,419 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       return;
     }
     if (action === 'syncPush') {
-      await this.store.syncPositionsLocalToRemote();
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pushProfileConfig();
+        this.showBaseConfigResult(result);
+      });
       return;
     }
     if (action === 'syncPull') {
-      await this.store.syncPositionsRemoteToLocal();
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pullProfileConfig();
+        this.showBaseConfigResult(result);
+      });
+    }
+  }
+
+  private async onProject(
+    webview: vscode.Webview,
+    action: 'select' | 'create' | 'createSubmit' | 'selectSubmit' | 'syncPush' | 'syncPull' | 'join',
+    id?: string,
+    name?: string,
+    channelId?: string,
+    discordToken?: string,
+    mode?: 'create' | 'select',
+    repoUrl?: string,
+    githubToken?: string,
+    gitlabToken?: string,
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    if (action === 'select') {
+      if (!id || id === this.store.activeProjectId()) {
+        return;
+      }
+      if (this.store.hasUnsentChanges()) {
+        const continueLabel = t(locale, 'projectSwitchContinue');
+        const choice = await vscode.window.showWarningMessage(
+          t(locale, 'projectSwitchUnsynced'),
+          { modal: true },
+          t(locale, 'projectSwitchCancel'),
+          continueLabel,
+        );
+        if (choice !== continueLabel) {
+          return;
+        }
+      }
+      await this.store.setActiveProject(id);
+      await this.pushOpenReviewSchemes();
+      return;
+    }
+    if (action === 'create') {
+      const projects = this.store.projects();
+      const needChannel = projects.length === 0 || !this.store.baseChannelId().trim();
+      const status = await secretsStatus(this.hostSecrets);
+      await webview.postMessage({
+        type: 'projectCreatePanel',
+        needChannel,
+        hasDiscord: status.hasDiscord,
+        mode: mode === 'select' ? 'select' : 'create',
+        gate: false,
+        profileName: this.store.activeProfileName,
+      });
+      return;
+    }
+    if (action === 'createSubmit') {
+      const trimmedName = (name || '').trim();
+      if (!trimmedName) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectNameEmpty'),
+          canRetry: false,
+        });
+        return;
+      }
+      const projects = this.store.projects();
+      const needChannel = projects.length === 0 || !this.store.baseChannelId().trim();
+      let nextChannel: string | undefined;
+      if (needChannel) {
+        const ch = (channelId || '').trim();
+        if (!ch) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'projectChannelEmpty'),
+            canRetry: false,
+          });
+          return;
+        }
+        if (!isValidChannelId(ch)) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'projectChannelInvalid'),
+            canRetry: false,
+          });
+          return;
+        }
+        nextChannel = ch;
+      }
+      const newToken = (discordToken || '').trim();
+      if (newToken) {
+        await storeSecrets(this.hostSecrets, { discord: newToken });
+      } else {
+        const status = await secretsStatus(this.hostSecrets);
+        if (!status.hasDiscord) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'discordTokenRequired'),
+            canRetry: false,
+          });
+          return;
+        }
+      }
+      const trimmedRepo = (repoUrl || '').trim();
+      const detectedProvider = recognizedRepoProvider(trimmedRepo);
+      if (!detectedProvider) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectRepositoryRequired'),
+          canRetry: false,
+        });
+        return;
+      }
+      const hostToken = (
+        detectedProvider === 'github' ? githubToken : gitlabToken
+      )?.trim();
+      if (!hostToken) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(
+            locale,
+            detectedProvider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab',
+            { name: this.store.activeProfileName },
+          ),
+          canRetry: false,
+        });
+        return;
+      }
+      await storeSecrets(this.hostSecrets, {
+        profileId: this.store.activeProfileId,
+        github: detectedProvider === 'github' ? hostToken : undefined,
+        gitlab: detectedProvider === 'gitlab' ? hostToken : undefined,
+      });
+      const repo = { provider: detectedProvider, repoUrl: trimmedRepo };
+      try {
+        const result = await this.store.publishNewProject(trimmedName, nextChannel, repo);
+        if (!result.ok) {
+          const text = result.message || 'Failed to post base.json';
+          this.notify(`Syn3: ${text}`, 'error');
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: result.canRetry ? t(locale, 'projectCreateRetryHint') : text,
+            canRetry: result.canRetry,
+          });
+          return;
+        }
+        await webview.postMessage({ type: 'projectCreateDone' });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        this.notify(`Syn3: ${text}`, 'error');
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: text,
+          canRetry: false,
+        });
+      }
+      return;
+    }
+    if (action === 'selectSubmit') {
+      const ch = (channelId || '').trim();
+      if (!ch) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectChannelEmpty'),
+          canRetry: false,
+        });
+        return;
+      }
+      if (!isValidChannelId(ch)) {
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: t(locale, 'projectChannelInvalid'),
+          canRetry: false,
+        });
+        return;
+      }
+      const newToken = (discordToken || '').trim();
+      if (newToken) {
+        await storeSecrets(this.hostSecrets, { discord: newToken });
+      } else {
+        const status = await secretsStatus(this.hostSecrets);
+        if (!status.hasDiscord) {
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: t(locale, 'discordTokenRequired'),
+            canRetry: false,
+          });
+          return;
+        }
+      }
+      try {
+        const pull = await this.store.pullBaseFromChannel(ch);
+        if (!pull.ok && pull.message && pull.message !== 'Nothing to pull') {
+          this.notify(`Syn3: ${pull.message}`, 'error');
+          await webview.postMessage({
+            type: 'projectCreateError',
+            message: pull.message,
+            canRetry: false,
+          });
+          return;
+        }
+        await webview.postMessage({ type: 'projectCreateDone' });
+        if (this.store.machineIsBound()) {
+          await this.syncOpenSurfacesIfNeeded(true);
+        } else {
+          await this.postProfileSettings(webview, GENERAL_PROFILE_ID);
+        }
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        this.notify(`Syn3: ${text}`, 'error');
+        await webview.postMessage({
+          type: 'projectCreateError',
+          message: text,
+          canRetry: false,
+        });
+      }
+      return;
+    }
+    if (action === 'join') {
+      const ch = await vscode.window.showInputBox({
+        title: t(locale, 'projectJoinTitle'),
+        prompt: t(locale, 'projectChannel'),
+        placeHolder: t(locale, 'channelIdPlaceholder'),
+        validateInput: (v) => {
+          const trimmed = v.trim();
+          if (!trimmed) {
+            return t(locale, 'projectChannelEmpty');
+          }
+          if (!isValidChannelId(trimmed)) {
+            return t(locale, 'projectChannelInvalid');
+          }
+          return undefined;
+        },
+      });
+      if (!ch?.trim()) {
+        return;
+      }
+      await this.withBaseConfigBusy(async () => {
+        await this.store.setCatalogChannels({ profile: ch.trim() });
+        const pull = await this.store.pullProfileConfig();
+        if (!pull.ok && pull.message) {
+          const text =
+            pull.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : pull.message;
+          this.notify(`Syn3: ${text}`, 'error');
+        }
+      });
+      return;
+    }
+    if (action === 'syncPush') {
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pushProfileConfig();
+        this.showBaseConfigResult(result);
+      });
+      return;
+    }
+    if (action === 'syncPull') {
+      await this.withBaseConfigBusy(async () => {
+        const result = await this.store.pullProfileConfig();
+        this.showBaseConfigResult(result);
+      });
+    }
+  }
+
+  private showBaseConfigResult(result: { ok: boolean; message?: string }): void {
+    if (result.ok) {
+      return;
+    }
+    this.showBaseConfigError(result.message || 'Failed to post base.json');
+  }
+
+  private showBaseConfigError(message: string): void {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const text = message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : message;
+    this.notify(`Syn3: ${text}`, 'error');
+  }
+
+  private postBaseConfigBusy(busy: boolean): void {
+    for (const webview of this.webviews) {
+      void webview.postMessage({ type: 'baseConfigBusy', busy });
+    }
+  }
+
+  private async withBaseConfigBusy(task: () => Promise<void>): Promise<void> {
+    if (this.baseConfigBatch) {
+      this.postBaseConfigBusy(true);
+      this.showBaseConfigError('Base config sync is already running');
+      return;
+    }
+    this.baseConfigBatch = true;
+    this.postBaseConfigBusy(true);
+    try {
+      await task();
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      this.showBaseConfigError(text);
+    } finally {
+      this.baseConfigBatch = false;
+      this.postBaseConfigBusy(false);
+    }
+  }
+
+  private async onPageCloud(
+    action: 'push' | 'pull',
+    pageId: string | undefined,
+  ): Promise<void> {
+    if (!pageId || !this.store.page(pageId)) {
+      return;
+    }
+    const locale = normalizeLocale(this.store.appearance.language);
+    if (action === 'pull') {
+      this.bodyCache.clear();
+      this.bodyFlight.clear();
+      this.bodyGen += 1;
+      this.scheduleAll();
+    }
+    const result =
+      action === 'push'
+        ? await this.store.pushPageConfig(pageId)
+        : await this.store.pullPageConfig(pageId);
+    if (!result.ok && result.message) {
+      const text =
+        result.message === 'cloudPullFirst' ? t(locale, 'cloudPullFirst') : result.message;
+      this.notify(`Syn3: ${text}`, 'error');
+    }
+  }
+
+  /** Toolbar Accept / Send: BASE then dirty or newer known pages. */
+  private async onWorkspaceCloud(action: 'push' | 'pull'): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    if (action === 'pull') {
+      this.bodyCache.clear();
+      this.bodyFlight.clear();
+      this.bodyGen += 1;
+      this.scheduleAll();
+    }
+    await this.withBaseConfigBusy(async () => {
+      const result =
+        action === 'push'
+          ? await this.store.pushWorkspaceCloud()
+          : await this.store.pullWorkspaceCloud();
+      if (!result.ok && result.message) {
+        if (result.message === 'cloudPullFirst' || !result.message.includes('\t')) {
+          this.showBaseConfigError(result.message);
+          return;
+        }
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'error');
+      }
+    });
+  }
+
+  /** Send pages that differ from Discord. The lock is one of those differences. */
+  private async onPageCloudPushAll(webview: vscode.Webview): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    this.pageCloudBatch = true;
+    let pushed = 0;
+    let ok = false;
+    try {
+      const result = await this.store.pushDirtyPageConfigs();
+      pushed = result.pushed;
+      ok = result.ok;
+      if (!result.ok && result.message) {
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'error');
+      }
+    } finally {
+      this.pageCloudBatch = false;
+      void webview.postMessage({ type: 'pageCloudBusy', busy: false, pushed, ok });
+    }
+  }
+
+  /** Pull every page that has a newer cloud config. */
+  private async onPageCloudPullAll(webview: vscode.Webview): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    this.pageCloudBatch = true;
+    this.bodyCache.clear();
+    this.bodyFlight.clear();
+    this.bodyGen += 1;
+    this.scheduleAll();
+    try {
+      const result = await this.store.pullNewerPageConfigs();
+      if (!result.ok && result.message) {
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'error');
+      }
+    } finally {
+      this.pageCloudBatch = false;
+      void webview.postMessage({ type: 'pageCloudBusy', busy: false });
+    }
+  }
+
+  /** Manual Discord scan from the pager reload button. */
+  private async onPageCloudCheck(webview: vscode.Webview): Promise<void> {
+    if (this.pageCloudBatch) {
+      return;
+    }
+    this.pageCloudBatch = true;
+    try {
+      const result = await this.store.checkCloud();
+      if (!result.ok && result.message) {
+        this.notify(`Syn3: ${this.formatCloudFailures(result.message)}`, 'warning');
+      }
+    } finally {
+      this.pageCloudBatch = false;
+      void webview.postMessage({ type: 'pageCloudBusy', busy: false });
     }
   }
 
@@ -3136,40 +6448,1261 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     if (this.store.pages().length >= MAX_PAGES) {
       return;
     }
-    const locale = normalizeLocale(this.store.appearance.language);
-    const name = await vscode.window.showInputBox({
-      title: t(locale, 'menuNewPage'),
-      prompt: 'Page name',
-      placeHolder: 'e.g. Docs, Rules, Tips',
-      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
-    });
-    if (!name) {
+    const pageKind = normalizePageKind(kind) ?? 'files';
+    if (this.store.hasPageKind(pageKind)) {
       return;
     }
-    const pageKind = normalizePageKind(kind) ?? 'files';
-    const id = await this.store.createPage(name, pageKind);
-    if (id) {
-      this.activePageByWebview.set(webview, id);
-      this.persistSurfacePage(webview, id);
-      await webview.postMessage({ type: 'openPage', pageId: id });
+    if (pageKind === 'review') {
+      const defaults = await this.review.createPageDefaults();
+      if ('error' in defaults) {
+        this.notify(`Syn3: ${defaults.error}`, 'error');
+        return;
+      }
+      const projectRepo = this.store.projectRepo();
+      await webview.postMessage({
+        type: 'reviewCreatePagePanel',
+        origin: defaults.origin,
+        suggestedProvider: projectRepo?.provider || defaults.suggestedProvider,
+        channelId: this.store.catalogChannels().review || '',
+        repoUrl: projectRepo?.repoUrl || '',
+        projectRepoLocked: !!projectRepo?.repoUrl,
+        hasGitlab: defaults.hasGitlab,
+        hasGithub: defaults.hasGithub,
+        hasDiscord: defaults.hasDiscord,
+        githubToken: defaults.githubToken,
+        gitlabToken: defaults.gitlabToken,
+      });
+      return;
     }
+    if (pageKind === 'scenarios') {
+      await this.postScenarioPagePanel(webview, { mode: 'create' });
+      return;
+    }
+    await this.postPageSettingsPanel(webview, { mode: 'create', kind: pageKind });
   }
 
-  private async renamePageFlow(pageId: string): Promise<void> {
+  private mapKindChannelKey(kind: PageKind): 'explorer' | 'notes' | 'links' | 'figma' | undefined {
+    if (kind === 'files') {
+      return 'explorer';
+    }
+    if (kind === 'notes') {
+      return 'notes';
+    }
+    if (kind === 'links') {
+      return 'links';
+    }
+    if (kind === 'figma') {
+      return 'figma';
+    }
+    return undefined;
+  }
+
+  private catalogChannelForPageKind(kind: PageKind): string {
+    const key = this.mapKindChannelKey(kind);
+    if (!key) {
+      return '';
+    }
+    return this.store.catalogChannels()[key] || '';
+  }
+
+  private async postPageSettingsPanel(
+    webview: vscode.Webview,
+    opts: {
+      mode: 'create' | 'edit';
+      pageId?: string;
+      kind: PageKind;
+      name?: string;
+      description?: string;
+    },
+  ): Promise<void> {
+    const status = await secretsStatus(this.hostSecrets);
+    const figmaPage = opts.kind === 'figma';
+    const figmaToken = figmaPage
+      ? (await readFigmaToken(this.hostSecrets, this.store.activeProfileId)) || ''
+      : undefined;
+    const figmaFiles = figmaPage
+      ? this.store.page(opts.pageId || '')?.figmaFiles ?? []
+      : undefined;
+    await webview.postMessage({
+      type: 'pageSettingsPanel',
+      mode: opts.mode,
+      pageId: opts.pageId || '',
+      kind: opts.kind,
+      name: opts.name || '',
+      description: opts.description || '',
+      channelId: this.catalogChannelForPageKind(opts.kind),
+      hasDiscord: status.hasDiscord,
+      ...(figmaToken !== undefined ? { figmaToken } : {}),
+      ...(figmaFiles !== undefined ? { figmaFiles } : {}),
+      ...(figmaPage
+        ? {
+            figmaSkillPath: this.store.activeFigmaSkillPath(),
+            figmaModel: this.store.activeFigmaModel(),
+            figmaPrintThinking: this.store.activeFigmaPrint().printThinking,
+            figmaPrintTools: this.store.activeFigmaPrint().printTools,
+            figmaOpenInApp: this.store.activeFigmaOpenInApp(),
+          }
+        : {}),
+    });
+  }
+
+  private async openMapPageSettings(webview: vscode.Webview, pageId: string): Promise<void> {
     const page = this.store.page(pageId);
     if (!page) {
       return;
     }
-    const name = await vscode.window.showInputBox({
-      title: 'Rename page',
-      prompt: 'Page name',
-      value: page.name,
-      validateInput: (v) => (v.trim() ? undefined : 'Name cannot be empty'),
-    });
-    if (!name || name.trim() === page.name) {
+    if (page.kind === 'review') {
+      await this.openReviewPageSettings(webview, pageId);
       return;
     }
-    await this.store.renamePage(pageId, name);
+    if (page.kind === 'scenarios') {
+      await this.postScenarioPagePanel(webview, {
+        mode: 'edit',
+        pageId,
+        name: page.name,
+        description: page.description || '',
+      });
+      return;
+    }
+    await this.postPageSettingsPanel(webview, {
+      mode: 'edit',
+      pageId,
+      kind: page.kind,
+      name: page.name,
+      description: page.description || '',
+    });
+  }
+
+  private async createOrSaveScenarioPage(
+    webview: vscode.Webview,
+    message: {
+      pageId?: string;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+      scenarioSkillPath?: string;
+      scenarioModel?: string;
+      scenarioPrintThinking?: boolean;
+      scenarioPrintTools?: boolean;
+    },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'scenarioPageError', message: text });
+      this.notify(`Syn3: ${text}`, 'error');
+    };
+    const name = message.name.trim();
+    if (!name) {
+      await fail(t(locale, 'profileNameEmpty'));
+      return;
+    }
+    const channelId = (message.channelId || '').trim();
+    if (!channelId || !/^\d{5,}$/.test(channelId)) {
+      await fail(t(locale, 'projectChannelInvalid'));
+      return;
+    }
+    if (message.discordToken?.trim()) {
+      await storeSecrets(this.hostSecrets, { discord: message.discordToken });
+    }
+    const status = await secretsStatus(this.hostSecrets);
+    if (!status.hasDiscord) {
+      await fail(t(locale, 'discordTokenRequired'));
+      return;
+    }
+    await this.store.setActiveScenarioPaths({
+      scenarioSkillPath: message.scenarioSkillPath,
+      scenarioModel: message.scenarioModel,
+      scenarioPrintThinking: message.scenarioPrintThinking,
+      scenarioPrintTools: message.scenarioPrintTools,
+    });
+    if (message.pageId) {
+      const page = this.store.page(message.pageId);
+      const nextDesc = message.description || '';
+      if ((page?.name || '') !== name || (page?.description || '') !== nextDesc) {
+        await this.store.setPageMeta(message.pageId, name, nextDesc);
+      }
+      const prevChannel = (this.store.catalogChannels().scenarios || '').trim();
+      if (prevChannel !== channelId) {
+        await this.store.setCatalogChannels({ scenarios: channelId });
+        this.scenarios.bindChannel(channelId);
+        await this.pushScenarioState(webview, await this.scenarios.loadInitial(message.pageId));
+      }
+      return;
+    }
+    if (this.store.pages().length >= MAX_PAGES || this.store.hasPageKind('scenarios')) {
+      await fail(t(locale, 'pageKindTaken'));
+      return;
+    }
+    const hello = await this.postPageChannelHello('scenarios', channelId);
+    if (!hello.ok) {
+      await fail(hello.message);
+      return;
+    }
+    await this.store.setCatalogChannels({ scenarios: channelId });
+    this.scenarios.bindChannel(channelId);
+    const id = await this.store.createPage(name, 'scenarios', message.description);
+    if (!id) {
+      await fail('Failed to create page');
+      return;
+    }
+    await this.store.touchPageConfig(id);
+    await this.pushBaseAfterPageHello();
+    this.activePageByWebview.set(webview, id);
+    this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'scenarioPageDone' });
+    await webview.postMessage({ type: 'openPage', pageId: id });
+    const state = await this.scenarios.loadInitial(id);
+    await this.pushScenarioState(webview, state);
+  }
+
+  private pageSetupKind(kind: PageKind): SetupChannelKind {
+    if (kind === 'notes') {
+      return 'notes';
+    }
+    if (kind === 'links') {
+      return 'links';
+    }
+    if (kind === 'figma') {
+      return 'figma';
+    }
+    if (kind === 'review') {
+      return 'review';
+    }
+    if (kind === 'scenarios') {
+      return 'scenarios';
+    }
+    return 'explorer';
+  }
+
+  private async postScenarioPagePanel(
+    webview: vscode.Webview,
+    opts: { mode: 'create' | 'edit'; pageId?: string; name?: string; description?: string },
+  ): Promise<void> {
+    const status = await secretsStatus(this.hostSecrets);
+    const paths = this.store.activeScenarioPaths();
+    await webview.postMessage({
+      type: 'scenarioPagePanel',
+      mode: opts.mode,
+      pageId: opts.pageId || '',
+      name: opts.name || '',
+      description: opts.description || '',
+      channelId: this.store.catalogChannels().scenarios || '',
+      hasDiscord: status.hasDiscord,
+      scenarioSkillPath: paths.skillPath,
+      scenarioModel: paths.model,
+      scenarioPrintThinking: paths.printThinking,
+      scenarioPrintTools: paths.printTools,
+    });
+  }
+
+  private async pushScenarioState(webview: vscode.Webview, state: ScenarioPageState): Promise<void> {
+    await webview.postMessage({ type: 'scenarioState', scenario: state });
+  }
+
+  /** Post the map hello into the page channel. Does not look for an older hello. */
+  private async postPageChannelHello(
+    kind: PageKind,
+    channelId: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const token = (await getSecret(this.hostSecrets, SECRET_DISCORD)) || '';
+    if (!token) {
+      return { ok: false, message: t(locale, 'reviewFieldDiscordToken') };
+    }
+    const setupKind = this.pageSetupKind(kind);
+    const posted = await postChannelMessage(token, channelId, setupHelloText(setupKind, locale));
+    if (!posted.ok) {
+      return posted;
+    }
+    return { ok: true };
+  }
+
+  /** Page-channel hello and base.json are different channels, so post base right away. */
+  private async pushBaseAfterPageHello(): Promise<void> {
+    await this.withBaseConfigBusy(async () => {
+      const result = await this.store.pushProfileConfig();
+      if (!result.ok && result.message && result.message !== 'Nothing to push') {
+        this.showBaseConfigResult(result);
+      }
+    });
+  }
+
+  /** Links page settings share the profile Figma token. An empty edit clears it. */
+  private async savePageFigmaToken(token: string | undefined, allowClear: boolean): Promise<void> {
+    if (typeof token !== 'string') {
+      return;
+    }
+    this.dropFigmaPreviewCache();
+    const trimmed = token.trim();
+    const profileId = this.store.activeProfileId;
+    if (trimmed) {
+      await writeFigmaToken(this.hostSecrets, profileId, trimmed);
+      return;
+    }
+    if (allowClear) {
+      await deleteFigmaToken(this.hostSecrets, profileId);
+    }
+  }
+
+  /** A saved token must not keep a preview that failed under the previous one. */
+  private dropFigmaPreviewCache(): void {
+    for (const key of this.linkPreviewCache.keys()) {
+      if (key.startsWith('figma')) {
+        this.linkPreviewCache.delete(key);
+      }
+    }
+    for (const key of this.linkPreviewInflight.keys()) {
+      if (key.startsWith('figma')) {
+        this.linkPreviewInflight.delete(key);
+      }
+    }
+  }
+
+  private async savePageDiscordAndChannel(
+    kind: PageKind,
+    channelId: string | undefined,
+    discordToken: string | undefined,
+  ): Promise<void> {
+    if (discordToken?.trim()) {
+      await storeSecrets(this.hostSecrets, { discord: discordToken });
+    }
+    const key = this.mapKindChannelKey(kind);
+    if (!key || channelId === undefined) {
+      return;
+    }
+    await this.store.setCatalogChannels({ [key]: channelId.trim() });
+  }
+
+  private async saveFigmaIconBindings(
+    webview: vscode.Webview,
+    message: { pageId?: string; bindings?: unknown; match?: unknown },
+  ): Promise<void> {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const pageId = typeof message.pageId === 'string' ? message.pageId : '';
+    const page = this.store.page(pageId);
+    if (!page || page.kind !== 'figma') {
+      await webview.postMessage({
+        type: 'figmaIconBindingsError',
+        message: t(locale, 'figmaIconDuplicate'),
+      });
+      return;
+    }
+    const prepared = prepareFigmaIconBindings(message.bindings, page.figmaIconBindings, message.match);
+    if (!prepared.ok) {
+      await webview.postMessage({
+        type: 'figmaIconBindingsError',
+        message: t(locale, prepared.reason === 'builtin' ? 'figmaIconBuiltin' : 'figmaIconDuplicate'),
+      });
+      return;
+    }
+    await this.store.setPageFigmaIcons(pageId, prepared.bindings, prepared.match);
+    await webview.postMessage({ type: 'figmaIconBindingsSaved' });
+  }
+
+  private async savePageSettingsFromPanel(
+    webview: vscode.Webview,
+    message: {
+      pageId?: string;
+      kind?: PageKind;
+      name: string;
+      description?: string;
+      channelId?: string;
+      discordToken?: string;
+      figmaToken?: string;
+      figmaFiles?: { url: string; label?: string }[];
+      figmaSkillPath?: string;
+      figmaModel?: string;
+      figmaPrintThinking?: boolean;
+      figmaPrintTools?: boolean;
+      figmaOpenInApp?: boolean;
+    },
+  ): Promise<void> {
+    const name = message.name.trim();
+    const locale = normalizeLocale(this.store.appearance.language);
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'pageSettingsError', message: text });
+    };
+    if (!name) {
+      await fail(t(locale, 'profileNameEmpty'));
+      return;
+    }
+    const channelId = typeof message.channelId === 'string' ? message.channelId.trim() : '';
+    if (channelId && !/^\d{5,}$/.test(channelId)) {
+      await fail(t(locale, 'projectChannelInvalid'));
+      return;
+    }
+    const editing = this.store.page(message.pageId || '');
+    const kind = editing?.kind ?? (normalizePageKind(message.kind) ?? 'files');
+    let figmaLinks: FigmaStoredLink[] | undefined;
+    if (kind === 'figma') {
+      const values = Array.isArray(message.figmaFiles) ? message.figmaFiles : [];
+      const collected = collectFigmaLinks(values);
+      if (!collected.ok) {
+        await fail(t(locale, collected.reason === 'duplicate' ? 'figmaFileDuplicate' : 'figmaFileInvalid'));
+        return;
+      }
+      figmaLinks = collected.links;
+      if (typeof message.figmaToken === 'string') {
+        await this.savePageFigmaToken(message.figmaToken, !!message.pageId);
+      }
+      if (typeof message.figmaSkillPath === 'string') {
+        await this.store.setActiveFigmaSkillPath(message.figmaSkillPath);
+      }
+      if (typeof message.figmaModel === 'string') {
+        await this.store.setActiveFigmaModel(message.figmaModel);
+      }
+      if (typeof message.figmaOpenInApp === 'boolean') {
+        await this.store.setActiveFigmaOpenInApp(message.figmaOpenInApp);
+      }
+      if (
+        typeof message.figmaPrintThinking === 'boolean' ||
+        typeof message.figmaPrintTools === 'boolean'
+      ) {
+        await this.store.setActiveFigmaPrint({
+          ...(typeof message.figmaPrintThinking === 'boolean'
+            ? { figmaPrintThinking: message.figmaPrintThinking }
+            : {}),
+          ...(typeof message.figmaPrintTools === 'boolean'
+            ? { figmaPrintTools: message.figmaPrintTools }
+            : {}),
+        });
+      }
+    }
+    if (message.pageId) {
+      const page = this.store.page(message.pageId);
+      if (!page) {
+        return;
+      }
+      await this.store.setPageMeta(message.pageId, name, message.description);
+      if (page.kind === 'figma' && figmaLinks) {
+        await this.store.setPageFigmaFiles(message.pageId, figmaLinks);
+      }
+      await this.savePageDiscordAndChannel(page.kind, channelId, message.discordToken);
+      return;
+    }
+    if (this.store.pages().length >= MAX_PAGES) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: 'Too many pages',
+      });
+      return;
+    }
+    if (!/^\d{5,}$/.test(channelId)) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: channelId ? t(locale, 'projectChannelInvalid') : t(locale, 'projectChannelEmpty'),
+      });
+      return;
+    }
+    if (kind === 'review') {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: 'Use review create panel',
+      });
+      return;
+    }
+    if (this.store.hasPageKind(kind)) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: t(locale, 'pageKindTaken'),
+      });
+      return;
+    }
+    if (message.discordToken?.trim()) {
+      await storeSecrets(this.hostSecrets, { discord: message.discordToken });
+    }
+    const hello = await this.postPageChannelHello(kind, channelId);
+    if (!hello.ok) {
+      this.notify(`Syn3: ${hello.message}`, 'error');
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: hello.message,
+      });
+      return;
+    }
+    const id = await this.store.createPage(name, kind, message.description);
+    if (!id) {
+      await webview.postMessage({
+        type: 'pageSettingsError',
+        message: 'Failed to create page',
+      });
+      return;
+    }
+    if (kind === 'figma' && figmaLinks) {
+      await this.store.setPageFigmaFiles(id, figmaLinks);
+    }
+    await this.savePageDiscordAndChannel(kind, channelId, message.discordToken);
+    await this.pushBaseAfterPageHello();
+    await webview.postMessage({ type: 'pageSettingsSaved' });
+    this.activePageByWebview.set(webview, id);
+    this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'openPage', pageId: id });
+  }
+
+  private async createReviewPageFromPanel(
+    webview: vscode.Webview,
+    message: {
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      description?: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    },
+  ): Promise<void> {
+    const fail = async (text: string) => {
+      await webview.postMessage({ type: 'reviewCreatePageError', message: text });
+      this.notify(`Syn3: ${text}`, 'error');
+    };
+    if (this.store.pages().length >= MAX_PAGES) {
+      await fail('Too many pages');
+      return;
+    }
+    const name = message.name.trim();
+    if (!name) {
+      await fail('page name is required');
+      return;
+    }
+    const storedRepo = this.store.projectRepo();
+    const provider = storedRepo?.provider || (isReviewHostProvider(message.provider) ? message.provider : undefined);
+    if (!provider) {
+      await fail('choose GitLab or GitHub');
+      return;
+    }
+    const defaults = await this.review.createPageDefaults();
+    if ('error' in defaults) {
+      await fail(defaults.error);
+      return;
+    }
+    const repoUrl = storedRepo?.repoUrl || (message.repoUrl || '').trim();
+    if (!repoUrl) {
+      await fail(t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired'));
+      return;
+    }
+    const accessError = this.review.validateCreateAccess({
+      provider,
+      channelId: message.channelId,
+      repoUrl,
+      origin: defaults.origin,
+    });
+    if (accessError) {
+      await fail(accessError);
+      return;
+    }
+    const secrets = await this.review.applyCreatePageSecrets({
+      provider,
+      gitlabToken: message.gitlabToken,
+      githubToken: message.githubToken,
+      discordToken: message.discordToken,
+    });
+    if (!secrets.ok) {
+      await fail(secrets.message);
+      return;
+    }
+    const channelId = message.channelId.trim();
+    const hello = await this.postPageChannelHello('review', channelId);
+    if (!hello.ok) {
+      await fail(hello.message);
+      return;
+    }
+    // Project review channel is what settings and later reloads read.
+    // Page access alone is dropped when that project channel is still empty.
+    await this.store.setCatalogChannels({ review: channelId });
+    await this.store.setProjectRepo({ provider, repoUrl });
+    const id = await this.store.createPage(name, 'review', message.description);
+    if (!id) {
+      await fail('Failed to create page');
+      return;
+    }
+    await this.review.savePageAccess(id, {
+      provider,
+      channelId,
+      repoUrl,
+    });
+    this.review.bindReviewChannel(channelId);
+    await this.store.touchPageConfig(id);
+    await this.pushBaseAfterPageHello();
+    this.activePageByWebview.set(webview, id);
+    this.persistSurfacePage(webview, id);
+    await webview.postMessage({ type: 'reviewCreatePageDone' });
+    await webview.postMessage({ type: 'openPage', pageId: id });
+    // Load once here. Later activePage events for the same pageId are ignored (rate limits).
+    await this.runReviewChannelLoad(webview, id, 'initial', () => this.review.loadInitial(id));
+    this.armReviewRefresh(webview);
+  }
+
+  private async openReviewPageSettings(webview: vscode.Webview, pageId: string): Promise<void> {
+    const page = this.store.page(pageId);
+    if (!page || page.kind !== 'review') {
+      return;
+    }
+    const defaults = await this.review.createPageDefaults();
+    if ('error' in defaults) {
+      this.notify(`Syn3: ${defaults.error}`, 'error');
+      return;
+    }
+    const access = await this.review.getAccess(pageId);
+    const projectRepo = this.store.projectRepo();
+    const lockedRepo = projectRepo?.repoUrl || access?.repoUrl || '';
+    const paths = this.store.activeReviewPaths();
+    await webview.postMessage({
+      type: 'reviewPageSettingsPanel',
+      pageId,
+      name: page.name,
+      description: page.description || '',
+      reviewScheme: this.store.reviewScheme(),
+      origin: defaults.origin,
+      repoUrl: lockedRepo || defaults.origin,
+      projectRepoLocked: !!lockedRepo,
+      suggestedProvider: projectRepo?.provider || access?.provider || defaults.suggestedProvider,
+      channelId: access?.channelId || this.store.catalogChannels().review || '',
+      hasGitlab: defaults.hasGitlab,
+      hasGithub: defaults.hasGithub,
+      hasDiscord: defaults.hasDiscord,
+      githubToken: defaults.githubToken,
+      gitlabToken: defaults.gitlabToken,
+      reviewSkillPath: paths.skillPath,
+      reviewFixSkillPath: paths.fixSkillPath,
+      explainSkillPath: paths.explainSkillPath,
+      studySkillPath: paths.studySkillPath,
+      reviewDirPath: paths.dirPath,
+      reviewModel: paths.model,
+      reviewFixModel: paths.fixModel,
+      reviewPrintThinking: paths.printThinking,
+      reviewPrintTools: paths.printTools,
+    });
+  }
+
+  private async updateReviewPageFromPanel(
+    webview: vscode.Webview,
+    message: {
+      pageId: string;
+      name: string;
+      provider: ReviewHostProvider;
+      channelId: string;
+      repoUrl: string;
+      description?: string;
+      gitlabToken?: string;
+      githubToken?: string;
+      discordToken?: string;
+    },
+  ): Promise<void> {
+    const page = this.store.page(message.pageId);
+    if (!page || page.kind !== 'review') {
+      return;
+    }
+    const name = message.name.trim();
+    if (!name) {
+      this.notify('Syn3: page name is required', 'error');
+      return;
+    }
+    const defaults = await this.review.createPageDefaults();
+    if ('error' in defaults) {
+      this.notify(`Syn3: ${defaults.error}`, 'error');
+      return;
+    }
+    const storedRepo = this.store.projectRepo();
+    const previous = await this.review.getAccess(message.pageId);
+    const provider =
+      storedRepo?.provider ||
+      (previous?.repoUrl ? previous.provider : undefined) ||
+      (isReviewHostProvider(message.provider) ? message.provider : undefined);
+    if (!provider) {
+      this.notify('Syn3: choose GitLab or GitHub', 'error');
+      return;
+    }
+    const repoUrl = storedRepo?.repoUrl || previous?.repoUrl || (message.repoUrl || '').trim();
+    const accessError = this.review.validateCreateAccess({
+      provider,
+      channelId: message.channelId,
+      repoUrl,
+      origin: defaults.origin,
+    });
+    if (accessError) {
+      this.notify(`Syn3: ${accessError}`, 'error');
+      return;
+    }
+    const secrets = await this.review.applyCreatePageSecrets({
+      provider,
+      gitlabToken: message.gitlabToken,
+      githubToken: message.githubToken,
+      discordToken: message.discordToken,
+    });
+    if (!secrets.ok) {
+      this.notify(`Syn3: ${secrets.message}`, 'error');
+      return;
+    }
+    await this.store.setPageMeta(message.pageId, name, message.description);
+    const channelId = message.channelId.trim();
+    if (!repoUrl) {
+      this.notify(`Syn3: ${t(normalizeLocale(this.store.appearance.language), 'projectRepoRequired')}`, 'error');
+      return;
+    }
+    await this.store.setCatalogChannels({ review: channelId });
+    await this.store.setProjectRepo({ provider, repoUrl });
+    await this.review.savePageAccess(message.pageId, {
+      provider,
+      channelId,
+      repoUrl,
+    });
+    this.review.bindReviewChannel(channelId);
+    await this.store.touchPageConfig(message.pageId);
+    if (previous?.channelId !== channelId) {
+      this.review.dropWindow(message.pageId);
+      await this.runReviewChannelLoad(webview, message.pageId, 'initial', () =>
+        this.review.loadInitial(message.pageId),
+      );
+    }
+  }
+
+  private async pushOpenReviewSchemes(): Promise<void> {
+    for (const view of this.webviews) {
+      const pageId = this.activePageByWebview.get(view);
+      const page = pageId ? this.store.page(pageId) : undefined;
+      if (!pageId || page?.kind !== 'review') {
+        continue;
+      }
+      const state = this.review.snapshot(pageId);
+      if (state) {
+        await this.pushReviewState(view, state);
+      }
+    }
+  }
+
+  private async pushReviewState(
+    webview: vscode.Webview,
+    state: ReviewPageState,
+    checkout?: string,
+  ): Promise<void> {
+    if (checkout !== undefined) {
+      this.checkoutName = checkout;
+    } else {
+      const gen = this.checkoutGen;
+      const branch = await currentBranch(this.store.root.fsPath);
+      if (this.checkoutGen === gen) {
+        this.checkoutName = branch.ok ? branch.value : '';
+      }
+    }
+    await webview.postMessage({
+      type: 'reviewState',
+      review: {
+        ...state,
+        checkout: this.checkoutName,
+        scheme: this.store.reviewScheme(),
+      },
+    });
+  }
+
+  /** Refresh review stamps when the IDE checkout changes. */
+  private async watchCheckout(): Promise<void> {
+    const extension = vscode.extensions.getExtension<CheckoutGitExtension>('vscode.git');
+    if (!extension) {
+      return;
+    }
+    let api: CheckoutGitAPI;
+    try {
+      const exports = extension.isActive ? extension.exports : await extension.activate();
+      api = exports.getAPI(1);
+    } catch {
+      return;
+    }
+    const bind = () => {
+      if (api.state !== 'initialized') {
+        return;
+      }
+      const seen = new Set<string>();
+      for (const repo of api.repositories) {
+        if (!this.checkoutRepoMatches(repo.rootUri)) {
+          continue;
+        }
+        const key = repo.rootUri.toString();
+        seen.add(key);
+        if (this.checkoutRepoDisposables.has(key)) {
+          continue;
+        }
+        this.checkoutRepoDisposables.set(
+          key,
+          repo.state.onDidChange(() => {
+            this.noteCheckoutHead(repo.state.HEAD?.name || '');
+          }),
+        );
+        this.noteCheckoutHead(repo.state.HEAD?.name || '');
+      }
+      for (const [key, item] of this.checkoutRepoDisposables) {
+        if (seen.has(key)) {
+          continue;
+        }
+        item.dispose();
+        this.checkoutRepoDisposables.delete(key);
+      }
+    };
+    if (api.state === 'initialized') {
+      bind();
+    }
+    this.checkoutDisposables.push(
+      api.onDidChangeState(() => bind()),
+      api.onDidOpenRepository(() => bind()),
+      api.onDidCloseRepository(() => bind()),
+    );
+  }
+
+  private checkoutRepoMatches(rootUri: vscode.Uri): boolean {
+    const repo = path.resolve(rootUri.fsPath);
+    const project = path.resolve(this.store.root.fsPath);
+    return project === repo || project.startsWith(repo + path.sep);
+  }
+
+  private noteCheckoutHead(name: string): void {
+    const next = name.trim();
+    if (next === this.checkoutName) {
+      this.checkoutSeeded = true;
+      return;
+    }
+    if (!this.checkoutSeeded) {
+      this.checkoutSeeded = true;
+      this.checkoutName = next;
+      return;
+    }
+    this.checkoutGen += 1;
+    this.checkoutName = next;
+    if (this.store.reviewMapFilters().checkout) {
+      void this.reloadOpenReviewsForCheckout();
+    } else {
+      void this.pushCheckoutToOpenReviews();
+    }
+  }
+
+  private async pushCheckoutToOpenReviews(): Promise<void> {
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      const pageId = this.pageIdFor(webview);
+      if (this.store.page(pageId)?.kind !== 'review') {
+        continue;
+      }
+      await this.pushReviewState(webview, this.review.snapshot(pageId), this.checkoutName);
+    }
+  }
+
+  /**
+   * Open a review page. A window already fetched for this page is shown as-is.
+   * Discord is hit only for the first load, or when a fetch is not already running.
+   * The project's review channel is used when the page binding has none.
+   */
+  private async showReviewPage(webview: vscode.Webview, pageId: string): Promise<void> {
+    const access = await this.review.getAccess(pageId);
+    const projectChannel = (this.store.catalogChannels().review || '').trim();
+    this.review.bindReviewChannel(projectChannel);
+    const channel = (access?.channelId || projectChannel).trim();
+    if (!channel) {
+      this.review.dropWindow(pageId);
+      await this.pushReviewState(webview, this.review.snapshot(pageId));
+      return;
+    }
+    if (this.review.hasWindow(pageId)) {
+      await this.pushReviewState(webview, this.review.snapshot(pageId));
+      return;
+    }
+    if (this.review.isLoading(pageId)) {
+      return;
+    }
+    const override = access?.channelId?.trim() ? undefined : projectChannel;
+    await this.runReviewChannelLoad(webview, pageId, 'initial', () =>
+      this.review.loadInitial(pageId, override),
+    );
+  }
+
+  /**
+   * Project switch: forget messages from the previous review channel.
+   * If the new project has a review channel, open review pages read it.
+   */
+  private async reloadReviewOnProjectChange(): Promise<void> {
+    const projectId = this.store.activeProjectId() ?? '';
+    const profileId = this.store.activeProfileId;
+    const channel = (this.store.catalogChannels().review || '').trim();
+    const key = `${projectId}\n${profileId}\n${channel}`;
+    if (key === this.reviewProjectKey) {
+      return;
+    }
+    const first = this.reviewProjectKey === '';
+    this.reviewProjectKey = key;
+    if (first) {
+      return;
+    }
+    this.review.dropAllWindows();
+    for (const webview of this.webviews) {
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      const pageId = this.pageIdFor(webview);
+      if (this.store.page(pageId)?.kind !== 'review') {
+        continue;
+      }
+      this.review.armReset(pageId);
+      try {
+        await this.showReviewPage(webview, pageId);
+      } finally {
+        this.review.clearReset(pageId);
+      }
+    }
+  }
+
+  /** Drop the loaded window and read the channel again. Closes file panels. */
+  private async reloadReviewPage(webview: vscode.Webview, pageId: string): Promise<void> {
+    this.review.armReset(pageId);
+    this.review.dropWindow(pageId);
+    try {
+      await this.runReviewChannelLoad(webview, pageId, 'initial', () => this.review.loadInitial(pageId));
+    } finally {
+      this.review.clearReset(pageId);
+    }
+  }
+
+  /** Checkout filter is on and git moved: same full reload as a filter click. */
+  private async reloadOpenReviewsForCheckout(): Promise<void> {
+    const gen = this.checkoutGen;
+    for (const webview of this.webviews) {
+      if (gen !== this.checkoutGen) {
+        return;
+      }
+      if (!this.readyWebviews.has(webview)) {
+        continue;
+      }
+      const pageId = this.pageIdFor(webview);
+      if (this.store.page(pageId)?.kind !== 'review') {
+        continue;
+      }
+      await this.reloadReviewPage(webview, pageId);
+    }
+  }
+
+  /**
+   * Paint a placeholder, run git/Discord work, then replace the placeholder
+   * with the settled snapshot. A failed attempt pushes the cleared page itself.
+   */
+  private async withReviewPlaceholder<T extends { kind: string; state?: ReviewPageState }>(
+    webview: vscode.Webview,
+    begin: () => ReviewPageState,
+    end: () => ReviewPageState,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    let result: T;
+    try {
+      await this.pushReviewState(webview, begin());
+      result = await run();
+    } catch (error) {
+      await this.pushReviewState(webview, end());
+      throw error;
+    }
+    const state = end();
+    if (result.kind === 'state') {
+      return { ...result, state };
+    }
+    await this.pushReviewState(webview, state);
+    return result;
+  }
+
+  /** Like withReviewPlaceholder, but holds the review/explain agent busy lock. */
+  private async withReviewAgentPlaceholder<T extends { kind: string; state?: ReviewPageState }>(
+    webview: vscode.Webview,
+    begin: () => ReviewPageState,
+    end: () => ReviewPageState,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    this.review.beginAgentBusy();
+    try {
+      return await this.withReviewPlaceholder(webview, begin, end, run);
+    } finally {
+      this.review.endAgentBusy();
+    }
+  }
+
+  private async handleExplainFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    messageId: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      this.notify(`Syn3: ${result.message}`, 'error');
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
+          return;
+        }
+        const retry = await this.withReviewAgentPlaceholder(
+          webview,
+          () => this.review.beginExplainSkeleton(pageId, messageId),
+          () => this.review.endExplainSkeleton(pageId, messageId),
+          () => this.review.retryExplainFile(pageId, messageId),
+        );
+        await this.handleExplainFileResult(webview, pageId, messageId, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
+  }
+
+  private async handleExplainRootFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    branch: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      this.notify(`Syn3: ${result.message}`, 'error');
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
+          return;
+        }
+        this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+        const retry = await this.withReviewAgentPlaceholder(
+          webview,
+          () => this.review.beginExplainRootSkeleton(pageId, branch),
+          () => this.review.endExplainRootSkeleton(pageId, branch),
+          () => this.review.retryRootExplainFile(pageId),
+        );
+        await this.handleExplainRootFileResult(webview, pageId, branch, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
+  }
+
+  /** Push a skeleton edge, run the fetch, then push the settled window. */
+  private async runReviewChannelLoad(
+    webview: vscode.Webview,
+    pageId: string,
+    edge: ReviewLoadEdge,
+    load: () => Promise<ReviewPageState>,
+  ): Promise<void> {
+    await this.pushReviewState(webview, this.review.beginLoad(pageId, edge));
+    try {
+      await load();
+    } finally {
+      await this.pushReviewState(webview, this.review.finishLoad(pageId));
+      if (edge !== 'initial') {
+        this.toastReviewEdgeNotice(pageId);
+      }
+    }
+  }
+
+  private toastReviewEdgeNotice(pageId: string): void {
+    const message = this.review.takeEdgeNotice(pageId);
+    if (message) {
+      this.notify(`Syn3: ${message}`, 'error');
+    }
+  }
+
+  private async handleReviewPlus(webview: vscode.Webview, pageId: string): Promise<void> {
+    const result = await this.review.handleCreateMr(pageId);
+    if (result.kind === 'needPanel') {
+      await webview.postMessage({
+        type: 'reviewMrPanel',
+        pageId,
+        branches: result.branches,
+        parent: result.parent,
+        people: result.people,
+        defaultAssignee: result.defaultAssignee,
+        provider: result.provider,
+      });
+      return;
+    }
+    if (result.kind === 'notice') {
+      this.toastReviewNotice(result.provider, result.code);
+      return;
+    }
+    this.notify(`Syn3: ${result.message}`, 'error');
+  }
+
+  private async handleReviewPull(
+    webview: vscode.Webview,
+    pageId: string,
+    sourceBranch?: string,
+  ): Promise<void> {
+    const title = this.review.pullSkeletonTitle();
+    const result = await this.withReviewPlaceholder(
+      webview,
+      () => this.review.beginMrSkeleton(pageId, title, false),
+      () => this.review.endMrSkeleton(pageId, title),
+      () => this.review.pullExistingMr(pageId, sourceBranch),
+    );
+    if (result.kind === 'notice') {
+      this.toastReviewNotice(result.provider, result.code);
+      return;
+    }
+    await this.handleReviewMrResult(webview, pageId, result, true);
+  }
+
+  private toastReviewNotice(
+    provider: ReviewHostProvider,
+    code: 'alreadyOpen' | 'noOpen' | 'alreadyInChannel' | 'added',
+  ): void {
+    const locale = normalizeLocale(this.store.appearance.language);
+    const github = provider === 'github';
+    const key =
+      code === 'alreadyOpen'
+        ? github
+          ? 'reviewPrAlreadyOpen'
+          : 'reviewMrAlreadyOpen'
+        : code === 'noOpen'
+          ? github
+            ? 'reviewNoOpenPr'
+            : 'reviewNoOpenMr'
+          : code === 'alreadyInChannel'
+            ? github
+              ? 'reviewPrInChannel'
+              : 'reviewMrInChannel'
+            : github
+              ? 'reviewPrAdded'
+              : 'reviewMrAdded';
+    const line = `Syn3: ${t(locale, key)}`;
+    const tone = code === 'noOpen' || code === 'alreadyInChannel' ? 'warning' : 'info';
+    this.notify(line, tone);
+  }
+
+  private async handleReviewMrResult(
+    webview: vscode.Webview,
+    pageId: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState; provider?: ReviewHostProvider }
+      | { kind: 'discordFail'; mr: ReviewMr; message: string }
+      | { kind: 'error'; message: string },
+    announceAdded = false,
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      this.notify(`Syn3: ${result.message}`, 'error');
+      return;
+    }
+    if (result.kind === 'discordFail') {
+      this.pendingDiscordMr = { pageId, mr: result.mr };
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewDiscordFail'),
+        t(locale, 'reviewRefresh'),
+      );
+      if (choice === t(locale, 'reviewRefresh')) {
+        const retry = await this.withReviewPlaceholder(
+          webview,
+          () => this.review.beginMrSkeleton(pageId, result.mr.title, result.mr.draft),
+          () => this.review.endMrSkeleton(pageId, result.mr.title),
+          () => this.review.retryDiscordPost(pageId, result.mr),
+        );
+        await this.handleReviewMrResult(webview, pageId, retry, announceAdded);
+      }
+      return;
+    }
+    this.pendingDiscordMr = undefined;
+    await this.pushReviewState(webview, result.state);
+    if (!announceAdded) {
+      return;
+    }
+    const provider = result.provider ?? (await this.review.getAccess(pageId))?.provider;
+    if (provider) {
+      this.toastReviewNotice(provider, 'added');
+    }
+  }
+
+  private async handleReviewFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    messageId: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      this.notify(`Syn3: ${result.message}`, 'error');
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
+          return;
+        }
+        const retry = await this.withReviewAgentPlaceholder(
+          webview,
+          () => this.review.beginReviewSkeleton(pageId, messageId),
+          () => this.review.endReviewSkeleton(pageId, messageId),
+          () => this.review.retryReviewFile(pageId, messageId),
+        );
+        await this.handleReviewFileResult(webview, pageId, messageId, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
+  }
+
+  private async handleReviewRootFileResult(
+    webview: vscode.Webview,
+    pageId: string,
+    branch: string,
+    result:
+      | { kind: 'state'; state: ReviewPageState }
+      | { kind: 'fileFail'; message: string }
+      | { kind: 'error'; message: string },
+  ): Promise<void> {
+    if (result.kind === 'error') {
+      this.notify(`Syn3: ${result.message}`, 'error');
+      return;
+    }
+    if (result.kind === 'fileFail') {
+      const locale = normalizeLocale(this.store.appearance.language);
+      const choice = await vscode.window.showErrorMessage(
+        t(locale, 'reviewFileFail'),
+        t(locale, 'reviewRetry'),
+      );
+      if (choice === t(locale, 'reviewRetry')) {
+        if (this.review.isAgentBusy()) {
+          this.notify(`Syn3: ${t(locale, 'reviewAgentBusy')}`, 'error');
+          return;
+        }
+        this.review.bindReviewChannel(this.store.catalogChannels().review || '');
+        const retry = await this.withReviewAgentPlaceholder(
+          webview,
+          () => this.review.beginRootSkeleton(pageId, branch),
+          () => this.review.endRootSkeleton(pageId, branch),
+          () => this.review.retryRootReviewFile(pageId),
+        );
+        await this.handleReviewRootFileResult(webview, pageId, branch, retry);
+      }
+      return;
+    }
+    await this.pushReviewState(webview, result.state);
   }
 
   private async deletePageFlow(webview: vscode.Webview, pageId: string): Promise<void> {
@@ -3201,7 +7734,21 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     url: string,
     requestId: string,
   ): Promise<void> {
-    const cached = this.linkPreviewCache.get(url);
+    if (!figmaLinkPreviewEnabled && parseFigmaFrame(url)) {
+      await webview.postMessage({
+        type: 'previewLinkResult',
+        requestId,
+        url,
+        empty: true,
+      });
+      return;
+    }
+    const frame = parseFigmaFrame(url);
+    const figmaToken = frame
+      ? await readFigmaToken(this.hostSecrets, this.store.activeProfileId)
+      : undefined;
+    const cacheKey = frame ? figmaPreviewCacheKey(url, figmaToken) : url;
+    const cached = this.linkPreviewCache.get(cacheKey);
     if (cached) {
       await webview.postMessage({
         type: 'previewLinkResult',
@@ -3211,15 +7758,14 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       });
       return;
     }
-    let inflight = this.linkPreviewInflight.get(url);
+    let inflight = this.linkPreviewInflight.get(cacheKey);
     if (!inflight) {
-      inflight = this.fetchLinkPreview(url).finally(() => {
-        this.linkPreviewInflight.delete(url);
+      inflight = this.fetchLinkPreview(cacheKey, url, frame, figmaToken).finally(() => {
+        this.linkPreviewInflight.delete(cacheKey);
       });
-      this.linkPreviewInflight.set(url, inflight);
+      this.linkPreviewInflight.set(cacheKey, inflight);
     }
-    await inflight;
-    const result = this.linkPreviewCache.get(url) ?? { empty: true as const };
+    const result = (await inflight) ?? this.linkPreviewCache.get(cacheKey) ?? { empty: true as const };
     await webview.postMessage({
       type: 'previewLinkResult',
       requestId,
@@ -3228,17 +7774,62 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     });
   }
 
-  private async fetchLinkPreview(url: string): Promise<void> {
+  private async fetchLinkPreview(
+    cacheKey: string,
+    url: string,
+    frame: ReturnType<typeof parseFigmaFrame>,
+    figmaToken: string | undefined,
+  ): Promise<{ image?: string; description?: string; empty?: true } | undefined> {
     try {
+      if (frame) {
+        if (!figmaToken) {
+          const empty = { empty: true as const };
+          this.linkPreviewCache.set(cacheKey, empty);
+          return empty;
+        }
+        const found = await loadFigmaPreview(frame, figmaToken, async (imageUrl) => {
+          const file = await downloadPreviewImage(imageUrl, 2_500_000, 20_000);
+          if ('dataUrl' in file) {
+            return file.dataUrl;
+          }
+          return 'tooBig' in file ? 'too-big' : 'failed';
+        });
+        const locale = normalizeLocale(this.store.appearance.language);
+        if (found.retry) {
+          const description = found.limited
+            ? found.limitQuota
+              ? t(locale, 'figmaPreviewLimitedQuota')
+              : t(locale, 'figmaPreviewLimited', {
+                  minutes: Math.max(1, Math.ceil((found.retryAfterSec ?? 60) / 60)),
+                })
+            : found.detail || t(locale, 'figmaPreviewEmpty');
+          return { description };
+        }
+        const description = found.denied
+          ? t(locale, 'figmaPreviewDenied')
+          : found.detail || t(locale, 'figmaPreviewEmpty');
+        if (found.image) {
+          const hit = { image: found.image };
+          this.linkPreviewCache.set(cacheKey, hit);
+          return hit;
+        }
+        const miss = { description };
+        if (!found.denied) {
+          this.linkPreviewCache.set(cacheKey, miss);
+        }
+        return miss;
+      }
       const parsed = vscode.Uri.parse(url);
       if (parsed.scheme !== 'http' && parsed.scheme !== 'https') {
-        this.linkPreviewCache.set(url, { empty: true });
-        return;
+        const empty = { empty: true as const };
+        this.linkPreviewCache.set(cacheKey, empty);
+        return empty;
       }
       const html = await fetchTextLimited(url, 400_000, 8_000);
       if (!html) {
-        this.linkPreviewCache.set(url, { empty: true });
-        return;
+        const empty = { empty: true as const };
+        this.linkPreviewCache.set(cacheKey, empty);
+        return empty;
       }
       const description =
         metaContent(html, 'og:description') || metaContent(html, 'description') || undefined;
@@ -3255,12 +7846,17 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
         image = await fetchImageDataUrl(imageUrl, 800_000, 8_000);
       }
       if (!image && !description) {
-        this.linkPreviewCache.set(url, { empty: true });
-        return;
+        const empty = { empty: true as const };
+        this.linkPreviewCache.set(cacheKey, empty);
+        return empty;
       }
-      this.linkPreviewCache.set(url, { image, description });
+      const hit = { image, description };
+      this.linkPreviewCache.set(cacheKey, hit);
+      return hit;
     } catch {
-      this.linkPreviewCache.set(url, { empty: true });
+      const empty = { empty: true as const };
+      this.linkPreviewCache.set(cacheKey, empty);
+      return empty;
     }
   }
 
@@ -3272,26 +7868,46 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
     return `<img class="tool-icon tone-light" src="${light}" alt=""${modeAttr}${hiddenAttr}><img class="tool-icon tone-dark" src="${dark}" alt=""${modeAttr}${hiddenAttr}>`;
   }
 
-  private html(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface): string {
+  /** Cache-bust dev reloads without dropping asWebviewUri's own query. */
+  private mediaUri(webview: vscode.Webview, rev: string, ...parts: string[]): vscode.Uri {
+    const uri = webview.asWebviewUri(vscode.Uri.joinPath(this.media, ...parts));
+    const query = uri.query ? `${uri.query}&rev=${rev}` : `rev=${rev}`;
+    return uri.with({ query });
+  }
+
+  private html(webview: vscode.Webview, chrome: 'view' | 'panel', surface: MapSurface, rev: string): string {
     const nonce = crypto.randomBytes(16).toString('base64');
-    const css = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.css'));
-    const js = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'map.js'));
+    const css = this.mediaUri(webview, rev, 'map.css');
+    const js = this.mediaUri(webview, rev, 'map.js');
     // Themed copies of assets/bill.svg / box-3-line.svg for fixed type icons.
     const noteIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-light.svg'));
     const noteIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'bill-dark.svg'));
     const groupIconLight = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-light.svg'));
     const groupIconDark = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'icons', 'box-3-line-dark.svg'));
+    const lucideBase = webview.asWebviewUri(vscode.Uri.joinPath(this.media, 'lucide')).toString().replace(/\/?$/, '/');
     const icon = (name: string, mode?: string, hidden = false) => this.toolIcon(webview, name, mode, hidden);
+    const glyph = (d: string) =>
+      `<svg class="review-file-ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="${d}"></path></svg>`;
+    const iconGrow =
+      'M11 11V7H13V11H17V13H13V17H11V13H7V11H11ZM12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20Z';
+    const iconShrink =
+      'M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20ZM7 11H17V13H7V11Z';
+    const iconDownload =
+      'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z';
+    const iconClose =
+      'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z';
+    const iconLink =
+      'M17.6567 14.8285L16.2425 13.4143L17.6567 12.0001C19.2188 10.438 19.2188 7.9053 17.6567 6.3432C16.0946 4.78111 13.5619 4.78111 11.9998 6.3432L10.5856 7.75742L9.17139 6.3432L10.5856 4.92899C12.9287 2.58584 16.7277 2.58584 19.0709 4.92899C21.414 7.27214 21.414 11.0712 19.0709 13.4143L17.6567 14.8285ZM14.8282 17.657L13.414 19.0712C11.0709 21.4143 7.27189 21.4143 4.92875 19.0712C2.5856 16.728 2.5856 12.929 4.92875 10.5859L6.34296 9.17163L7.75717 10.5859L6.34296 12.0001C4.78086 13.5622 4.78086 16.0949 6.34296 17.657C7.90506 19.219 10.4377 19.219 11.9998 17.657L13.414 16.2427L14.8282 17.657ZM14.8282 7.75742L16.2425 9.17163L9.17139 16.2427L7.75717 14.8285L14.8282 7.75742Z';
     const sideAttr = surface === 'left' || surface === 'right' ? ` data-side="${surface}"` : '';
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${css}">
 </head>
-<body class="chrome-${chrome}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
+<body class="chrome-${chrome}" data-boot-rev="${rev}" data-surface="${surface}"${sideAttr} data-note-icon-light="${noteIconLight}" data-note-icon-dark="${noteIconDark}" data-group-icon-light="${groupIconLight}" data-group-icon-dark="${groupIconDark}" data-lucide-base="${lucideBase}" data-vscode-context='{"preventDefaultContextMenuItems": true}'>
   <div class="map-chrome">
   <div class="history-bar">
     <div class="toolbar-profile">
@@ -3301,22 +7917,31 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       <div id="toolbar-profile-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Профили">
         <div id="toolbar-profile-list" class="toolbar-profile-list"></div>
         <div class="toolbar-profile-create">
-          <input id="toolbar-profile-name" type="text" placeholder="Новый профиль" aria-label="Имя нового профиля" maxlength="64">
           <button id="toolbar-profile-add" class="history-btn" type="button" title="Создать профиль" aria-label="Создать профиль">
             ${icon('add')}
           </button>
         </div>
       </div>
     </div>
-    <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
-      ${icon('arrow-left')}
-    </button>
-    <button id="history-accept" class="history-btn" type="button" title="Готово" aria-label="Готово" hidden>
-      ${icon('check')}
-    </button>
-    <button id="history-forward" class="history-btn" type="button" title="Вперёд" aria-label="Вперёд" disabled>
-      ${icon('arrow-right')}
-    </button>
+    <div class="toolbar-project">
+      <button id="toolbar-project" class="history-btn" type="button" aria-label="Project" aria-haspopup="menu" aria-expanded="false">
+        ${icon('apps-line')}
+      </button>
+      <div id="toolbar-project-menu" class="toolbar-profile-menu" hidden role="menu" aria-label="Projects">
+        <div id="toolbar-project-list" class="toolbar-profile-list"></div>
+        <div class="toolbar-profile-create">
+          <button id="toolbar-project-add" class="history-btn" type="button" title="New project" aria-label="New project">
+            ${icon('add')}
+          </button>
+        </div>
+      </div>
+    </div>
+    <button id="toolbar-lock" class="history-btn toolbar-lock" type="button" title="Fix pages" aria-label="Fix pages" aria-pressed="false"></button>
+    <button id="toolbar-cloud-check" class="history-btn toolbar-cloud-btn" type="button" title="Проверить Discord" aria-label="Проверить Discord" hidden></button>
+    <button id="toolbar-cloud-pull" class="history-btn toolbar-cloud-btn" type="button" title="Принять" aria-label="Принять" disabled></button>
+    <button id="toolbar-cloud-push" class="history-btn toolbar-cloud-btn" type="button" title="Отправить" aria-label="Отправить" disabled></button>
+    <span id="toolbar-base-loader" class="toolbar-base-loader pager-cloud-loader" hidden aria-hidden="true"></span>
+    <span class="toolbar-spacer" aria-hidden="true"></span>
     <div class="toolbar-extra">
       <div class="toolbar-format" id="toolbar-format-wrap" hidden>
         <button id="toolbar-format" class="history-btn" type="button" title="Оформление текста" aria-label="Оформление текста" aria-haspopup="menu" aria-expanded="false">
@@ -3331,62 +7956,158 @@ export class MarkersMapProvider implements vscode.WebviewViewProvider, vscode.We
       </div>
       <div class="toolbar-view">
         <button id="toolbar-view" class="history-btn" type="button" title="Вид" aria-label="Вид" aria-haspopup="menu" aria-expanded="false">
-          ${icon('chevron-down')}
+          ${icon('stack-line')}
         </button>
         <div id="toolbar-view-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Вид"></div>
       </div>
+      <button id="toolbar-collapse" class="history-btn" type="button" title="Свернуть все группы" aria-label="Свернуть все группы">
+        ${icon('contract-up-down-fill', 'collapse')}
+        ${icon('expand-up-down-fill', 'expand', true)}
+      </button>
       <div class="toolbar-view toolbar-create">
         <button id="toolbar-create" class="history-btn" type="button" title="Создать" aria-label="Создать" aria-haspopup="menu" aria-expanded="false">
-          ${icon('add')}
+          ${icon('function-add-line')}
         </button>
         <div id="toolbar-create-menu" class="syn3-menu toolbar-view-menu" hidden role="menu" aria-label="Создать"></div>
       </div>
-      <button id="toolbar-collapse" class="history-btn" type="button" title="Свернуть все группы" aria-label="Свернуть все группы">
-        ${icon('collapse-all', 'collapse')}
-        ${icon('expand-all', 'expand', true)}
+      <button id="toolbar-review-tab" class="history-btn" type="button" title="Открыть во вкладке" aria-label="Открыть во вкладке" hidden>
+        ${icon('split-horizontal')}
       </button>
       <div class="toolbar-panels">
         <button id="toolbar-panels" class="history-btn" type="button" title="Toggle panels" aria-label="Toggle panels" aria-haspopup="true" aria-expanded="false">
-          ${icon('menu')}
+          ${icon('dashboard-horizontal-line')}
         </button>
         <div id="toolbar-panels-menu" class="toolbar-panels-menu" hidden role="group" aria-label="Panel toggles">
           <button type="button" id="panel-toggle-bottom" class="history-btn" data-action="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="false">
-            ${icon('layout-panel')}
+            ${icon('layout-bottom-fill')}
           </button>
           <button type="button" id="panel-toggle-left" class="history-btn" data-action="toggleLeft" title="Toggle left sidebar" aria-label="Toggle left sidebar" aria-pressed="false">
-            ${icon('layout-sidebar-left')}
+            ${icon('layout-left-fill')}
           </button>
           <button type="button" id="panel-toggle-right" class="history-btn" data-action="toggleRight" title="Toggle right sidebar" aria-label="Toggle right sidebar" aria-pressed="false">
-            ${icon('sidebar-right')}
+            ${icon('layout-right-fill')}
           </button>
         </div>
       </div>
+      <button id="toolbar-explorer" class="history-btn" type="button" title="Explorer" aria-label="Explorer">
+        ${icon('layout-column-fill')}
+      </button>
       <div class="toolbar-more">
-        <button id="toolbar-more" class="history-btn" type="button" title="Дополнительные действия" aria-label="Дополнительные действия" aria-haspopup="menu">
-          ${icon('ellipsis')}
+        <button id="toolbar-more" class="history-btn" type="button" title="Menu" aria-label="Menu" aria-haspopup="menu">
+          ${icon('icon')}
         </button>
         <div id="toolbar-menu" class="toolbar-menu" hidden role="menu">
           <div class="toolbar-menu-flyout" id="menu-create-page-wrap">
             <button type="button" class="toolbar-menu-parent" role="menuitem" id="menu-create-page" aria-haspopup="menu" aria-expanded="false"><span data-i18n="menuNewPage">Create page</span><span class="toolbar-menu-caret" aria-hidden="true">▸</span></button>
             <div id="menu-create-page-sub" class="toolbar-menu-sub" hidden role="menu">
-              <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Groups</span></button>
+              <button type="button" data-action="createPageFiles" role="menuitem"><span data-i18n="menuNewPageGroups">Explorer</span></button>
               <button type="button" data-action="createPageNotes" role="menuitem"><span data-i18n="menuNewPageNotes">Notes</span></button>
               <button type="button" data-action="createPageLinks" role="menuitem"><span data-i18n="menuNewPageLinks">Links</span></button>
+              <button type="button" data-action="createPageFigma" role="menuitem"><span data-i18n="menuNewPageFigma">Figma</span></button>
+              <button type="button" data-action="createPageReview" role="menuitem"><span data-i18n="menuNewPageReview">Review</span></button>
+              <button type="button" data-action="createPageScenarios" role="menuitem"><span data-i18n="menuNewPageScenarios">Scenarios</span></button>
             </div>
           </div>
-          <button type="button" data-action="renamePage" role="menuitem">${icon('list-flat')}Rename Page</button>
           <button type="button" data-action="deletePage" role="menuitem" id="menu-delete-page">${icon('ellipsis')}Delete Page</button>
-          <button type="button" data-action="refresh" role="menuitem">${icon('refresh')}Refresh</button>
           <button type="button" data-action="openSettings" role="menuitem">${icon('gear')}Settings</button>
+          <div class="toolbar-menu-sep" role="separator"></div>
+          <button type="button" data-action="whySyn3" role="menuitem" id="menu-why">${icon('bill')}<span data-i18n="menuWhy">Why Syn3</span></button>
         </div>
       </div>
     </div>
   </div>
-  <div id="pager" class="pager" hidden></div>
+  <div id="pager" class="pager" hidden>
+    <div class="pager-history">
+      <button id="history-back" class="history-btn" type="button" title="Назад" aria-label="Назад" disabled>
+        ${icon('arrow-left')}
+      </button>
+      <button id="history-accept" class="history-btn" type="button" title="Готово" aria-label="Готово" hidden>
+        ${icon('check')}
+      </button>
+      <button id="history-forward" class="history-btn" type="button" title="Вперёд" aria-label="Вперёд" disabled>
+        ${icon('arrow-right')}
+      </button>
+    </div>
+  </div>
+  <div id="review-filters" class="review-filters" hidden>
+    <button id="review-filter-checkout" class="history-btn review-filter" type="button" aria-pressed="false">checkout</button>
+    <button id="review-filter-general" class="history-btn review-filter" type="button" aria-pressed="true">Общие</button>
+    <button id="review-filter-discussions" class="history-btn review-filter" type="button" aria-pressed="true">Обсуждения</button>
+  </div>
+  <div id="figma-filters" class="review-filters figma-filters" hidden>
+    <button id="figma-form" class="history-btn review-filter" type="button"></button>
+    <button id="figma-refresh" class="history-btn review-filter" type="button"></button>
+    <button id="figma-reset" class="history-btn review-filter" type="button"></button>
+    <span id="figma-form-loader" class="pager-cloud-loader" hidden></span>
+    <span id="figma-form-status" class="figma-form-status" hidden></span>
+  </div>
+  <div id="map-notices" class="map-notices"></div>
   </div>
   <div id="stage" class="page-stage">
     <div id="root" class="map-page"></div>
+    <aside id="review-file" class="review-file" hidden>
+      <div class="review-file-head">
+        <span id="review-file-title" class="review-file-title"></span>
+        <div class="review-file-actions">
+          <button id="review-file-link" class="history-btn" type="button" aria-label="Ссылка на описание" disabled>${glyph(iconLink)}</button>
+          <button id="review-file-grow" class="history-btn" type="button" aria-label="Увеличить">${glyph(iconGrow)}</button>
+          <button id="review-file-shrink" class="history-btn" type="button" aria-label="Уменьшить">${glyph(iconShrink)}</button>
+          <button id="review-file-save" class="history-btn" type="button" aria-label="Скачать" disabled>${glyph(iconDownload)}</button>
+          <button id="review-file-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+        </div>
+      </div>
+      <div id="review-file-body" class="review-file-body"></div>
+    </aside>
+    <aside id="review-fixes" class="review-file review-fixes" hidden>
+      <div class="review-file-head">
+        <span class="review-file-title"></span>
+        <button id="review-fixes-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+      </div>
+      <div id="review-fixes-body" class="review-file-body"></div>
+    </aside>
+    <aside id="explain-file" class="review-file explain-file" hidden>
+      <div class="review-file-head">
+        <span id="explain-file-title" class="review-file-title"></span>
+        <div class="review-file-actions">
+          <button id="explain-file-link" class="history-btn" type="button" aria-label="Ссылка на описание" disabled>${glyph(iconLink)}</button>
+          <button id="explain-file-grow" class="history-btn" type="button" aria-label="Увеличить">${glyph(iconGrow)}</button>
+          <button id="explain-file-shrink" class="history-btn" type="button" aria-label="Уменьшить">${glyph(iconShrink)}</button>
+          <button id="explain-file-save" class="history-btn" type="button" aria-label="Скачать" disabled>${glyph(iconDownload)}</button>
+          <button id="explain-file-close" class="history-btn" type="button" aria-label="Закрыть">${glyph(iconClose)}</button>
+        </div>
+      </div>
+      <div id="explain-file-body" class="review-file-body explain-file-body"></div>
+    </aside>
+    <form id="review-talk" class="review-talk" hidden>
+      <div id="review-talk-source" class="review-talk-source" hidden>
+        <span id="review-talk-source-label" class="review-talk-source-label"></span>
+        <button id="review-talk-source-clear" class="review-talk-source-clear" type="button"></button>
+      </div>
+      <div class="review-talk-row">
+        <textarea id="review-talk-input" class="review-talk-input" rows="1"></textarea>
+        <button id="review-talk-send" class="review-talk-send" type="button" disabled></button>
+      </div>
+    </form>
   </div>
+  <script nonce="${nonce}">
+    (function () {
+      const vscode = acquireVsCodeApi();
+      window.__syn3Vscode = vscode;
+      const rev = ${JSON.stringify(rev)};
+      let reported = false;
+      function fail() {
+        if (reported) return;
+        reported = true;
+        vscode.postMessage({ type: 'assetsFailed', rev: rev });
+      }
+      const link = document.querySelector('link[rel="stylesheet"]');
+      if (link) link.addEventListener('error', fail);
+      window.addEventListener('error', (event) => {
+        const target = event.target;
+        if (target && target.tagName === 'SCRIPT' && target.src) fail();
+      }, true);
+    })();
+  </script>
   <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;

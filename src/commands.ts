@@ -30,7 +30,7 @@ export function registerCommands(
     if (!markerId || !store.isLocked(markerId)) {
       return false;
     }
-    void vscode.window.showWarningMessage('Syn3: группа закрыта');
+    map.notify('Syn3: группа закрыта', 'warning');
     return true;
   }
 
@@ -144,7 +144,7 @@ export function registerCommands(
     if (parentId) {
       const parentDepth = store.depthOf(parentId);
       if (parentDepth >= MAX_MARKER_DEPTH) {
-        void vscode.window.showWarningMessage(`Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`);
+        map.notify(`Syn3: maximum nesting depth is ${MAX_MARKER_DEPTH} subgroups.`, 'warning');
         return undefined;
       }
       if (refuseLocked(parentId)) {
@@ -192,7 +192,7 @@ export function registerCommands(
     const targets = uris && uris.length > 0 ? uris : uri ? [uri] : activeUri();
     const relPaths = targets.map((u) => store.toRelative(u)).filter((p): p is string => p !== undefined);
     if (relPaths.length === 0) {
-      void vscode.window.showWarningMessage('Syn3: select files or folders inside the first workspace folder.');
+      map.notify('Syn3: select files or folders inside the first workspace folder.', 'warning');
       return;
     }
     const title = relPaths.length === 1 ? `Mark ${path.posix.basename(relPaths[0])}` : `Mark ${relPaths.length} items`;
@@ -225,17 +225,17 @@ export function registerCommands(
   async function markClass(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-      void vscode.window.showWarningMessage('Syn3: open a file and place the cursor on a class.');
+      map.notify('Syn3: open a file and place the cursor on a class.', 'warning');
       return;
     }
     const relPath = store.toRelative(editor.document.uri);
     if (!relPath) {
-      void vscode.window.showWarningMessage('Syn3: file must be inside the workspace folder.');
+      map.notify('Syn3: file must be inside the workspace folder.', 'warning');
       return;
     }
     const symbol = await symbolAtCursor(editor);
     if (!symbol?.name) {
-      void vscode.window.showWarningMessage('Syn3: no symbol under the cursor.');
+      map.notify('Syn3: no symbol under the cursor.', 'warning');
       return;
     }
     const markerId = await pickMarker(`Mark class ${symbol.name}`);
@@ -262,7 +262,7 @@ export function registerCommands(
     }
     const relPath = store.toRelative(fileUri);
     if (!relPath) {
-      void vscode.window.showWarningMessage('Syn3: file must be inside the workspace folder.');
+      map.notify('Syn3: file must be inside the workspace folder.', 'warning');
       return;
     }
     const name = await vscode.window.showInputBox({
@@ -358,7 +358,7 @@ export function registerCommands(
     if (!def) {
       return;
     }
-    await openClassAt(store, def);
+    await openClassAt(store, def, undefined, (text, tone) => map.notify(text, tone));
   }
 
   async function openItemOrFull(node: Node | undefined, full: boolean): Promise<void> {
@@ -366,11 +366,18 @@ export function registerCommands(
       return;
     }
     if (node.kind === 'marker') {
-      await openTargets(store, targetsForMarker(store, node.markerId, full));
+      await openTargets(store, targetsForMarker(store, node.markerId, full), undefined, (text, tone) =>
+        map.notify(text, tone),
+      );
       return;
     }
     if (node.kind === 'item' && node.isDir) {
-      await openTargets(store, await targetsForDirectory(store, node.markerId, node.relPath, full));
+      await openTargets(
+        store,
+        await targetsForDirectory(store, node.markerId, node.relPath, full),
+        undefined,
+        (text, tone) => map.notify(text, tone),
+      );
     }
   }
 
@@ -423,7 +430,7 @@ export function registerCommands(
     edit.renameFile(oldUri, vscode.Uri.joinPath(parentUri, newName.trim()));
     const ok = await vscode.workspace.applyEdit(edit);
     if (!ok) {
-      void vscode.window.showErrorMessage(`Syn3: could not rename ${oldName}.`);
+      map.notify(`Syn3: could not rename ${oldName}.`, 'error');
     }
   }
 
@@ -550,7 +557,7 @@ export function registerCommands(
     }
     if (noteId) {
       if (store.isNoteLocked(noteId)) {
-        void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+        map.notify('Syn3: заметка закрыта', 'warning');
         return;
       }
       const def = store.note(noteId);
@@ -601,7 +608,7 @@ export function registerCommands(
     }
     if (noteId) {
       if (store.isNoteLocked(noteId)) {
-        void vscode.window.showWarningMessage('Syn3: заметка закрыта');
+        map.notify('Syn3: заметка закрыта', 'warning');
         return;
       }
       const def = store.note(noteId);
@@ -721,57 +728,97 @@ export function registerCommands(
     };
   }
 
+  function gated<Args extends unknown[]>(
+    fn: (...args: Args) => unknown | Promise<unknown>,
+  ): (...args: Args) => Promise<unknown> {
+    return async (...args: Args) => {
+      if (!store.ready) {
+        void vscode.window.showInformationMessage('Syn3: сначала выполните команду «Syn3: start».');
+        return;
+      }
+      if (await map.refuseIfDiscordGate()) {
+        return;
+      }
+      return fn(...args);
+    };
+  }
+
   return [
-    vscode.commands.registerCommand('syn3.assign', assign),
-    vscode.commands.registerCommand('syn3.unassign', withNode(unassign)),
-    vscode.commands.registerCommand('syn3.unassignFromExplorer', unassignFromExplorer),
-    vscode.commands.registerCommand('syn3.rename', withNode(rename)),
+    vscode.commands.registerCommand('syn3.assign', gated(assign)),
+    vscode.commands.registerCommand('syn3.unassign', gated(withNode(unassign))),
+    vscode.commands.registerCommand('syn3.unassignFromExplorer', gated(unassignFromExplorer)),
+    vscode.commands.registerCommand('syn3.rename', gated(withNode(rename))),
     vscode.commands.registerCommand(
       'syn3.reveal',
-      withNode(async (node) => {
-        const target = node;
-        const uri = target ? tree.uriOf(target) : undefined;
-        if (uri) {
-          await vscode.commands.executeCommand('revealInExplorer', uri);
-        }
-      }),
-    ),
-    vscode.commands.registerCommand('syn3.relink', withNode(relink)),
-    vscode.commands.registerCommand('syn3.createMarker', (pageId?: string) =>
-      createMarkerFlow(undefined, typeof pageId === 'string' ? pageId : undefined),
-    ),
-    vscode.commands.registerCommand('syn3.createSubgroup', withNode(createSubgroup)),
-    vscode.commands.registerCommand('syn3.unnestMarker', withNode(unnestMarker)),
-    vscode.commands.registerCommand('syn3.editMarker', withNode(editMarker)),
-    vscode.commands.registerCommand('syn3.deleteMarker', withNode(deleteMarker)),
-    vscode.commands.registerCommand('syn3.changeColor', withNode(editMarkerField('color', pickColor))),
-    vscode.commands.registerCommand('syn3.addIcon', (arg?: unknown) => addIcon(arg)),
-    vscode.commands.registerCommand('syn3.removeIcon', (arg?: unknown) => changeIcon(arg)),
-    ...COLUMNS_MODES.map((columns) =>
-      vscode.commands.registerCommand(
-        `syn3.setColumns.${columns}`,
+      gated(
         withNode(async (node) => {
-          if (node?.kind !== 'marker') {
-            return;
+          const target = node;
+          const uri = target ? tree.uriOf(target) : undefined;
+          if (uri) {
+            await vscode.commands.executeCommand('revealInExplorer', uri);
           }
-          if (refuseLocked(node.markerId)) {
-            return;
-          }
-          await store.setColumns(node.markerId, columns);
         }),
       ),
     ),
-    vscode.commands.registerCommand('syn3.markClass', () => markClass()),
-    vscode.commands.registerCommand('syn3.markClassManual', (uri?: vscode.Uri) => markClassManual(uri)),
-    vscode.commands.registerCommand('syn3.setAlias', withNode(setAlias)),
-    vscode.commands.registerCommand('syn3.clearAlias', withNode(clearAlias)),
-    vscode.commands.registerCommand('syn3.openClass', withNode(openClassCommand)),
-    vscode.commands.registerCommand('syn3.openItem', withNode((node) => openItemOrFull(node, false))),
-    vscode.commands.registerCommand('syn3.openFull', withNode((node) => openItemOrFull(node, true))),
-    vscode.commands.registerCommand('syn3.moveMarkerUp', withNode((node) => moveMarker(node, -1))),
-    vscode.commands.registerCommand('syn3.moveMarkerDown', withNode((node) => moveMarker(node, 1))),
-    vscode.commands.registerCommand('syn3.openConfig', openConfig),
-    vscode.commands.registerCommand('syn3.refresh', () => store.load()),
+    vscode.commands.registerCommand('syn3.relink', gated(withNode(relink))),
+    vscode.commands.registerCommand(
+      'syn3.createMarker',
+      gated((pageId?: string) =>
+        createMarkerFlow(undefined, typeof pageId === 'string' ? pageId : undefined),
+      ),
+    ),
+    vscode.commands.registerCommand('syn3.createSubgroup', gated(withNode(createSubgroup))),
+    vscode.commands.registerCommand('syn3.unnestMarker', gated(withNode(unnestMarker))),
+    vscode.commands.registerCommand('syn3.editMarker', gated(withNode(editMarker))),
+    vscode.commands.registerCommand('syn3.deleteMarker', gated(withNode(deleteMarker))),
+    vscode.commands.registerCommand(
+      'syn3.changeColor',
+      gated(withNode(editMarkerField('color', pickColor))),
+    ),
+    vscode.commands.registerCommand('syn3.addIcon', gated((arg?: unknown) => addIcon(arg))),
+    vscode.commands.registerCommand('syn3.removeIcon', gated((arg?: unknown) => changeIcon(arg))),
+    ...COLUMNS_MODES.map((columns) =>
+      vscode.commands.registerCommand(
+        `syn3.setColumns.${columns}`,
+        gated(
+          withNode(async (node) => {
+            if (node?.kind !== 'marker') {
+              return;
+            }
+            if (refuseLocked(node.markerId)) {
+              return;
+            }
+            await store.setColumns(node.markerId, columns);
+          }),
+        ),
+      ),
+    ),
+    vscode.commands.registerCommand('syn3.markClass', gated(() => markClass())),
+    vscode.commands.registerCommand(
+      'syn3.markClassManual',
+      gated((uri?: vscode.Uri) => markClassManual(uri)),
+    ),
+    vscode.commands.registerCommand('syn3.setAlias', gated(withNode(setAlias))),
+    vscode.commands.registerCommand('syn3.clearAlias', gated(withNode(clearAlias))),
+    vscode.commands.registerCommand('syn3.openClass', gated(withNode(openClassCommand))),
+    vscode.commands.registerCommand(
+      'syn3.openItem',
+      gated(withNode((node) => openItemOrFull(node, false))),
+    ),
+    vscode.commands.registerCommand(
+      'syn3.openFull',
+      gated(withNode((node) => openItemOrFull(node, true))),
+    ),
+    vscode.commands.registerCommand(
+      'syn3.moveMarkerUp',
+      gated(withNode((node) => moveMarker(node, -1))),
+    ),
+    vscode.commands.registerCommand(
+      'syn3.moveMarkerDown',
+      gated(withNode((node) => moveMarker(node, 1))),
+    ),
+    vscode.commands.registerCommand('syn3.openConfig', gated(openConfig)),
+    vscode.commands.registerCommand('syn3.refresh', gated(() => store.load())),
   ];
 }
 

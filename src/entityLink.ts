@@ -1,6 +1,6 @@
-/** `pageId://group/id/...` or `pageId://note/groupIds.../noteIds...`. */
+/** `pageId://group/id/...`, `pageId://note/...`, or `pageId://scenario/...`. */
 
-export type EntityLinkKind = 'group' | 'note';
+export type EntityLinkKind = 'group' | 'note' | 'scenario';
 
 export interface ParsedEntityLink {
   pageId: string;
@@ -10,8 +10,8 @@ export interface ParsedEntityLink {
 }
 
 const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*$/;
-const FULL = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note)\/([^?\s#]+)$/;
-const ENTITY_BODY = String.raw`[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:group|note)\/[^\s<>"')\]]+`;
+const FULL = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note|scenario)\/([^?\s#]+)$/;
+const ENTITY_BODY = String.raw`[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:group|note|scenario)\/[^\s<>"')\]]+`;
 const IN_TEXT = new RegExp(String.raw`\[([^\]]*)\]\((${ENTITY_BODY})\)|(${ENTITY_BODY})`, 'g');
 
 export const NOTE_JSON_PREFIX = 'syn3json:';
@@ -40,7 +40,7 @@ export function parseEntityLink(raw: string): ParsedEntityLink | undefined {
   if (ids.length === 0 || ids.some((id) => !isSegment(id))) {
     return undefined;
   }
-  const kind = match[2] === 'note' ? 'note' : 'group';
+  const kind = match[2] === 'note' ? 'note' : match[2] === 'scenario' ? 'scenario' : 'group';
   return { pageId: match[1], kind, ids };
 }
 

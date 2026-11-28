@@ -1,7 +1,8 @@
 // @ts-check
 (function () {
-  // @ts-ignore
-  const vscode = acquireVsCodeApi();
+  // @ts-ignore acquireVsCodeApi is provided by the webview, or stashed by the boot script.
+  const vscode = /** @type {any} */ (window).__syn3Vscode || acquireVsCodeApi();
+  const bootRev = document.body?.dataset.bootRev || '';
   const root = /** @type {HTMLElement} */ (document.getElementById('root'));
   const historyBack = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-back'));
   const historyAccept = /** @type {HTMLButtonElement | null} */ (document.getElementById('history-accept'));
@@ -12,6 +13,117 @@
   /** @param {string} key */
   function t(key) {
     return i18nBag[key] || key;
+  }
+
+  const MAP_NOTICE_MS = 3000;
+
+  /**
+   * @param {string} className
+   * @param {string} label
+   * @param {string} pathD
+   */
+  function mapNoticeButton(className, label, pathD) {
+    const button = el('button', className);
+    button.type = 'button';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathD);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    button.append(svg);
+    return button;
+  }
+
+  /** @param {string} pathD */
+  function mapNoticeIcon(pathD) {
+    const icon = el('span', 'map-notice-icon');
+    icon.setAttribute('aria-hidden', 'true');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathD);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    icon.append(svg);
+    return icon;
+  }
+
+  /**
+   * Snackbar under the map toolbar. Each notice hides itself after 3s.
+   * @param {string} text
+   * @param {'error' | 'warning' | 'info'} [tone]
+   */
+  function showMapNotice(text, tone) {
+    const body = String(text || '').replace(/^Syn3:\s*/, '').trim();
+    if (!body || !mapNotices) {
+      return;
+    }
+    const kind = tone === 'info' ? 'info' : tone === 'warning' ? 'warning' : 'error';
+    const notice = el('div', `map-notice is-${kind}`);
+    notice.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    const row = el('div', 'map-notice-row');
+    const icon = mapNoticeIcon(
+      kind === 'info'
+        ? 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z'
+        : kind === 'warning'
+          ? 'M12.8659 3.00017L22.3922 19.5002C22.6684 19.9785 22.5045 20.5901 22.0262 20.8662C21.8742 20.954 21.7017 21.0002 21.5262 21.0002H2.47363C1.92135 21.0002 1.47363 20.5525 1.47363 20.0002C1.47363 19.8246 1.51984 19.6522 1.60761 19.5002L11.1339 3.00017C11.41 2.52187 12.0216 2.358 12.4999 2.63414C12.6519 2.72191 12.7782 2.84815 12.8659 3.00017ZM4.20568 19.0002H19.7941L11.9999 5.50017L4.20568 19.0002ZM10.9999 16.0002H12.9999V18.0002H10.9999V16.0002ZM10.9999 9.00017H12.9999V14.0002H10.9999V9.00017Z'
+          : 'M17.5 2.47363L23 11.9999L17.5 21.5262H6.5L1 11.9999L6.5 2.47363H17.5ZM8.63398 8.16979L13.634 16.83L15.366 15.83L10.366 7.16979L8.63398 8.16979Z',
+    );
+    const textEl = el('div', 'map-notice-text');
+    textEl.textContent = body;
+    const actions = el('div', 'map-notice-actions');
+    const close = mapNoticeButton(
+      'map-notice-close',
+      t('mapNoticeClose'),
+      'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z',
+    );
+    actions.append(close);
+    row.append(icon, textEl, actions);
+    notice.append(row);
+    mapNotices.prepend(notice);
+    /** @type {number} */
+    let timer = window.setTimeout(dismiss, MAP_NOTICE_MS);
+    function dismiss() {
+      window.clearTimeout(timer);
+      notice.remove();
+    }
+    close.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    });
+    requestAnimationFrame(() => {
+      if (!notice.isConnected) {
+        return;
+      }
+      const clamped = textEl.clientHeight;
+      textEl.classList.add('is-measuring');
+      const full = textEl.scrollHeight;
+      textEl.classList.remove('is-measuring');
+      if (full <= clamped + 1) {
+        return;
+      }
+      const expand = mapNoticeButton(
+        'map-notice-expand',
+        t('mapNoticeExpand'),
+        'M11.9999 13.1714L16.9497 8.22168L18.3639 9.63589L11.9999 15.9999L5.63599 9.63589L7.0502 8.22168L11.9999 13.1714Z',
+      );
+      expand.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (notice.classList.contains('is-open')) {
+          return;
+        }
+        notice.classList.add('is-open');
+        window.clearTimeout(timer);
+      });
+      actions.insertBefore(expand, close);
+    });
   }
 
   historyBack?.addEventListener('click', () => {
@@ -31,18 +143,72 @@
   const toolbarCreateMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-create-menu'));
   const toolbarCreateWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-create'));
   const toolbarCollapse = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-collapse'));
+  const toolbarReviewTab = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-review-tab'));
+  const reviewFilters = /** @type {HTMLElement | null} */ (document.getElementById('review-filters'));
+  const figmaFilters = /** @type {HTMLElement | null} */ (document.getElementById('figma-filters'));
+  const figmaFormButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-form'));
+  const figmaRefreshButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-refresh'));
+  const figmaResetButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('figma-reset'));
+  const figmaFormLoader = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-loader'));
+  const figmaFormStatus = /** @type {HTMLElement | null} */ (document.getElementById('figma-form-status'));
+  const mapNotices = /** @type {HTMLElement | null} */ (document.getElementById('map-notices'));
+  let figmaFormRunning = false;
+  let figmaFormStatusText = '';
+  /** Empty Figma map keeps the chip skeleton up while the form dialog or the build is open. */
+  let figmaEmptySkel = false;
+  const reviewFilterCheckout = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-checkout'));
+  const reviewFilterGeneral = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-general'));
+  const reviewFilterDiscussions = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-filter-discussions'));
+  const reviewTalk = /** @type {HTMLElement | null} */ (document.getElementById('review-talk'));
+  const reviewTalkSourceRow = /** @type {HTMLElement | null} */ (document.getElementById('review-talk-source'));
+  const reviewTalkSourceLabel = /** @type {HTMLElement | null} */ (document.getElementById('review-talk-source-label'));
+  const reviewTalkSourceClear = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-talk-source-clear'));
+  const reviewTalkInput = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('review-talk-input'));
+  const reviewTalkSend = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-talk-send'));
+  /** @type {Map<string, { messageId: string, label: string }>} */
+  const reviewTalkSource = new Map();
+  let reviewTalkBusy = false;
+  const reviewFilePane = /** @type {HTMLElement | null} */ (document.getElementById('review-file'));
+  const reviewFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('review-file-title'));
+  const reviewFileBody = /** @type {HTMLElement | null} */ (document.getElementById('review-file-body'));
+  const reviewFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-close'));
+  const reviewFileLink = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-link'));
+  const reviewFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-grow'));
+  const reviewFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-shrink'));
+  const reviewFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-file-save'));
+  const reviewFixesPane = /** @type {HTMLElement | null} */ (document.getElementById('review-fixes'));
+  const reviewFixesBody = /** @type {HTMLElement | null} */ (document.getElementById('review-fixes-body'));
+  const reviewFixesClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('review-fixes-close'));
+  const explainFilePane = /** @type {HTMLElement | null} */ (document.getElementById('explain-file'));
+  const explainFileTitle = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-title'));
+  const explainFileBody = /** @type {HTMLElement | null} */ (document.getElementById('explain-file-body'));
+  const explainFileClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-close'));
+  const explainFileLink = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-link'));
+  const explainFileGrow = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-grow'));
+  const explainFileShrink = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-shrink'));
+  const explainFileSave = /** @type {HTMLButtonElement | null} */ (document.getElementById('explain-file-save'));
+  const toolbarExplorer = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-explorer'));
   const toolbarMore = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-more'));
   const toolbarMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-menu'));
   const toolbarMoreWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-more'));
   const toolbarFormatWrap = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-format-wrap'));
   const toolbarFormat = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-format'));
   const toolbarFormatMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-format-menu'));
+  const toolbarProject = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-project'));
+  const toolbarProjectMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-project-menu'));
+  const toolbarProjectList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-project-list'));
+  const toolbarProjectAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-project-add'));
+  const toolbarProjectWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-project'));
+  const toolbarLock = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-lock'));
   const toolbarProfile = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile'));
   const toolbarProfileMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-menu'));
   const toolbarProfileList = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-profile-list'));
-  const toolbarProfileName = /** @type {HTMLInputElement | null} */ (document.getElementById('toolbar-profile-name'));
   const toolbarProfileAdd = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-profile-add'));
   const toolbarProfileWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-profile'));
+  const toolbarCloudCheck = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-check'));
+  const toolbarCloudPull = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-pull'));
+  const toolbarCloudPush = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-cloud-push'));
+  const toolbarBaseLoader = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-base-loader'));
   const toolbarPanels = /** @type {HTMLButtonElement | null} */ (document.getElementById('toolbar-panels'));
   const toolbarPanelsMenu = /** @type {HTMLElement | null} */ (document.getElementById('toolbar-panels-menu'));
   const panelToggleBottom = /** @type {HTMLButtonElement | null} */ (document.getElementById('panel-toggle-bottom'));
@@ -57,9 +223,39 @@
   contextMenu.setAttribute('aria-label', 'Context menu');
   document.body.append(contextMenu);
 
-  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
+  /** @type {{ kind: 'toolbar' | 'toolbar-create' | 'context', viewExpanded: boolean, createExpanded?: boolean, deleteExpanded?: boolean, pullExpanded?: boolean, reviewExpanded?: boolean, reviewScope?: '' | 'branch' | 'changes', explainExpanded?: boolean, explainScope?: '' | 'branch' | 'changes', reviewStatusExpanded?: boolean, neurofixExpanded?: boolean, rereviewExpanded?: boolean, studyExpanded?: boolean, ctx?: Record<string, unknown>, x?: number, y?: number } | null} */
   let openMenuState = null;
+  /**
+   * Host branch picker for «Подтянуть → другая ветка» / «Создать ревью → другая ветка» / «Что сделано → другая ветка».
+   * @type {{
+   *   mode: 'pull' | 'review' | 'explain',
+   *   pageId: string,
+   *   parentMessageId?: string,
+   *   currentBranch: string,
+   *   branches: string[],
+   *   nextPage: number | undefined,
+   *   loading: boolean,
+   *   step: 'branches' | 'bases',
+   *   selectedBranch?: string,
+   *   selectedDepth?: string,
+   *   parentBranch?: string,
+   *   selectedBase?: string,
+   *   requestId?: string,
+   *   query?: string,
+   *   activeQuery?: string,
+   *   pendingSearchFocus?: boolean,
+   * } | null}
+   */
+  let branchPicker = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let branchSearchTimer = null;
+  const BRANCH_SEARCH_MS = 3000;
+  /** @type {HTMLElement | null} */
+  let branchDepthMenu = null;
+  /** Create-menu «Создать ревью» uses the same scope/depth flyout as the MR chip. */
   const MENU_CLOSE_MS = 300;
+  /** Pointer travel from the click before an unentered context menu dismisses. */
+  const CONTEXT_AWAY_PX = 24;
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const menuCloseTimers = new Map();
 
@@ -152,6 +348,14 @@
   let linkPreviewPendingId = null;
   /** @type {HTMLElement | null} */
   let linkPreviewEl = null;
+  /** Spinner beside the chip while its preview is still loading. */
+  /** @type {HTMLElement | null} */
+  let linkPreviewLoaderEl = null;
+  /** Request whose chip spinner is showing. An older result must not hide the next one. */
+  /** @type {string | null} */
+  let linkPreviewLoaderRequestId = null;
+  /** @type {number} */
+  let linkPreviewLoaderTimer = 0;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let linkPreviewHideTimer = null;
   /** @type {string | null} */
@@ -160,7 +364,13 @@
   let linkPreviewGen = 0;
   /** Generation captured when the current preview was shown. */
   let linkPreviewShownGen = 0;
+  /** Matches figmaLinkPreviewEnabled in src/figmaLink.ts. Hover must not render frames. */
+  const figmaLinkPreviewEnabled = false;
+  /** Dragging a Figma frame. Mouseleave must not close the card mid-pan. */
+  let linkPreviewPanning = false;
   let clipboardRequestId = 0;
+  /** Hides «данные скилла скопированы» after a skill copy in review settings. */
+  let reviewSkillCopiedTimer = 0;
   /** @type {{ ctx: Record<string, unknown>, x: number, y: number, requestId: string } | null} */
   let pendingClipboardMenu = null;
   /** Last language-bearing clipboard stamp from the host. */
@@ -202,9 +412,13 @@
 
   const toolbarPanelsWrap = /** @type {HTMLElement | null} */ (document.querySelector('.toolbar-panels'));
 
+  reviewFilterCheckout?.addEventListener('click', () => postReviewFilter('checkout'));
+  reviewFilterGeneral?.addEventListener('click', () => postReviewFilter('general'));
+  reviewFilterDiscussions?.addEventListener('click', () => postReviewFilter('discussions'));
+
   toolbarView?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarViewMenu) {
+    if (!toolbarViewMenu || toolbarView?.disabled) {
       return;
     }
     const open = toolbarViewMenu.hidden;
@@ -217,6 +431,12 @@
   });
   toolbarViewWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-view');
+    if (toolbarView?.disabled || !toolbarViewMenu || !toolbarViewMenu.hidden) {
+      return;
+    }
+    closeToolbarMenus();
+    closeContextMenu();
+    openToolbarViewMenu();
   });
   toolbarViewWrap?.addEventListener('mouseleave', () => {
     if (toolbarViewMenu && !toolbarViewMenu.hidden) {
@@ -225,11 +445,27 @@
   });
   toolbarCreate?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (activePage()?.kind === 'links') {
+    if (toolbarCreate?.disabled) {
+      return;
+    }
+    if (isLinkMapKind(activePage()?.kind)) {
       cancelMenuClose();
       closeToolbarMenus();
       closeContextMenu();
       postToolbar('createLinkLayout');
+      return;
+    }
+    if (activePage()?.kind === 'scenarios') {
+      if (!toolbarCreateMenu) {
+        return;
+      }
+      const open = toolbarCreateMenu.hidden;
+      cancelMenuClose();
+      closeToolbarMenus();
+      closeContextMenu();
+      if (open) {
+        openToolbarCreateMenu();
+      }
       return;
     }
     if (!toolbarCreateMenu) {
@@ -245,6 +481,15 @@
   });
   toolbarCreateWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-create');
+    if (toolbarCreate?.disabled || isLinkMapKind(activePage()?.kind) || activePage()?.kind === 'scenarios') {
+      return;
+    }
+    if (!toolbarCreateMenu || !toolbarCreateMenu.hidden) {
+      return;
+    }
+    closeToolbarMenus();
+    closeContextMenu();
+    openToolbarCreateMenu();
   });
   toolbarCreateWrap?.addEventListener('mouseleave', () => {
     if (toolbarCreateMenu && !toolbarCreateMenu.hidden) {
@@ -305,21 +550,101 @@
     cancelMenuClose();
     closeToolbarMenus();
     closeContextMenu();
-    postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
-  });
-  toolbarPanels?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (!toolbarPanelsMenu) {
+    if (activePage()?.kind === 'review') {
+      setAllReviewCollapsed(!allTopCollapsed());
       return;
     }
-    const open = toolbarPanelsMenu.hidden;
+    if (activePage()?.kind === 'scenarios') {
+      setAllScenarioCollapsed(!allTopCollapsed());
+      return;
+    }
+    postToolbar(allTopCollapsed() ? 'expandGroups' : 'collapseGroups');
+  });
+  toolbarReviewTab?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewOpenFileTab',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+      filenames: reviewFileView.levelNote ? reviewFileView.filenames : undefined,
+    });
+  });
+  reviewFileClose?.addEventListener('click', () => {
+    closeReviewFileView();
+  });
+  reviewFileLink?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewCopyFileLink',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+      filenames: reviewFileView.levelNote ? reviewFileView.filenames : undefined,
+    });
+  });
+  reviewFileGrow?.addEventListener('click', () => {
+    stepReviewFont(0.05);
+  });
+  reviewFileShrink?.addEventListener('click', () => {
+    stepReviewFont(-0.05);
+  });
+  reviewFileSave?.addEventListener('click', () => {
+    if (!reviewFileView || reviewFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewSaveFile',
+      pageId: reviewFileView.pageId,
+      messageId: reviewFileView.messageId,
+    });
+  });
+  explainFileClose?.addEventListener('click', () => {
+    closeExplainFileView();
+  });
+  explainFileLink?.addEventListener('click', () => {
+    if (!explainFileView || explainFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewCopyFileLink',
+      pageId: explainFileView.pageId,
+      messageId: explainFileView.messageId,
+    });
+  });
+  explainFileGrow?.addEventListener('click', () => {
+    stepReviewFont(0.05);
+  });
+  explainFileShrink?.addEventListener('click', () => {
+    stepReviewFont(-0.05);
+  });
+  explainFileSave?.addEventListener('click', () => {
+    if (!explainFileView || explainFileView.status !== 'ready') {
+      return;
+    }
+    vscode.postMessage({
+      type: 'reviewSaveFile',
+      pageId: explainFileView.pageId,
+      messageId: explainFileView.messageId,
+    });
+  });
+  reviewFixesClose?.addEventListener('click', () => {
+    closeReviewFixesView();
+  });
+  reviewFileBody?.addEventListener('click', openReviewFileLink);
+  explainFileBody?.addEventListener('click', openReviewFileLink);
+  reviewFixesBody?.addEventListener('click', openReviewFileLink);
+  toolbarExplorer?.addEventListener('click', () => {
     cancelMenuClose();
     closeToolbarMenus();
     closeContextMenu();
-    if (open) {
-      toolbarPanelsMenu.hidden = false;
-      toolbarPanels?.setAttribute('aria-expanded', 'true');
-    }
+    postToolbar('toggleExplorer');
+  });
+  toolbarPanels?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    openToolbarPanelsMenu();
   });
   toolbarPanelsMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -333,7 +658,7 @@
     postToolbar(action);
   });
   toolbarPanelsWrap?.addEventListener('mouseenter', () => {
-    cancelMenuClose('toolbar-panels');
+    openToolbarPanelsMenu();
   });
   toolbarPanelsWrap?.addEventListener('mouseleave', () => {
     if (toolbarPanelsMenu && !toolbarPanelsMenu.hidden) {
@@ -347,16 +672,7 @@
   });
   toolbarMore?.addEventListener('click', (event) => {
     event.stopPropagation();
-    if (!toolbarMenu) {
-      return;
-    }
-    const open = toolbarMenu.hidden;
-    cancelMenuClose();
-    closeToolbarMenus();
-    closeContextMenu();
-    if (open) {
-      toolbarMenu.hidden = false;
-    }
+    openToolbarMoreMenu();
   });
   toolbarMenu?.addEventListener('click', (event) => {
     const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
@@ -388,7 +704,7 @@
     postToolbar(action);
   });
   toolbarMoreWrap?.addEventListener('mouseenter', () => {
-    cancelMenuClose('toolbar-more');
+    openToolbarMoreMenu();
   });
   toolbarMoreWrap?.addEventListener('mouseleave', () => {
     if (toolbarMenu && !toolbarMenu.hidden) {
@@ -400,6 +716,77 @@
     }
   });
 
+  toolbarProjectWrap?.addEventListener('mouseenter', () => {
+    cancelMenuClose('toolbar-project');
+    closeToolbarMenus();
+    closeContextMenu();
+    if (toolbarProjectMenu) {
+      toolbarProjectMenu.hidden = false;
+      toolbarProject?.setAttribute('aria-expanded', 'true');
+    }
+  });
+  toolbarProjectWrap?.addEventListener('mouseleave', () => {
+    scheduleMenuClose('toolbar-project', () => closeProjectMenu());
+  });
+  toolbarProjectAdd?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeProjectMenu();
+    vscode.postMessage({ type: 'project', action: 'create' });
+  });
+  toolbarProjectList?.addEventListener('pointerdown', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const actionBtn = target?.closest('[data-project-action]');
+    if (actionBtn instanceof HTMLElement) {
+      return;
+    }
+    const row = target?.closest('[data-project-id]');
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const id = row.getAttribute('data-project-id');
+    if (!id || id === activeProjectId) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    vscode.postMessage({ type: 'project', action: 'select', id });
+    closeProjectMenu();
+  });
+  toolbarProjectList?.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const actionBtn = target?.closest('[data-project-action]');
+    if (actionBtn instanceof HTMLElement) {
+      event.stopPropagation();
+      const action = actionBtn.getAttribute('data-project-action');
+      if (action === 'join') {
+        if (baseConfigBusy || (actionBtn instanceof HTMLButtonElement && actionBtn.disabled)) {
+          return;
+        }
+        vscode.postMessage({ type: 'project', action: 'create', mode: 'select' });
+        closeProjectMenu();
+        return;
+      }
+      if (action === 'edit') {
+        const id = actionBtn.getAttribute('data-project-id');
+        if (id) {
+          vscode.postMessage({ type: 'projectOpenSettings', id });
+          closeProjectMenu();
+        }
+        return;
+      }
+      return;
+    }
+    const row = target?.closest('[data-project-id]');
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const id = row.getAttribute('data-project-id');
+    if (!id) {
+      return;
+    }
+    vscode.postMessage({ type: 'project', action: 'select', id });
+    closeProjectMenu();
+  });
   toolbarProfileWrap?.addEventListener('mouseenter', () => {
     cancelMenuClose('toolbar-profile');
     closeToolbarMenus();
@@ -414,26 +801,35 @@
   });
   toolbarProfileAdd?.addEventListener('click', (event) => {
     event.stopPropagation();
-    submitProfileCreate();
+    closeProfileMenu();
+    vscode.postMessage({ type: 'profileOpenSettings' });
   });
-  toolbarProfileName?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      submitProfileCreate();
+  toolbarLock?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (toolbarLock.disabled) {
+      return;
     }
+    pagesFixed = !pagesFixed;
+    applyToolbarLock();
+    renderPager();
+    vscode.postMessage({ type: 'setPagesFixed', fixed: pagesFixed });
   });
   toolbarProfileList?.addEventListener('click', (event) => {
-    const target = /** @type {HTMLElement | null} */ (event.target instanceof HTMLElement ? event.target : null);
+    const target = event.target instanceof Element ? event.target : null;
     const actionBtn = target?.closest('[data-profile-action]');
     if (actionBtn instanceof HTMLElement) {
       event.stopPropagation();
       const action = actionBtn.getAttribute('data-profile-action');
       const id = actionBtn.getAttribute('data-profile-id') || undefined;
-      if (action === 'rename' || action === 'delete' || action === 'syncPush' || action === 'syncPull') {
+      if (action === 'edit') {
+        vscode.postMessage({ type: 'profileOpenSettings', id });
+        closeProfileMenu();
+        return;
+      }
+      if (action === 'delete') {
         vscode.postMessage({ type: 'profile', action, id });
-        if (action === 'rename' || action === 'delete') {
-          closeProfileMenu();
-        }
+        closeProfileMenu();
       }
       return;
     }
@@ -451,6 +847,66 @@
 
   /** Skip leave-close while the context menu DOM is rebuilt (toggle/highlight). */
   let ignoreContextLeave = false;
+  /** @type {((event: PointerEvent) => void) | null} */
+  let contextDismissMove = null;
+
+  /**
+   * @param {HTMLElement | null} menu
+   * @param {number} x
+   * @param {number} y
+   */
+  function menuBoxContains(menu, x, y) {
+    if (!menu || menu.hidden) {
+      return false;
+    }
+    const rect = menu.getBoundingClientRect();
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+  }
+
+  function clearContextDismissMove() {
+    if (!contextDismissMove) {
+      return;
+    }
+    document.removeEventListener('pointermove', contextDismissMove, true);
+    contextDismissMove = null;
+  }
+
+  /**
+   * replaceChildren can synthesize mouseleave. Ignore that until the pointer
+   * actually moves — mouseenter never fires if the menu opened off the cursor
+   * (flipped above the click), so the first real move must both unlock leave
+   * and dismiss when the pointer stays outside.
+   */
+  function armContextMenuDismiss() {
+    ignoreContextLeave = true;
+    clearContextDismissMove();
+    const originX = openMenuState?.x ?? 0;
+    const originY = openMenuState?.y ?? 0;
+    contextDismissMove = (event) => {
+      if (contextMenu.hidden) {
+        clearContextDismissMove();
+        ignoreContextLeave = false;
+        return;
+      }
+      ignoreContextLeave = false;
+      if (
+        menuBoxContains(contextMenu, event.clientX, event.clientY) ||
+        menuBoxContains(reviewDepthMenu, event.clientX, event.clientY) ||
+        menuBoxContains(neuroFixMenu, event.clientX, event.clientY)
+      ) {
+        clearContextDismissMove();
+        return;
+      }
+      const dx = event.clientX - originX;
+      const dy = event.clientY - originY;
+      if (dx * dx + dy * dy < CONTEXT_AWAY_PX * CONTEXT_AWAY_PX) {
+        return;
+      }
+      clearContextDismissMove();
+      scheduleMenuClose('context', () => closeContextMenu());
+    };
+    document.addEventListener('pointermove', contextDismissMove, true);
+  }
 
   contextMenu.addEventListener('mouseenter', () => {
     ignoreContextLeave = false;
@@ -521,6 +977,7 @@
 
   /** @type {{ activePageId?: string, side?: 'left' | 'right' }} */
   const uiState = vscode.getState() || {};
+  bindReviewTalk();
   const bodySide = document.body.getAttribute('data-side');
   if (bodySide === 'left' || bodySide === 'right') {
     uiState.side = bodySide;
@@ -528,8 +985,48 @@
   }
   /** Local to this webview — not persisted in setState. */
   let problemsPageOpen = false;
+  let debugPageOpen = false;
+  /** @type {{ sections: Array<{ id: string, title: string, reason?: string, left: Record<string, unknown>, right: Record<string, unknown> }> } | null} */
+  let debugDiffSnapshot = null;
+  let debugDiffBusy = false;
+  /** True after a diff fetch started while Send was on. Stops a frozen empty screen from lying. */
+  let debugFetchedForPush = false;
   /** @type {any} */
   let data = null;
+  /** @type {Record<string, { canPull?: boolean, canPush?: boolean }>} */
+  let pageConfigSync = {};
+  /** Page tabs show the fixed mark. */
+  let pagesFixed = false;
+  /** Lock value already published. Differs from pagesFixed while that change is unsent. */
+  let pagesFixedSent = false;
+  /** @type {{ id: string, name: string, active?: boolean }[]} */
+  let projectsList = [];
+  let activeProjectId = '';
+  /** @type {{ canPush?: boolean, canPull?: boolean }} */
+  let projectConfigSync = {};
+  let canToggleProjectLock = true;
+  /** Batch send/receive of page configs is in flight. */
+  let pageCloudBusy = false;
+  /** Project / profile Discord sync in flight. */
+  let baseConfigBusy = false;
+  /** @type {Record<string, string[]>} */
+  let pageDrafts = {};
+  /** Path from assets/download-cloud-2-fill.svg */
+  const CLOUD_DOWNLOAD_D =
+    'M13 13V18.585L14.8284 16.7574L16.2426 18.1716L12 22.4142L7.75736 18.1716L9.17157 16.7574L11 18.585V13H13ZM12 2C15.5934 2 18.5544 4.70761 18.9541 8.19395C21.2858 8.83154 23 10.9656 23 13.5C23 16.3688 20.8036 18.7246 18.0006 18.9776L18 17C18 13.6863 15.3137 11 12 11C8.7616 11 6.12243 13.5656 6.00414 16.7751L6 17L6.00039 18.9776C3.19696 18.7252 1 16.3692 1 13.5C1 10.9656 2.71424 8.83154 5.04648 8.19411C5.44561 4.70761 8.40661 2 12 2Z';
+  /** Path from assets/upload-cloud-2-fill.svg */
+  const CLOUD_UPLOAD_D =
+    'M12 12.5858L16.2426 16.8284L14.8284 18.2426L13 16.415V22H11V16.413L9.17157 18.2426L7.75736 16.8284L12 12.5858ZM12 2C15.5934 2 18.5544 4.70761 18.9541 8.19395C21.2858 8.83154 23 10.9656 23 13.5C23 16.3688 20.8036 18.7246 18.0006 18.9776L18 17C18 13.6863 15.3137 11 12 11C8.7616 11 6.12243 13.5656 6.00414 16.7751L6 17L6.00039 18.9776C3.19696 18.7252 1 16.3692 1 13.5C1 10.9656 2.71424 8.83154 5.04648 8.19411C5.44561 4.70761 8.40661 2 12 2Z';
+  /** Path from assets/delete-bin-2-fill.svg */
+  const PROJECT_DELETE_D =
+    'M7 6V3C7 2.44772 7.44772 2 8 2H16C16.5523 2 17 2.44772 17 3V6H22V8H20V21C20 21.5523 19.5523 22 19 22H5C4.44772 22 4 21.5523 4 21V8H2V6H7ZM13.4142 13.9997L15.182 12.232L13.7678 10.8178L12 12.5855L10.2322 10.8178L8.81802 12.232L10.5858 13.9997L8.81802 15.7675L10.2322 17.1817L12 15.4139L13.7678 17.1817L15.182 15.7675L13.4142 13.9997ZM9 4V6H15V4H9Z';
+  /** Path from assets/reload.svg */
+  const CLOUD_RELOAD_D =
+    'M12 4C14.5905 4 16.8939 5.23053 18.3573 7.14274L16 9.5H22V3.5L19.7814 5.71863C17.9494 3.452 15.1444 2 12 2C6.47715 2 2 6.47715 2 12H4C4 7.58172 7.58172 4 12 4ZM20 12C20 16.4183 16.4183 20 12 20C9.40951 20 7.10605 18.7695 5.64274 16.8573L8 14.5H2V20.5L4.21863 18.2814C6.05062 20.548 8.85557 22 12 22C17.5228 22 22 17.5228 22 12H20Z';
+  /** Discord pages waiting to be created by pull. */
+  let pendingRemoteCount = 0;
+  /** At least one Discord config channel is configured. */
+  let hasConfigChannel = false;
   /** Drops a state push that lost the race with a newer one. */
   let stateSeq = 0;
   /** Bumped when map data changes. Same revision means a visited page can be shown from cache. */
@@ -539,6 +1036,8 @@
   const pager = /** @type {HTMLElement | null} */ (document.getElementById('pager'));
   /** @type {string | null} */
   let pageDragId = null;
+  /** Last pager-chip click. A second press still counts after the chip is rebuilt. */
+  let pageChipClick = { id: '', at: 0 };
   let wheelLock = false;
   /** @type {any} */
   let dragPayload = null;
@@ -624,9 +1123,820 @@
   /** @type {{ anchor: HTMLButtonElement, kind: 'file' | 'dir', relPath: string } | null} */
   let problemPanelState = null;
 
+  /**
+   * @typedef {{
+   *   pageId: string,
+   *   loading?: boolean,
+   *   loadingEdge?: 'initial' | 'older' | 'newer',
+   *   error?: string,
+   *   empty?: boolean,
+   *   contentBlocked?: boolean,
+   *   messages?: Array<{
+   *     id: string,
+   *     content: string,
+   *     author?: string,
+   *     timestamp: string,
+   *     isMr: boolean,
+   *     isReviewRoot?: boolean,
+   *     webUrl?: string,
+   *     title?: string,
+   *     draft?: boolean,
+   *     color?: string,
+   *     pillLabel?: string,
+   *     fixes?: {
+   *       counts: { H: number, M: number, L: number },
+   *       at?: string,
+   *       bullets: { H: number[], M: number[], L: number[] }
+   *     },
+   *     status?: 'open' | 'closed',
+   *     reviewStatus?: 'inProgress' | 'done',
+   *     hasFile?: boolean,
+   *     filename?: string,
+   *     locked?: boolean,
+   *     threadId?: string,
+   *     hasThread?: boolean,
+   *     replies: Array<{
+   *       id: string,
+   *       content: string,
+   *       author?: string,
+   *       timestamp: string,
+   *       isReview: boolean,
+   *       isExplain?: boolean,
+   *       isPill?: boolean,
+   *       pillLabel?: string,
+   *       fixes?: {
+   *         counts: { H: number, M: number, L: number },
+   *         at?: string,
+   *         bullets: { H: number[], M: number[], L: number[] }
+   *       },
+   *       status?: 'inProgress' | 'done',
+   *       color?: string,
+   *       branch?: string,
+   *       hasFile?: boolean,
+   *       filename?: string,
+   *       contentMissing?: boolean,
+   *       isTalk?: boolean,
+   *       profileId?: string,
+   *       profileName?: string,
+   *       avatar?: string,
+   *       talkText?: string,
+   *       talkSourceType?: string,
+   *       talkSourceTitle?: string,
+   *       locked?: boolean
+   *     }>,
+   *     repliesHasMore: boolean,
+   *     repliesHasNewer?: boolean,
+   *     gapBeforeReplyId?: string,
+   *     repliesLoaded?: boolean,
+   *     contentMissing?: boolean,
+   *     branch?: string,
+   *     isExplainRoot?: boolean,
+   *     isTalk?: boolean,
+   *     profileId?: string,
+   *     profileName?: string,
+   *     avatar?: string,
+   *     talkText?: string,
+   *     talkSourceType?: string,
+   *     talkSourceTitle?: string
+   *   }>,
+   *   canLoadOlder?: boolean,
+   *   canLoadNewer?: boolean,
+   *   gapBeforeMessageId?: string,
+   *   focusMessageId?: string,
+   *   checkout?: string,
+   *   filters?: { checkout: boolean, general: boolean, discussions: boolean },
+   *   resetView?: boolean,
+   *   pendingMr?: { title: string, draft?: boolean },
+   *   pendingRoot?: { branch: string },
+   *   pendingReviewId?: string,
+   *   pendingExplainRoot?: { branch: string },
+   *   pendingExplainId?: string,
+   *   pendingNeurofixId?: string,
+   *   pendingStudyId?: string,
+   *   pendingRereviewId?: string,
+   *   skeletonSeq?: number
+   * }} ReviewState
+   */
+  /** @type {ReviewState | null} */
+  let reviewState = null;
+  /**
+   * @typedef {Object} ScenarioChildChip
+   * @property {string} id
+   * @property {string} title
+   * @property {boolean} hasFile
+   * @property {string} [md]
+   * @property {number} order
+   * @property {number} steep
+   */
+  /**
+   * @typedef {Object} ScenarioChip
+   * @property {string} id
+   * @property {boolean} isGroup
+   * @property {string} title
+   * @property {string} [color]
+   * @property {string} [alias]
+   * @property {string} [description]
+   * @property {boolean} hasFile
+   * @property {string} [md]
+   * @property {boolean} locked
+   * @property {ScenarioChildChip[]} children
+   * @property {boolean} [childrenLoaded]
+   */
+  /**
+   * @typedef {Object} ScenarioPageState
+   * @property {string} pageId
+   * @property {boolean} loading
+   * @property {string} [error]
+   * @property {boolean} [empty]
+   * @property {ScenarioChip[]} messages
+   */
+  /** @type {ScenarioPageState | null} */
+  let scenarioState = null;
+  /** @type {Map<string, ScenarioPageState>} */
+  const scenarioByPage = new Map();
+  let scenariosStructureKey = '';
+  /** @type {string | null} */
+  let openScenarioGroupPanelId = null;
+  let focusScenarioGroupNameOnOpen = false;
+  /** @type {{ pageId: string, messageId: string } | null} */
+  let scenarioFormBusy = null;
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   questions: { id: string, prompt: string, options: { id: string, label: string }[] }[]
+   * } | null}
+   */
+  let scenarioFormQuestions = null;
+  /** @type {Record<string, string>} */
+  let scenarioFormPicks = {};
+  /** @type {{ id: string, groupId: string, targetGroupId?: string, copy?: boolean } | null} */
+  let pendingScenarioDrop = null;
+  /** @type {{ kind: 'row', row: HTMLElement, edge: 'before' | 'after' | 'into' } | { kind: 'tail', tail: HTMLElement } | null} */
+  let scenarioCue = null;
+  /** @type {HTMLElement | null} */
+  let scenarioDropSlotEl = null;
+  /** @type {HTMLElement | null} */
+  let scenarioOverlayEl = null;
+  /** @type {string | null} */
+  let scenarioOverlayMessageId = null;
+  /** Optimistic channel-load edge until the host snapshot arrives. */
+  /** @type {{ pageId: string, edge: 'initial' | 'older' | 'newer' } | null} */
+  let reviewLoadPending = null;
+  /**
+   * Optimistic thread-load slot until a settled snapshot arrives.
+   * `armed` flips on the next turn so a reviewState already in the queue
+   * does not put the chip back before this load's own snapshot.
+   * @type {{ pageId: string, messageId: string, direction: 'older' | 'newer', armed: boolean } | null}
+   */
+  let reviewThreadLoadPending = null;
+  /**
+   * MR chip drawn before the host snapshot. Cleared once that snapshot carries
+   * the same title. A newer skeletonSeq from another operation leaves it up.
+   * @type {{ pageId: string, title: string, draft: boolean } | null}
+   */
+  let localPendingMr = null;
+  /**
+   * Review pill drawn in a thread before the Discord reply is in the snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingReview = null;
+  /**
+   * Root review chip drawn before the host snapshot. Cleared once that snapshot
+   * carries the same branch.
+   * @type {{ pageId: string, branch: string } | null}
+   */
+  let localPendingRoot = null;
+  /**
+   * Explain pill drawn in a thread before the Discord reply is in the snapshot.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingExplain = null;
+  /**
+   * Root explain chip drawn before the host snapshot.
+   * @type {{ pageId: string, branch: string } | null}
+   */
+  let localPendingExplainRoot = null;
+  /**
+   * Green fix chip drawn under a review message before the host snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingNeurofix = null;
+  /**
+   * «Изучено» chip drawn under a review message before the host snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingStudy = null;
+  /**
+   * Rereview note drawn under a review message before the host snapshot.
+   * Cleared once that snapshot carries the same messageId.
+   * @type {{ pageId: string, messageId: string } | null}
+   */
+  let localPendingRereview = null;
+  /** Highest skeletonSeq applied per page. Lower snapshots are stale. */
+  const reviewSkeletonSeq = new Map();
+  /** Last placeholder scrolled into view, so later paints do not jump. */
+  let reviewSkelShown = '';
+  /** Pages that already sent reviewLoad while the snapshot was still missing. */
+  const reviewAutoLoad = new Set();
+  /** Initial channel load should land on the newest rows once the list is painted. */
+  let reviewScrollToEnd = false;
+  /** Page slide must not put back the previous offset after that glide. */
+  let reviewPinEnd = false;
+  /** Bumps cancel an in-flight glide to the end of the review list. */
+  let reviewScrollAnim = 0;
+  /** Pages that already sent scenarioReload while the snapshot was still missing. */
+  const scenarioAutoLoad = new Set();
+  /** Settled review snapshots, so switching back does not refetch. */
+  const reviewByPage = new Map();
+  /** @type {{ pageId: string, branches: string[], parent: string, people: Array<{ nick: string, name?: string }>, defaultAssignee: string, provider: 'gitlab' | 'github' } | null} */
+  let reviewMrPanel = null;
+  /** Collapsed review threads (MR chips and plain messages). Default open. */
+  const reviewCollapsed = new Set();
+  /** Last closed flag per MR, so a closed thread folds once on load and on close. */
+  const reviewClosedSeen = new Map();
+  /** MR titles expanded past one line. */
+  const reviewTitleExpanded = new Set();
+  /** Plain parents with expanded body + thread. */
+  const reviewPlainExpanded = new Set();
+  /** Tree identity aside from fold flags, so a collapse can animate in place. */
+  let reviewStructureKeyValue = '';
+  /** Downloaded review bodies, keyed by Discord message id. */
+  const reviewFileCache = new Map();
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   title: string,
+   *   filename: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   text: string,
+   *   error: string,
+   * } | null}
+   */
+  let reviewFileView = null;
+  /**
+   * Neurofix bullet picker opened from «Фикс списком».
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   left: number,
+   *   top: number,
+   *   width: number,
+   *   status: 'loading' | 'ready' | 'error',
+   *   error: string,
+   *   entered: boolean,
+   *   pointerInside: boolean,
+   *   el: HTMLElement | null,
+   * } | null}
+   */
+  let neuroFixListPanel = null;
+
+  /** Thrown by fetch when the machine is offline. Not an HTTP error from Discord. */
+  function isReviewFetchError(text) {
+    return /fetch failed|fetch error|failed to fetch|networkerror|network request failed|enotfound|econnrefused|econnreset|etimedout|eai_again|offline|getaddrinfo/i.test(
+      String(text || ''),
+    );
+  }
+
+  /** @param {ReviewState | null | undefined} state */
+  function reviewStateMessages(state) {
+    return state && Array.isArray(state.messages) ? state.messages : [];
+  }
+
+  /**
+   * A reload that dies before the network answers must not replace a card
+   * that already has messages.
+   * @param {ReviewState | null} incoming
+   * @returns {ReviewState | null}
+   */
+  function keepLoadedReview(incoming) {
+    if (!incoming || !incoming.pageId || !isReviewFetchError(incoming.error)) {
+      return incoming;
+    }
+    const cached = reviewByPage.get(incoming.pageId);
+    const current = reviewState && reviewState.pageId === incoming.pageId ? reviewState : null;
+    const kept = reviewStateMessages(incoming).length
+      ? incoming
+      : reviewStateMessages(current).length
+        ? current
+        : reviewStateMessages(cached).length
+          ? cached
+          : null;
+    if (!kept) {
+      return incoming;
+    }
+    return {
+      ...kept,
+      pageId: incoming.pageId,
+      loading: false,
+      loadingEdge: undefined,
+      error: '',
+      skeletonSeq: incoming.skeletonSeq,
+      checkout: typeof incoming.checkout === 'string' ? incoming.checkout : kept.checkout,
+      filters: incoming.filters || kept.filters,
+      resetView: incoming.resetView === true,
+      pendingMr: incoming.pendingMr || kept.pendingMr,
+      pendingRoot: incoming.pendingRoot || kept.pendingRoot,
+      pendingReviewId: incoming.pendingReviewId || kept.pendingReviewId,
+      pendingExplainRoot: incoming.pendingExplainRoot || kept.pendingExplainRoot,
+      pendingExplainId: incoming.pendingExplainId || kept.pendingExplainId,
+      pendingNeurofixId: incoming.pendingNeurofixId || kept.pendingNeurofixId,
+      pendingStudyId: incoming.pendingStudyId || kept.pendingStudyId,
+      pendingRereviewId: incoming.pendingRereviewId || kept.pendingRereviewId,
+    };
+  }
+
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'state') {
+    if (message.type === 'mapNotice') {
+      showMapNotice(
+        message.text,
+        message.tone === 'info' || message.tone === 'warning' ? message.tone : 'error',
+      );
+    } else if (message.type === 'reviewSkillCopied' || message.type === 'scenarioSkillCopied') {
+      const note = document.getElementById(
+        message.type === 'scenarioSkillCopied' ? 'scenario-skill-copied' : 'review-skill-copied',
+      );
+      if (note) {
+        note.textContent = t('reviewSkillCopied');
+        note.hidden = false;
+        window.clearTimeout(reviewSkillCopiedTimer);
+        reviewSkillCopiedTimer = window.setTimeout(() => {
+          note.hidden = true;
+        }, 2200);
+      }
+    } else if (message.type === 'reviewFile') {
+      onReviewFileResult(message);
+    } else if (message.type === 'reviewFixes') {
+      onReviewFixesResult(message);
+    } else if (message.type === 'reviewNeurofixIdle') {
+      if (
+        localPendingNeurofix &&
+        localPendingNeurofix.pageId === message.pageId &&
+        localPendingNeurofix.messageId === message.messageId
+      ) {
+        localPendingNeurofix = null;
+        if (activePage()?.kind === 'review' && activePage()?.id === message.pageId) {
+          paintReviewPage();
+        }
+      }
+    } else if (message.type === 'reviewStudyIdle') {
+      if (
+        localPendingStudy &&
+        localPendingStudy.pageId === message.pageId &&
+        localPendingStudy.messageId === message.messageId
+      ) {
+        localPendingStudy = null;
+        if (activePage()?.kind === 'review' && activePage()?.id === message.pageId) {
+          paintReviewPage();
+        }
+      }
+    } else if (message.type === 'reviewRereviewIdle') {
+      if (
+        localPendingRereview &&
+        localPendingRereview.pageId === message.pageId &&
+        localPendingRereview.messageId === message.messageId
+      ) {
+        localPendingRereview = null;
+        if (activePage()?.kind === 'review' && activePage()?.id === message.pageId) {
+          paintReviewPage();
+        }
+      }
+    } else if (message.type === 'reviewTalkResult') {
+      reviewTalkBusy = false;
+      if (message.ok && reviewTalkInput) {
+        reviewTalkInput.value = '';
+        resizeReviewTalk();
+      }
+      syncReviewTalk();
+    } else if (message.type === 'figmaFormState') {
+      figmaFormRunning = message.running === true;
+      figmaFormStatusText = typeof message.status === 'string' ? message.status : '';
+      if (!figmaFormRunning) {
+        figmaEmptySkel = false;
+      }
+      syncFigmaFilters();
+      if (activePage()?.kind === 'figma' && pageLinks().length === 0) {
+        paintLinksPage();
+      }
+    } else if (message.type === 'reviewState') {
+      const incoming = keepLoadedReview(message.review || null);
+      const incomingSeq = incoming && incoming.pageId ? incoming.skeletonSeq || 0 : 0;
+      if (
+        incoming &&
+        incoming.pageId &&
+        incomingSeq < (reviewSkeletonSeq.get(incoming.pageId) || 0)
+      ) {
+        return;
+      }
+      reviewState = incoming;
+      reviewSchemeId = normalizeReviewScheme(incoming && (incoming.scheme || incoming.theme));
+      if (incoming && incoming.resetView) {
+        closeReviewFileView();
+        closeExplainFileView();
+        closeReviewFixesView();
+      }
+      syncReviewFilters();
+      if (reviewState && reviewState.pageId) {
+        if (incomingSeq > (reviewSkeletonSeq.get(reviewState.pageId) || 0)) {
+          reviewSkeletonSeq.set(reviewState.pageId, incomingSeq);
+        }
+        if (localPendingMr && localPendingMr.pageId === reviewState.pageId) {
+          const hostMr = reviewState.pendingMr;
+          if (hostMr && hostMr.title === localPendingMr.title) {
+            localPendingMr = null;
+          }
+        }
+        if (localPendingReview && localPendingReview.pageId === reviewState.pageId) {
+          if (reviewState.pendingReviewId === localPendingReview.messageId) {
+            localPendingReview = null;
+          }
+        }
+        if (localPendingRoot && localPendingRoot.pageId === reviewState.pageId) {
+          // Host skeleton (any branch) replaces the optimistic «…» row.
+          if (reviewState.pendingRoot) {
+            localPendingRoot = null;
+          }
+        }
+        if (localPendingExplain && localPendingExplain.pageId === reviewState.pageId) {
+          if (reviewState.pendingExplainId === localPendingExplain.messageId) {
+            localPendingExplain = null;
+          }
+        }
+        if (localPendingExplainRoot && localPendingExplainRoot.pageId === reviewState.pageId) {
+          if (reviewState.pendingExplainRoot) {
+            localPendingExplainRoot = null;
+          }
+        }
+        if (localPendingNeurofix && localPendingNeurofix.pageId === reviewState.pageId) {
+          if (reviewState.pendingNeurofixId === localPendingNeurofix.messageId) {
+            localPendingNeurofix = null;
+          }
+        }
+        if (localPendingStudy && localPendingStudy.pageId === reviewState.pageId) {
+          if (reviewState.pendingStudyId === localPendingStudy.messageId) {
+            localPendingStudy = null;
+          }
+        }
+        if (localPendingRereview && localPendingRereview.pageId === reviewState.pageId) {
+          if (reviewState.pendingRereviewId === localPendingRereview.messageId) {
+            localPendingRereview = null;
+          }
+        }
+        if (reviewState.pendingReviewId) {
+          reviewCollapsed.delete(reviewState.pendingReviewId);
+        }
+        if (reviewState.pendingExplainId) {
+          reviewCollapsed.delete(reviewState.pendingExplainId);
+        }
+        if (reviewState.pendingNeurofixId) {
+          reviewCollapsed.delete(reviewFoldParentId(reviewState.pendingNeurofixId));
+        }
+        if (reviewState.pendingStudyId) {
+          reviewCollapsed.delete(reviewFoldParentId(reviewState.pendingStudyId));
+        }
+        if (reviewState.pendingRereviewId) {
+          reviewCollapsed.delete(reviewFoldParentId(reviewState.pendingRereviewId));
+        }
+        reviewAutoLoad.delete(reviewState.pageId);
+        if (reviewState.error || reviewState.loadingEdge === 'initial') {
+          reviewByPage.delete(reviewState.pageId);
+        } else if (!reviewState.loadingEdge) {
+          reviewByPage.set(reviewState.pageId, reviewState);
+        }
+      }
+      if (
+        reviewLoadPending &&
+        reviewState &&
+        reviewLoadPending.pageId === reviewState.pageId &&
+        (reviewState.loadingEdge || !reviewState.loading)
+      ) {
+        reviewLoadPending = null;
+      }
+      if (
+        reviewThreadLoadPending &&
+        reviewThreadLoadPending.armed &&
+        reviewState &&
+        reviewThreadLoadPending.pageId === reviewState.pageId &&
+        !reviewState.loading
+      ) {
+        reviewThreadLoadPending = null;
+      }
+      if (activePage()?.kind === 'review') {
+        paintReviewPage();
+      }
+    } else if (message.type === 'scenarioState') {
+      const incoming = message.scenario || null;
+      scenarioState = incoming;
+      if (incoming && incoming.pageId) {
+        if (incoming.loading) {
+          scenarioByPage.delete(incoming.pageId);
+        } else {
+          scenarioByPage.set(incoming.pageId, incoming);
+          scenarioAutoLoad.delete(incoming.pageId);
+        }
+      }
+      if (activePage()?.kind === 'scenarios') {
+        render();
+      }
+    } else if (message.type === 'scenarioFormBusy') {
+      const pageId = typeof message.pageId === 'string' ? message.pageId : '';
+      const messageId = typeof message.messageId === 'string' ? message.messageId : '';
+      if (pageId && messageId) {
+        scenarioFormBusy = { pageId, messageId };
+      }
+      closeContextMenu();
+      if (activePage()?.kind === 'scenarios') {
+        paintScenariosPage();
+      }
+    } else if (message.type === 'scenarioFormIdle') {
+      scenarioFormBusy = null;
+      closeScenarioFormPanel(false);
+      if (activePage()?.kind === 'scenarios') {
+        paintScenariosPage();
+      }
+    } else if (message.type === 'scenarioQuestions') {
+      const pageId = typeof message.pageId === 'string' ? message.pageId : '';
+      const messageId = typeof message.messageId === 'string' ? message.messageId : '';
+      const questions = Array.isArray(message.questions) ? message.questions : [];
+      scenarioFormQuestions =
+        pageId && messageId && questions.length
+          ? { pageId, messageId, questions }
+          : null;
+      scenarioFormPicks = {};
+      if (scenarioFormQuestions) {
+        scenarioFormBusy = { pageId, messageId };
+      }
+      closeContextMenu();
+      if (activePage()?.kind === 'scenarios') {
+        paintScenariosPage();
+      }
+    } else if (message.type === 'scenarioPagePanel') {
+      openScenarioPagePanel({
+        mode: message.mode === 'edit' ? 'edit' : 'create',
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        hasDiscord: message.hasDiscord === true,
+        scenarioSkillPath:
+          typeof message.scenarioSkillPath === 'string' ? message.scenarioSkillPath : '',
+        scenarioModel: typeof message.scenarioModel === 'string' ? message.scenarioModel : '',
+        scenarioPrintThinking: message.scenarioPrintThinking === true,
+        scenarioPrintTools: message.scenarioPrintTools !== false,
+      });
+    } else if (message.type === 'scenarioPageDone') {
+      setPanelBusy(document.getElementById('scenario-page-panel'), false);
+      closeScenarioPagePanel();
+    } else if (message.type === 'scenarioPageError') {
+      const panel = document.getElementById('scenario-page-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'reviewMrPanel') {
+      reviewMrPanel = {
+        pageId: message.pageId,
+        branches: Array.isArray(message.branches) ? message.branches : [],
+        parent: typeof message.parent === 'string' ? message.parent : '',
+        people: Array.isArray(message.people) ? message.people : [],
+        defaultAssignee: typeof message.defaultAssignee === 'string' ? message.defaultAssignee : '',
+        provider: message.provider === 'github' ? 'github' : 'gitlab',
+      };
+      openReviewMrPanel();
+    } else if (message.type === 'reviewBranches') {
+      onReviewBranchesMessage({
+        requestId: typeof message.requestId === 'string' ? message.requestId : '',
+        ok: message.ok === true,
+        branches: Array.isArray(message.branches) ? message.branches : [],
+        nextPage: typeof message.nextPage === 'number' ? message.nextPage : undefined,
+        currentBranch: typeof message.currentBranch === 'string' ? message.currentBranch : '',
+        message: typeof message.message === 'string' ? message.message : undefined,
+      });
+    } else if (message.type === 'reviewOpenRequests') {
+      onReviewOpenRequestsMessage({
+        requestId: typeof message.requestId === 'string' ? message.requestId : '',
+        ok: message.ok === true,
+        requests: readOpenRequests(message.requests),
+        nextPage: typeof message.nextPage === 'number' ? message.nextPage : undefined,
+        currentBranch: typeof message.currentBranch === 'string' ? message.currentBranch : '',
+        message: typeof message.message === 'string' ? message.message : undefined,
+      });
+    } else if (message.type === 'reviewParent') {
+      onReviewParentMessage({
+        requestId: typeof message.requestId === 'string' ? message.requestId : '',
+        ok: message.ok === true,
+        parent: typeof message.parent === 'string' ? message.parent : undefined,
+        message: typeof message.message === 'string' ? message.message : undefined,
+      });
+    } else if (message.type === 'projectSettingsPanel') {
+      openProjectEditPanel({
+        id: typeof message.id === 'string' ? message.id : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        profileName: typeof message.profileName === 'string' ? message.profileName : '',
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'projectSettingsError') {
+      const panel = document.getElementById('project-edit-panel');
+      if (panel instanceof HTMLElement) {
+        panel.classList.remove('is-busy');
+      }
+      const error = document.querySelector('#project-edit-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'projectSettingsSaved') {
+      closeProjectEditPanel();
+    } else if (message.type === 'profileSettingsPanel') {
+      openProfileSettingsPanel({
+        id: typeof message.id === 'string' ? message.id : '',
+        creating: message.creating === true,
+        nameLocked: message.nameLocked === true,
+        name: typeof message.name === 'string' ? message.name : '',
+        githubNick: typeof message.githubNick === 'string' ? message.githubNick : '',
+        gitlabNick: typeof message.gitlabNick === 'string' ? message.gitlabNick : '',
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'profileSettingsError') {
+      const error = document.querySelector('#profile-settings-panel .review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'profileSettingsSaved') {
+      closeProfileSettingsPanel();
+    } else if (message.type === 'pageSettingsPanel') {
+      openPageSettingsPanel({
+        mode: message.mode === 'edit' ? 'edit' : 'create',
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        kind:
+          message.kind === 'notes' ||
+          message.kind === 'links' ||
+          message.kind === 'figma' ||
+          message.kind === 'review'
+            ? message.kind
+            : 'files',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        hasDiscord: message.hasDiscord === true,
+        figmaToken: typeof message.figmaToken === 'string' ? message.figmaToken : '',
+        figmaSkillPath: typeof message.figmaSkillPath === 'string' ? message.figmaSkillPath : '',
+        figmaModel: typeof message.figmaModel === 'string' ? message.figmaModel : '',
+        figmaPrintThinking: message.figmaPrintThinking === true,
+        figmaPrintTools: message.figmaPrintTools !== false,
+        figmaOpenInApp: message.figmaOpenInApp !== false,
+        figmaFiles: figmaFileEntries(message.figmaFiles),
+      });
+    } else if (message.type === 'pageSettingsError') {
+      const panel = document.getElementById('page-settings-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'pageSettingsSaved') {
+      setPanelBusy(document.getElementById('page-settings-panel'), false);
+      closePageSettingsPanel();
+    } else if (message.type === 'figmaIconBindingsSaved') {
+      setPanelBusy(document.getElementById('figma-icon-panel'), false);
+      if (figmaIconCloseSeq !== 0 && figmaIconCloseSeq === figmaIconSaveSeq) {
+        figmaIconCloseSeq = 0;
+        closeFigmaIconPanel();
+      }
+    } else if (message.type === 'figmaIconBindingsError') {
+      const panel = document.getElementById('figma-icon-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'reviewCreatePagePanel') {
+      openReviewCreatePagePanel({
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        projectRepoLocked: message.projectRepoLocked === true,
+        hasGitlab: message.hasGitlab === true,
+        hasGithub: message.hasGithub === true,
+        hasDiscord: message.hasDiscord === true,
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+      });
+    } else if (message.type === 'reviewCreatePageDone') {
+      setPanelBusy(document.getElementById('review-create-page-panel'), false);
+      closeReviewCreatePagePanel();
+    } else if (message.type === 'reviewCreatePageError') {
+      const panel = document.getElementById('review-create-page-panel');
+      setPanelBusy(panel, false);
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+    } else if (message.type === 'discordGatePanel') {
+      if (message.i18n && typeof message.i18n === 'object') {
+        i18nBag = message.i18n;
+      }
+      openProjectCreatePanel({
+        needChannel: true,
+        gate: true,
+        hasDiscord: message.hasDiscord === true,
+        mode: 'create',
+        profileName: typeof message.profileName === 'string' ? message.profileName : '',
+      });
+    } else if (message.type === 'discordGateClear') {
+      closeDiscordGatePanel();
+    } else if (message.type === 'discordGateError') {
+      applyDiscordGateError(
+        typeof message.field === 'string' ? message.field : '',
+        typeof message.message === 'string' ? message.message : '',
+      );
+    } else if (message.type === 'reviewPageSettingsPanel') {
+      openReviewCreatePagePanel({
+        pageId: typeof message.pageId === 'string' ? message.pageId : '',
+        name: typeof message.name === 'string' ? message.name : '',
+        description: typeof message.description === 'string' ? message.description : '',
+        channelId: typeof message.channelId === 'string' ? message.channelId : '',
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        repoUrl: typeof message.repoUrl === 'string' ? message.repoUrl : '',
+        projectRepoLocked: message.projectRepoLocked === true,
+        suggestedProvider: message.suggestedProvider === 'github' ? 'github' : 'gitlab',
+        hasGitlab: message.hasGitlab === true,
+        hasGithub: message.hasGithub === true,
+        hasDiscord: message.hasDiscord === true,
+        githubToken: typeof message.githubToken === 'string' ? message.githubToken : '',
+        gitlabToken: typeof message.gitlabToken === 'string' ? message.gitlabToken : '',
+        reviewSkillPath: typeof message.reviewSkillPath === 'string' ? message.reviewSkillPath : '',
+        reviewFixSkillPath: typeof message.reviewFixSkillPath === 'string' ? message.reviewFixSkillPath : '',
+        explainSkillPath: typeof message.explainSkillPath === 'string' ? message.explainSkillPath : '',
+        studySkillPath: typeof message.studySkillPath === 'string' ? message.studySkillPath : '',
+        reviewDirPath: typeof message.reviewDirPath === 'string' ? message.reviewDirPath : '',
+        reviewModel: typeof message.reviewModel === 'string' ? message.reviewModel : '',
+        reviewFixModel: typeof message.reviewFixModel === 'string' ? message.reviewFixModel : '',
+        reviewPrintThinking: message.reviewPrintThinking === true,
+        reviewPrintTools: message.reviewPrintTools !== false,
+        reviewScheme: typeof message.reviewScheme === 'string' ? message.reviewScheme : '',
+      });
+    } else if (message.type === 'pageCloudBusy') {
+      pageCloudBusy = message.busy === true;
+      if (!pageCloudBusy && message.ok === true && message.pushed > 0) {
+        pagesFixedSent = pagesFixed;
+        applyToolbarLock();
+      }
+      applyBaseConfigLoader();
+      applyWorkspaceCloudButtons();
+    } else if (message.type === 'baseConfigBusy') {
+      baseConfigBusy = message.busy === true;
+      applyBaseConfigLoader();
+      applyWorkspaceCloudButtons();
+      renderProjects(projectsList, activeProjectId, projectConfigSync);
+      renderProfiles(
+        Array.isArray(data?.profiles) ? data.profiles : undefined,
+        typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
+        data?.profileConfigSync,
+      );
+    } else if (message.type === 'projectCreatePanel') {
+      if (message.i18n && typeof message.i18n === 'object') {
+        i18nBag = message.i18n;
+      }
+      openProjectCreatePanel({
+        needChannel: message.needChannel === true,
+        gate: message.gate === true,
+        hasDiscord: message.hasDiscord !== false,
+        mode: message.mode === 'select' ? 'select' : 'create',
+        profileName: typeof message.profileName === 'string' ? message.profileName : '',
+      });
+    } else if (message.type === 'projectCreateDone') {
+      setProjectCreateBusy(false);
+      closeProjectCreatePanel();
+    } else if (message.type === 'projectCreateError') {
+      setProjectCreateBusy(false);
+      const panel = document.getElementById('project-create-panel');
+      const error = panel?.querySelector('.review-panel-error');
+      if (error instanceof HTMLElement) {
+        error.hidden = false;
+        error.textContent = typeof message.message === 'string' ? message.message : '';
+      }
+      const submit = panel?.querySelector('[data-project-create-submit]');
+      if (submit instanceof HTMLButtonElement && message.canRetry === true) {
+        submit.textContent = t('projectCreateRetry');
+        submit.dataset.projectCreateRetry = '1';
+      }
+    } else if (message.type === 'state') {
       if (typeof message.stateSeq === 'number') {
         if (message.stateSeq < stateSeq) {
           return;
@@ -637,7 +1947,10 @@
       closeProblemPanel();
       const previousPageId = uiState.activePageId;
       const previousProblems = problemsPageOpen;
+      const previousDebug = debugPageOpen;
       data = message;
+      pagesFixed = message.pagesFixed === true;
+      pagesFixedSent = message.pagesFixedSent === true;
       reconcileGroupFoldSync();
       if (
         message.restorePage &&
@@ -660,6 +1973,17 @@
       if (typeof message.themeGeneration === 'number') {
         themeGeneration = message.themeGeneration;
       }
+      const incomingProjectId =
+        typeof message.activeProjectId === 'string' ? message.activeProjectId : '';
+      if (activeProjectId && incomingProjectId !== activeProjectId) {
+        cancelSlide();
+        isFolding = false;
+        renderDeferred = false;
+        pageBodies.clear();
+        uiState.activePageId = '';
+        vscode.setState(uiState);
+        activeProjectId = incomingProjectId;
+      }
       ensureActivePage();
       syncPageBodies();
       if (message.i18n && typeof message.i18n === 'object') {
@@ -670,17 +1994,50 @@
       setToolbar(activePage() || message);
       setPanelToggles(message.open);
       updatePageMenu();
-      renderProfiles(message.profiles, message.activeProfileId, message.positionSync);
+      pageConfigSync =
+        message.pageConfigSync && typeof message.pageConfigSync === 'object'
+          ? message.pageConfigSync
+          : {};
+      pendingRemoteCount =
+        typeof message.pendingRemoteCount === 'number' && message.pendingRemoteCount > 0
+          ? message.pendingRemoteCount
+          : 0;
+      hasConfigChannel = message.hasConfigChannel === true;
+      pageDrafts =
+        message.pageDrafts && typeof message.pageDrafts === 'object' ? message.pageDrafts : {};
+      renderProfiles(message.profiles, message.activeProfileId, message.profileConfigSync);
+      projectsList = Array.isArray(message.projects)
+        ? /** @type {{ id: string, name: string, active?: boolean }[]} */ (message.projects)
+        : [];
+      activeProjectId =
+        typeof message.activeProjectId === 'string'
+          ? message.activeProjectId
+          : projectsList.find((p) => p.active)?.id || '';
+      projectConfigSync =
+        message.projectConfigSync && typeof message.projectConfigSync === 'object'
+          ? message.projectConfigSync
+          : {};
+      canToggleProjectLock = message.canToggleProjectLock !== false;
+      renderProjects(projectsList, activeProjectId, projectConfigSync);
+      applyToolbarLock();
+      applyWorkspaceCloudButtons();
+      if (isDebugPageOpen() && workspaceCloudCanPush() && !debugFetchedForPush && !debugDiffBusy) {
+        requestDebugDiff(true);
+      }
       applyAppearance(message.appearance);
       if (!showProblemsTab()) {
         problemsPageOpen = false;
       }
-      if (previousPageId !== uiState.activePageId || previousProblems !== problemsPageOpen) {
+      if (
+        previousPageId !== uiState.activePageId ||
+        previousProblems !== problemsPageOpen ||
+        previousDebug !== debugPageOpen
+      ) {
         dismissLinkPreview();
       }
       renderPager();
       render();
-      if (typeof message.focusNoteId === 'string' && !isProblemsPageOpen()) {
+      if (typeof message.focusNoteId === 'string' && !isAuxPageOpen()) {
         focusNoteInput(message.focusNoteId);
       }
       noteRefactorEpoch(message.refactorEpoch);
@@ -743,6 +2100,14 @@
       } else {
         applyProblemMarks();
       }
+    } else if (message.type === 'debugDiff') {
+      debugDiffBusy = false;
+      debugDiffSnapshot = {
+        sections: Array.isArray(message.sections) ? message.sections : [],
+      };
+      if (isDebugPageOpen()) {
+        paintDebugPage();
+      }
     } else if (message.type === 'dropAlreadyExists') {
       openDropExistsDialog();
     } else if (message.type === 'dirListing') {
@@ -803,11 +2168,48 @@
   });
 
   function postToolbar(action) {
+    if (action === 'refresh') {
+      const page = activePage();
+      if (page && page.kind === 'scenarios') {
+        vscode.postMessage({ type: 'scenarioReload', pageId: page.id });
+        return;
+      }
+      if (page && page.kind === 'review') {
+        requestReviewChannelLoad(page.id, 'initial');
+        return;
+      }
+    }
+    if (action === 'scenarioCreate') {
+      const pageId = uiState.activePageId;
+      if (pageId) {
+        vscode.postMessage({ type: 'scenarioCreate', pageId });
+      }
+      return;
+    }
+    if (action === 'scenarioCreateGroup') {
+      const pageId = uiState.activePageId;
+      if (pageId) {
+        vscode.postMessage({ type: 'scenarioCreateGroup', pageId });
+      }
+      return;
+    }
+    if (action === 'pullMr') {
+      const pageId = uiState.activePageId;
+      if (pageId) {
+        // Same title as ReviewMapController.pullSkeletonTitle. The host snapshot clears this row.
+        beginLocalMrSkeleton(pageId, '…', false);
+      }
+    }
     vscode.postMessage({ type: 'toolbar', action, pageId: uiState.activePageId });
   }
 
   function pages() {
     return data && Array.isArray(data.pages) ? data.pages : [];
+  }
+
+  /** Links and Figma share the link-card canvas. */
+  function isLinkMapKind(kind) {
+    return kind === 'links' || kind === 'figma';
   }
 
   function activePage() {
@@ -818,6 +2220,10 @@
   function ensureActivePage() {
     const list = pages();
     if (list.length === 0) {
+      if (uiState.activePageId) {
+        uiState.activePageId = '';
+        vscode.setState(uiState);
+      }
       return;
     }
     if (!list.some((page) => page.id === uiState.activePageId)) {
@@ -862,6 +2268,12 @@
     if (typeof data.contentPageId === 'string') {
       rememberPageBody(data.contentPageId);
     }
+    const alive = new Set(pages().map((page) => page.id));
+    for (const id of pageBodies.keys()) {
+      if (!alive.has(id)) {
+        pageBodies.delete(id);
+      }
+    }
     const activeId = activePage()?.id;
     if (activeId && data.contentPageId !== activeId) {
       applyPageBody(activeId);
@@ -891,11 +2303,13 @@
       return;
     }
     const samePage = uiState.activePageId === pageId;
-    const leaveProblems = problemsPageOpen;
+    const leaveAux = problemsPageOpen || debugPageOpen;
     problemsPageOpen = false;
-    if (samePage && !leaveProblems) {
+    debugPageOpen = false;
+    if (samePage && !leaveAux) {
       return;
     }
+    closeMapSettingsPanels();
     dismissLinkPreview();
     if (!samePage) {
       rememberSlide(pageId);
@@ -919,17 +2333,79 @@
     return problemsPageOpen && showProblemsTab();
   }
 
+  function isDebugPageOpen() {
+    return debugPageOpen;
+  }
+
+  /** Problems or Debug overlay instead of a map page. */
+  function isAuxPageOpen() {
+    return isProblemsPageOpen() || isDebugPageOpen();
+  }
+
   function openProblemsPage() {
     if (!showProblemsTab() || problemsPageOpen) {
       return;
     }
+    closeMapSettingsPanels();
     dismissLinkPreview();
     problemsPageOpen = true;
+    debugPageOpen = false;
     closeProblemPanel();
     cancelSlide();
     pendingSlide = 0;
     renderPager();
     render();
+  }
+
+  function openDebugPage() {
+    if (debugPageOpen) {
+      return;
+    }
+    closeMapSettingsPanels();
+    dismissLinkPreview();
+    debugPageOpen = true;
+    problemsPageOpen = false;
+    debugDiffSnapshot = null;
+    closeProblemPanel();
+    cancelSlide();
+    pendingSlide = 0;
+    if (workspaceCloudCanPush()) {
+      debugDiffBusy = true;
+      debugFetchedForPush = true;
+    } else {
+      debugDiffBusy = false;
+      debugFetchedForPush = false;
+      debugDiffSnapshot = { sections: [] };
+    }
+    renderPager();
+    render();
+    if (workspaceCloudCanPush()) {
+      vscode.postMessage({ type: 'debugDiff' });
+    }
+  }
+
+  /**
+   * @param {boolean} force
+   */
+  function requestDebugDiff(force) {
+    if (!workspaceCloudCanPush()) {
+      debugDiffBusy = false;
+      debugFetchedForPush = false;
+      debugDiffSnapshot = { sections: [] };
+      if (isDebugPageOpen()) {
+        paintDebugPage();
+      }
+      return;
+    }
+    debugFetchedForPush = true;
+    if (debugDiffBusy && !force) {
+      return;
+    }
+    debugDiffBusy = true;
+    if (isDebugPageOpen()) {
+      paintDebugPage();
+    }
+    vscode.postMessage({ type: 'debugDiff' });
   }
 
   /** Direction from the current page to `pageId`, using the list as it is now. */
@@ -1077,13 +2553,42 @@
     });
   }
 
+  function pageHasSettings(page) {
+    return page?.kind === 'review' || page?.kind === 'scenarios';
+  }
+
   function updatePageMenu() {
     const list = pages();
-    const max = typeof data?.maxPages === 'number' ? data.maxPages : 6;
+    const max = typeof data?.maxPages === 'number' ? data.maxPages : 4;
+    const usedKinds = new Set(
+      Array.isArray(data?.usedPageKinds)
+        ? data.usedPageKinds
+        : list.map((page) => page.kind).filter(Boolean),
+    );
     const createBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-create-page'));
     const deleteBtn = /** @type {HTMLButtonElement | null} */ (document.getElementById('menu-delete-page'));
+    const kindActions = [
+      ['createPageFiles', 'files'],
+      ['createPageNotes', 'notes'],
+      ['createPageLinks', 'links'],
+      ['createPageFigma', 'figma'],
+      ['createPageReview', 'review'],
+      ['createPageScenarios', 'scenarios'],
+    ];
+    let available = 0;
+    for (const [action, kind] of kindActions) {
+      const btn = document.querySelector(`[data-action="${action}"]`);
+      if (!(btn instanceof HTMLElement)) {
+        continue;
+      }
+      const taken = usedKinds.has(kind);
+      btn.hidden = taken;
+      if (!taken) {
+        available += 1;
+      }
+    }
     if (createBtn) {
-      createBtn.disabled = list.length >= max;
+      createBtn.disabled = list.length >= max || available === 0;
     }
     if (deleteBtn) {
       deleteBtn.disabled = list.length <= 1;
@@ -1096,20 +2601,22 @@
     const pageHistory = history && pageId ? history[pageId] : undefined;
     const back = pageHistory && pageHistory.back ? pageHistory.back : 0;
     const forward = pageHistory && pageHistory.forward ? pageHistory.forward : 0;
+    const pageLoading = pageSkeletonKind() !== '';
     if (historyBack) {
-      historyBack.disabled = back === 0;
+      historyBack.disabled = pageLoading || back === 0;
       const backLabel = t('toolbarBack');
       historyBack.title = back ? backLabel + ' (' + back + ')' : backLabel;
       historyBack.setAttribute('aria-label', historyBack.title);
     }
     if (historyForward) {
-      historyForward.disabled = forward === 0;
+      historyForward.disabled = pageLoading || forward === 0;
       const forwardLabel = t('toolbarForward');
       historyForward.title = forward ? forwardLabel + ' (' + forward + ')' : forwardLabel;
       historyForward.setAttribute('aria-label', historyForward.title);
     }
     if (historyAccept) {
       historyAccept.hidden = back + forward === 0;
+      historyAccept.disabled = pageLoading;
       historyAccept.title = t('toolbarDone');
       historyAccept.setAttribute('aria-label', historyAccept.title);
     }
@@ -1118,13 +2625,14 @@
   /** Apply profile language to static toolbar chrome and more-menu labels. */
   function applyToolbarLocale() {
     contextMenu.setAttribute('aria-label', t('contextMenu'));
+    setBtnLocale(toolbarProject, 'toolbarProject');
+    setElLocale(toolbarProjectMenu, 'projectSelect', 'aria-label');
+    setBtnLocale(toolbarProjectAdd, 'projectCreate');
+    applyToolbarLock();
     setBtnLocale(toolbarProfile, 'toolbarProfile');
     setElLocale(toolbarProfileMenu, 'profiles', 'aria-label');
-    if (toolbarProfileName) {
-      toolbarProfileName.placeholder = t('profileNewPlaceholder');
-      toolbarProfileName.setAttribute('aria-label', t('profileNewAria'));
-    }
     setBtnLocale(toolbarProfileAdd, 'profileCreate');
+    applyWorkspaceCloudButtons();
     setBtnLocale(toolbarView, 'toolbarView');
     setElLocale(toolbarViewMenu, 'toolbarView', 'aria-label');
     setBtnLocale(toolbarCreate, 'toolbarCreate');
@@ -1137,15 +2645,18 @@
     setBtnLocale(panelToggleBottom, 'toolbarPanelBottom');
     setBtnLocale(panelToggleLeft, 'toolbarPanelLeft');
     setBtnLocale(panelToggleRight, 'toolbarPanelRight');
+    setBtnLocale(toolbarExplorer, 'toolbarExplorer');
     setBtnLocale(toolbarMore, 'toolbarMore');
     setMenuItemLocale('menu-create-page', 'menuNewPage');
     setMenuItemLocaleByAction('createPageFiles', 'menuNewPageGroups');
     setMenuItemLocaleByAction('createPageNotes', 'menuNewPageNotes');
     setMenuItemLocaleByAction('createPageLinks', 'menuNewPageLinks');
-    setMenuItemLocaleByAction('renamePage', 'menuRenamePage');
+    setMenuItemLocaleByAction('createPageFigma', 'menuNewPageFigma');
+    setMenuItemLocaleByAction('createPageReview', 'menuNewPageReview');
+    setMenuItemLocaleByAction('createPageScenarios', 'menuNewPageScenarios');
     setMenuItemLocale('menu-delete-page', 'menuDeletePage');
-    setMenuItemLocaleByAction('refresh', 'menuRefresh');
     setMenuItemLocaleByAction('openSettings', 'menuOpenSettings');
+    setMenuItemLocaleByAction('whySyn3', 'menuWhy');
     setCollapseButton();
   }
 
@@ -1242,6 +2753,27 @@
     }
   }
 
+  function openToolbarPanelsMenu() {
+    if (!toolbarPanelsMenu || toolbarPanels?.disabled) {
+      return;
+    }
+    cancelMenuClose('toolbar-panels');
+    closeToolbarMenus();
+    closeContextMenu();
+    toolbarPanelsMenu.hidden = false;
+    toolbarPanels?.setAttribute('aria-expanded', 'true');
+  }
+
+  function openToolbarMoreMenu() {
+    if (!toolbarMenu) {
+      return;
+    }
+    cancelMenuClose('toolbar-more');
+    closeToolbarMenus();
+    closeContextMenu();
+    toolbarMenu.hidden = false;
+  }
+
   function closeToolbarMenus() {
     cancelMenuClose();
     if (toolbarMenu) {
@@ -1258,12 +2790,14 @@
     toolbarPanels?.setAttribute('aria-expanded', 'false');
     closeToolbarViewMenu();
     closeToolbarCreateMenu();
+    closeProjectMenu();
     closeProfileMenu();
     closeFormatMenu();
   }
 
   function closeToolbarCreateMenu() {
     cancelMenuClose('toolbar-create');
+    clearReviewDepthMenu();
     if (toolbarCreateMenu) {
       toolbarCreateMenu.hidden = true;
     }
@@ -1274,22 +2808,102 @@
   }
 
   function openToolbarCreateMenu() {
-    if (!toolbarCreateMenu || !toolbarCreateWrap) {
+    if (!toolbarCreateMenu || !toolbarCreateWrap || !canUseCreateViewToolbar()) {
       return;
     }
-    openMenuState = { kind: 'toolbar-create', viewExpanded: false };
+    openMenuState = {
+      kind: 'toolbar-create',
+      viewExpanded: false,
+      pullExpanded: false,
+      reviewExpanded: false,
+      reviewScope: '',
+      explainExpanded: false,
+      explainScope: '',
+    };
     fillCreateMenu(toolbarCreateMenu);
     positionToolbarMenu(toolbarCreateMenu, toolbarCreateWrap);
     toolbarCreate?.setAttribute('aria-expanded', 'true');
+  }
+
+  function rerenderCreateMenu() {
+    if (!openMenuState || openMenuState.kind !== 'toolbar-create' || !toolbarCreateMenu) {
+      return;
+    }
+    fillCreateMenu(toolbarCreateMenu);
+    cancelMenuClose('toolbar-create');
+    if (openMenuState.reviewExpanded && openMenuState.reviewScope) {
+      mountReviewDepthMenu(
+        openMenuState.reviewScope,
+        String(activePage()?.id || ''),
+        '',
+        true,
+      );
+    }
+    if (openMenuState.explainExpanded && openMenuState.explainScope) {
+      mountExplainDepthMenu(
+        openMenuState.explainScope,
+        String(activePage()?.id || ''),
+        '',
+        true,
+      );
+    }
   }
 
   /** @param {HTMLElement} root */
   function fillCreateMenu(menuRoot) {
     const isMenu = menuRoot.classList.contains('syn3-menu');
     const target = isMenu ? ensureMenuChrome(menuRoot).scroller : menuRoot;
+    clearReviewDepthMenu();
     target.replaceChildren();
-    if (activePage()?.kind === 'links') {
+    if (isLinkMapKind(activePage()?.kind)) {
       target.append(menuActionChoice(t('linkLayoutFallback'), { toolbar: 'createLinkLayout' }));
+    } else if (activePage()?.kind === 'scenarios') {
+      target.append(menuActionChoice(t('createScenario'), { toolbar: 'scenarioCreate' }));
+      target.append(menuActionChoice(t('createScenarioGroup'), { toolbar: 'scenarioCreateGroup' }));
+    } else if (activePage()?.kind === 'review') {
+      const isGithub = data?.reviewProvider === 'github';
+      target.append(menuActionChoice(t(isGithub ? 'createPr' : 'createMr'), { toolbar: 'createMr' }));
+      appendExpandableMenuBlock(
+        target,
+        t(isGithub ? 'pullPr' : 'pullMr'),
+        !!openMenuState?.pullExpanded,
+        'togglePull',
+        (nest) => {
+          nest.append(menuActionChoice(t('pullOwnBranch'), { toolbar: 'pullMr' }));
+          const other = menuAction(t('pullOtherBranch'));
+          other.dataset.menuAction = 'openBranchPanelPull';
+          nest.append(other);
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        target,
+        t('createReview'),
+        !!openMenuState?.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+          const other = menuAction(t('reviewScopeOtherBranch'));
+          other.dataset.menuAction = 'openBranchPanelReview';
+          nest.append(other);
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        target,
+        t('createExplain'),
+        !!openMenuState?.explainExpanded,
+        'toggleExplain',
+        (nest) => {
+          appendExplainScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendExplainScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+          const other = menuAction(t('reviewScopeOtherBranch'));
+          other.dataset.menuAction = 'openBranchPanelExplain';
+          nest.append(other);
+        },
+        { plain: true },
+      );
     } else {
       target.append(menuActionChoice(t('createGroup'), { toolbar: 'createMarker' }));
       target.append(menuActionChoice(t('createNote'), { toolbar: 'createNote' }));
@@ -1301,7 +2915,7 @@
 
   /**
    * @param {string} label
-   * @param {{ toolbar?: string, create?: string, deleteAction?: string }} attrs
+   * @param {{ toolbar?: string, create?: string, deleteAction?: string, review?: string, reviewDepth?: string, reviewRoot?: boolean, explain?: string, explainDepth?: string, explainRoot?: boolean, reviewEdit?: string, neuroFix?: string, rereview?: string, study?: string, pageId?: string, messageId?: string }} attrs
    */
   function menuActionChoice(label, attrs) {
     const button = menuAction(label);
@@ -1313,6 +2927,42 @@
     }
     if (attrs.deleteAction) {
       button.dataset.deleteAction = attrs.deleteAction;
+    }
+    if (attrs.review) {
+      button.dataset.review = attrs.review;
+    }
+    if (attrs.reviewDepth) {
+      button.dataset.reviewDepth = attrs.reviewDepth;
+    }
+    if (attrs.reviewRoot) {
+      button.dataset.reviewRoot = '1';
+    }
+    if (attrs.explain) {
+      button.dataset.explain = attrs.explain;
+    }
+    if (attrs.explainDepth) {
+      button.dataset.explainDepth = attrs.explainDepth;
+    }
+    if (attrs.explainRoot) {
+      button.dataset.explainRoot = '1';
+    }
+    if (attrs.reviewEdit) {
+      button.dataset.reviewEdit = attrs.reviewEdit;
+    }
+    if (attrs.neuroFix) {
+      button.dataset.neuroFix = attrs.neuroFix;
+    }
+    if (attrs.rereview) {
+      button.dataset.rereview = attrs.rereview;
+    }
+    if (attrs.study) {
+      button.dataset.study = attrs.study;
+    }
+    if (attrs.pageId) {
+      button.dataset.pageId = attrs.pageId;
+    }
+    if (attrs.messageId) {
+      button.dataset.messageId = attrs.messageId;
     }
     return button;
   }
@@ -1334,12 +2984,20 @@
 
   function closeContextMenu() {
     cancelMenuClose('context');
+    clearContextDismissMove();
+    // Hiding and replaceChildren can synthesize mouseleave; don't re-arm a close.
+    ignoreContextLeave = true;
+    clearReviewDepthMenu();
+    clearNeuroFixMenu();
+    clearRereviewMenu();
+    clearStudyMenu();
     contextMenu.hidden = true;
     contextMenu.style.maxHeight = '';
     const chrome = ensureMenuChrome(contextMenu);
     chrome.scroller.replaceChildren();
     chrome.scroller.scrollTop = 0;
     chrome.bar.hidden = true;
+    ignoreContextLeave = false;
     if (openMenuState?.kind === 'context') {
       openMenuState = null;
     }
@@ -1407,7 +3065,7 @@
   }
 
   function openToolbarViewMenu() {
-    if (!toolbarViewMenu || !toolbarView || !toolbarViewWrap) {
+    if (!toolbarViewMenu || !toolbarView || !toolbarViewWrap || !canUseCreateViewToolbar()) {
       return;
     }
     cancelMenuClose('toolbar-view');
@@ -1425,12 +3083,21 @@
    */
   function openContextMenu(ctx, x, y) {
     cancelMenuClose('context');
+    closeNeuroFixListPanel();
     // Always start collapsed; user expands «Вид» / «Создать» / delete explicitly.
     openMenuState = {
       kind: 'context',
       viewExpanded: false,
       createExpanded: false,
       deleteExpanded: false,
+      reviewExpanded: false,
+      reviewScope: '',
+      explainExpanded: false,
+      explainScope: '',
+      reviewStatusExpanded: false,
+      neurofixExpanded: false,
+      rereviewExpanded: false,
+      studyExpanded: false,
       ctx,
       x,
       y,
@@ -1441,14 +3108,16 @@
   }
 
   /**
+   * @param {HTMLElement} scroller
    * @param {string} label
    * @param {boolean} expanded
    * @param {string} toggleAction
    * @param {(nest: HTMLElement) => void} fillNest
+   * @param {{ plain?: boolean }} [opts]
    */
-  function appendExpandableMenuBlock(scroller, label, expanded, toggleAction, fillNest) {
+  function appendExpandableMenuBlock(scroller, label, expanded, toggleAction, fillNest, opts) {
     const block = document.createElement('div');
-    block.className = 'syn3-menu-view-block';
+    block.className = 'syn3-menu-view-block' + (opts?.plain ? ' is-plain' : '');
     const row = menuAction('', expanded ? 'is-expanded' : '');
     row.dataset.menuAction = toggleAction;
     const title = document.createElement('span');
@@ -1469,6 +3138,691 @@
     scroller.append(block);
   }
 
+  /** @type {HTMLElement | null} */
+  let reviewDepthMenu = null;
+  /** @type {HTMLElement | null} */
+  let neuroFixMenu = null;
+  /** @type {HTMLElement | null} */
+  let rereviewMenu = null;
+  /** @type {HTMLElement | null} */
+  let studyMenu = null;
+
+  function clearReviewDepthMenu() {
+    reviewDepthMenu?.remove();
+    reviewDepthMenu = null;
+  }
+
+  function clearNeuroFixMenu() {
+    neuroFixMenu?.remove();
+    neuroFixMenu = null;
+  }
+
+  function clearRereviewMenu() {
+    rereviewMenu?.remove();
+    rereviewMenu = null;
+  }
+
+  function clearStudyMenu() {
+    studyMenu?.remove();
+    studyMenu = null;
+  }
+
+  /** Total H/M/L on the source review pill, including bullets already fixed. */
+  function sourceSeverityCounts(node) {
+    return parsePillSeverityCounts(node && node.pillLabel);
+  }
+
+  /** @param {{ open?: { H?: number[], M?: number[], L?: number[] } } | null | undefined} node */
+  function reviewOpenBullets(node) {
+    const open = node && node.open;
+    return {
+      H: Array.isArray(open && open.H) ? open.H : [],
+      M: Array.isArray(open && open.M) ? open.M : [],
+      L: Array.isArray(open && open.L) ? open.L : [],
+    };
+  }
+
+  /** Open re-review rows that neurofix has not recorded yet. */
+  function rereviewRemainingCounts(node) {
+    const open = reviewOpenBullets(node);
+    const fixed = reviewFixBullets(node);
+    const left = (letter) => open[letter].filter((index) => !fixed[letter].includes(index));
+    return {
+      H: left('H').length,
+      M: left('M').length,
+      L: left('L').length,
+    };
+  }
+
+  function reviewThreadParentId(messageId) {
+    const messages = reviewState?.messages || [];
+    if (messages.some((item) => item.id === messageId)) {
+      return messageId;
+    }
+    for (const msg of messages) {
+      if ((msg.replies || []).some((item) => item.id === messageId)) {
+        return msg.id;
+      }
+    }
+    return messageId;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H?: number[] | 'all', M?: number[] | 'all', L?: number[] | 'all' }} selection
+   */
+  function postRereview(pageId, messageId, selection) {
+    beginLocalRereviewSkeleton(pageId, messageId);
+    vscode.postMessage({
+      type: 'reviewRereview',
+      pageId,
+      messageId,
+      selection,
+    });
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H?: number[] | 'all', M?: number[] | 'all', L?: number[] | 'all' }} selection
+   */
+  function postStudy(pageId, messageId, selection) {
+    beginLocalStudySkeleton(pageId, messageId);
+    vscode.postMessage({
+      type: 'reviewStudy',
+      pageId,
+      messageId,
+      selection,
+    });
+  }
+
+  /**
+   * Neurofix row inside the root review chip menu. Click opens the scope flyout.
+   * On a foreign branch the row stays muted and still opens the flyout.
+   * The actions inside are muted, and a click reports the error.
+   * @param {HTMLElement} scroller
+   * @param {boolean} expanded
+   * @param {boolean} [blocked]
+   */
+  function appendNeuroFixRow(scroller, expanded, blocked) {
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleNeuroFix';
+    if (blocked) {
+      row.classList.add('is-muted');
+      row.title = t('neurofixForeignBranch');
+    }
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = t('neurofix');
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    scroller.append(row);
+  }
+
+  /**
+   * Side flyout for Neurofix scopes on the root review chip.
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H: number, M: number, L: number }} counts
+   */
+  function mountNeuroFixMenu(pageId, messageId, counts) {
+    clearNeuroFixMenu();
+    if (!(contextMenu instanceof HTMLElement)) {
+      return;
+    }
+    const blocked = reviewNeurofixBlocked(messageId);
+    const anchor = contextMenu.querySelector('[data-menu-action="toggleNeuroFix"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
+    const items = [
+      { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
+      { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
+      { scope: 'L', label: t('neurofixSimple'), show: counts.L > 0 },
+      {
+        scope: 'all',
+        label: t('neurofixAll'),
+        show: counts.H > 0 || counts.M > 0 || counts.L > 0,
+      },
+    ];
+    for (const item of items) {
+      if (!item.show) {
+        continue;
+      }
+      const choice = menuActionChoice(item.label, {
+        neuroFix: item.scope,
+        pageId,
+        messageId,
+      });
+      if (blocked) {
+        muteNeurofixAction(choice);
+      }
+      fly.append(choice);
+    }
+    const listBtn = menuAction(t('neurofixList'));
+    listBtn.dataset.menuAction = 'neuroFixList';
+    listBtn.dataset.pageId = pageId;
+    listBtn.dataset.messageId = messageId;
+    if (blocked) {
+      muteNeurofixAction(listBtn);
+    }
+    fly.append(listBtn);
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    neuroFixMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * Re-review row. Click opens High / Medium / Low / All / List.
+   * @param {HTMLElement} scroller
+   * @param {boolean} expanded
+   */
+  function appendRereviewRow(scroller, expanded) {
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleRereview';
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = t('rereview');
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    scroller.append(row);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H: number, M: number, L: number }} counts
+   */
+  function mountRereviewMenu(pageId, messageId, counts) {
+    clearRereviewMenu();
+    if (!(contextMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = contextMenu.querySelector('[data-menu-action="toggleRereview"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
+    const items = [
+      { scope: 'H', label: t('rereviewHigh'), show: counts.H > 0 },
+      { scope: 'M', label: t('rereviewMedium'), show: counts.M > 0 },
+      { scope: 'L', label: t('rereviewLow'), show: counts.L > 0 },
+      {
+        scope: 'all',
+        label: t('rereviewAll'),
+        show: counts.H > 0 || counts.M > 0 || counts.L > 0,
+      },
+    ];
+    for (const item of items) {
+      if (!item.show) {
+        continue;
+      }
+      const choice = menuActionChoice(item.label, {
+        rereview: item.scope,
+        pageId,
+        messageId,
+      });
+      fly.append(choice);
+    }
+    const listBtn = menuAction(t('rereviewList'));
+    listBtn.dataset.menuAction = 'rereviewList';
+    listBtn.dataset.pageId = pageId;
+    listBtn.dataset.messageId = messageId;
+    fly.append(listBtn);
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    rereviewMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * Study row. Click opens High / Medium / Low / All / List.
+   * @param {HTMLElement} scroller
+   * @param {boolean} expanded
+   */
+  function appendStudyRow(scroller, expanded) {
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleStudy';
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = t('study');
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    scroller.append(row);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ H: number, M: number, L: number }} counts
+   */
+  function mountStudyMenu(pageId, messageId, counts) {
+    clearStudyMenu();
+    if (!(contextMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = contextMenu.querySelector('[data-menu-action="toggleStudy"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
+    const items = [
+      { scope: 'H', label: t('studyHigh'), show: counts.H > 0 },
+      { scope: 'M', label: t('studyMedium'), show: counts.M > 0 },
+      { scope: 'L', label: t('studyLow'), show: counts.L > 0 },
+      {
+        scope: 'all',
+        label: t('studyAll'),
+        show: counts.H > 0 || counts.M > 0 || counts.L > 0,
+      },
+    ];
+    for (const item of items) {
+      if (!item.show) {
+        continue;
+      }
+      fly.append(
+        menuActionChoice(item.label, {
+          study: item.scope,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    const listBtn = menuAction(t('studyList'));
+    listBtn.dataset.menuAction = 'studyList';
+    listBtn.dataset.pageId = pageId;
+    listBtn.dataset.messageId = messageId;
+    fly.append(listBtn);
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose('context');
+    });
+    fly.addEventListener('mouseleave', () => {
+      scheduleMenuClose('context', () => closeContextMenu());
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, 'context');
+    });
+    document.body.append(fly);
+    studyMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = contextMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * Scope row inside «Ревью». Click opens the depth submenu.
+   * @param {HTMLElement} nest
+   * @param {'branch' | 'changes'} scope
+   * @param {string} label
+   */
+  function appendReviewScopeRow(nest, scope, label) {
+    const expanded = openMenuState?.reviewScope === scope;
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleReviewScope';
+    row.dataset.reviewScope = scope;
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    row.title = label;
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    nest.append(row);
+  }
+
+  /**
+   * Scope row inside «Что сделано». Click opens the depth submenu.
+   * @param {HTMLElement} nest
+   * @param {'branch' | 'changes'} scope
+   * @param {string} label
+   */
+  function appendExplainScopeRow(nest, scope, label) {
+    const expanded = openMenuState?.explainScope === scope;
+    const row = menuAction('', expanded ? 'is-expanded' : '');
+    row.dataset.menuAction = 'toggleExplainScope';
+    row.dataset.explainScope = scope;
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    row.title = label;
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    const caret = document.createElement('span');
+    caret.className = 'syn3-menu-item-caret';
+    caret.textContent = '▸';
+    caret.setAttribute('aria-hidden', 'true');
+    row.append(title, caret);
+    nest.append(row);
+  }
+
+  /**
+   * @param {string} messageId
+   */
+  function findReviewReply(messageId) {
+    for (const msg of reviewState?.messages || []) {
+      const reply = (msg.replies || []).find((item) => item.id === messageId);
+      if (reply) {
+        return reply;
+      }
+    }
+    return undefined;
+  }
+
+  /** Parent chip to unfold so a neurofix skeleton under this message stays visible. */
+  function reviewFoldParentId(messageId) {
+    for (const msg of reviewState?.messages || []) {
+      if (msg.id === messageId) {
+        return msg.id;
+      }
+      if ((msg.replies || []).some((item) => item.id === messageId)) {
+        return msg.id;
+      }
+    }
+    return messageId;
+  }
+
+  /**
+   * @param {HTMLElement} nest
+   * @param {'inProgress' | 'done'} status
+   * @param {string} label
+   * @param {boolean} active
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function appendReviewStatusChoice(nest, status, label, active, pageId, messageId) {
+    const row = menuAction('', active ? 'is-active' : '');
+    row.dataset.reviewStatus = status;
+    row.dataset.pageId = pageId;
+    row.dataset.messageId = messageId;
+    const ico = document.createElement('span');
+    ico.className = 'syn3-menu-item-ico';
+    ico.append(status === 'done' ? reviewDoneIcon() : reviewProgressIcon());
+    const title = document.createElement('span');
+    title.className = 'syn3-menu-item-label';
+    title.textContent = label;
+    row.append(ico, title);
+    nest.append(row);
+  }
+
+  /**
+   * Depth flyout for the open scope. Lives on document.body so the context
+   * menu's overflow does not clip it.
+   * @param {'branch' | 'changes'} scope
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {boolean} [asRoot]
+   */
+  function mountReviewDepthMenu(scope, pageId, messageId, asRoot) {
+    clearReviewDepthMenu();
+    const hostMenu =
+      openMenuState?.kind === 'toolbar-create' ? toolbarCreateMenu : contextMenu;
+    if (!(hostMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = hostMenu.querySelector('[data-review-scope="' + scope + '"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const closeKind = openMenuState?.kind === 'toolbar-create' ? 'toolbar-create' : 'context';
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      fly.append(
+        menuActionChoice(t(key), {
+          review: scope,
+          reviewDepth: depth,
+          reviewRoot: !!asRoot,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose(closeKind);
+    });
+    fly.addEventListener('mouseleave', () => {
+      if (closeKind === 'toolbar-create') {
+        scheduleMenuClose('toolbar-create', () => closeToolbarCreateMenu());
+      } else {
+        scheduleMenuClose('context', () => closeContextMenu());
+      }
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, closeKind === 'toolbar-create' ? 'toolbar-create' : 'context');
+    });
+    document.body.append(fly);
+    reviewDepthMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = hostMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * Depth flyout for «Что сделано».
+   * @param {'branch' | 'changes'} scope
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {boolean} [asRoot]
+   */
+  function mountExplainDepthMenu(scope, pageId, messageId, asRoot) {
+    clearReviewDepthMenu();
+    const hostMenu =
+      openMenuState?.kind === 'toolbar-create' ? toolbarCreateMenu : contextMenu;
+    if (!(hostMenu instanceof HTMLElement)) {
+      return;
+    }
+    const anchor = hostMenu.querySelector('[data-explain-scope="' + scope + '"]');
+    if (!(anchor instanceof HTMLElement)) {
+      return;
+    }
+    const closeKind = openMenuState?.kind === 'toolbar-create' ? 'toolbar-create' : 'context';
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      fly.append(
+        menuActionChoice(t(key), {
+          explain: scope,
+          explainDepth: depth,
+          explainRoot: !!asRoot,
+          pageId,
+          messageId,
+        }),
+      );
+    }
+    fly.addEventListener('mouseenter', () => {
+      cancelMenuClose(closeKind);
+    });
+    fly.addEventListener('mouseleave', () => {
+      if (closeKind === 'toolbar-create') {
+        scheduleMenuClose('toolbar-create', () => closeToolbarCreateMenu());
+      } else {
+        scheduleMenuClose('context', () => closeContextMenu());
+      }
+    });
+    fly.addEventListener('click', (event) => {
+      handleSyn3MenuClick(event, closeKind === 'toolbar-create' ? 'toolbar-create' : 'context');
+    });
+    document.body.append(fly);
+    reviewDepthMenu = fly;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = hostMenu.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = anchorRect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - menuRect.right;
+    const left = roomRight >= flyWidth + 8 ? menuRect.right - 6 : Math.max(8, menuRect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  function rerenderContextMenu() {
+    if (!openMenuState || openMenuState.kind !== 'context') {
+      return;
+    }
+    // Keep the open menu where it is. Re-anchoring to the original click
+    // flips a taller menu above the pointer, and the next move closes it.
+    const placedLeft = parseFloat(contextMenu.style.left);
+    const placedTop = parseFloat(contextMenu.style.top);
+    renderContextMenu();
+    cancelMenuClose('context');
+    positionMenu(contextMenu, {
+      left: Number.isFinite(placedLeft) ? placedLeft : (openMenuState.x ?? 0),
+      top: Number.isFinite(placedTop) ? placedTop : (openMenuState.y ?? 0),
+      keepPosition: true,
+    });
+    if (openMenuState.reviewExpanded && openMenuState.reviewScope && openMenuState.ctx) {
+      mountReviewDepthMenu(
+        openMenuState.reviewScope,
+        String(openMenuState.ctx.reviewPageId || ''),
+        String(openMenuState.ctx.reviewMessageId || ''),
+      );
+    }
+    if (openMenuState.explainExpanded && openMenuState.explainScope && openMenuState.ctx) {
+      const asRoot = String(openMenuState.ctx.webviewSection || '') === 'reviewExplain';
+      mountExplainDepthMenu(
+        openMenuState.explainScope,
+        String(openMenuState.ctx.reviewPageId || ''),
+        String(openMenuState.ctx.reviewMessageId || ''),
+        asRoot,
+      );
+    }
+    if (openMenuState.neurofixExpanded && openMenuState.ctx) {
+      const pageId = String(openMenuState.ctx.reviewPageId || '');
+      const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const source = reply || chip;
+      const counts = source?.isRereview
+        ? rereviewRemainingCounts(source)
+        : remainingSeverityCounts(parsePillSeverityCounts(source?.pillLabel), source);
+      if (counts && counts.H + counts.M + counts.L > 0) {
+        mountNeuroFixMenu(pageId, messageId, counts);
+      }
+    }
+    if (openMenuState.rereviewExpanded && openMenuState.ctx) {
+      const pageId = String(openMenuState.ctx.reviewPageId || '');
+      const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const counts = sourceSeverityCounts(reply || chip);
+      if (counts && counts.H + counts.M + counts.L > 0) {
+        mountRereviewMenu(pageId, messageId, counts);
+      }
+    }
+    if (openMenuState.studyExpanded && openMenuState.ctx) {
+      const pageId = String(openMenuState.ctx.reviewPageId || '');
+      const messageId = String(openMenuState.ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const counts = sourceSeverityCounts(reply || chip);
+      if (counts && counts.H + counts.M + counts.L > 0) {
+        mountStudyMenu(pageId, messageId, counts);
+      }
+    }
+  }
+
   function renderContextMenu() {
     if (!openMenuState || openMenuState.kind !== 'context' || !openMenuState.ctx) {
       return;
@@ -1477,10 +3831,385 @@
     const section = String(ctx.webviewSection || '');
     const depth = Number(ctx.depth) || 0;
     // replaceChildren can synthesize mouseleave; ignore it until the pointer moves again.
-    ignoreContextLeave = true;
+    armContextMenuDismiss();
     cancelMenuClose('context');
+    clearReviewDepthMenu();
+    clearNeuroFixMenu();
+    clearRereviewMenu();
+    clearStudyMenu();
     const { scroller } = ensureMenuChrome(contextMenu);
     scroller.replaceChildren();
+    if (section === 'reviewMr') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const isPr = typeof chip?.webUrl === 'string' && /\/pull\/\d+/.test(chip.webUrl);
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewMenu'),
+        !!openMenuState.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          const mrBranch = reviewBranchLabel(chip?.branch);
+          // Pulled MR of another branch: review that branch, not the checkout.
+          if (mrBranch && !reviewBranchMatchesCheckout(mrBranch)) {
+            appendReviewScopeRow(nest, 'branch', mrBranch);
+            return;
+          }
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        scroller,
+        t('explainMenu'),
+        !!openMenuState.explainExpanded,
+        'toggleExplain',
+        (nest) => {
+          const mrBranch = reviewBranchLabel(chip?.branch);
+          if (mrBranch && !reviewBranchMatchesCheckout(mrBranch)) {
+            appendExplainScopeRow(nest, 'branch', mrBranch);
+            return;
+          }
+          appendExplainScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendExplainScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+        { plain: true },
+      );
+      scroller.append(
+        menuActionChoice(t(isPr ? 'reviewRenamePr' : 'reviewRenameMr'), {
+          reviewEdit: 'rename',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.draft ? 'reviewClearDraft' : 'reviewSetDraft'), {
+          reviewEdit: 'draft',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(isPr ? 'reviewClosePr' : 'reviewCloseMr'), {
+          reviewEdit: 'close',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.locked ? 'reviewUnlock' : 'reviewLock'), {
+          reviewEdit: 'lock',
+          pageId,
+          messageId,
+        }),
+      );
+      if (chip?.status === 'closed' || chip?.locked) {
+        const reviewStays = !!chip?.locked && chip?.status !== 'closed';
+        scroller.querySelectorAll('button').forEach((button) => {
+          if (button.dataset.reviewEdit === 'lock') {
+            return;
+          }
+          if (chip?.status === 'closed' && !chip?.locked && button.dataset.reviewEdit === 'delete') {
+            return;
+          }
+          // A lock freezes edits. Starting a review on an open MR stays available.
+          if (
+            reviewStays &&
+            (button.dataset.menuAction === 'toggleReview' ||
+              button.dataset.menuAction === 'toggleReviewScope' ||
+              button.dataset.menuAction === 'toggleExplain' ||
+              button.dataset.menuAction === 'toggleExplainScope')
+          ) {
+            return;
+          }
+          button.disabled = true;
+        });
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewRoot') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const status = chip?.reviewStatus || '';
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewMenu'),
+        !!openMenuState.reviewExpanded,
+        'toggleReview',
+        (nest) => {
+          const rootBranch = reviewBranchLabel(chip?.branch);
+          if (rootBranch && !reviewBranchMatchesCheckout(rootBranch)) {
+            appendReviewScopeRow(nest, 'branch', rootBranch);
+            return;
+          }
+          appendReviewScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendReviewScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        scroller,
+        t('explainMenu'),
+        !!openMenuState.explainExpanded,
+        'toggleExplain',
+        (nest) => {
+          const rootBranch = reviewBranchLabel(chip?.branch);
+          if (rootBranch && !reviewBranchMatchesCheckout(rootBranch)) {
+            appendExplainScopeRow(nest, 'branch', rootBranch);
+            return;
+          }
+          appendExplainScopeRow(nest, 'branch', t('reviewScopeBranch'));
+          appendExplainScopeRow(nest, 'changes', t('reviewScopeUnpushed'));
+        },
+        { plain: true },
+      );
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewStatus'),
+        !!openMenuState.reviewStatusExpanded,
+        'toggleReviewStatus',
+        (nest) => {
+          appendReviewStatusChoice(
+            nest,
+            'inProgress',
+            t('reviewStatusProgress'),
+            status === 'inProgress',
+            pageId,
+            messageId,
+          );
+          appendReviewStatusChoice(
+            nest,
+            'done',
+            t('reviewStatusDone'),
+            status === 'done',
+            pageId,
+            messageId,
+          );
+        },
+        { plain: true },
+      );
+      const counts = remainingSeverityCounts(parsePillSeverityCounts(chip?.pillLabel), chip);
+      if (counts && counts.H + counts.M + counts.L > 0) {
+        appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
+      }
+      const rereviewCounts = sourceSeverityCounts(chip);
+      if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
+        appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+        appendStudyRow(scroller, !!openMenuState.studyExpanded);
+      }
+      scroller.append(
+        menuActionChoice(t('reviewMigrate'), {
+          reviewEdit: 'migrate',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      scroller.append(
+        menuActionChoice(t(chip?.locked ? 'reviewUnlock' : 'reviewLock'), {
+          reviewEdit: 'lock',
+          pageId,
+          messageId,
+        }),
+      );
+      if (chip?.locked) {
+        scroller.querySelectorAll('button').forEach((button) => {
+          if (button.dataset.reviewEdit === 'lock' || button.dataset.reviewEdit === 'migrate') {
+            return;
+          }
+          if (
+            button.dataset.menuAction === 'toggleReview' ||
+            button.dataset.menuAction === 'toggleReviewScope' ||
+            button.dataset.menuAction === 'toggleExplain' ||
+            button.dataset.menuAction === 'toggleExplainScope'
+          ) {
+            return;
+          }
+          button.disabled = true;
+        });
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewExplain') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const chip =
+        (reviewState?.messages || []).find((item) => item.id === messageId) ||
+        findReviewReply(messageId);
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewPill') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const status = reply?.status || '';
+      appendExpandableMenuBlock(
+        scroller,
+        t('reviewStatus'),
+        !!openMenuState.reviewStatusExpanded,
+        'toggleReviewStatus',
+        (nest) => {
+          appendReviewStatusChoice(
+            nest,
+            'inProgress',
+            t('reviewStatusProgress'),
+            status === 'inProgress',
+            pageId,
+            messageId,
+          );
+          appendReviewStatusChoice(
+            nest,
+            'done',
+            t('reviewStatusDone'),
+            status === 'done',
+            pageId,
+            messageId,
+          );
+        },
+        { plain: true },
+      );
+      if (!reply?.isRereview && !reply?.isStudy) {
+        const counts = remainingSeverityCounts(parsePillSeverityCounts(reply?.pillLabel), reply);
+        if (counts && counts.H + counts.M + counts.L > 0) {
+          appendNeuroFixRow(scroller, !!openMenuState.neurofixExpanded, reviewNeurofixBlocked(messageId));
+        }
+        const rereviewCounts = sourceSeverityCounts(reply);
+        if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
+          appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+          appendStudyRow(scroller, !!openMenuState.studyExpanded);
+        }
+      }
+      if (!reply?.isRereview && !reply?.isStudy) {
+        scroller.append(
+          menuActionChoice(t('reviewMigrate'), {
+            reviewEdit: 'migrate',
+            pageId,
+            messageId,
+          }),
+        );
+      }
+      scroller.append(
+        menuActionChoice(t('menuDelete'), {
+          reviewEdit: 'delete',
+          pageId,
+          messageId,
+        }),
+      );
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewNeurofix') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const reply = findReviewReply(messageId);
+      const rootChip = (reviewState?.messages || []).find(
+        (item) => item.id === messageId && item.isReviewRoot,
+      );
+      const source = reply || rootChip;
+      const blocked = reviewNeurofixBlocked(messageId);
+      const counts = source?.isRereview
+        ? rereviewRemainingCounts(source)
+        : remainingSeverityCounts(parsePillSeverityCounts(source?.pillLabel), source);
+      if (counts) {
+        /** @type {Array<{ scope: 'H' | 'M' | 'L' | 'all', label: string, show: boolean }>} */
+        const items = [
+          { scope: 'H', label: t('neurofixHigh'), show: counts.H > 0 },
+          { scope: 'M', label: t('neurofixMedium'), show: counts.M > 0 },
+          { scope: 'L', label: t('neurofixSimple'), show: counts.L > 0 },
+          {
+            scope: 'all',
+            label: t('neurofixAll'),
+            show: counts.H > 0 || counts.M > 0 || counts.L > 0,
+          },
+        ];
+        let any = false;
+        for (const item of items) {
+          if (!item.show) {
+            continue;
+          }
+          any = true;
+          const choice = menuActionChoice(item.label, {
+            neuroFix: item.scope,
+            pageId,
+            messageId,
+          });
+          if (blocked) {
+            muteNeurofixAction(choice);
+          }
+          scroller.append(choice);
+        }
+        if (any) {
+          const listBtn = menuAction(t('neurofixList'));
+          listBtn.dataset.menuAction = 'neuroFixList';
+          listBtn.dataset.pageId = pageId;
+          listBtn.dataset.messageId = messageId;
+          if (blocked) {
+            muteNeurofixAction(listBtn);
+          }
+          scroller.append(listBtn);
+        }
+      }
+      if (!source?.isRereview && !source?.isStudy) {
+        const rereviewCounts = sourceSeverityCounts(source);
+        if (rereviewCounts && rereviewCounts.H + rereviewCounts.M + rereviewCounts.L > 0) {
+          appendRereviewRow(scroller, !!openMenuState.rereviewExpanded);
+          appendStudyRow(scroller, !!openMenuState.studyExpanded);
+        }
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
+    if (section === 'reviewMsg') {
+      const pageId = String(ctx.reviewPageId || '');
+      const messageId = String(ctx.reviewMessageId || '');
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const del = menuActionChoice(t('menuDelete'), {
+        reviewEdit: 'delete',
+        pageId,
+        messageId,
+      });
+      if (parent?.locked) {
+        del.disabled = true;
+      }
+      scroller.append(del);
+      if (parent) {
+        scroller.append(
+          menuActionChoice(t(parent.locked ? 'reviewUnlock' : 'reviewLock'), {
+            reviewEdit: 'lock',
+            pageId,
+            messageId,
+          }),
+        );
+      }
+      updateMenuScrollbar(contextMenu);
+      return;
+    }
     if (section === 'problems') {
       const filters = problemsFilterState();
       scroller.append(
@@ -1609,7 +4338,8 @@
    */
   function contextMenuItems(ctx) {
     const section = String(ctx.webviewSection || '');
-    const locked = !!ctx.locked;
+    const entityLocked = !!ctx.locked;
+    const locked = entityLocked;
     const hasAlias = !!ctx.hasAlias;
     const depth = Number(ctx.depth) || 0;
     const isDir = !!ctx.isDir;
@@ -1702,11 +4432,35 @@
       items.push({ kind: 'copyLink' });
     }
 
-    if ((section === 'marker' || section === 'note') && locked) {
+    if ((section === 'marker' || section === 'note') && entityLocked) {
       items.push({ kind: 'unlock' });
     }
 
     return items;
+  }
+
+  function aliasTitleOn() {
+    return data?.appearance?.aliasTitle === true;
+  }
+
+  /**
+   * Small alias line stays above the title. When aliasTitle is on and an alias
+   * is set, those two strings trade places; the line styles stay put.
+   * No alias: title only.
+   * @param {HTMLElement} wrap
+   * @param {string} titleClass
+   * @param {string} titleText
+   * @param {string | undefined} alias
+   * @returns {HTMLElement}
+   */
+  function appendNameSlots(wrap, titleClass, titleText, alias) {
+    const swap = aliasTitleOn() && !!alias;
+    if (alias) {
+      wrap.append(el('span', 'alias', swap ? titleText : alias));
+    }
+    const titleEl = el('span', titleClass, swap ? alias : titleText);
+    wrap.append(titleEl);
+    return titleEl;
   }
 
   /** @param {HTMLElement} root */
@@ -1718,7 +4472,7 @@
     const layout = page?.layout || data?.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
 
-    // One framed View block: no dividers between map/group subsections.
+    // Map and group layout stay in one block. Alias is its own row under a rule.
     target.append(menuLabel(t('viewMap')));
     target.append(menuChoice(t('viewCards'), layout === 'chips', { set: 'layout', value: 'chips' }));
     target.append(menuChoice(t('viewList'), layout === 'list', { set: 'layout', value: 'list' }));
@@ -1727,6 +4481,8 @@
     target.append(menuChoice(t('viewCol1'), groupsLayout === '1', { set: 'groups', value: '1' }));
     target.append(menuChoice(t('viewCol2'), groupsLayout === '2', { set: 'groups', value: '2' }));
     target.append(menuChoice(t('viewCol3'), groupsLayout === '3', { set: 'groups', value: '3' }));
+    target.append(menuSeparator());
+    target.append(menuChoice(t('viewAlias'), aliasTitleOn(), { set: 'aliasTitle', value: '1' }));
     if (isMenu) {
       updateMenuScrollbar(root);
     }
@@ -1785,7 +4541,16 @@
     if (!(button instanceof HTMLButtonElement)) {
       return;
     }
+    if (button.dataset.neurofixBlocked === '1') {
+      event.preventDefault();
+      event.stopPropagation();
+      denyForeignNeurofix();
+      return;
+    }
     event.stopPropagation();
+    if (button.disabled) {
+      return;
+    }
     // Rebuilds replace DOM and can fire mouseleave — keep the menu open.
     if (source === 'context') {
       cancelMenuClose('context');
@@ -1794,6 +4559,386 @@
     if (button.dataset.toolbar) {
       closeToolbarMenus();
       postToolbar(button.dataset.toolbar);
+      return;
+    }
+
+    if (button.dataset.review) {
+      const pageId = button.dataset.pageId || activePage()?.id || '';
+      const messageId = button.dataset.messageId || '';
+      const kind = button.dataset.review;
+      const depth = button.dataset.reviewDepth || 'medium';
+      const asRoot = button.dataset.reviewRoot === '1' || !messageId;
+      closeContextMenu();
+      closeToolbarCreateMenu();
+      if (asRoot) {
+        vscode.postMessage({
+          type: 'reviewStartRoot',
+          pageId,
+          kind,
+          depth,
+        });
+      } else {
+        beginLocalReviewSkeleton(pageId, messageId);
+        vscode.postMessage({
+          type: 'reviewStart',
+          pageId,
+          messageId,
+          kind,
+          depth,
+        });
+      }
+      return;
+    }
+
+    if (button.dataset.explain) {
+      const pageId = button.dataset.pageId || activePage()?.id || '';
+      const messageId = button.dataset.messageId || '';
+      const kind = button.dataset.explain;
+      const depth = button.dataset.explainDepth || 'medium';
+      const asRoot = button.dataset.explainRoot === '1' || !messageId;
+      closeContextMenu();
+      closeToolbarCreateMenu();
+      if (asRoot) {
+        beginLocalExplainRootSkeleton(pageId, t('explainMenu'));
+        vscode.postMessage({
+          type: 'explainStartRoot',
+          pageId,
+          kind,
+          depth,
+        });
+      } else {
+        beginLocalExplainSkeleton(pageId, messageId);
+        vscode.postMessage({
+          type: 'explainStart',
+          pageId,
+          messageId,
+          kind,
+          depth,
+        });
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'togglePull') {
+      if (openMenuState?.kind === 'toolbar-create') {
+        openMenuState.pullExpanded = !openMenuState.pullExpanded;
+        if (openMenuState.pullExpanded) {
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.explainExpanded = false;
+          openMenuState.explainScope = '';
+        }
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'openBranchPanelPull') {
+      closeToolbarCreateMenu();
+      openHostBranchPanel('pull');
+      return;
+    }
+
+    if (button.dataset.menuAction === 'openBranchPanelReview') {
+      closeToolbarCreateMenu();
+      openHostBranchPanel('review');
+      return;
+    }
+
+    if (button.dataset.menuAction === 'openBranchPanelExplain') {
+      closeToolbarCreateMenu();
+      openHostBranchPanel('explain');
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReview') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
+        if (!openMenuState.reviewExpanded) {
+          openMenuState.reviewScope = '';
+        }
+        if (openMenuState.reviewExpanded) {
+          openMenuState.explainExpanded = false;
+          openMenuState.explainScope = '';
+        }
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        openMenuState.reviewExpanded = !openMenuState.reviewExpanded;
+        if (!openMenuState.reviewExpanded) {
+          openMenuState.reviewScope = '';
+        }
+        if (openMenuState.reviewExpanded) {
+          openMenuState.pullExpanded = false;
+          openMenuState.explainExpanded = false;
+          openMenuState.explainScope = '';
+        }
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleExplain') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.explainExpanded = !openMenuState.explainExpanded;
+        if (!openMenuState.explainExpanded) {
+          openMenuState.explainScope = '';
+        }
+        if (openMenuState.explainExpanded) {
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+        }
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        openMenuState.explainExpanded = !openMenuState.explainExpanded;
+        if (!openMenuState.explainExpanded) {
+          openMenuState.explainScope = '';
+        }
+        if (openMenuState.explainExpanded) {
+          openMenuState.pullExpanded = false;
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+        }
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleNeuroFix') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.neurofixExpanded = !openMenuState.neurofixExpanded;
+        if (openMenuState.neurofixExpanded) {
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.reviewStatusExpanded = false;
+          openMenuState.rereviewExpanded = false;
+          openMenuState.studyExpanded = false;
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleRereview') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.rereviewExpanded = !openMenuState.rereviewExpanded;
+        if (openMenuState.rereviewExpanded) {
+          openMenuState.neurofixExpanded = false;
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.reviewStatusExpanded = false;
+          openMenuState.studyExpanded = false;
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.rereview) {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const scope = button.dataset.rereview;
+      const selection = scope === 'all' ? { H: 'all', M: 'all', L: 'all' } : { [scope]: 'all' };
+      closeContextMenu();
+      postRereview(pageId, messageId, selection);
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleStudy') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.studyExpanded = !openMenuState.studyExpanded;
+        if (openMenuState.studyExpanded) {
+          openMenuState.neurofixExpanded = false;
+          openMenuState.rereviewExpanded = false;
+          openMenuState.reviewExpanded = false;
+          openMenuState.reviewScope = '';
+          openMenuState.reviewStatusExpanded = false;
+        }
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.study) {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const scope = button.dataset.study;
+      const selection = scope === 'all' ? { H: 'all', M: 'all', L: 'all' } : { [scope]: 'all' };
+      closeContextMenu();
+      postStudy(pageId, messageId, selection);
+      return;
+    }
+
+    if (button.dataset.menuAction === 'studyList') {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const menuRect = contextMenu.getBoundingClientRect();
+      const flyRect = studyMenu?.getBoundingClientRect();
+      const left = Number.isFinite(menuRect.left) ? menuRect.left : 0;
+      const top = Number.isFinite(menuRect.top) ? menuRect.top : 0;
+      const width = flyRect && flyRect.width > menuRect.width ? flyRect.width : menuRect.width;
+      closeContextMenu();
+      openNeuroFixListPanel({ pageId, messageId, left, top, width, mode: 'study' });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'rereviewList') {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const menuRect = contextMenu.getBoundingClientRect();
+      const flyRect = rereviewMenu?.getBoundingClientRect();
+      const left = Number.isFinite(menuRect.left) ? menuRect.left : 0;
+      const top = Number.isFinite(menuRect.top) ? menuRect.top : 0;
+      const width = flyRect && flyRect.width > menuRect.width ? flyRect.width : menuRect.width;
+      closeContextMenu();
+      openNeuroFixListPanel({ pageId, messageId, left, top, width, mode: 'rereview' });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'neuroFixList') {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const menuRect = contextMenu.getBoundingClientRect();
+      const flyRect = neuroFixMenu?.getBoundingClientRect();
+      const left = Number.isFinite(menuRect.left) ? menuRect.left : 0;
+      const top = Number.isFinite(menuRect.top) ? menuRect.top : 0;
+      const width = flyRect && flyRect.width > menuRect.width ? flyRect.width : menuRect.width;
+      closeContextMenu();
+      openNeuroFixListPanel({ pageId, messageId, left, top, width });
+      return;
+    }
+
+    if (button.dataset.reviewStatus) {
+      closeContextMenu();
+      vscode.postMessage({
+        type: 'reviewSetStatus',
+        pageId: button.dataset.pageId || '',
+        messageId: button.dataset.messageId || '',
+        status: button.dataset.reviewStatus,
+      });
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReviewStatus') {
+      if (openMenuState?.kind === 'context') {
+        openMenuState.reviewStatusExpanded = !openMenuState.reviewStatusExpanded;
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleReviewScope') {
+      if (openMenuState?.kind === 'context') {
+        const scope = button.dataset.reviewScope || '';
+        openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
+        openMenuState.reviewExpanded = true;
+        openMenuState.explainExpanded = false;
+        openMenuState.explainScope = '';
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        const scope = button.dataset.reviewScope || '';
+        openMenuState.reviewScope = openMenuState.reviewScope === scope ? '' : scope;
+        openMenuState.reviewExpanded = true;
+        openMenuState.explainExpanded = false;
+        openMenuState.explainScope = '';
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.menuAction === 'toggleExplainScope') {
+      if (openMenuState?.kind === 'context') {
+        const scope = button.dataset.explainScope || '';
+        openMenuState.explainScope = openMenuState.explainScope === scope ? '' : scope;
+        openMenuState.explainExpanded = true;
+        openMenuState.reviewExpanded = false;
+        openMenuState.reviewScope = '';
+        openMenuState.neurofixExpanded = false;
+        rerenderContextMenu();
+      } else if (openMenuState?.kind === 'toolbar-create') {
+        const scope = button.dataset.explainScope || '';
+        openMenuState.explainScope = openMenuState.explainScope === scope ? '' : scope;
+        openMenuState.explainExpanded = true;
+        openMenuState.reviewExpanded = false;
+        openMenuState.reviewScope = '';
+        rerenderCreateMenu();
+      }
+      return;
+    }
+
+    if (button.dataset.neuroFix) {
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      closeContextMenu();
+      beginLocalNeurofixSkeleton(pageId, messageId);
+      vscode.postMessage({
+        type: 'reviewNeurofix',
+        pageId,
+        messageId,
+        scope: button.dataset.neuroFix,
+      });
+      return;
+    }
+
+    if (button.dataset.reviewEdit) {
+      closeContextMenu();
+      const pageId = button.dataset.pageId || '';
+      const messageId = button.dataset.messageId || '';
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      const replyChip = parent ? undefined : findReviewReply(messageId);
+      const chip = parent || replyChip;
+      if (button.dataset.reviewEdit === 'lock') {
+        if (parent) {
+          vscode.postMessage({
+            type: 'reviewSetLock',
+            pageId,
+            messageId,
+            locked: parent.locked !== true,
+          });
+        }
+        return;
+      }
+      if (button.dataset.reviewEdit === 'migrate') {
+        vscode.postMessage({
+          type: 'reviewMigrate',
+          pageId,
+          messageId,
+        });
+        return;
+      }
+      if (parent?.locked) {
+        return;
+      }
+      if (button.dataset.reviewEdit === 'rename') {
+        openReviewRenamePanel({
+          pageId,
+          messageId,
+          title: parent?.title || '',
+          isPr: typeof parent?.webUrl === 'string' && /\/pull\/\d+/.test(parent.webUrl),
+        });
+      } else if (button.dataset.reviewEdit === 'close') {
+        vscode.postMessage({
+          type: 'reviewCloseMr',
+          pageId,
+          messageId,
+        });
+      } else if (button.dataset.reviewEdit === 'delete') {
+        vscode.postMessage({
+          type: 'reviewDeleteReview',
+          pageId,
+          messageId,
+        });
+      } else {
+        vscode.postMessage({
+          type: 'reviewUpdateMr',
+          pageId,
+          messageId,
+          draft: chip?.draft !== true,
+        });
+      }
       return;
     }
 
@@ -1990,6 +5135,16 @@
       refreshOpenViewHighlights();
       return;
     }
+    if (button.dataset.set === 'aliasTitle') {
+      const next = !aliasTitleOn();
+      if (data && typeof data === 'object') {
+        data.appearance = { ...(data.appearance || {}), aliasTitle: next };
+      }
+      vscode.postMessage({ type: 'setAppearance', appearance: { aliasTitle: next } });
+      render();
+      refreshOpenViewHighlights();
+      return;
+    }
     if (button.dataset.set === 'columns' && button.dataset.value && button.dataset.markerId) {
       vscode.postMessage({
         type: 'runCommand',
@@ -2125,6 +5280,9 @@
   }
 
   function applyPageChrome() {
+    if (pageSkeletonKind()) {
+      return;
+    }
     const page = activePage();
     const layout = page?.layout || data?.layout || 'chips';
     const groupsLayout = page?.groupsLayout || data?.groupsLayout || 'flow';
@@ -2137,28 +5295,258 @@
       toolbarProfileMenu.hidden = true;
     }
     toolbarProfile?.setAttribute('aria-expanded', 'false');
+    closeProjectMenu();
   }
 
-  function submitProfileCreate() {
-    const name = (toolbarProfileName?.value || '').trim();
-    if (!name || !isCreatableProfileName(name)) {
+  function closeProjectMenu() {
+    cancelMenuClose('toolbar-project');
+    if (toolbarProjectMenu) {
+      toolbarProjectMenu.hidden = true;
+    }
+    toolbarProject?.setAttribute('aria-expanded', 'false');
+  }
+
+  function applyBaseConfigLoader() {
+    if (!toolbarBaseLoader) {
       return;
     }
-    vscode.postMessage({ type: 'profile', action: 'create', name });
-    if (toolbarProfileName) {
-      toolbarProfileName.value = '';
+    if (!baseConfigBusy && !pageCloudBusy) {
+      toolbarBaseLoader.hidden = true;
+      toolbarBaseLoader.replaceChildren();
+      toolbarBaseLoader.removeAttribute('title');
+      toolbarBaseLoader.setAttribute('aria-hidden', 'true');
+      toolbarBaseLoader.removeAttribute('aria-label');
+      return;
     }
-    closeProfileMenu();
+    const label = baseConfigBusy ? t('baseConfigWorking') : t('pageCloudWorking');
+    toolbarBaseLoader.hidden = false;
+    toolbarBaseLoader.title = label;
+    toolbarBaseLoader.setAttribute('aria-label', label);
+    toolbarBaseLoader.setAttribute('aria-hidden', 'false');
+    toolbarBaseLoader.replaceChildren(reviewProgressIcon());
   }
 
-  /** @param {string} name */
-  function isCreatableProfileName(name) {
+  function workspaceCloudCanPush() {
+    if (projectConfigSync && projectConfigSync.canPush) {
+      return true;
+    }
+    const profileSync = data?.profileConfigSync;
+    if (profileSync && profileSync.canPush) {
+      return true;
+    }
+    for (const id of Object.keys(pageConfigSync)) {
+      if (pageConfigSync[id]?.canPush) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function workspaceCloudCanPull() {
+    if (projectConfigSync && projectConfigSync.canPull) {
+      return true;
+    }
+    const profileSync = data?.profileConfigSync;
+    if (profileSync && profileSync.canPull) {
+      return true;
+    }
+    for (const id of Object.keys(pageConfigSync)) {
+      if (pageConfigSync[id]?.canPull) {
+        return true;
+      }
+    }
+    return pendingRemoteCount > 0;
+  }
+
+  function applyWorkspaceCloudButtons() {
+    const busy = baseConfigBusy || pageCloudBusy;
+    if (toolbarCloudPull) {
+      const canPull = workspaceCloudCanPull();
+      const pullLabel = t('workspaceCloudPull');
+      toolbarCloudPull.title = pullLabel;
+      toolbarCloudPull.setAttribute('aria-label', pullLabel);
+      toolbarCloudPull.disabled = busy || !canPull;
+      toolbarCloudPull.classList.toggle('is-cloud-active', canPull);
+    }
+    if (toolbarCloudPush) {
+      const canPush = workspaceCloudCanPush();
+      const pushLabel = t('workspaceCloudPush');
+      toolbarCloudPush.title = pushLabel;
+      toolbarCloudPush.setAttribute('aria-label', pushLabel);
+      toolbarCloudPush.disabled = busy || !canPush;
+      toolbarCloudPush.classList.toggle('is-cloud-active', canPush);
+    }
+    applyToolbarCloudCheck();
+  }
+
+  function applyToolbarCloudCheck() {
+    if (!toolbarCloudCheck) {
+      return;
+    }
+    const label = t('pageCloudCheck');
+    toolbarCloudCheck.title = label;
+    toolbarCloudCheck.setAttribute('aria-label', label);
+    toolbarCloudCheck.hidden = !hasConfigChannel;
+    toolbarCloudCheck.disabled = !hasConfigChannel || baseConfigBusy || pageCloudBusy;
+  }
+
+  function sendWorkspaceCheck() {
+    if (!toolbarCloudCheck || toolbarCloudCheck.disabled || toolbarCloudCheck.hidden) {
+      return;
+    }
+    if (baseConfigBusy || pageCloudBusy || !hasConfigChannel) {
+      return;
+    }
+    pageCloudBusy = true;
+    applyBaseConfigLoader();
+    applyWorkspaceCloudButtons();
+    vscode.postMessage({ type: 'pageCloud', action: 'check' });
+  }
+
+  /** @param {'push' | 'pull'} action */
+  function sendWorkspaceCloud(action) {
+    if (baseConfigBusy || pageCloudBusy) {
+      return;
+    }
+    if (action === 'push' && !workspaceCloudCanPush()) {
+      return;
+    }
+    if (action === 'pull' && !workspaceCloudCanPull()) {
+      return;
+    }
+    const now = Date.now();
+    if (now - baseSyncStamp < 400) {
+      return;
+    }
+    baseSyncStamp = now;
+    vscode.postMessage({ type: 'workspaceCloud', action });
+    baseConfigBusy = true;
+    applyBaseConfigLoader();
+    applyWorkspaceCloudButtons();
+    renderProjects(projectsList, activeProjectId, projectConfigSync);
+    renderProfiles(
+      Array.isArray(data?.profiles) ? data.profiles : undefined,
+      typeof data?.activeProfileId === 'string' ? data.activeProfileId : undefined,
+      data?.profileConfigSync,
+    );
+  }
+
+  /** Ignore a second click on the same cloud button. */
+  let baseSyncStamp = 0;
+
+  function initWorkspaceCloudButtons() {
+    if (toolbarCloudCheck && !toolbarCloudCheck.querySelector('.cloud-ico')) {
+      toolbarCloudCheck.append(cloudSvgIcon('cloud-ico-reload', CLOUD_RELOAD_D));
+      toolbarCloudCheck.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendWorkspaceCheck();
+      });
+    }
+    if (toolbarCloudPull && !toolbarCloudPull.querySelector('.cloud-ico')) {
+      toolbarCloudPull.append(cloudSvgIcon('cloud-ico-download', CLOUD_DOWNLOAD_D));
+      toolbarCloudPull.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendWorkspaceCloud('pull');
+      });
+    }
+    if (toolbarCloudPush && !toolbarCloudPush.querySelector('.cloud-ico')) {
+      toolbarCloudPush.append(cloudSvgIcon('cloud-ico-upload', CLOUD_UPLOAD_D));
+      toolbarCloudPush.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendWorkspaceCloud('push');
+      });
+    }
+    applyWorkspaceCloudButtons();
+  }
+
+  function renderProjects(projects, activeId, _sync) {
+    if (!toolbarProjectList) {
+      return;
+    }
+    toolbarProjectList.replaceChildren();
+    const list = Array.isArray(projects) ? projects : [];
+    if (list.length === 0) {
+      const hint = el('div', 'toolbar-profile-row toolbar-project-hint');
+      hint.setAttribute('role', 'presentation');
+      const hintText = el('span', 'profile-name');
+      hintText.textContent = t('projectPickExisting');
+      hint.append(hintText);
+      toolbarProjectList.append(hint);
+      const joinRow = el('div', 'toolbar-profile-row');
+      joinRow.setAttribute('role', 'menuitem');
+      const joinBtn = el('button', 'history-btn toolbar-project-join-btn');
+      joinBtn.type = 'button';
+      joinBtn.textContent = t('projectJoin');
+      joinBtn.title = t('projectJoinTitle');
+      joinBtn.setAttribute('aria-label', joinBtn.title);
+      joinBtn.setAttribute('data-project-action', 'join');
+      joinBtn.disabled = baseConfigBusy;
+      joinRow.append(joinBtn);
+      toolbarProjectList.append(joinRow);
+      return;
+    }
+    for (const project of list) {
+      const row = el('div', 'toolbar-profile-row' + (project.id === activeId ? ' is-active' : ''));
+      row.setAttribute('role', 'menuitem');
+      row.setAttribute('data-project-id', project.id);
+      const name = el('span', 'profile-name');
+      name.textContent = project.name;
+      row.append(name);
+      const actions = el('span', 'profile-actions');
+      const editBtn = el('button', '');
+      editBtn.type = 'button';
+      editBtn.title = t('profileEdit');
+      editBtn.setAttribute('aria-label', t('profileEdit'));
+      editBtn.setAttribute('data-project-action', 'edit');
+      editBtn.setAttribute('data-project-id', project.id);
+      editBtn.textContent = '✎';
+      actions.append(editBtn);
+      row.append(actions);
+      toolbarProjectList.append(row);
+    }
+  }
+
+  function applyToolbarLock() {
+    if (!toolbarLock) {
+      return;
+    }
+    const lockedOut = !canToggleProjectLock;
+    toolbarLock.disabled = lockedOut;
+    const label = pagesFixed ? t('pagesUnfix') : t('pagesFix');
+    toolbarLock.title = label;
+    toolbarLock.setAttribute('aria-label', label);
+    toolbarLock.setAttribute('aria-pressed', pagesFixed ? 'true' : 'false');
+    toolbarLock.classList.toggle('is-fixed', pagesFixed);
+    toolbarLock.classList.toggle('toolbar-lock-dirty', pagesFixed !== pagesFixedSent);
+    const nextIcon = pagesFixed ? lockClosedIcon() : lockOpenIcon();
+    nextIcon.setAttribute('viewBox', pagesFixed ? '2.5 1.75 13.5 13.5' : '2.75 1.75 13.5 13.5');
+    toolbarLock.replaceChildren(nextIcon);
+  }
+
+  function syncToolbarLockBeforePager() {
+    if (!toolbarLock) {
+      return;
+    }
+    toolbarLock.classList.toggle('toolbar-lock-dirty', pagesFixed !== pagesFixedSent);
+  }
+
+  /** @param {string} name @param {string} [exceptId] */
+  function isCreatableProfileName(name, exceptId) {
     const lower = name.toLocaleLowerCase();
-    if (lower === 'общий' || lower === 'general') {
+    if (lower === 'админ' || lower === 'общий' || lower === 'general') {
       return false;
     }
     const rows = toolbarProfileList?.querySelectorAll('[data-profile-id]') || [];
     for (const row of rows) {
+      if (!(row instanceof HTMLElement)) {
+        continue;
+      }
+      if (exceptId && row.getAttribute('data-profile-id') === exceptId) {
+        continue;
+      }
       const label = row.querySelector('.profile-name');
       if (label && label.textContent && label.textContent.toLocaleLowerCase() === lower) {
         return false;
@@ -2172,12 +5560,10 @@
    * @param {string | undefined} activeId
    * @param {{ canPush?: boolean, canPull?: boolean } | undefined} sync
    */
-  function renderProfiles(profiles, activeId, sync) {
+  function renderProfiles(profiles, activeId, _sync) {
     if (!toolbarProfileList) {
       return;
     }
-    const canPush = !!(sync && sync.canPush);
-    const canPull = !!(sync && sync.canPull);
     toolbarProfileList.replaceChildren();
     const list = Array.isArray(profiles) ? profiles : [];
     for (const profile of list) {
@@ -2195,33 +5581,15 @@
         row.append(count);
       }
       const actions = el('span', 'profile-actions');
-      if (profile.id === activeId) {
-        const pushBtn = el('button', '');
-        pushBtn.type = 'button';
-        pushBtn.title = t('profileSyncPush');
-        pushBtn.setAttribute('aria-label', t('profileSyncPush'));
-        pushBtn.setAttribute('data-profile-action', 'syncPush');
-        pushBtn.setAttribute('data-profile-id', profile.id);
-        pushBtn.textContent = '↑';
-        pushBtn.disabled = !canPush;
-        const pullBtn = el('button', '');
-        pullBtn.type = 'button';
-        pullBtn.title = t('profileSyncPull');
-        pullBtn.setAttribute('aria-label', t('profileSyncPull'));
-        pullBtn.setAttribute('data-profile-action', 'syncPull');
-        pullBtn.setAttribute('data-profile-id', profile.id);
-        pullBtn.textContent = '↓';
-        pullBtn.disabled = !canPull;
-        actions.append(pushBtn, pullBtn);
-      }
+      const editBtn = el('button', '');
+      editBtn.type = 'button';
+      editBtn.title = t('profileEdit');
+      editBtn.setAttribute('aria-label', t('profileEdit'));
+      editBtn.setAttribute('data-profile-action', 'edit');
+      editBtn.setAttribute('data-profile-id', profile.id);
+      editBtn.textContent = '✎';
+      actions.append(editBtn);
       if (profile.id !== 'general') {
-        const renameBtn = el('button', '');
-        renameBtn.type = 'button';
-        renameBtn.title = t('profileRename');
-        renameBtn.setAttribute('aria-label', t('profileRename'));
-        renameBtn.setAttribute('data-profile-action', 'rename');
-        renameBtn.setAttribute('data-profile-id', profile.id);
-        renameBtn.textContent = '✎';
         const deleteBtn = el('button', '');
         deleteBtn.type = 'button';
         deleteBtn.title = t('profileDelete');
@@ -2229,7 +5597,7 @@
         deleteBtn.setAttribute('data-profile-action', 'delete');
         deleteBtn.setAttribute('data-profile-id', profile.id);
         deleteBtn.textContent = '×';
-        actions.append(renameBtn, deleteBtn);
+        actions.append(deleteBtn);
       }
       if (actions.childNodes.length > 0) {
         row.append(actions);
@@ -2297,7 +5665,18 @@
   /** Top-level groups, root notes, and link layouts that can fold. */
   function collapsibleTopGroups() {
     const page = activePage();
-    if (page?.kind === 'links') {
+    if (page?.kind === 'scenarios') {
+      return pageScenarioMessages().filter((chip) => {
+        if (chip.locked) {
+          return false;
+        }
+        if (chip.isGroup) {
+          return (chip.children || []).length > 0;
+        }
+        return !!(chip.md && chip.hasFile);
+      });
+    }
+    if (isLinkMapKind(page?.kind)) {
       return (data?.links || []).filter(
         (link) =>
           !link.parent &&
@@ -2315,27 +5694,189 @@
     return [...groups, ...notes];
   }
 
+  /** MR chips, root reviews, and plain messages whose thread can fold. */
+  /** @param {string | undefined} pillLabel */
+  function parsePillSeverityCounts(pillLabel) {
+    if (!pillLabel) {
+      return undefined;
+    }
+    const match = pillLabel.match(/H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*[LS]:\s*(\d+)/i);
+    if (!match) {
+      return undefined;
+    }
+    return { H: Number(match[1]), M: Number(match[2]), L: Number(match[3]) };
+  }
+
+  /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number }, bullets?: { H?: number[], M?: number[], L?: number[] }, at?: string } } | null | undefined} node */
+  function reviewFixBullets(node) {
+    const bullets = node && node.fixes && node.fixes.bullets;
+    return {
+      H: Array.isArray(bullets && bullets.H) ? bullets.H : [],
+      M: Array.isArray(bullets && bullets.M) ? bullets.M : [],
+      L: Array.isArray(bullets && bullets.L) ? bullets.L : [],
+    };
+  }
+
+  /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number } } } | null | undefined} node */
+  function reviewHasFixes(node) {
+    const counts = node && node.fixes && node.fixes.counts;
+    if (!counts) {
+      return false;
+    }
+    return (Number(counts.H) || 0) + (Number(counts.M) || 0) + (Number(counts.L) || 0) > 0;
+  }
+
+  /** @param {{ fixes?: { counts?: { H?: number, M?: number, L?: number } } } | null | undefined} node */
+  function reviewFixLabel(node) {
+    const bullets = reviewFixBullets(node);
+    const parts = [];
+    for (const letter of ['H', 'M', 'L']) {
+      const nums = bullets[letter];
+      if (nums.length) {
+        parts.push(`${letter}:${nums.join(', ')}`);
+      }
+    }
+    const items = parts.length ? parts.join(' | ') : '';
+    const run = Number(node && node.fixN) || 0;
+    if (items) {
+      return run > 0 ? `${t('fixChip')} ${run} | ${items}` : items;
+    }
+    const counts = node && node.fixes && node.fixes.counts;
+    if (!counts) {
+      return '';
+    }
+    const h = Number(counts.H) || 0;
+    const m = Number(counts.M) || 0;
+    const l = Number(counts.L) || 0;
+    const legacy = [];
+    if (h) legacy.push(`H:${h}`);
+    if (m) legacy.push(`M:${m}`);
+    if (l) legacy.push(`L:${l}`);
+    const legacyItems = legacy.join(' | ');
+    if (run > 0 && legacyItems) {
+      return `${t('fixChip')} ${run} | ${legacyItems}`;
+    }
+    if (run > 0) {
+      return `${t('fixChip')} ${run}`;
+    }
+    return legacyItems;
+  }
+
+  /**
+   * @param {{ H: number, M: number, L: number } | undefined} counts
+   * @param {{ fixes?: { bullets?: { H?: number[], M?: number[], L?: number[] } } } | null | undefined} node
+   */
+  function remainingSeverityCounts(counts, node) {
+    if (!counts) {
+      return undefined;
+    }
+    const bullets = reviewFixBullets(node);
+    return {
+      H: Math.max(0, counts.H - bullets.H.length),
+      M: Math.max(0, counts.M - bullets.M.length),
+      L: Math.max(0, counts.L - bullets.L.length),
+    };
+  }
+
+  function reviewMessageCanFold(msg) {
+    if (!msg) {
+      return false;
+    }
+    const pageId = activePage()?.id || '';
+    if (activePendingNeurofixId(pageId) === msg.id || activePendingStudyId(pageId) === msg.id) {
+      return true;
+    }
+    if (
+      (msg.isMr || msg.isReviewRoot) &&
+      (activePendingReviewId(pageId) === msg.id || activePendingExplainId(pageId) === msg.id)
+    ) {
+      return true;
+    }
+    if (msg.isMr || msg.isReviewRoot) {
+      return !!(
+        msg.hasThread ||
+        msg.threadId ||
+        (msg.replies && msg.replies.length) ||
+        reviewHasFixes(msg) ||
+        levelNoteFiles(msg.rereviewNote).length > 0 ||
+        levelNoteFiles(msg.studyNote).length > 0
+      );
+    }
+    if (msg.isExplainRoot) {
+      return !!(msg.hasThread || msg.threadId || (msg.replies && msg.replies.length));
+    }
+    return !!(
+      (msg.replies && msg.replies.length) ||
+      msg.repliesHasMore ||
+      msg.repliesHasNewer
+    );
+  }
+
+  function foldableReviewMessages() {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || !reviewState || reviewState.pageId !== page.id) {
+      return [];
+    }
+    if (reviewPaintEdge(page.id) === 'initial') {
+      return [];
+    }
+    return (reviewState.messages || []).filter((msg) => reviewMessageCanFold(msg) && !msg.locked);
+  }
+
   function allTopCollapsed() {
+    if (activePage()?.kind === 'scenarios') {
+      const items = collapsibleTopGroups();
+      return items.length > 0 && items.every((chip) => isCollapsed(chip.id));
+    }
+    if (activePage()?.kind === 'review') {
+      const items = foldableReviewMessages();
+      return items.length > 0 && items.every((msg) => reviewCollapsed.has(msg.id));
+    }
     const groups = collapsibleTopGroups();
     return groups.length > 0 && groups.every((group) => isCollapsed(group.id));
   }
 
-  function syncToolbarView() {
-    const onLinks = !isProblemsPageOpen() && activePage()?.kind === 'links';
-    if (toolbarViewWrap) {
-      toolbarViewWrap.hidden = onLinks;
+  /** Create / View need a real map page, not Problems/Debug and not an empty workspace. */
+  function canUseCreateViewToolbar() {
+    if (isAuxPageOpen() || pageSkeletonKind() !== '') {
+      return false;
     }
-    if (onLinks) {
+    return !!activePage();
+  }
+
+  function syncCreateViewToolbar() {
+    const enabled = canUseCreateViewToolbar();
+    if (toolbarCreate) {
+      toolbarCreate.disabled = !enabled;
+    }
+    if (toolbarView) {
+      toolbarView.disabled = !enabled;
+    }
+    if (!enabled) {
+      closeToolbarCreateMenu();
       closeToolbarViewMenu();
     }
   }
 
+  function syncToolbarView() {
+    const kind = activePage()?.kind;
+    const hide = !isAuxPageOpen() && (isLinkMapKind(kind) || kind === 'review' || kind === 'scenarios');
+    if (toolbarViewWrap) {
+      toolbarViewWrap.hidden = hide;
+    }
+    if (hide) {
+      closeToolbarViewMenu();
+    }
+    syncCreateViewToolbar();
+  }
+
   function setCollapseButton() {
-    const groups = collapsibleTopGroups();
-    const collapsed = groups.length > 0 && groups.every((group) => isCollapsed(group.id));
+    const review = activePage()?.kind === 'review';
+    const groups = review ? foldableReviewMessages() : collapsibleTopGroups();
+    const collapsed = allTopCollapsed();
     const mode = collapsed ? 'expand' : 'collapse';
     if (toolbarCollapse) {
-      toolbarCollapse.disabled = groups.length === 0;
+      toolbarCollapse.disabled = groups.length === 0 || pageSkeletonKind() !== '';
       toolbarCollapse.title = collapsed ? t('toolbarExpand') : t('toolbarCollapse');
       toolbarCollapse.setAttribute('aria-label', toolbarCollapse.title);
       toolbarCollapse.querySelectorAll('.tool-icon').forEach((img) => {
@@ -2560,7 +6101,7 @@
     return String(Math.round(value * 10) / 10) + '%';
   }
 
-  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number, showProblemsTab?: boolean, cyclePageScroll?: boolean, problemsError?: boolean, problemsWarning?: boolean, problemsInfo?: boolean } | undefined} appearance */
+  /** @param {{ fontGroup?: number, fontSubgroup?: number, fontFolder?: number, fontFile?: number, fontReview?: number, fontScale?: number, gradientDirection?: number, cardGradient?: boolean, cardFill?: number, cardBorder?: number, bgFolder?: number, bgFile?: number, bgSubgroup?: number, bgClass?: number, bgNote?: number, bgHover?: number, openFileMark?: boolean, showErrorIcon?: boolean, openFileAnimate?: boolean, openFileDuration?: number, showProblemsTab?: boolean, cyclePageScroll?: boolean, problemsError?: boolean, problemsWarning?: boolean, problemsInfo?: boolean } | undefined} appearance */
   function applyAppearance(appearance) {
     const a = appearance || {};
     const scale = typeof a.fontScale === 'number' ? a.fontScale : 1;
@@ -2573,6 +6114,38 @@
     setSize('--size-subgroup', a.fontSubgroup, 1.05);
     setSize('--size-folder', a.fontFolder, 0.95);
     setSize('--size-file', a.fontFile, 0.9);
+    setSize('--size-review', a.fontReview, 1);
+    const reviewSize = typeof a.fontReview === 'number' ? a.fontReview : 1;
+    for (const link of [reviewFileLink, explainFileLink]) {
+      if (!link) {
+        continue;
+      }
+      link.title = t('reviewFileLink');
+      link.setAttribute('aria-label', t('reviewFileLink'));
+    }
+    for (const grow of [reviewFileGrow, explainFileGrow]) {
+      if (!grow) {
+        continue;
+      }
+      grow.disabled = reviewSize >= 1.999;
+      grow.title = t('reviewFileGrow');
+      grow.setAttribute('aria-label', t('reviewFileGrow'));
+    }
+    for (const shrink of [reviewFileShrink, explainFileShrink]) {
+      if (!shrink) {
+        continue;
+      }
+      shrink.disabled = reviewSize <= 0.601;
+      shrink.title = t('reviewFileShrink');
+      shrink.setAttribute('aria-label', t('reviewFileShrink'));
+    }
+    for (const save of [reviewFileSave, explainFileSave]) {
+      if (!save) {
+        continue;
+      }
+      save.title = t('reviewFileSave');
+      save.setAttribute('aria-label', t('reviewFileSave'));
+    }
     const turn = typeof a.gradientDirection === 'number' ? a.gradientDirection : 0;
     document.body.style.setProperty('--gradient-turn', String(turn));
 
@@ -2630,6 +6203,14 @@
       !toolbarPanelsMenu.parentElement?.contains(target)
     ) {
       closeToolbarMenus();
+    }
+    if (
+      branchDepthMenu &&
+      target &&
+      !branchDepthMenu.contains(target) &&
+      !(target instanceof Element && target.closest('#host-branch-panel'))
+    ) {
+      clearBranchDepthMenu();
     }
     const inProblem = !!(target && problemPanel.contains(target));
     const onProblemAnchor = !!(
@@ -2772,41 +6353,115 @@
 
   /** Body in `data` belongs to the page on screen. Other pages arrive with the next state. */
   function pageContentReady() {
-    if (isProblemsPageOpen()) {
+    if (isAuxPageOpen()) {
       return true;
     }
     const page = activePage();
+    // Scenarios paint their own empty/loading UI — do not park on is-page-loading.
+    if (page?.kind === 'scenarios') {
+      return true;
+    }
     return !!page && data.contentPageId === page.id;
   }
 
-  function render() {
-    if (!data) {
-      return;
+  /** files / notes / links with no cached body. Review keeps the dimmed wait. */
+  function pageSkeletonKind() {
+    if (!data || isAuxPageOpen() || pageContentReady()) {
+      return '';
     }
-    if (!pageContentReady()) {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && root.contains(active)) {
-        active.blur();
-      }
-      root.classList.add('is-page-loading');
-      root.setAttribute('aria-busy', 'true');
-      return;
+    const page = activePage();
+    if (!page || page.kind === 'review' || page.kind === 'scenarios') {
+      return '';
     }
-    root.classList.remove('is-page-loading');
-    root.removeAttribute('aria-busy');
-    const direction = consumeSlideDirection();
-    if (isSliding && direction === 0) {
-      renderDeferred = true;
-      setCollapseButton();
-      return;
+    if (page.kind === 'notes') {
+      return page.kind;
     }
-    if (isFolding && direction === 0 && !renderFromToggle) {
-      renderDeferred = true;
-      setCollapseButton();
-      return;
+    if (isLinkMapKind(page.kind)) {
+      return 'links';
     }
-    renderDeferred = false;
+    return 'files';
+  }
 
+  function clearPageSkeletonMark() {
+    delete root.dataset.skeletonKind;
+    delete root.dataset.skeletonPageId;
+  }
+
+  /** Content buttons wait. More-menu and profile stay. Leave only via another chip. */
+  function syncPageLoadingChrome() {
+    const locked = pageSkeletonKind() !== '';
+    if (locked) {
+      closeToolbarViewMenu();
+      closeToolbarCreateMenu();
+      closeFormatMenu();
+      if (toolbarPanelsMenu) {
+        toolbarPanelsMenu.hidden = true;
+      }
+      toolbarPanels?.setAttribute('aria-expanded', 'false');
+    }
+    const contentButtons = [
+      toolbarCollapse,
+      toolbarFormat,
+      toolbarReviewTab,
+      toolbarPanels,
+      panelToggleBottom,
+      panelToggleLeft,
+      panelToggleRight,
+    ];
+    if (locked) {
+      for (const button of contentButtons) {
+        if (button) {
+          button.disabled = true;
+        }
+      }
+      if (toolbarView) {
+        toolbarView.disabled = true;
+      }
+      if (toolbarCreate) {
+        toolbarCreate.disabled = true;
+      }
+      if (historyBack) {
+        historyBack.disabled = true;
+      }
+      if (historyForward) {
+        historyForward.disabled = true;
+      }
+      if (historyAccept) {
+        historyAccept.disabled = true;
+      }
+    } else {
+      for (const button of contentButtons) {
+        if (button && button !== toolbarCollapse) {
+          button.disabled = false;
+        }
+      }
+      syncCreateViewToolbar();
+      setHistoryButtons(data && data.history);
+      setCollapseButton();
+    }
+    if (!pager) {
+      return;
+    }
+    for (const node of pager.querySelectorAll('.pager-chip')) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      const current =
+        node.classList.contains('active') &&
+        !node.classList.contains('problems-tab') &&
+        !node.classList.contains('debug-tab');
+      if (node.dataset.pageId) {
+        node.draggable = !locked;
+      }
+      node.classList.toggle('is-load-locked', locked && current);
+    }
+  }
+
+  /**
+   * @param {() => void} paint
+   * @param {number} direction
+   */
+  function commitPagePaint(paint, direction) {
     /** @type {HTMLElement | null} */
     let leaving = null;
     let oldHeight = 0;
@@ -2823,7 +6478,7 @@
         leaving.inert = true;
         stage.append(leaving);
       }
-      paintPage();
+      paint();
       if (leaving && stage) {
         stage.classList.add('is-sliding');
         stage.style.height = Math.max(oldHeight, root.offsetHeight) + 'px';
@@ -2861,7 +6516,10 @@
       stage.style.height = '';
       stage.classList.remove('is-sliding');
       flushDeferredRender();
-      if (entityAlignPending() && !isFolding) {
+      if (reviewPinEnd) {
+        reviewPinEnd = false;
+        animateReviewListToEnd(++reviewScrollAnim);
+      } else if (entityAlignPending() && !isFolding) {
         applyEntityFlash(true);
       } else if (!entityAlignPending()) {
         applyDocScroll(restoredScroll);
@@ -2887,8 +6545,271 @@
     outgoing.style.transform = 'translateX(' + leaveTo + ')';
   }
 
+  function render() {
+    if (!data) {
+      return;
+    }
+    if (!activePage() && !isAuxPageOpen()) {
+      paintNoPage();
+      syncPageLoadingChrome();
+      return;
+    }
+    const skeletonKind = pageSkeletonKind();
+    if (!pageContentReady() && !skeletonKind) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      root.classList.add('is-page-loading');
+      root.setAttribute('aria-busy', 'true');
+      syncPageLoadingChrome();
+      return;
+    }
+    if (skeletonKind) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && root.contains(active)) {
+        active.blur();
+      }
+      const direction = consumeSlideDirection();
+      const page = activePage();
+      const sameSkeleton =
+        root.classList.contains('is-page-skeleton') &&
+        root.dataset.skeletonKind === skeletonKind &&
+        root.dataset.skeletonPageId === page?.id;
+      if (sameSkeleton && direction === 0) {
+        syncPageLoadingChrome();
+        return;
+      }
+      root.classList.remove('is-page-loading');
+      commitPagePaint(() => paintPageSkeleton(skeletonKind), direction);
+      syncPageLoadingChrome();
+      return;
+    }
+
+    const arrivedOnSkeleton =
+      root.classList.contains('is-page-skeleton') &&
+      root.dataset.skeletonPageId === activePage()?.id;
+    root.classList.remove('is-page-loading');
+    root.removeAttribute('aria-busy');
+    if (arrivedOnSkeleton) {
+      pendingSlide = 0;
+      preservingPageScroll(() => {
+        cancelSlide();
+        clearPageSkeletonMark();
+        paintPage();
+      });
+      syncPageLoadingChrome();
+      return;
+    }
+
+    clearPageSkeletonMark();
+    const direction = consumeSlideDirection();
+    if (isSliding && direction === 0) {
+      renderDeferred = true;
+      setCollapseButton();
+      syncPageLoadingChrome();
+      return;
+    }
+    if (isFolding && direction === 0 && !renderFromToggle) {
+      renderDeferred = true;
+      setCollapseButton();
+      syncPageLoadingChrome();
+      return;
+    }
+    renderDeferred = false;
+    commitPagePaint(paintPage, direction);
+    syncPageLoadingChrome();
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   */
+  function pageSkelBar(width, delayMs) {
+    const bar = el('span', 'page-skel-bar');
+    if (width) {
+      bar.style.width = width;
+    }
+    bar.style.animationDelay = delayMs + 'ms';
+    return bar;
+  }
+
+  /** Drop the previous project's map when this project has no pages. */
+  function paintNoPage() {
+    closeContextMenu();
+    dismissLinkPreview();
+    closeGroupPanel(true);
+    openLinkPanelId = null;
+    cancelSlide();
+    isFolding = false;
+    renderDeferred = false;
+    clearPageSkeletonMark();
+    root.classList.remove('is-page-loading', 'is-page-skeleton');
+    root.removeAttribute('aria-busy');
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page';
+    clearDropHighlights();
+  }
+
+  /** @param {'files' | 'notes' | 'links' | 'scenarios'} kind */
+  function paintPageSkeleton(kind) {
+    closeContextMenu();
+    dismissLinkPreview();
+    closeGroupPanel(false);
+    openLinkPanelId = null;
+    const page = activePage();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className =
+      'map-page is-page-skeleton' +
+      (kind === 'links' || kind === 'scenarios' ? ' links-page scenarios-page' : '');
+    root.dataset.skeletonKind = kind;
+    root.dataset.skeletonPageId = page ? page.id : '';
+    root.setAttribute('aria-busy', 'true');
+    clearDropHighlights();
+    if (kind === 'links' || kind === 'scenarios') {
+      paintLinksSkeleton();
+      return;
+    }
+    if (kind === 'notes') {
+      paintNotesSkeleton();
+      return;
+    }
+    paintFilesSkeleton();
+  }
+
+  function paintFilesSkeleton() {
+    const widths = ['180px', '140px', '100px'];
+    let delay = 0;
+    for (let groupIndex = 0; groupIndex < 3; groupIndex += 1) {
+      const group = el('section', 'page-skel-group');
+      group.setAttribute('aria-hidden', 'true');
+      group.append(pageSkelBar('120px', delay));
+      delay += 40;
+      const files = el('div', 'page-skel-files');
+      for (const width of widths) {
+        files.append(pageSkelBar(width, delay));
+        delay += 40;
+      }
+      group.append(files);
+      root.append(group);
+    }
+  }
+
+  function paintNotesSkeleton() {
+    for (let noteIndex = 0; noteIndex < 3; noteIndex += 1) {
+      const note = el('section', 'page-skel-note');
+      note.setAttribute('aria-hidden', 'true');
+      const long = pageSkelBar('', noteIndex * 80);
+      long.classList.add('is-long');
+      const half = pageSkelBar('', noteIndex * 80 + 40);
+      half.classList.add('is-half');
+      note.append(long, half);
+      root.append(note);
+    }
+  }
+
+  /** Distinct root hues from the auto palette, shuffled. Warm defaults stay out. */
+  function pageSkelParentColors(count) {
+    const skip = new Set(['red', 'rose', 'fuchsia', 'orange', 'amber']);
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    /** @type {string[]} */
+    const hues = [];
+    for (const column of columns) {
+      if (column && skip.has(String(column.id || '').toLowerCase())) {
+        continue;
+      }
+      const tone = Array.isArray(column.tones) ? column.tones[0] : '';
+      if (tone) {
+        hues.push(String(tone));
+      }
+    }
+    if (hues.length < count) {
+      hues.push('#52be37', '#37be7f', '#37beb0', '#5173d6', '#9760c7', '#6a81a0');
+    }
+    for (let i = hues.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = hues[i];
+      hues[i] = hues[j];
+      hues[j] = swap;
+    }
+    return hues.slice(0, count);
+  }
+
+  /**
+   * @param {{ depth: number, layout: boolean, leadingGap: boolean, width: string, delay: number, color: string, nextColor: string, children: number }} opts
+   */
+  function pageSkelLinkNode(opts) {
+    const row = el(
+      'div',
+      'link-node depth-' +
+        opts.depth +
+        (opts.leadingGap ? ' has-gap' : '') +
+        (opts.layout ? ' is-layout' : ' is-component'),
+    );
+    row.style.setProperty('--link-color', opts.color);
+    const half = linkChipHalf(opts.depth);
+    row.append(linkElbow((opts.leadingGap ? LINK_ROW_GAP : 0) + half, opts.nextColor));
+    const body = el('div', 'link-body');
+    const chipWrap = el('div', 'link-chip-wrap');
+    const chip = el('span', 'link-chip');
+    chip.append(pageSkelBar(opts.width, opts.delay));
+    chipWrap.append(chip);
+    body.append(chipWrap);
+    if (opts.children > 0) {
+      const kids = el('div', 'link-children');
+      const clip = el('div', 'link-children-clip');
+      const slide = el('div', 'link-children-slide');
+      for (let child = 0; child < opts.children; child += 1) {
+        slide.append(
+          pageSkelLinkNode({
+            depth: opts.depth + 1,
+            layout: false,
+            leadingGap: true,
+            width: '100px',
+            delay: opts.delay + 40 + child * 40,
+            color: opts.color,
+            nextColor: child < opts.children - 1 ? opts.color : '',
+            children: 0,
+          }),
+        );
+      }
+      clip.append(slide);
+      kids.append(clip);
+      body.append(kids);
+    }
+    row.append(body);
+    return row;
+  }
+
+  function paintLinksSkeleton() {
+    const colors = pageSkelParentColors(3);
+    const tree = el('div', 'links-tree page-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    for (let parent = 0; parent < 3; parent += 1) {
+      tree.append(
+        pageSkelLinkNode({
+          depth: 0,
+          layout: true,
+          leadingGap: parent > 0,
+          width: '150px',
+          delay: parent * 90,
+          color: colors[parent] || '#6e6e6e',
+          nextColor: parent < 2 ? colors[parent + 1] || '' : '',
+          children: 3,
+        }),
+      );
+    }
+    root.append(tree);
+  }
+
   /** @type {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' } | null} */
   let pendingLinkDrop = null;
+  /** @type {{ kind: 'row', row: HTMLElement, edge: 'before' | 'after' | 'into' } | { kind: 'tail', tail: HTMLElement } | null} */
+  let linkCue = null;
+  /** @type {HTMLElement | null} */
+  let linkDropSlotEl = null;
   /** @type {string | null} */
   let openLinkPanelId = null;
   /** Focus the name field once, when the link chip panel is opened. */
@@ -2935,15 +6856,22 @@
   /**
    * Shared color picker panel.
    * @type {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon' | 'figma-chip',
    *   id?: string,
+   *   pageId?: string,
+   *   index?: number,
    *   currentHex: string,
+   *   rgb: string,
+   *   alpha: number,
    *   allowNone: boolean,
    *   noneDisabled?: boolean,
    *   locked?: boolean,
+   *   figma?: boolean,
    * } | null}
    */
   let openColorPanel = null;
+  /** Alpha percent (0–100) to bake into the system color picker result. */
+  let pendingPickerAlpha = 100;
 
   function pageLinks() {
     const pageId = activePage()?.id;
@@ -2994,6 +6922,10 @@
           link.depth || 0,
           link.canDelete ? 1 : 0,
           link.lastRoot ? 1 : 0,
+          link.figmaTag || '',
+          link.figmaUnsynced ? 1 : 0,
+          link.figmaIcon || '',
+          link.figmaIconColor || '',
           (link.children || []).join(','),
         ].join('\u001f'),
       )
@@ -3009,7 +6941,7 @@
       const collapsed = isCollapsed(node.dataset.linkId);
       node.classList.toggle('is-collapsed', collapsed);
       const tri = node.querySelector(
-        ':scope > .link-body > .link-chip-wrap > .link-chip > .link-chip-tri',
+        ':scope > .link-body > .link-chip-wrap .link-chip-tri',
       );
       if (tri) {
         tri.classList.toggle('is-collapsed', collapsed);
@@ -3030,6 +6962,7 @@
     if (!openLinkPanelId) {
       return;
     }
+    closeFigmaIconPicker();
     openLinkPanelId = null;
     paintLinksPage();
   }
@@ -3037,6 +6970,18 @@
   document.addEventListener(
     'keydown',
     (event) => {
+      if (reviewFileView && event.key === 'Escape' && !openColorPanel) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeReviewFileView();
+        return;
+      }
+      if (explainFileView && event.key === 'Escape' && !openColorPanel) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeExplainFileView();
+        return;
+      }
       if (openColorPanel && event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -3126,6 +7071,7 @@
       return;
     }
     if (existing instanceof HTMLElement && existing.dataset.linkId === openLinkPanelId) {
+      syncOpenChipBinding(existing, byId[openLinkPanelId]);
       if (focusLinkNameOnOpen) {
         focusLinkNameOnOpen = false;
         focusLinkPanelName(existing);
@@ -3141,6 +7087,7 @@
     });
     backdrop.addEventListener('click', (event) => {
       if (pressedBackdrop && event.target === backdrop) {
+        closeFigmaIconPicker();
         openLinkPanelId = null;
         paintLinksPage();
       }
@@ -3150,6 +7097,45 @@
     if (focusLinkNameOnOpen) {
       focusLinkNameOnOpen = false;
       focusLinkPanelName(backdrop);
+    }
+  }
+
+  /**
+   * The card stays mounted across repaints. Refresh the binding row from the chip
+   * unless a name edit or a picker is in progress.
+   * @param {HTMLElement} backdrop
+   * @param {*} link
+   */
+  function syncOpenChipBinding(backdrop, link) {
+    if (!link || figmaIconDirty || openColorPanel?.kind === 'figma-chip' || document.getElementById('figma-icon-picker')) {
+      return;
+    }
+    const typing = document.activeElement;
+    if (typing instanceof HTMLInputElement && typing.classList.contains('link-panel-input')) {
+      return;
+    }
+    const host = backdrop.querySelector('.figma-chip-binding');
+    if (!(host instanceof HTMLElement)) {
+      return;
+    }
+    const label = String(link.label || '');
+    host.dataset.bindingLabel = label.trim();
+    const name = host.querySelector('.figma-chip-binding-name');
+    if (name instanceof HTMLInputElement) {
+      name.value = label;
+    }
+    const color = freshenFigmaIconColor(link.figmaIconColor) || FIGMA_ICON_GRAY;
+    const avatar = host.querySelector('.figma-chip-avatar');
+    const iconName = link.figmaIcon || FIGMA_ICON_FALLBACK;
+    if (avatar instanceof HTMLElement) {
+      avatar.style.setProperty('--avatar-color', color);
+      if (avatar.dataset.icon !== iconName) {
+        mountLucide(avatar, iconName);
+      }
+    }
+    const well = host.querySelector('.link-color-well');
+    if (well instanceof HTMLElement) {
+      well.style.setProperty('--swatch', color);
     }
   }
 
@@ -3185,37 +7171,55 @@
 
   /**
    * @param {{
-   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft',
+   *   kind: 'marker' | 'note' | 'link' | 'text' | 'group-draft' | 'review' | 'figma-icon' | 'figma-chip',
    *   id?: string,
+   *   pageId?: string,
+   *   index?: number,
    *   currentHex?: string,
    *   allowNone?: boolean,
    *   noneDisabled?: boolean,
    *   locked?: boolean,
+   *   figma?: boolean,
    * }} opts
    */
   function openColorsPanel(opts) {
     const currentHex = (opts.currentHex || '').toLowerCase();
+    const stored = currentHex.startsWith('#') ? currentHex : '';
+    const parsed = splitHexAlpha(stored);
     openColorPanel = {
       kind: opts.kind,
       id: opts.id,
-      currentHex: currentHex.startsWith('#') ? currentHex : currentHex ? currentHex : '',
+      pageId: opts.pageId,
+      currentHex: parsed ? hexWithAlpha(parsed.rgb, parsed.alpha) : stored || (currentHex ? currentHex : ''),
+      rgb: parsed?.rgb || '',
+      alpha: parsed?.alpha ?? 100,
       allowNone: opts.allowNone !== false,
       noneDisabled: !!opts.noneDisabled,
       locked: !!opts.locked,
+      figma: !!opts.figma,
+      index: Number.isInteger(opts.index) ? opts.index : undefined,
     };
     mountColorPanel();
   }
 
-  /** @param {string | null | undefined} value */
-  function applyColorPanelChoice(value) {
+  /**
+   * @param {string | null | undefined} value
+   * @param {boolean} [closePanel]
+   */
+  function applyColorPanelChoice(value, closePanel = true) {
     const target = openColorPanel;
     if (!target || target.locked) {
       return;
     }
+    const finish = () => {
+      if (closePanel) {
+        closeColorPanel();
+      }
+    };
     if (target.kind === 'group-draft' && openGroupPanel?.mode === 'create') {
       openGroupPanel.colorTouched = true;
       openGroupPanel.color = value;
-      closeColorPanel();
+      finish();
       mountGroupPanel();
       return;
     }
@@ -3223,16 +7227,29 @@
       if (value) {
         applyTextColor(value);
       }
-      closeColorPanel();
+      finish();
+      return;
+    }
+    if (target.kind === 'figma-icon' && Number.isInteger(target.index)) {
+      setFigmaIconRowColor(target.index, value || '');
+      finish();
+      return;
+    }
+    if (target.kind === 'figma-chip' && target.id) {
+      commitFigmaChipColor(target.id, value || '');
+      finish();
       return;
     }
     if (target.kind === 'link' && target.id) {
       if (!value) {
-        closeColorPanel();
+        if (target.figma) {
+          vscode.postMessage({ type: 'updateLink', linkId: target.id, color: null });
+        }
+        finish();
         return;
       }
       vscode.postMessage({ type: 'updateLink', linkId: target.id, color: value });
-      closeColorPanel();
+      finish();
       return;
     }
     if (target.kind === 'marker' && target.id) {
@@ -3241,7 +7258,7 @@
           ? { type: 'setColor', markerId: target.id, color: value }
           : { type: 'setColor', markerId: target.id, clear: true },
       );
-      closeColorPanel();
+      finish();
       return;
     }
     if (target.kind === 'note' && target.id) {
@@ -3250,10 +7267,33 @@
           ? { type: 'setColor', noteId: target.id, color: value }
           : { type: 'setColor', noteId: target.id, clear: true },
       );
-      closeColorPanel();
+      finish();
       return;
     }
-    closeColorPanel();
+    if (target.kind === 'review' && target.id && target.pageId && value) {
+      vscode.postMessage({
+        type: 'reviewUpdateMr',
+        pageId: target.pageId,
+        messageId: target.id,
+        color: value,
+      });
+      finish();
+      return;
+    }
+    if (target.kind === 'scenario-group' && target.id && value) {
+      const pageId = activePage()?.id;
+      if (pageId) {
+        vscode.postMessage({
+          type: 'scenarioUpdateGroup',
+          pageId,
+          groupId: target.id,
+          color: value,
+        });
+      }
+      finish();
+      return;
+    }
+    finish();
   }
 
   function openSystemColorPickerForPanel() {
@@ -3266,7 +7306,8 @@
       colorInput.style.left = rect.left + 'px';
       colorInput.style.top = rect.bottom + 'px';
     }
-    colorInput.value = target.currentHex || '#8b8d98';
+    pendingPickerAlpha = target.alpha;
+    colorInput.value = /^#[0-9a-f]{6}$/.test(target.rgb) ? target.rgb : '#8b8d98';
     if (target.kind === 'text') {
       colorTarget = { kind: 'text' };
     } else if (target.kind === 'group-draft') {
@@ -3275,8 +7316,14 @@
       colorTarget = { kind: 'note', id: target.id };
     } else if (target.kind === 'link' && target.id) {
       colorTarget = { kind: 'link', id: target.id };
+    } else if (target.kind === 'figma-icon' && Number.isInteger(target.index)) {
+      colorTarget = { kind: 'figma-icon', index: target.index };
+    } else if (target.kind === 'figma-chip' && target.id) {
+      colorTarget = { kind: 'figma-chip', id: target.id };
     } else if (target.kind === 'marker' && target.id) {
       colorTarget = { kind: 'marker', id: target.id };
+    } else if (target.kind === 'review' && target.id && target.pageId) {
+      colorTarget = { kind: 'review', id: target.id, pageId: target.pageId };
     } else {
       return;
     }
@@ -3290,6 +7337,180 @@
       }
     }
     colorInput.click();
+  }
+
+  /**
+   * @param {string | null | undefined} value
+   * @returns {{ rgb: string, alpha: number } | null}
+   */
+  function splitHexAlpha(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    const match = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(raw);
+    if (!match) {
+      return null;
+    }
+    let digits = match[1];
+    if (digits.length <= 4) {
+      digits = [...digits].map((ch) => ch + ch).join('');
+    }
+    const rgb = '#' + digits.slice(0, 6);
+    const alpha =
+      digits.length === 8 ? Math.round((parseInt(digits.slice(6), 16) / 255) * 100) : 100;
+    return { rgb, alpha };
+  }
+
+  /**
+   * Opaque `#rrggbb`, or `#rrggbbaa` when alpha is below 100.
+   * @param {string} rgb
+   * @param {number} alphaPercent
+   */
+  function hexWithAlpha(rgb, alphaPercent) {
+    const parsed = splitHexAlpha(rgb);
+    const base = parsed ? parsed.rgb : '';
+    if (!base) {
+      return String(rgb || '');
+    }
+    const alpha = Math.max(0, Math.min(100, Math.round(Number(alphaPercent) || 0)));
+    if (alpha >= 100) {
+      return base;
+    }
+    const byte = Math.round((alpha / 100) * 255);
+    return base + byte.toString(16).padStart(2, '0');
+  }
+
+  /**
+   * @param {string} hex
+   * @param {number} alphaPercent
+   */
+  function pickerHex(hex, alphaPercent) {
+    const parsed = splitHexAlpha(hex);
+    return hexWithAlpha(parsed ? parsed.rgb : hex, alphaPercent);
+  }
+
+  /** @param {any[]} columns */
+  function paletteBands(columns) {
+    /** @type {Map<number, any[]>} */
+    const bands = new Map();
+    for (const column of columns) {
+      const row = column && Number.isInteger(column.row) ? column.row : 0;
+      const list = bands.get(row);
+      if (list) {
+        list.push(column);
+      } else {
+        bands.set(row, [column]);
+      }
+    }
+    return [...bands.keys()].sort((a, b) => a - b).map((row) => bands.get(row) || []);
+  }
+
+  /**
+   * @param {HTMLElement} panel
+   * @param {{ rgb: string, alpha: number }} target
+   */
+  function paintColorAlpha(panel, target) {
+    const color = target.rgb || '#8b8d98';
+    panel.querySelectorAll('.link-color-swatch').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const hex = node.dataset.hex || color;
+      node.style.setProperty('--swatch', hexWithAlpha(hex, target.alpha));
+    });
+    const range = panel.querySelector('.color-panel-alpha-range');
+    if (range instanceof HTMLElement) {
+      range.style.setProperty('--alpha-color', color);
+    }
+  }
+
+  /**
+   * Soft tones for each column. Used when the host has not sent `pastels` yet.
+   * Keep in step with `pastels` in src/linkPalette.ts.
+   */
+  const PALETTE_PASTELS = {
+    orange: ['#e6c2b3', '#e3b4a1', '#d09880'],
+    amber: ['#e6ceb3', '#e3c4a1', '#d0ab80'],
+    lime: ['#bde6b3', '#aee3a1', '#90d080'],
+    green: ['#b3e6ce', '#a1e3c4', '#80d0ab'],
+    teal: ['#b3e6e0', '#a1e3dc', '#80d0c8'],
+    sky: ['#b3d4e6', '#a1cde3', '#80b6d0'],
+    blue: ['#b3bfe6', '#a1b2e3', '#8095d0'],
+    indigo: ['#beb3e6', '#aea1e3', '#9180d0'],
+    violet: ['#ceb3e6', '#c4a1e3', '#ab80d0'],
+    slate: ['#becada', '#afbfd4', '#95a5bb'],
+    red: ['#e6b3b4', '#e3a1a3', '#d08083'],
+    rose: ['#e6b3c3', '#e3a1b7', '#d0809b'],
+    fuchsia: ['#e6b3d8', '#e3a1d1', '#d080bb'],
+  };
+
+  /**
+   * @param {any} column
+   * @param {'vivid' | 'pastel'} shade
+   * @returns {string[]}
+   */
+  function columnShadeTones(column, shade) {
+    if (shade === 'pastel') {
+      const sent = column && Array.isArray(column.pastels) ? column.pastels : null;
+      const fallback = PALETTE_PASTELS[String(column?.id || '').toLowerCase()];
+      const source = sent && sent.length ? sent : fallback || [];
+      return source.map((tone) => String(tone).toLowerCase());
+    }
+    const tones = column && Array.isArray(column.tones) ? column.tones : [];
+    return tones.map((tone) => String(tone).toLowerCase());
+  }
+
+  /**
+   * @param {string} hex
+   * @param {'vivid' | 'pastel'} shade
+   */
+  function paletteShadeHas(hex, shade) {
+    const wanted = String(hex || '').toLowerCase();
+    if (!wanted) {
+      return false;
+    }
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    return columns.some((column) => columnShadeTones(column, shade).includes(wanted));
+  }
+
+  /**
+   * @param {HTMLElement} palettes
+   * @param {{ rgb: string, alpha: number, locked?: boolean }} target
+   * @param {'vivid' | 'pastel'} shade
+   */
+  function fillColorPalettes(palettes, target, shade) {
+    palettes.replaceChildren();
+    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
+    for (const band of paletteBands(columns)) {
+      const inline = band.some((column) => column && column.row === 1);
+      const sets = el('div', 'link-color-sets' + (inline ? ' is-inline' : ''));
+      for (const column of band) {
+        const set = el('div', 'link-color-set' + (inline ? ' is-inline' : ''));
+        const name = el('span', 'link-color-set-name');
+        name.textContent = column.label || '';
+        set.append(name);
+        const tonesWrap = el('div', 'link-color-tones');
+        for (const hex of columnShadeTones(column, shade)) {
+          const swatch = el('button', 'link-color-swatch');
+          swatch.type = 'button';
+          swatch.disabled = !!target.locked;
+          swatch.dataset.hex = hex;
+          swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
+          swatch.setAttribute('aria-pressed', hex === target.rgb ? 'true' : 'false');
+          swatch.addEventListener('click', () => {
+            if (target.locked) {
+              return;
+            }
+            target.rgb = hex;
+            const next = hexWithAlpha(hex, target.alpha);
+            target.currentHex = next;
+            applyColorPanelChoice(next);
+          });
+          tonesWrap.append(swatch);
+        }
+        set.append(tonesWrap);
+        sets.append(set);
+      }
+      palettes.append(sets);
+    }
   }
 
   function mountColorPanel() {
@@ -3328,34 +7549,79 @@
       panel.append(noneBtn);
     }
 
-    const sets = el('div', 'link-color-sets');
-    const columns = Array.isArray(data?.linkPalette) ? data.linkPalette : [];
-    const current = target.currentHex;
-    for (const column of columns) {
-      const set = el('div', 'link-color-set');
-      const name = el('span', 'link-color-set-name');
-      name.textContent = column.label || '';
-      set.append(name);
-      const tones = Array.isArray(column.tones) ? column.tones : [];
-      for (const tone of tones) {
-        const hex = String(tone).toLowerCase();
-        const swatch = el('button', 'link-color-swatch');
-        swatch.type = 'button';
-        swatch.disabled = !!target.locked;
-        swatch.style.background = hex;
-        swatch.dataset.hex = hex;
-        swatch.setAttribute('aria-label', (column.label || '') + ' ' + hex);
-        swatch.setAttribute('aria-pressed', hex === current ? 'true' : 'false');
-        swatch.addEventListener('click', () => {
-          if (!target.locked) {
-            applyColorPanelChoice(hex);
-          }
-        });
-        set.append(swatch);
-      }
-      sets.append(set);
+    const shade = paletteShadeHas(target.rgb, 'pastel') ? 'pastel' : 'vivid';
+    const tabs = el('div', 'color-panel-tabs');
+    tabs.setAttribute('role', 'tablist');
+    const palettes = el('div', 'color-panel-palettes');
+    /**
+     * @param {'vivid' | 'pastel'} nextShade
+     */
+    const selectShade = (nextShade) => {
+      tabs.querySelectorAll('.color-panel-tab').forEach((node) => {
+        if (!(node instanceof HTMLElement)) {
+          return;
+        }
+        const on = node.dataset.shade === nextShade;
+        node.classList.toggle('is-selected', on);
+        node.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      fillColorPalettes(palettes, target, nextShade);
+      paintColorAlpha(panel, target);
+    };
+    for (const item of [
+      { id: 'vivid', label: t('paletteVivid') },
+      { id: 'pastel', label: t('palettePastel') },
+    ]) {
+      const tab = el('button', 'color-panel-tab' + (item.id === shade ? ' is-selected' : ''));
+      tab.type = 'button';
+      tab.dataset.shade = item.id;
+      tab.textContent = item.label;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', item.id === shade ? 'true' : 'false');
+      tab.addEventListener('click', () => {
+        if (tab.classList.contains('is-selected')) {
+          return;
+        }
+        selectShade(/** @type {'vivid' | 'pastel'} */ (item.id));
+      });
+      tabs.append(tab);
     }
-    panel.append(sets);
+    panel.append(tabs);
+    fillColorPalettes(palettes, target, shade);
+    panel.append(palettes);
+
+    const alpha = el('label', 'color-panel-alpha');
+    const alphaHead = el('span', 'color-panel-alpha-head');
+    alphaHead.append(el('span', 'color-panel-alpha-label', t('colorOpacity')));
+    const alphaValue = el('span', 'color-panel-alpha-value', target.alpha + '%');
+    alphaHead.append(alphaValue);
+    const alphaInput = /** @type {HTMLInputElement} */ (el('input', 'color-panel-alpha-range'));
+    alphaInput.type = 'range';
+    alphaInput.min = '0';
+    alphaInput.max = '100';
+    alphaInput.step = '1';
+    alphaInput.value = String(target.alpha);
+    alphaInput.disabled = !!target.locked;
+    alphaInput.setAttribute('aria-label', t('colorOpacity'));
+    alphaInput.addEventListener('input', () => {
+      target.alpha = Number(alphaInput.value);
+      alphaValue.textContent = target.alpha + '%';
+      paintColorAlpha(panel, target);
+    });
+    alphaInput.addEventListener('change', () => {
+      if (target.locked || !target.rgb) {
+        return;
+      }
+      const next = hexWithAlpha(target.rgb, target.alpha);
+      if (next === target.currentHex) {
+        return;
+      }
+      target.currentHex = next;
+      applyColorPanelChoice(next, false);
+    });
+    alpha.append(alphaHead, alphaInput);
+    panel.append(alpha);
+    paintColorAlpha(panel, target);
 
     const custom = el('button', 'color-panel-custom');
     custom.type = 'button';
@@ -3663,7 +7929,7 @@
     well.type = 'button';
     well.disabled = locked && state.mode === 'edit';
     if (color) {
-      well.style.background = color;
+      well.style.setProperty('--swatch', color);
     }
     well.setAttribute('aria-label', t('changeColor'));
     well.addEventListener('click', () => {
@@ -3744,15 +8010,18 @@
       state.description = descInput.value;
       descCounter.textContent = descInput.value.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
     });
+    const commitCreateFromFields = () => {
+      state.label = nameInput.value;
+      state.alias = aliasInput.value;
+      state.description = clipGroupDescriptionInput(descInput.value);
+      commitGroupDraft();
+    };
     nameInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
         event.stopPropagation();
         if (state.mode === 'create') {
-          state.label = nameInput.value;
-          state.alias = aliasInput.value;
-          state.description = clipGroupDescriptionInput(descInput.value);
-          commitGroupDraft();
+          commitCreateFromFields();
         } else {
           nameInput.blur();
         }
@@ -3792,6 +8061,42 @@
         description: next || null,
       });
     });
+
+    if (state.mode === 'create') {
+      const actions = el('div', 'link-panel-actions group-draft-actions');
+      const cancel = el('button', 'link-panel-secondary');
+      cancel.type = 'button';
+      cancel.textContent = t('groupDraftCancel');
+      cancel.addEventListener('click', () => closeGroupPanel(true));
+      const save = el('button', 'link-panel-primary');
+      save.type = 'button';
+      save.textContent = t('groupDraftSave');
+      const createDraftDirty = () =>
+        !!(
+          nameInput.value.trim() ||
+          aliasInput.value.trim() ||
+          clipGroupDescriptionInput(descInput.value).trim() ||
+          state.locked ||
+          state.colorTouched ||
+          groupColumnMode(state.columns) !== defaultDraftColumns(state.parentId)
+        );
+      const syncSave = () => {
+        actions.hidden = !createDraftDirty();
+      };
+      syncSave();
+      nameInput.addEventListener('input', syncSave);
+      aliasInput.addEventListener('input', syncSave);
+      descInput.addEventListener('input', syncSave);
+      save.addEventListener('click', () => {
+        if (!nameInput.value.trim()) {
+          nameInput.focus();
+          return;
+        }
+        commitCreateFromFields();
+      });
+      actions.append(cancel, save);
+      panel.append(actions);
+    }
 
     if (state.mode === 'edit' && state.markerId) {
       const actions = el('div', 'link-panel-actions');
@@ -3833,11 +8138,9060 @@
     }
   }
 
+  function formatReviewStamp(iso) {
+    if (!iso) {
+      return '';
+    }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      return '';
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    return (
+      pad(d.getDate()) +
+      '.' +
+      pad(d.getMonth() + 1) +
+      '.' +
+      String(d.getFullYear()).slice(-2) +
+      ' ' +
+      pad(d.getHours()) +
+      ':' +
+      pad(d.getMinutes())
+    );
+  }
+
+  /** True when the chip branch is the branch checked out in this window. */
+  function reviewBranchMatchesCheckout(branch) {
+    const name = reviewBranchLabel(branch);
+    const current = String(reviewState?.checkout || '').trim();
+    if (!name || !current) {
+      return false;
+    }
+    return name.toLocaleLowerCase() === current.toLocaleLowerCase();
+  }
+
+  /**
+   * Branch this review was written for. A thread reply uses the parent chip
+   * when the reply itself has no `Branch:` line.
+   * @param {string} messageId
+   */
+  function reviewSubjectBranch(messageId) {
+    const chip = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (chip) {
+      return reviewBranchLabel(chip.branch);
+    }
+    const reply = findReviewReply(messageId);
+    const own = reviewBranchLabel(reply && reply.branch);
+    if (own) {
+      return own;
+    }
+    for (const msg of reviewState?.messages || []) {
+      if ((msg.replies || []).some((item) => item.id === messageId)) {
+        return reviewBranchLabel(msg.branch);
+      }
+    }
+    return '';
+  }
+
+  /** Neurofix edits the checkout, so a review of another branch cannot run it. */
+  function reviewNeurofixBlocked(messageId) {
+    const branch = reviewSubjectBranch(messageId);
+    if (!branch) {
+      return false;
+    }
+    return !reviewBranchMatchesCheckout(branch);
+  }
+
+  /** @param {HTMLButtonElement} button */
+  function muteNeurofixAction(button) {
+    button.classList.add('is-muted');
+    button.dataset.neurofixBlocked = '1';
+    button.title = t('neurofixForeignBranch');
+  }
+
+  function denyForeignNeurofix() {
+    closeContextMenu();
+    closeNeuroFixListPanel();
+    vscode.postMessage({ type: 'reviewNeurofixDenied' });
+  }
+
+  /** Branch label from a root review. A full markdown link keeps only its text. */
+  function reviewBranchLabel(raw) {
+    const value = String(raw || '').trim();
+    const linked = /^\[([^\]]+)\]\([^)]+\)$/.exec(value);
+    return (linked ? linked[1] : value).trim();
+  }
+
+  /** Checkout branch stays on screen this long after the pointer leaves. */
+  const CHECKOUT_BRANCH_HIDE_MS = 2000;
+  /** Nested branch appears only after the pointer has stayed this long. */
+  const CHECKOUT_BRANCH_SHOW_MS = 500;
+
+  /** @type {Set<string>} */
+  const checkoutBranchShown = new Set();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const checkoutBranchHideTimers = new Map();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const checkoutBranchShowTimers = new Map();
+
+  /**
+   * Own `Branch:` line, or the parent chip when a thread pill has none.
+   * @param {string | undefined} branch
+   * @param {string | undefined} [fallback]
+   */
+  function stampBranchName(branch, fallback) {
+    return reviewBranchLabel(branch) || reviewBranchLabel(fallback);
+  }
+
+  /**
+   * @param {string} revealId
+   */
+  function checkoutBranchNodes(revealId) {
+    return document.querySelectorAll(
+      `[data-branch-reveal="${revealId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`,
+    );
+  }
+
+  /**
+   * @param {string} revealId
+   * @param {boolean} shown
+   */
+  function applyCheckoutBranchShown(revealId, shown) {
+    checkoutBranchNodes(revealId).forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.classList.toggle('is-shown', shown);
+      }
+    });
+  }
+
+  /** @param {string} revealId */
+  function cancelCheckoutBranchShow(revealId) {
+    const pending = checkoutBranchShowTimers.get(revealId);
+    if (pending) {
+      clearTimeout(pending);
+      checkoutBranchShowTimers.delete(revealId);
+    }
+  }
+
+  /** @param {string} revealId */
+  function showCheckoutBranch(revealId) {
+    if (!revealId) {
+      return;
+    }
+    const pending = checkoutBranchHideTimers.get(revealId);
+    if (pending) {
+      clearTimeout(pending);
+      checkoutBranchHideTimers.delete(revealId);
+    }
+    cancelCheckoutBranchShow(revealId);
+    checkoutBranchShown.add(revealId);
+    applyCheckoutBranchShown(revealId, true);
+  }
+
+  /**
+   * Show after the pointer has stayed. A label that is already up stays up.
+   * @param {string} revealId
+   */
+  function scheduleShowCheckoutBranch(revealId) {
+    if (!revealId) {
+      return;
+    }
+    const hiding = checkoutBranchHideTimers.get(revealId);
+    if (hiding) {
+      clearTimeout(hiding);
+      checkoutBranchHideTimers.delete(revealId);
+    }
+    if (checkoutBranchShown.has(revealId) || checkoutBranchShowTimers.has(revealId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      checkoutBranchShowTimers.delete(revealId);
+      showCheckoutBranch(revealId);
+    }, CHECKOUT_BRANCH_SHOW_MS);
+    checkoutBranchShowTimers.set(revealId, timer);
+  }
+
+  /** @param {string} revealId */
+  function scheduleHideCheckoutBranch(revealId) {
+    if (!revealId) {
+      return;
+    }
+    cancelCheckoutBranchShow(revealId);
+    const pending = checkoutBranchHideTimers.get(revealId);
+    if (pending) {
+      clearTimeout(pending);
+    }
+    if (!checkoutBranchShown.has(revealId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      checkoutBranchHideTimers.delete(revealId);
+      checkoutBranchShown.delete(revealId);
+      applyCheckoutBranchShown(revealId, false);
+    }, CHECKOUT_BRANCH_HIDE_MS);
+    checkoutBranchHideTimers.set(revealId, timer);
+  }
+
+  /** @param {string} revealId */
+  function branchHoverSelector(revealId) {
+    const safe = revealId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `[data-branch-hover="${safe}"]`;
+  }
+
+  /**
+   * Pointer on the chip or on the branch name keeps a checkout label up.
+   * Moving between those two does not start the hide timer.
+   * @param {HTMLElement} target
+   * @param {string} revealId
+   */
+  function bindCheckoutBranchHover(target, revealId) {
+    if (!revealId) {
+      return;
+    }
+    target.dataset.branchHover = revealId;
+    target.addEventListener('pointerenter', () => scheduleShowCheckoutBranch(revealId));
+    target.addEventListener('pointerleave', (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Element && next.closest(branchHoverSelector(revealId))) {
+        return;
+      }
+      scheduleHideCheckoutBranch(revealId);
+    });
+  }
+
+  /**
+   * Date, and the branch name to its right.
+   * A revealed name stays hidden until the pointer is on the chip.
+   * `own` is the checkout branch and is drawn in the brighter text color.
+   * @param {string} dateText
+   * @param {string} [branchText]
+   * @param {{ own?: boolean, reveal?: boolean, revealId?: string }} [opts]
+   */
+  function renderReviewStamp(dateText, branchText, opts) {
+    const stamp = el('div', 'review-stamp');
+    if (dateText) {
+      stamp.append(el('span', 'review-stamp-date', dateText));
+    }
+    if (branchText) {
+      const own = !!opts?.own;
+      const reveal = !!opts?.reveal;
+      const revealId = reveal ? opts?.revealId || '' : '';
+      const shown = !!revealId && checkoutBranchShown.has(revealId);
+      const branch = el(
+        'span',
+        'review-stamp-branch' +
+          (own ? ' is-own' : '') +
+          (reveal ? ' is-reveal' : '') +
+          (shown ? ' is-shown' : ''),
+      );
+      branch.append(reviewBranchIcon(), el('span', 'review-stamp-branch-name', branchText));
+      branch.title = branchText;
+      if (revealId) {
+        branch.dataset.branchReveal = revealId;
+        bindCheckoutBranchHover(branch, revealId);
+      }
+      branch.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (reveal && !branch.classList.contains('is-shown')) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'clipboardWrite',
+          text: branchText,
+          notice: 'branchCopied',
+        });
+      });
+      stamp.append(branch);
+    }
+    return stamp;
+  }
+
+  /**
+   * @param {string} rawBranch
+   * @param {string} revealId
+   */
+  function reviewStampOpts(rawBranch, revealId) {
+    const name = reviewBranchLabel(rawBranch);
+    const checkout = reviewBranchMatchesCheckout(name);
+    return {
+      name,
+      checkout,
+      revealId: checkout ? revealId : '',
+    };
+  }
+
+  /** Path from assets/git-branch-fill.svg — sits before a stamp branch name. */
+  function reviewBranchIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-stamp-branch-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M7.10508 15.2101C8.21506 15.6501 9 16.7334 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V11.9996C7.83566 11.3719 8.87439 11 10 11H14C15.3835 11 16.5482 10.0635 16.8949 8.78991C15.7849 8.34988 15 7.26661 15 6C15 4.34315 16.3431 3 18 3C19.6569 3 21 4.34315 21 6C21 7.3332 20.1303 8.46329 18.9274 8.85392C18.5222 11.2085 16.4703 13 14 13H10C8.61653 13 7.45179 13.9365 7.10508 15.2101Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /** Paths from assets/sparkling-2-fill.svg — Neurofix trigger next to review pill. */
+  function reviewSparkleIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-sparkle');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M17.0007 1.20825L18.3195 3.68108L20.7923 4.99992L18.3195 6.31876L17.0007 8.79159L15.6818 6.31876L13.209 4.99992L15.6818 3.68108L17.0007 1.20825ZM8.00065 4.33325L10.6673 9.33325L15.6673 11.9999L10.6673 14.6666L8.00065 19.6666L5.33398 14.6666L0.333984 11.9999L5.33398 9.33325L8.00065 4.33325ZM19.6673 16.3333L18.0007 13.2083L16.334 16.3333L13.209 17.9999L16.334 19.6666L18.0007 22.7916L19.6673 19.6666L22.7923 17.9999L19.6673 16.3333Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /** Paths from assets/var-instance-fill.svg — «Изучено» chip avatar and the open-file row. */
+  const REVIEW_VAR_INSTANCE_PATHS = [
+    'M11.293 1.39348C11.6835 1.00295 12.3165 1.00295 12.707 1.39348L22.6064 11.2929C22.9969 11.6834 22.9969 12.3165 22.6064 12.707L12.707 22.6064C12.3165 22.9967 11.6834 22.9968 11.293 22.6064L3.68652 14.9999H9.35742C10.0598 15.6197 10.9837 15.9999 12 15.9999C14.209 15.9999 15.9999 14.2089 16 11.9999C16 9.79082 14.2091 7.99998 12 7.99993C10.9836 7.99997 10.0598 8.38012 9.35742 8.99993H3.68652L11.293 1.39348Z',
+    'M12.2051 10.0097C12.9445 10.085 13.5646 10.5636 13.8428 11.2216C13.8933 11.3412 13.9333 11.4665 13.96 11.5966C13.9866 11.7268 14 11.8618 14 11.9999C14 12.5333 13.7895 13.0164 13.4492 13.3749C13.3932 13.4339 13.3353 13.4911 13.2725 13.5429C12.9267 13.8283 12.4834 13.9999 12 13.9999C11.3063 13.9999 10.6964 13.6458 10.3379 13.1093L10.2695 12.9999H1.09961L1.10059 10.9999H10.2695C10.6155 10.4026 11.2601 9.99993 12 9.99993L12.2051 10.0097Z',
+  ];
+
+  /** Paths from assets/var-instance-fill.svg — open full review file from a list row. */
+  function reviewVarInstanceIcon() {
+    return reviewSvgIcon('', REVIEW_VAR_INSTANCE_PATHS);
+  }
+
+  /** Paths from assets/blog-line.svg — plain message / comment glyph. */
+  function reviewCommentIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const paths = [
+      { d: 'M11 11.5H9V13.5H11V11.5Z' },
+      { d: 'M15 11.5H13V13.5H15V11.5Z' },
+      { d: 'M17 11.5H19V13.5H17V11.5Z' },
+      {
+        d: 'M11.2 19L14 22.5L16.8 19H22C22.5523 19 23 18.5523 23 18V7.10256C23 6.55028 22.5523 6.10256 22 6.10256H6C5.44772 6.10256 5 6.55028 5 7.10256V18C5 18.5523 5.44772 19 6 19H11.2ZM21 17H15.8387L14 19.2984L12.1613 17H7V8.10256H21V17Z',
+        rule: 'evenodd',
+      },
+      { d: 'M19 2H2C1.44772 2 1 2.44772 1 3V15H3V4H19V2Z' },
+    ];
+    for (const item of paths) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', item.d);
+      path.setAttribute('fill', 'currentColor');
+      if (item.rule) {
+        path.setAttribute('fill-rule', item.rule);
+        path.setAttribute('clip-rule', item.rule);
+      }
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** Path from assets/git-pull-request-fill.svg — MR chip leading glyph. */
+  function reviewPrIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-pr');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3.83481 15.5825 5 15.1707V8.82929Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {string} className
+   * @param {string | string[]} d
+   */
+  function reviewSvgIcon(className, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico' + (className ? ' ' + className : ''));
+    for (const part of Array.isArray(d) ? d : [d]) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', part);
+      path.setAttribute('fill', 'currentColor');
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /**
+   * @param {string} className
+   * @param {string} d
+   */
+  function cloudSvgIcon(className, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'cloud-ico ' + className);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /** assets/fragment.svg — closed MR chip. */
+  function reviewClosedIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico review-ico-closed');
+    const specs = [
+      {
+        d: 'M12 9C12.5521 9 12.9997 9.44796 13 10V11H11V10C11.0003 9.44796 11.4479 9 12 9Z',
+      },
+      {
+        d: 'M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM12 7C10.3432 7 9.00023 8.34329 9 10V11H8V16H16V11H15V10C14.9998 8.34329 13.6568 7 12 7Z',
+        rule: 'evenodd',
+      },
+    ];
+    for (const spec of specs) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', spec.d);
+      path.setAttribute('fill', 'currentColor');
+      if (spec.rule) {
+        path.setAttribute('fill-rule', spec.rule);
+        path.setAttribute('clip-rule', spec.rule);
+      }
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** assets/bolt.svg — review chip with empty status. */
+  function reviewBoltIcon() {
+    return reviewSvgIcon('review-ico-bolt', 'M13 10H20L11 23V14H4L13 1V10Z');
+  }
+
+  const FIGMA_ICON_GRAY = '#c5c8ce';
+  const FIGMA_ICON_MINT = '#47f5dc';
+  const FIGMA_ICON_LIGHT = '#f7f9fc';
+  const FIGMA_ICON_AMBER = '#ffb224';
+  const FIGMA_ICON_FALLBACK = 'tag';
+  /** Previous starter hexes, so a saved list picks up the brighter palette. */
+  const FIGMA_ICON_COLOR_REFRESH = {
+    '#7ed9cc': FIGMA_ICON_MINT,
+    '#e7eaee': FIGMA_ICON_LIGHT,
+    '#f0a040': FIGMA_ICON_AMBER,
+  };
+
+  /**
+   * @param {string | undefined} color
+   */
+  function freshenFigmaIconColor(color) {
+    const key = String(color || '').trim().toLowerCase();
+    return FIGMA_ICON_COLOR_REFRESH[key] || color || '';
+  }
+
+  /** @type {Map<string, string>} */
+  const lucideSvgCache = new Map();
+  /** @type {Map<string, Promise<string>>} */
+  const lucideSvgPending = new Map();
+  /** @type {string[] | null} */
+  let lucideNames = null;
+  /** @type {Promise<string[]> | null} */
+  let lucideNamesTask = null;
+
+  function lucideBase() {
+    return document.body?.dataset.lucideBase || '';
+  }
+
+  /**
+   * @param {string} name
+   */
+  function lucideFileUrl(name) {
+    const base = lucideBase();
+    if (!base) {
+      return '';
+    }
+    const rev = document.body?.dataset.bootRev || '';
+    return base + encodeURIComponent(name) + '.svg' + (rev ? '?rev=' + encodeURIComponent(rev) : '');
+  }
+
+  /**
+   * @param {string} name
+   * @returns {Promise<string>}
+   */
+  function lucideSvg(name) {
+    const safe = String(name || '').trim().toLowerCase();
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(safe)) {
+      return Promise.resolve('');
+    }
+    const cached = lucideSvgCache.get(safe);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
+    const pending = lucideSvgPending.get(safe);
+    if (pending) {
+      return pending;
+    }
+    const url = lucideFileUrl(safe);
+    if (!url) {
+      return Promise.resolve('');
+    }
+    const task = fetch(url)
+      .then((res) => (res.ok ? res.text() : ''))
+      .then((text) => {
+        const svg = text.includes('<svg') ? text : '';
+        lucideSvgCache.set(safe, svg);
+        lucideSvgPending.delete(safe);
+        return svg;
+      })
+      .catch(() => {
+        lucideSvgPending.delete(safe);
+        return '';
+      });
+    lucideSvgPending.set(safe, task);
+    return task;
+  }
+
+  /**
+   * @param {HTMLElement} host
+   * @param {string} name
+   */
+  function mountLucide(host, name) {
+    const wanted = String(name || FIGMA_ICON_FALLBACK);
+    host.dataset.icon = wanted;
+    host.replaceChildren();
+    lucideSvg(wanted).then((text) => {
+      if (!host.isConnected || host.dataset.icon !== wanted) {
+        return;
+      }
+      const markup = text || '';
+      const finish = (svgText) => {
+        if (!host.isConnected || host.dataset.icon !== wanted || !svgText) {
+          return;
+        }
+        const wrap = document.createElement('div');
+        wrap.innerHTML = svgText;
+        const svg = wrap.querySelector('svg');
+        if (!svg) {
+          return;
+        }
+        svg.setAttribute('aria-hidden', 'true');
+        svg.removeAttribute('width');
+        svg.removeAttribute('height');
+        host.replaceChildren(svg);
+      };
+      if (markup) {
+        finish(markup);
+        return;
+      }
+      if (wanted === FIGMA_ICON_FALLBACK) {
+        return;
+      }
+      lucideSvg(FIGMA_ICON_FALLBACK).then((fallback) => {
+        finish(fallback);
+      });
+    });
+  }
+
+  /** @returns {Promise<string[]>} */
+  function loadLucideNames() {
+    if (lucideNames) {
+      return Promise.resolve(lucideNames);
+    }
+    if (lucideNamesTask) {
+      return lucideNamesTask;
+    }
+    const base = lucideBase();
+    const rev = document.body?.dataset.bootRev || '';
+    const url = base ? base + 'names.json' + (rev ? '?rev=' + encodeURIComponent(rev) : '') : '';
+    if (!url) {
+      lucideNames = [];
+      return Promise.resolve(lucideNames);
+    }
+    lucideNamesTask = fetch(url)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((list) => {
+        lucideNames = Array.isArray(list) ? list.filter((item) => typeof item === 'string') : [];
+        return lucideNames;
+      })
+      .catch(() => {
+        lucideNames = [];
+        return lucideNames;
+      });
+    return lucideNamesTask;
+  }
+
+  /** assets/alert.svg — Figma tag chip that has no node link. */
+  function figmaTagAlertIcon() {
+    const button = el('button', 'figma-tag-alert');
+    button.type = 'button';
+    const label = t('figmaNoLinkError');
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M12.8659 3.00017L22.3922 19.5002C22.6684 19.9785 22.5045 20.5901 22.0262 20.8662C21.8742 20.954 21.7017 21.0002 21.5262 21.0002H2.47363C1.92135 21.0002 1.47363 20.5525 1.47363 20.0002C1.47363 19.8246 1.51984 19.6522 1.60761 19.5002L11.1339 3.00017C11.41 2.52187 12.0216 2.358 12.4999 2.63414C12.6519 2.72191 12.7782 2.84815 12.8659 3.00017ZM4.20568 19.0002H19.7941L11.9999 5.50017L4.20568 19.0002ZM10.9999 16.0002H12.9999V18.0002H10.9999V16.0002ZM10.9999 9.00017H12.9999V14.0002H10.9999V9.00017Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    button.append(svg);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showMapNotice(t('figmaNoLinkError'), 'error');
+    });
+    return button;
+  }
+
+  /** assets/link-unlink-m.svg — Figma chip whose tag is missing or was not found on its links. */
+  function figmaUnsyncIcon() {
+    const button = el('button', 'figma-tag-unsync');
+    button.type = 'button';
+    const label = t('figmaUnsyncedError');
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M17.657 14.8284L16.2428 13.4142L17.657 12C19.2191 10.4379 19.2191 7.90526 17.657 6.34316C16.0949 4.78106 13.5622 4.78106 12.0001 6.34316L10.5859 7.75737L9.17171 6.34316L10.5859 4.92895C12.9291 2.5858 16.7281 2.5858 19.0712 4.92895C21.4143 7.27209 21.4143 11.0711 19.0712 13.4142L17.657 14.8284ZM14.8286 17.6569L13.4143 19.0711C11.0712 21.4142 7.27221 21.4142 4.92907 19.0711C2.58592 16.7279 2.58592 12.9289 4.92907 10.5858L6.34328 9.17159L7.75749 10.5858L6.34328 12C4.78118 13.5621 4.78118 16.0948 6.34328 17.6569C7.90538 19.219 10.438 19.219 12.0001 17.6569L13.4143 16.2427L14.8286 17.6569ZM14.8286 7.75737L16.2428 9.17159L9.17171 16.2427L7.75749 14.8284L14.8286 7.75737ZM5.77539 2.29291L7.70724 1.77527L8.74252 5.63897L6.81067 6.15661L5.77539 2.29291ZM15.2578 18.3611L17.1896 17.8434L18.2249 21.7071L16.293 22.2248L15.2578 18.3611ZM2.29303 5.77527L6.15673 6.81054L5.63909 8.7424L1.77539 7.70712L2.29303 5.77527ZM18.3612 15.2576L22.2249 16.2929L21.7072 18.2248L17.8435 17.1895L18.3612 15.2576Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    button.append(svg);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showMapNotice(t('figmaUnsyncedError'), 'error');
+    });
+    return button;
+  }
+
+  /** assets/loader-2-fill.svg — review status in progress. */
+  function reviewProgressIcon() {
+    return reviewSvgIcon(
+      'review-ico-progress',
+      'M12 2C12.5523 2 13 2.44772 13 3V6C13 6.55228 12.5523 7 12 7C11.4477 7 11 6.55228 11 6V3C11 2.44772 11.4477 2 12 2ZM12 17C12.5523 17 13 17.4477 13 18V21C13 21.5523 12.5523 22 12 22C11.4477 22 11 21.5523 11 21V18C11 17.4477 11.4477 17 12 17ZM22 12C22 12.5523 21.5523 13 21 13H18C17.4477 13 17 12.5523 17 12C17 11.4477 17.4477 11 18 11H21C21.5523 11 22 11.4477 22 12ZM7 12C7 12.5523 6.55228 13 6 13H3C2.44772 13 2 12.5523 2 12C2 11.4477 2.44772 11 3 11H6C6.55228 11 7 11.4477 7 12ZM19.0711 19.0711C18.6805 19.4616 18.0474 19.4616 17.6569 19.0711L15.5355 16.9497C15.145 16.5592 15.145 15.9261 15.5355 15.5355C15.9261 15.145 16.5592 15.145 16.9497 15.5355L19.0711 17.6569C19.4616 18.0474 19.4616 18.6805 19.0711 19.0711ZM8.46447 8.46447C8.07394 8.85499 7.44078 8.85499 7.05025 8.46447L4.92893 6.34315C4.53841 5.95262 4.53841 5.31946 4.92893 4.92893C5.31946 4.53841 5.95262 4.53841 6.34315 4.92893L8.46447 7.05025C8.85499 7.44078 8.85499 8.07394 8.46447 8.46447ZM4.92893 19.0711C4.53841 18.6805 4.53841 18.0474 4.92893 17.6569L7.05025 15.5355C7.44078 15.145 8.07394 15.145 8.46447 15.5355C8.85499 15.9261 8.85499 16.5592 8.46447 16.9497L6.34315 19.0711C5.95262 19.4616 5.31946 19.4616 4.92893 19.0711ZM15.5355 8.46447C15.145 8.07394 15.145 7.44078 15.5355 7.05025L17.6569 4.92893C18.0474 4.53841 18.6805 4.53841 19.0711 4.92893C19.4616 5.31946 19.4616 5.95262 19.0711 6.34315L16.9497 8.46447C16.5592 8.85499 15.9261 8.85499 15.5355 8.46447Z',
+    );
+  }
+
+  /** assets/check-double-fill.svg — review status done. */
+  function reviewDoneIcon() {
+    return reviewSvgIcon(
+      'review-ico-done',
+      'M11.602 13.7599L13.014 15.1719L21.4795 6.7063L22.8938 8.12051L13.014 18.0003L6.65 11.6363L8.06421 10.2221L10.189 12.3469L11.602 13.7599ZM11.6037 10.9322L16.5563 5.97949L17.9666 7.38977L13.014 12.3424L11.6037 10.9322ZM8.77698 16.5873L7.36396 18.0003L1 11.6363L2.41421 10.2221L3.82723 11.6352L3.82604 11.6363L8.77698 16.5873Z',
+    );
+  }
+
+  /**
+   * @param {string | undefined} status
+   */
+  function reviewStatusIcon(status) {
+    if (status === 'inProgress') {
+      return reviewProgressIcon();
+    }
+    if (status === 'done') {
+      return reviewDoneIcon();
+    }
+    return reviewBoltIcon();
+  }
+
+  function reviewPersonIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute(
+      'd',
+      'M8 8a2.75 2.75 0 1 0 0-5.5A2.75 2.75 0 0 0 8 8zm0 1.25c-2.4 0-4.5 1.2-4.5 2.75V13h9v-.999c0-1.55-2.1-2.751-4.5-2.751z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  const REVIEW_SKELETON_PARENTS = 3;
+  const REVIEW_SKELETON_CHILDREN = 3;
+  const REVIEW_SKEL_COLOR = '#6e6e6e';
+  /** Keep in sync with src/reviewThemes.ts. */
+  const REVIEW_SCHEME_IDS = ['softSemantic', 'highContrast', 'mutedPastel', 'neonOutline', 'softFilled', 'warmEarthy', 'coolTech'];
+  const REVIEW_SCHEME_DEFAULT = 'softSemantic';
+  const REVIEW_SCHEME_LABELS = {
+    softSemantic: 'Soft Semantic',
+    highContrast: 'High-Contrast Flat',
+    mutedPastel: 'Muted Pastel Dark',
+    neonOutline: 'Neon Outline',
+    softFilled: 'Soft Filled',
+    warmEarthy: 'Warm Earthy',
+    coolTech: 'Cool Tech',
+  };
+  /** Schemes whose H/M/L counts are separate pills. Zero counts are hidden. */
+  const REVIEW_SCHEME_LEVEL_PILLS = { softSemantic: true, mutedPastel: true };
+  /** Empty means the scheme has no role icons. */
+  const REVIEW_SCHEME_ICONS = {
+    softSemantic: 'fill',
+    highContrast: '',
+    mutedPastel: 'fill',
+    neonOutline: 'line',
+    softFilled: 'fill',
+    warmEarthy: 'line',
+    coolTech: 'fill',
+  };
+  const REVIEW_SCHEME_ICON_PATHS = {
+    mr: {
+      fill: 'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929Z',
+      line: 'M15 5H17C18.1046 5 19 5.89543 19 7V15.1707C20.1652 15.5825 21 16.6938 21 18C21 19.6569 19.6569 21 18 21C16.3431 21 15 19.6569 15 18C15 16.6938 15.8348 15.5825 17 15.1707V7H15V10L10.5 6L15 2V5ZM5 8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V15.1707C8.16519 15.5825 9 16.6938 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929ZM6 7C6.55228 7 7 6.55228 7 6C7 5.44772 6.55228 5 6 5C5.44772 5 5 5.44772 5 6C5 6.55228 5.44772 7 6 7ZM6 19C6.55228 19 7 18.5523 7 18C7 17.4477 6.55228 17 6 17C5.44772 17 5 17.4477 5 18C5 18.5523 5.44772 19 6 19ZM18 19C18.5523 19 19 18.5523 19 18C19 17.4477 18.5523 17 18 17C17.4477 17 17 17.4477 17 18C17 18.5523 17.4477 19 18 19Z',
+    },
+    review: {
+      fill: 'M24 12L18.3431 17.6569L16.9289 16.2426L21.1716 12L16.9289 7.75736L18.3431 6.34315L24 12ZM2.82843 12L7.07107 16.2426L5.65685 17.6569L0 12L5.65685 6.34315L7.07107 7.75736L2.82843 12ZM9.78828 21H7.66006L14.2118 3H16.34L9.78828 21Z',
+      line: 'M24 12L18.3431 17.6569L16.9289 16.2426L21.1716 12L16.9289 7.75736L18.3431 6.34315L24 12ZM2.82843 12L7.07107 16.2426L5.65685 17.6569L0 12L5.65685 6.34315L7.07107 7.75736L2.82843 12ZM9.78828 21H7.66006L14.2118 3H16.34L9.78828 21Z',
+    },
+    rereview: {
+      fill: 'M12 4C9.4095 4 7.10606 5.23053 5.64274 7.14274L8 9.5H2V3.5L4.21863 5.71863C6.05061 3.452 8.85558 2 12 2 17.5228 2 22 6.47715 22 12H20C20 7.58172 16.4183 4 12 4ZM4 12C4 16.4183 7.58172 20 12 20 14.5905 20 16.894 18.7695 18.3573 16.8573L16 14.5 22 14.5V20.5L19.7814 18.2814C17.9494 20.548 15.1444 22 12 22 6.47715 22 2 17.5228 2 12H4Z',
+      line: 'M12 4C9.25144 4 6.82508 5.38626 5.38443 7.5H8V9.5H2V3.5H4V5.99936C5.82381 3.57166 8.72764 2 12 2C17.5228 2 22 6.47715 22 12H20C20 7.58172 16.4183 4 12 4ZM4 12C4 16.4183 7.58172 20 12 20C14.7486 20 17.1749 18.6137 18.6156 16.5H16V14.5H22V20.5H20V18.0006C18.1762 20.4283 15.2724 22 12 22C6.47715 22 2 17.5228 2 12H4Z',
+    },
+    neurofix: {
+      fill: 'M17.0007 1.20825L18.3195 3.68108L20.7923 4.99992L18.3195 6.31876L17.0007 8.79159L15.6818 6.31876L13.209 4.99992L15.6818 3.68108L17.0007 1.20825ZM8.00065 4.33325L10.6673 9.33325L15.6673 11.9999L10.6673 14.6666L8.00065 19.6666L5.33398 14.6666L0.333984 11.9999L5.33398 9.33325L8.00065 4.33325ZM19.6673 16.3333L18.0007 13.2083L16.334 16.3333L13.209 17.9999L16.334 19.6666L18.0007 22.7916L19.6673 19.6666L22.7923 17.9999L19.6673 16.3333Z',
+      line: 'M17.0007 1.20825 18.3195 3.68108 20.7923 4.99992 18.3195 6.31876 17.0007 8.79159 15.6818 6.31876 13.209 4.99992 15.6818 3.68108 17.0007 1.20825ZM10.6673 9.33325 15.6673 11.9999 10.6673 14.6666 8.00065 19.6666 5.33398 14.6666.333984 11.9999 5.33398 9.33325 8.00065 4.33325 10.6673 9.33325ZM11.4173 11.9999 9.18905 10.8115 8.00065 8.58325 6.81224 10.8115 4.58398 11.9999 6.81224 13.1883 8.00065 15.4166 9.18905 13.1883 11.4173 11.9999ZM19.6673 16.3333 18.0007 13.2083 16.334 16.3333 13.209 17.9999 16.334 19.6666 18.0007 22.7916 19.6673 19.6666 22.7923 17.9999 19.6673 16.3333Z',
+    },
+    explain: {
+      fill: 'M9.24264 18.9967H21V20.9967H3V16.754L12.8995 6.85453L17.1421 11.0972L9.24264 18.9967ZM14.3137 5.44032L16.435 3.319C16.8256 2.92848 17.4587 2.92848 17.8492 3.319L20.6777 6.14743C21.0682 6.53795 21.0682 7.17112 20.6777 7.56164L18.5563 9.68296L14.3137 5.44032Z',
+      line: 'M5 18.89H6.41421L15.7279 9.57627L14.3137 8.16206L5 17.4758V18.89ZM21 20.89H3V16.6473L16.435 3.21231C16.8256 2.82179 17.4587 2.82179 17.8492 3.21231L20.6777 6.04074C21.0682 6.43126 21.0682 7.06443 20.6777 7.45495L9.24264 18.89H21V20.89ZM15.7279 6.74785L17.1421 8.16206L18.5563 6.74785L17.1421 5.33363L15.7279 6.74785Z',
+    },
+    study: {
+      fill: REVIEW_VAR_INSTANCE_PATHS,
+      line: REVIEW_VAR_INSTANCE_PATHS,
+    },
+    note: {
+      fill: 'M15 14L14.8834 14.0067C14.4243 14.0601 14.0601 14.4243 14.0067 14.8834L14 15V21H3.99826C3.44694 21 3 20.5551 3 20.0066V3.9934C3 3.44476 3.44495 3 3.9934 3H20.0066C20.5552 3 21 3.44749 21 3.9985V14H15ZM21 16L16 20.997V16H21Z',
+      line: 'M21 15L15 20.996L4.00221 21C3.4487 21 3 20.5551 3 20.0066V3.9934C3 3.44476 3.44495 3 3.9934 3H20.0066C20.5552 3 21 3.45576 21 4.00247V15ZM19 5H5V19H13V14C13 13.4872 13.386 13.0645 13.8834 13.0067L14 13L19 12.999V5ZM18.171 14.999L15 15V18.169L18.171 14.999Z',
+    },
+    fix: {
+      fill: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+      line: 'M9.9997 15.1709L19.1921 5.97852L20.6063 7.39273L9.9997 17.9993L3.63574 11.6354L5.04996 10.2212L9.9997 15.1709Z',
+    },
+  };
+  const REVIEW_BRANCH_ICON =
+    'M7.10508 15.2101C8.21506 15.6501 9 16.7334 9 18C9 19.6569 7.65685 21 6 21C4.34315 21 3 19.6569 3 18C3 16.6938 3.83481 15.5825 5 15.1707V8.82929C3.83481 8.41746 3 7.30622 3 6C3 4.34315 4.34315 3 6 3C7.65685 3 9 4.34315 9 6C9 7.30622 8.16519 8.41746 7 8.82929V11.9996C7.83566 11.3719 8.87439 11 10 11H14C15.3835 11 16.5482 10.0635 16.8949 8.78991C15.7849 8.34988 15 7.26661 15 6C15 4.34315 16.3431 3 18 3C19.6569 3 21 4.34315 21 6C21 7.3332 20.1303 8.46329 18.9274 8.85392C18.5222 11.2085 16.4703 13 14 13H10C8.61653 13 7.45179 13.9365 7.10508 15.2101Z';
+  let reviewSchemeId = REVIEW_SCHEME_DEFAULT;
+
+  /** @param {unknown} value */
+  function normalizeReviewScheme(value) {
+    return REVIEW_SCHEME_IDS.includes(/** @type {string} */ (value)) ? value : REVIEW_SCHEME_DEFAULT;
+  }
+
+  function reviewSchemeIconStyle() {
+    return REVIEW_SCHEME_ICONS[reviewSchemeId] || '';
+  }
+
+  function reviewSchemeLevelPills() {
+    return !!REVIEW_SCHEME_LEVEL_PILLS[reviewSchemeId];
+  }
+
+  /** Spine color. Chip paint comes from the scheme class. */
+  function reviewRoleColor(role) {
+    return 'var(--scheme-' + role + ')';
+  }
+
+  /**
+   * @param {string} role
+   */
+  function reviewSchemeGlyph(role) {
+    const style = reviewSchemeIconStyle();
+    const paths = REVIEW_SCHEME_ICON_PATHS[role];
+    if (!style || !paths) {
+      return null;
+    }
+    const plate = el('span', 'review-scheme-plate is-' + style);
+    plate.append(reviewSvgIcon('review-scheme-glyph', paths[style] || paths.fill));
+    return plate;
+  }
+
+  /**
+   * @param {HTMLElement} chip
+   * @param {string} role
+   */
+  function dressReviewChip(chip, role) {
+    chip.classList.add('is-role-' + role);
+    const style = reviewSchemeIconStyle();
+    if (!style) {
+      return;
+    }
+    if (role === 'mr') {
+      const existing = chip.querySelector(':scope > .review-ico');
+      if (existing) {
+        const plate = el('span', 'review-scheme-plate is-' + style);
+        existing.classList.add('review-scheme-glyph');
+        existing.replaceWith(plate);
+        plate.append(existing);
+        return;
+      }
+    }
+    const glyph = reviewSchemeGlyph(role);
+    if (glyph) {
+      chip.prepend(glyph);
+    }
+  }
+
+  /**
+   * @param {{ isMr?: boolean, isReviewRoot?: boolean, isExplainRoot?: boolean, isExplain?: boolean, isRereview?: boolean, isStudy?: boolean } | null | undefined} msg
+   */
+  function reviewChipFallback(msg) {
+    if (!msg) {
+      return '';
+    }
+    if (msg.isMr) {
+      return reviewRoleColor('mr');
+    }
+    if (msg.isExplainRoot || msg.isExplain) {
+      return reviewRoleColor('explain');
+    }
+    if (msg.isRereview) {
+      return reviewRoleColor('rereview');
+    }
+    if (msg.isStudy) {
+      return reviewRoleColor('study');
+    }
+    if (msg.isReviewRoot) {
+      return reviewRoleColor('review');
+    }
+    return REVIEW_SKEL_COLOR;
+  }
+
+  /**
+   * @param {string} pageId
+   * @returns {'initial' | 'older' | 'newer' | ''}
+   */
+  function reviewPaintEdge(pageId) {
+    if (reviewLoadPending && reviewLoadPending.pageId === pageId) {
+      return reviewLoadPending.edge;
+    }
+    if (!reviewState || reviewState.pageId !== pageId) {
+      return 'initial';
+    }
+    const marked = reviewState.loadingEdge;
+    if (marked === 'initial' || marked === 'older' || marked === 'newer') {
+      return marked;
+    }
+    if (reviewState.loading && (!reviewState.messages || reviewState.messages.length === 0)) {
+      return 'initial';
+    }
+    return '';
+  }
+
+  /** @param {string} pageId */
+  function reviewLoadsBusy(pageId) {
+    const painted = reviewPaintEdge(pageId);
+    if (painted === 'older' || painted === 'newer' || painted === 'initial') {
+      return true;
+    }
+    return !!(reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {'initial' | 'older' | 'newer'} edge
+   */
+  function requestReviewChannelLoad(pageId, edge) {
+    if (reviewPaintEdge(pageId)) {
+      return;
+    }
+    if (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId) {
+      return;
+    }
+    reviewLoadPending = { pageId, edge };
+    const type =
+      edge === 'older' ? 'reviewLoadOlder' : edge === 'newer' ? 'reviewLoadNewer' : 'reviewLoad';
+    vscode.postMessage(edge === 'initial' ? { type, pageId, force: true } : { type, pageId });
+    paintReviewPage();
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   */
+  function reviewSkeletonBar(width, delayMs) {
+    const bar = el('span', 'review-skel-bar');
+    bar.style.width = width;
+    bar.style.animationDelay = delayMs + 'ms';
+    return bar;
+  }
+
+  /**
+   * @param {string} width
+   * @param {number} delayMs
+   * @param {boolean} child
+   */
+  function reviewSkeletonPlain(width, delayMs, child) {
+    const preview = el('div', 'review-plain is-skel' + (child ? ' is-child' : ''));
+    const ico = el('span', 'review-plain-ico review-skel-ico');
+    ico.style.animationDelay = delayMs + 'ms';
+    preview.append(ico, reviewSkeletonBar(width, delayMs));
+    return preview;
+  }
+
+  /**
+   * @param {string} pageId
+   * @returns {{ title: string, draft?: boolean } | null}
+   */
+  function activePendingMr(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingMr && reviewState.pendingMr.title) {
+      return reviewState.pendingMr;
+    }
+    if (localPendingMr && localPendingMr.pageId === pageId) {
+      return localPendingMr;
+    }
+    return null;
+  }
+
+  /** @param {string} pageId */
+  function activePendingReviewId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingReviewId) {
+      return reviewState.pendingReviewId;
+    }
+    if (localPendingReview && localPendingReview.pageId === pageId) {
+      return localPendingReview.messageId;
+    }
+    return '';
+  }
+
+  /** @param {string} pageId */
+  function activePendingRoot(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingRoot && reviewState.pendingRoot.branch) {
+      return reviewState.pendingRoot;
+    }
+    if (localPendingRoot && localPendingRoot.pageId === pageId) {
+      return localPendingRoot;
+    }
+    return null;
+  }
+
+  /** @param {string} pageId */
+  function activePendingExplainId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingExplainId) {
+      return reviewState.pendingExplainId;
+    }
+    if (localPendingExplain && localPendingExplain.pageId === pageId) {
+      return localPendingExplain.messageId;
+    }
+    return '';
+  }
+
+  /** @param {string} pageId */
+  function activePendingNeurofixId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingNeurofixId) {
+      return reviewState.pendingNeurofixId;
+    }
+    if (localPendingNeurofix && localPendingNeurofix.pageId === pageId) {
+      return localPendingNeurofix.messageId;
+    }
+    return '';
+  }
+
+  /** @param {string} pageId */
+  function activePendingStudyId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingStudyId) {
+      return reviewState.pendingStudyId;
+    }
+    if (localPendingStudy && localPendingStudy.pageId === pageId) {
+      return localPendingStudy.messageId;
+    }
+    return '';
+  }
+
+  /** @param {string} pageId */
+  function activePendingRereviewId(pageId) {
+    if (reviewState && reviewState.pageId === pageId && reviewState.pendingRereviewId) {
+      return reviewState.pendingRereviewId;
+    }
+    if (localPendingRereview && localPendingRereview.pageId === pageId) {
+      return localPendingRereview.messageId;
+    }
+    return '';
+  }
+
+  function activePendingExplainRoot(pageId) {
+    if (
+      reviewState &&
+      reviewState.pageId === pageId &&
+      reviewState.pendingExplainRoot &&
+      reviewState.pendingExplainRoot.branch
+    ) {
+      return reviewState.pendingExplainRoot;
+    }
+    if (localPendingExplainRoot && localPendingExplainRoot.pageId === pageId) {
+      return localPendingExplainRoot;
+    }
+    return null;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} title
+   * @param {boolean} draft
+   */
+  function beginLocalMrSkeleton(pageId, title, draft) {
+    localPendingMr = {
+      pageId,
+      title,
+      draft: !!draft,
+    };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function beginLocalReviewSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingReview = {
+      pageId,
+      messageId,
+    };
+    reviewCollapsed.delete(messageId);
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} branch
+   */
+  function beginLocalRootSkeleton(pageId, branch) {
+    if (!pageId) {
+      return;
+    }
+    localPendingRoot = {
+      pageId,
+      branch: branch || '…',
+    };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function beginLocalExplainSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingExplain = { pageId, messageId };
+    reviewCollapsed.delete(messageId);
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function beginLocalNeurofixSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingNeurofix = { pageId, messageId };
+    reviewCollapsed.delete(reviewFoldParentId(messageId));
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId review chip the «Изучено» run is writing onto
+   */
+  function beginLocalStudySkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingStudy = { pageId, messageId };
+    reviewCollapsed.delete(reviewFoldParentId(messageId));
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId review chip the rereview run is writing onto
+   */
+  function beginLocalRereviewSkeleton(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    localPendingRereview = { pageId, messageId };
+    reviewCollapsed.delete(reviewFoldParentId(messageId));
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  function beginLocalExplainRootSkeleton(pageId, branch) {
+    if (!pageId) {
+      return;
+    }
+    localPendingExplainRoot = { pageId, branch: branch || '…' };
+    if (activePage()?.id === pageId) {
+      paintReviewPage();
+    }
+  }
+
+  /** @param {'mr' | 'review' | 'root' | 'neurofix' | 'study' | 'rereview'} kind */
+  function noteReviewSkeletonScroll(kind) {
+    const pageId = activePage()?.id || '';
+    const token =
+      kind === 'review'
+        ? 'review:' + activePendingReviewId(pageId)
+        : kind === 'neurofix'
+          ? 'neurofix:' + activePendingNeurofixId(pageId)
+          : kind === 'study'
+            ? 'study:' + activePendingStudyId(pageId)
+            : kind === 'rereview'
+              ? 'rereview:' + activePendingRereviewId(pageId)
+              : kind === 'root'
+                ? 'root:' + (activePendingRoot(pageId)?.branch || '')
+                : 'mr:' + (activePendingMr(pageId)?.title || '');
+    if (!token || token === reviewSkelShown) {
+      return;
+    }
+    reviewSkelShown = token;
+    const node = root.querySelector('[data-review-skel="' + kind + '"]');
+    if (node instanceof HTMLElement) {
+      node.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /**
+   * @param {{ title: string, draft?: boolean }} pending
+   * @param {boolean} leadingGap
+   */
+  function renderReviewMrSkeleton(pending, leadingGap) {
+    const row = el('div', 'review-node is-mr is-skel' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewSkel = 'mr';
+    row.style.setProperty('--link-color', reviewRoleColor('mr'));
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 20, rowGap: REVIEW_ROOT_GAP }),
+        '',
+      ),
+    );
+    const chip = el('div', 'review-chip is-mr-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar(pending.draft ? '52px' : '36px', 0));
+    const side = el('div', 'review-side is-skel');
+    side.append(el('span', 'review-skel-ico'));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip, side);
+    const title = reviewSkeletonBar('180px', 80);
+    title.classList.add('review-skel-title');
+    const head = el('div', 'review-mr-head');
+    head.append(chipWrap, title);
+    const body = el('div', 'review-body');
+    body.append(head);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {{ branch: string }} pending
+   * @param {boolean} leadingGap
+   * @param {string} color
+   */
+  function renderReviewRootSkeleton(pending, leadingGap, color) {
+    const row = el('div', 'review-node is-review-root is-skel' + (leadingGap ? ' has-gap' : ''));
+    row.dataset.reviewSkel = 'root';
+    row.style.setProperty('--link-color', color || reviewRoleColor('review'));
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap, hasStamp: true, contentHalf: 20, rowGap: REVIEW_ROOT_GAP }),
+        '',
+      ),
+    );
+    const branchOpts = reviewStampOpts(pending.branch, '');
+    const stamp = renderReviewStamp('', branchOpts.name, { own: branchOpts.checkout });
+    const dateBar = reviewSkeletonBar('72px', 0);
+    dateBar.classList.add('review-stamp-date');
+    stamp.prepend(dateBar);
+    const chip = el('div', 'review-chip is-review-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip);
+    const head = el('div', 'review-mr-head');
+    head.append(chipWrap);
+    const body = el('div', 'review-body');
+    body.append(stamp, head);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {string} color
+   * @param {{ withStamp?: boolean, branch?: string }} [opts]
+   */
+  function renderReviewReplySkeleton(color, opts) {
+    const withStamp = !!opts?.withStamp;
+    const row = el('div', 'review-reply-node has-gap is-skel');
+    row.dataset.reviewSkel = 'review';
+    row.style.setProperty('--link-color', color || reviewRoleColor('review'));
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: withStamp, contentHalf: 17 }),
+        '',
+      ),
+    );
+    const body = el('div', 'review-body');
+    if (withStamp) {
+      const branchOpts = reviewStampOpts(opts?.branch, '');
+      const stamp = renderReviewStamp('', branchOpts.name, {
+        own: branchOpts.checkout,
+        reveal: true,
+      });
+      const dateBar = reviewSkeletonBar('72px', 0);
+      dateBar.classList.add('review-stamp-date');
+      stamp.prepend(dateBar);
+      body.append(stamp);
+    }
+    const chip = el('div', 'review-chip is-review-pill is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    const chipWrap = el('div', 'review-chip-wrap');
+    chipWrap.append(chip);
+    body.append(chipWrap);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Green fix chip while neurofix is running.
+   * @param {string} nextColor
+   */
+  function renderReviewFixSkeleton(nextColor) {
+    const row = el('div', 'review-reply-node is-fix has-gap is-skel');
+    row.dataset.reviewSkel = 'neurofix';
+    row.style.setProperty('--link-color', reviewRoleColor('neurofix'));
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: true, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    const stamp = el('div', 'review-stamp');
+    const dateBar = reviewSkeletonBar('72px', 0);
+    dateBar.classList.add('review-stamp-date');
+    stamp.append(dateBar);
+    body.append(stamp);
+    const chip = el('div', 'review-chip is-review-pill is-fix is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Note chip while «Изучено» or rereview is running and the chip is not on the review yet.
+   * @param {string} nextColor
+   * @param {'study' | 'rereview'} [kind]
+   */
+  function renderReviewStudySkeleton(nextColor, kind) {
+    const skel = kind === 'rereview' ? 'rereview' : 'study';
+    const row = el('div', 'review-reply-node is-note has-gap is-skel');
+    row.dataset.reviewSkel = skel;
+    row.style.setProperty('--link-color', reviewRoleColor(skel));
+    row.setAttribute('aria-busy', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: true, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    const stamp = el('div', 'review-stamp');
+    const dateBar = reviewSkeletonBar('72px', 0);
+    dateBar.classList.add('review-stamp-date');
+    stamp.append(dateBar);
+    body.append(stamp);
+    const chip = el('div', 'review-chip is-review-pill is-note is-skel');
+    chip.append(el('span', 'review-skel-ico'), reviewSkeletonBar('96px', 40));
+    body.append(chip);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number] | null | undefined} msg
+   */
+  function reviewMessageColor(msg) {
+    if (!msg) {
+      return '';
+    }
+    return msg.color || reviewChipFallback(msg);
+  }
+
+  const REVIEW_ARROW_UP =
+    'M12 4.83582L5.79291 11.0429L7.20712 12.4571L12 7.66424L16.7929 12.4571L18.2071 11.0429L12 4.83582ZM12 10.4857L5.79291 16.6928L7.20712 18.107L12 13.3141L16.7929 18.107L18.2071 16.6928L12 10.4857Z';
+  const REVIEW_ARROW_DOWN =
+    'M12 19.1642L18.2071 12.9571L16.7929 11.5429L12 16.3358L7.20711 11.5429L5.79289 12.9571L12 19.1642ZM12 13.5143L18.2071 7.30722L16.7929 5.89301L12 10.6859L7.20711 5.89301L5.79289 7.30722L12 13.5143Z';
+
+  /** @param {'older' | 'newer'} direction */
+  function reviewArrowIcon(direction) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'review-load-chip-ico');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', direction === 'older' ? REVIEW_ARROW_UP : REVIEW_ARROW_DOWN);
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {'channel' | 'thread'} where
+   * @param {'older' | 'newer'} direction
+   * @param {{ leadingGap: boolean, nextColor: string, spineColor: string, label: string, disabled: boolean, onClick: () => void }} opts
+   */
+  function renderReviewLoadChip(where, direction, opts) {
+    const row = el(
+      'div',
+      (where === 'channel' ? 'review-node' : 'review-reply-node') +
+        (opts.leadingGap ? ' has-gap' : '') +
+        ' review-load-node',
+    );
+    row.style.setProperty('--link-color', opts.spineColor || '#6e6e6e');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: opts.leadingGap, hasStamp: false, contentHalf: 11 }),
+        opts.nextColor || '',
+      ),
+    );
+    const button = el('button', 'review-load-chip');
+    button.type = 'button';
+    button.setAttribute('aria-label', opts.label);
+    button.disabled = !!opts.disabled;
+    button.append(reviewArrowIcon(direction));
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
+      opts.onClick();
+    });
+    const body = el('div', 'review-body');
+    body.append(button);
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Gray parent row from the channel pack, without its child thread.
+   * @param {string} nextColor
+   */
+  function renderReviewThreadLoadSkeleton(nextColor) {
+    const row = el('div', 'review-reply-node has-gap is-skel');
+    row.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+    row.setAttribute('aria-busy', 'true');
+    row.setAttribute('aria-hidden', 'true');
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 12 }),
+        nextColor || '',
+      ),
+    );
+    const body = el('div', 'review-body');
+    body.append(reviewSkeletonPlain('168px', 0, false));
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * Three plain parents, each with three plain replies, appended into an existing tree.
+   * @param {HTMLElement} host
+   * @param {boolean} leadingGapFirst
+   * @param {string} continueColor stem under the last parent, when a real node follows
+   */
+  function appendReviewSkeletonPack(host, leadingGapFirst, continueColor) {
+    const parentWidths = ['168px', '124px', '148px'];
+    const childWidths = [
+      ['96px', '72px', '88px'],
+      ['80px', '112px', '64px'],
+      ['104px', '76px', '92px'],
+    ];
+    for (let parent = 0; parent < REVIEW_SKELETON_PARENTS; parent += 1) {
+      const leadingGap = parent === 0 ? leadingGapFirst : true;
+      const isLast = parent === REVIEW_SKELETON_PARENTS - 1;
+      const row = el(
+        'div',
+        'review-node is-plain is-skel' +
+          (leadingGap ? ' has-gap' : '') +
+          (parent === 0 ? ' review-skel' : ''),
+      );
+      row.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+      row.setAttribute('aria-hidden', 'true');
+      const nextColor = isLast ? continueColor || '' : REVIEW_SKEL_COLOR;
+      row.append(
+        linkElbow(
+          reviewElbowMid({ leadingGap, hasStamp: false, contentHalf: 12 }),
+          nextColor,
+        ),
+      );
+      const body = el('div', 'review-body');
+      body.append(reviewSkeletonPlain(parentWidths[parent], parent * 90, false));
+      const children = el('div', 'review-children');
+      const slide = el('div', 'review-children-slide');
+      for (let child = 0; child < REVIEW_SKELETON_CHILDREN; child += 1) {
+        const reply = el('div', 'review-reply-node has-gap is-skel');
+        reply.style.setProperty('--link-color', REVIEW_SKEL_COLOR);
+        const childNext = child < REVIEW_SKELETON_CHILDREN - 1 ? REVIEW_SKEL_COLOR : '';
+        reply.append(
+          linkElbow(
+            reviewElbowMid({ leadingGap: true, hasStamp: false, contentHalf: 12 }),
+            childNext,
+          ),
+        );
+        const childBody = el('div', 'review-body');
+        childBody.append(
+          reviewSkeletonPlain(childWidths[parent][child], parent * 90 + (child + 1) * 70, true),
+        );
+        reply.append(childBody);
+        slide.append(reply);
+      }
+      children.append(slide);
+      body.append(children);
+      row.append(body);
+      host.append(row);
+    }
+  }
+
+  /** Three plain parents, each with three plain replies. */
+  function renderReviewSkeletonTree() {
+    const tree = el('div', 'review-tree review-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    appendReviewSkeletonPack(tree, false, '');
+    return tree;
+  }
+
+  /** Fold a closed MR the first time it is seen, and again when it becomes closed. */
+  function applyClosedMrFolds() {
+    const pageId = activePage()?.id || '';
+    if (!reviewState || reviewState.pageId !== pageId) {
+      return;
+    }
+    for (const msg of reviewState.messages || []) {
+      if (!msg.isMr) {
+        continue;
+      }
+      const closed = msg.status === 'closed';
+      const prev = reviewClosedSeen.get(msg.id);
+      reviewClosedSeen.set(msg.id, closed);
+      if (closed && prev !== true) {
+        reviewCollapsed.add(msg.id);
+      }
+    }
+  }
+
+  function dismissMissingReviewFile() {
+    if (!reviewFileView) {
+      return;
+    }
+    const messageId = reviewFileView.messageId;
+    if (findReviewReply(messageId)) {
+      return;
+    }
+    const rootMsg = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (rootMsg && (rootMsg.isReviewRoot || rootMsg.isExplainRoot || rootMsg.hasFile)) {
+      return;
+    }
+    reviewFileView = null;
+    mountReviewFile();
+    if (explainFileView && explainFileView.messageId === messageId) {
+      if (rootMsg && (rootMsg.isExplainRoot || rootMsg.hasFile)) {
+        return;
+      }
+      if (findReviewReply(messageId)?.isExplain) {
+        return;
+      }
+      explainFileView = null;
+      mountExplainFile();
+    }
+  }
+
+  /** CSS `ease`: cubic-bezier(0.25, 0.1, 0.25, 1). */
+  function reviewScrollEase(t) {
+    const x1 = 0.25;
+    const y1 = 0.1;
+    const x2 = 0.25;
+    const y2 = 1;
+    const cx = 3 * x1;
+    const bx = 3 * (x2 - x1) - cx;
+    const ax = 1 - cx - bx;
+    const cy = 3 * y1;
+    const by = 3 * (y2 - y1) - cy;
+    const ay = 1 - cy - by;
+    const sampleX = (u) => ((ax * u + bx) * u + cx) * u;
+    const sampleY = (u) => ((ay * u + by) * u + cy) * u;
+    const sampleDX = (u) => (3 * ax * u + 2 * bx) * u + cx;
+    let u = t;
+    for (let i = 0; i < 6; i += 1) {
+      const dx = sampleDX(u);
+      const delta = sampleX(u) - t;
+      if (Math.abs(delta) < 1e-4 || Math.abs(dx) < 1e-6) {
+        break;
+      }
+      u = Math.min(1, Math.max(0, u - delta / dx));
+    }
+    return sampleY(u);
+  }
+
+  /**
+   * Glide from wherever the list just appeared to the newest rows.
+   * @param {number} token
+   */
+  function animateReviewListToEnd(token) {
+    const node = docScroller();
+    const from = node.scrollTop || 0;
+    const to = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (to - from < 1) {
+      return;
+    }
+    const gen = ++scrollTrackGen;
+    suppressScrollTrack = true;
+    const start = performance.now();
+    const duration = 200;
+    const step = (now) => {
+      if (token !== reviewScrollAnim || scrollTrackGen !== gen) {
+        return;
+      }
+      const t = Math.min(1, (now - start) / duration);
+      const eased = reviewScrollEase(t);
+      const top = from + (to - from) * eased;
+      node.scrollTop = top;
+      heldScroll = top;
+      if (t < 1) {
+        requestAnimationFrame(step);
+        return;
+      }
+      node.scrollTop = to;
+      heldScroll = to;
+      releaseScrollTrack(gen);
+    };
+    step(performance.now());
+  }
+
+  /** List stays where it painted. The glide starts on the next frame. */
+  function scrollReviewListToEnd() {
+    reviewPinEnd = true;
+    const token = ++reviewScrollAnim;
+    requestAnimationFrame(() => {
+      if (token !== reviewScrollAnim) {
+        return;
+      }
+      if (isSliding) {
+        return;
+      }
+      reviewPinEnd = false;
+      animateReviewListToEnd(token);
+    });
+  }
+
+  function paintReviewPage() {
+    const page = activePage();
+    const pageId = page?.id || '';
+    if (pageId && (!reviewState || reviewState.pageId !== pageId)) {
+      const cached = reviewByPage.get(pageId);
+      if (cached) {
+        reviewState = cached;
+      }
+    }
+    applyClosedMrFolds();
+    const pendingReviewId = activePendingReviewId(pageId);
+    if (pendingReviewId) {
+      reviewCollapsed.delete(pendingReviewId);
+    }
+    const pendingExplainId = activePendingExplainId(pageId);
+    if (pendingExplainId) {
+      reviewCollapsed.delete(pendingExplainId);
+    }
+    const pendingNeurofixId = activePendingNeurofixId(pageId);
+    if (pendingNeurofixId) {
+      reviewCollapsed.delete(reviewFoldParentId(pendingNeurofixId));
+    }
+    const pendingStudyId = activePendingStudyId(pageId);
+    if (pendingStudyId) {
+      reviewCollapsed.delete(reviewFoldParentId(pendingStudyId));
+    }
+    const pendingRereviewId = activePendingRereviewId(pageId);
+    if (pendingRereviewId) {
+      reviewCollapsed.delete(reviewFoldParentId(pendingRereviewId));
+    }
+    const pendingMr = activePendingMr(pageId);
+    const pendingRoot = activePendingRoot(pageId);
+    const pendingExplainRoot = activePendingExplainRoot(pageId);
+    if (
+      !pendingMr &&
+      !pendingRoot &&
+      !pendingReviewId &&
+      !pendingExplainRoot &&
+      !pendingExplainId &&
+      !pendingNeurofixId &&
+      !pendingStudyId &&
+      !pendingRereviewId
+    ) {
+      reviewSkelShown = '';
+    }
+    setCollapseButton();
+    dismissMissingReviewFile();
+    const edge = reviewPaintEdge(pageId);
+    const samePage = !!(reviewState && reviewState.pageId === pageId);
+    const keepScroll = samePage && edge !== 'initial' ? currentDocScroll() : 0;
+    const structureKey = reviewStructureKey(pageId, edge);
+    if (
+      structureKey &&
+      structureKey === reviewStructureKeyValue &&
+      root.classList.contains('review-page') &&
+      root.querySelector('.review-tree')
+    ) {
+      syncReviewCollapsed();
+      syncReviewFileMark();
+      return;
+    }
+    reviewStructureKeyValue = structureKey;
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page review-page review-scheme-' + reviewSchemeId;
+    clearDropHighlights();
+    if (
+      edge ||
+      pendingMr ||
+      pendingRoot ||
+      pendingReviewId ||
+      pendingExplainRoot ||
+      pendingExplainId ||
+      pendingNeurofixId ||
+      pendingStudyId ||
+      pendingRereviewId ||
+      (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId)
+    ) {
+      root.setAttribute('aria-busy', 'true');
+    } else {
+      root.removeAttribute('aria-busy');
+    }
+    if (edge === 'initial') {
+      reviewScrollToEnd = true;
+      root.append(renderReviewSkeletonTree());
+      if (
+        pageId &&
+        (!reviewState || reviewState.pageId !== pageId) &&
+        !reviewAutoLoad.has(pageId)
+      ) {
+        reviewAutoLoad.add(pageId);
+        vscode.postMessage({ type: 'reviewLoad', pageId });
+      }
+      return;
+    }
+    if (
+      reviewState &&
+      reviewState.error &&
+      !(isReviewFetchError(reviewState.error) && reviewStateMessages(reviewState).length > 0)
+    ) {
+      const box = el('div', 'review-error');
+      box.append(el('div', 'review-error-text', reviewState.error || t('reviewSyncError')));
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        requestReviewChannelLoad(pageId, 'initial');
+      });
+      box.append(retry);
+      root.append(box);
+      reviewScrollToEnd = false;
+      if (keepScroll) {
+        applyDocScroll(keepScroll);
+      }
+      return;
+    }
+    if (!reviewState || reviewState.empty || !reviewState.messages || reviewState.messages.length === 0) {
+      reviewScrollToEnd = false;
+      if (!pendingMr && !pendingRoot && !pendingExplainRoot) {
+        root.append(el('div', 'empty', t('reviewEmpty')));
+        return;
+      }
+      const tree = el('div', 'review-tree');
+      if (pendingMr) {
+        tree.append(renderReviewMrSkeleton(pendingMr, false));
+        root.append(tree);
+        noteReviewSkeletonScroll('mr');
+      } else if (pendingRoot) {
+        tree.append(renderReviewRootSkeleton(pendingRoot, false, reviewRoleColor('review')));
+        root.append(tree);
+        noteReviewSkeletonScroll('root');
+      } else if (pendingExplainRoot) {
+        tree.append(
+          renderReviewRootSkeleton(pendingExplainRoot, false, reviewRoleColor('explain')),
+        );
+        root.append(tree);
+        noteReviewSkeletonScroll('root');
+      }
+      return;
+    }
+    if (reviewState.contentBlocked) {
+      const warn = el('div', 'review-content-blocked');
+      warn.append(el('div', 'review-content-blocked-text', t('reviewContentBlocked')));
+      const howto = el('button', 'review-howto-link', t('reviewHowToConnect'));
+      howto.type = 'button';
+      howto.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        requestReviewChannelLoad(pageId, 'initial');
+      });
+      const actions = el('div', 'review-content-blocked-actions');
+      actions.append(howto, retry);
+      warn.append(actions);
+      root.append(warn);
+    }
+    const messages = reviewState.messages;
+    const gapId = reviewState.gapBeforeMessageId || '';
+    const showOlderSkel = edge === 'older';
+    const showOlderChip = !!(reviewState.canLoadOlder && edge !== 'older');
+    const tree = el('div', 'review-tree');
+    const first = messages[0];
+    const firstColor = reviewMessageColor(first) || '#6e6e6e';
+    const firstIsNewerGap = !!(gapId && first && first.id === gapId && edge === 'newer');
+    if (showOlderSkel) {
+      appendReviewSkeletonPack(tree, false, firstIsNewerGap ? REVIEW_SKEL_COLOR : firstColor);
+    } else if (showOlderChip) {
+      tree.append(
+        renderReviewLoadChip('channel', 'older', {
+          leadingGap: false,
+          nextColor: firstIsNewerGap ? REVIEW_SKEL_COLOR : firstColor,
+          spineColor: firstColor,
+          label: t('reviewLoadOlder'),
+          disabled: reviewLoadsBusy(pageId),
+          onClick: () => requestReviewChannelLoad(pageId, 'older'),
+        }),
+      );
+    }
+    let preceded = showOlderSkel || showOlderChip;
+    messages.forEach((msg, index) => {
+      if (gapId && msg.id === gapId) {
+        const spine = reviewMessageColor(msg) || '#6e6e6e';
+        if (edge === 'newer') {
+          appendReviewSkeletonPack(tree, true, spine);
+        } else if (reviewState.canLoadNewer) {
+          tree.append(
+            renderReviewLoadChip('channel', 'newer', {
+              leadingGap: true,
+              nextColor: spine,
+              spineColor: spine,
+              label: t('reviewLoadNewer'),
+              disabled: reviewLoadsBusy(pageId),
+              onClick: () => requestReviewChannelLoad(pageId, 'newer'),
+            }),
+          );
+        }
+        preceded = true;
+      }
+      const next = messages[index + 1];
+      const nextColor = next
+        ? reviewMessageColor(next)
+        : pendingMr
+          ? reviewRoleColor('mr')
+          : pendingRoot
+            ? reviewRoleColor('review')
+            : pendingExplainRoot
+              ? reviewRoleColor('explain')
+              : '';
+      tree.append(renderReviewNode(msg, pageId, index > 0 || preceded, nextColor));
+      preceded = true;
+    });
+    if (pendingMr) {
+      tree.append(renderReviewMrSkeleton(pendingMr, messages.length > 0));
+    } else if (pendingRoot) {
+      tree.append(
+        renderReviewRootSkeleton(pendingRoot, messages.length > 0, reviewRoleColor('review')),
+      );
+    } else if (pendingExplainRoot) {
+      tree.append(
+        renderReviewRootSkeleton(
+          pendingExplainRoot,
+          messages.length > 0,
+          reviewRoleColor('explain'),
+        ),
+      );
+    }
+    if (!gapId && (edge === 'newer' || reviewState.canLoadNewer)) {
+      const last = messages[messages.length - 1];
+      const spine =
+        reviewMessageColor(last) ||
+        (pendingMr
+          ? reviewRoleColor('mr')
+          : pendingRoot
+            ? reviewRoleColor('review')
+            : pendingExplainRoot
+              ? reviewRoleColor('explain')
+              : REVIEW_SKEL_COLOR);
+      const leadingGap = tree.childElementCount > 0;
+      if (edge === 'newer') {
+        appendReviewSkeletonPack(tree, leadingGap, '');
+      } else {
+        tree.append(
+          renderReviewLoadChip('channel', 'newer', {
+            leadingGap,
+            nextColor: '',
+            spineColor: spine,
+            label: t('reviewLoadNewer'),
+            disabled: reviewLoadsBusy(pageId),
+            onClick: () => requestReviewChannelLoad(pageId, 'newer'),
+          }),
+        );
+      }
+    }
+    root.append(tree);
+    const pinEnd = reviewScrollToEnd && !edge && !reviewState.focusMessageId;
+    if (pinEnd) {
+      reviewScrollToEnd = false;
+      scrollReviewListToEnd();
+    } else if (keepScroll) {
+      applyDocScroll(keepScroll);
+    }
+    if (reviewState.focusMessageId) {
+      reviewScrollToEnd = false;
+      const focused = root.querySelector('[data-review-id="' + reviewState.focusMessageId + '"]');
+      if (focused instanceof HTMLElement) {
+        focused.classList.add('is-focus');
+        focused.scrollIntoView({ block: 'nearest' });
+        vscode.postMessage({ type: 'reviewClearFocus', pageId });
+      }
+    } else if (edge === 'older' || edge === 'newer') {
+      reviewScrollToEnd = false;
+      const skel = root.querySelector('.review-skel');
+      if (skel instanceof HTMLElement) {
+        skel.scrollIntoView({ block: 'nearest' });
+      }
+    } else if (
+      pendingReviewId ||
+      pendingExplainId ||
+      pendingNeurofixId ||
+      pendingStudyId ||
+      pendingRereviewId ||
+      pendingMr ||
+      pendingRoot ||
+      pendingExplainRoot
+    ) {
+      noteReviewSkeletonScroll(
+        pendingRereviewId
+          ? 'rereview'
+          : pendingStudyId
+            ? 'study'
+            : pendingNeurofixId
+              ? 'neurofix'
+              : pendingReviewId || pendingExplainId
+                ? 'review'
+                : pendingMr
+                  ? 'mr'
+                  : 'root',
+      );
+    }
+    syncReviewFileMark();
+  }
+
+  /**
+   * Fold flags are omitted so toggling them can reuse the mounted tree.
+   * @param {string} pageId
+   * @param {'initial' | 'older' | 'newer' | ''} edge
+   */
+  function reviewStructureKey(pageId, edge) {
+    const state = reviewState;
+    if (!state || state.pageId !== pageId || edge === 'initial') {
+      return '';
+    }
+    /** @type {string[]} */
+    const chunks = [
+      pageId,
+      reviewSchemeId,
+      edge || '',
+      state.error || '',
+      state.empty ? '1' : '0',
+      state.contentBlocked ? '1' : '0',
+      state.canLoadOlder ? '1' : '0',
+      state.canLoadNewer ? '1' : '0',
+      reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId
+        ? reviewThreadLoadPending.messageId + ':' + reviewThreadLoadPending.direction
+        : '',
+      state.gapBeforeMessageId || '',
+      state.focusMessageId || '',
+      state.checkout || '',
+      [...reviewTitleExpanded].sort().join(','),
+      [...reviewPlainExpanded].sort().join(','),
+      activePendingReviewId(pageId),
+      activePendingExplainId(pageId),
+      activePendingNeurofixId(pageId),
+      activePendingStudyId(pageId),
+      activePendingRereviewId(pageId),
+      (() => {
+        const pending = activePendingMr(pageId);
+        return pending ? (pending.draft ? 'd:' : 'm:') + (pending.title || '') : '';
+      })(),
+      (() => {
+        const pending = activePendingRoot(pageId);
+        return pending ? 'r:' + (pending.branch || '') : '';
+      })(),
+      (() => {
+        const pending = activePendingExplainRoot(pageId);
+        return pending ? 'e:' + (pending.branch || '') : '';
+      })(),
+    ];
+    for (const msg of state.messages || []) {
+      chunks.push(
+        msg.id,
+        msg.isReviewRoot ? 'R' : '',
+        msg.isExplainRoot ? 'W' : '',
+        msg.color || '',
+        msg.title || '',
+        msg.pillLabel || '',
+        msg.draft ? 'd' : '',
+        msg.status || '',
+        msg.reviewStatus || '',
+        msg.locked ? 'L' : '',
+        msg.timestamp || '',
+        msg.branch || '',
+        msg.hasThread ? 't' : '',
+        msg.repliesHasMore ? 'm' : '',
+        msg.repliesHasNewer ? 'n' : '',
+        msg.gapBeforeReplyId || '',
+        msg.contentMissing ? 'x' : '',
+        msg.content || '',
+      );
+      for (const reply of msg.replies || []) {
+        chunks.push(
+          reply.id,
+          reply.pillLabel || '',
+          reply.status || '-',
+          reply.isPill ? 'p' : '',
+          reply.timestamp || '',
+          reply.hasFile ? 'f' : '',
+          reply.filename || '',
+          reply.contentMissing ? 'x' : '',
+          reply.content || '',
+        );
+      }
+    }
+    return chunks.join('\u001f');
+  }
+
+  /** Fold or open every review thread that has a caret. */
+  function setAllReviewCollapsed(collapsed) {
+    const items = foldableReviewMessages();
+    if (items.length === 0) {
+      return;
+    }
+    for (const msg of items) {
+      if (collapsed) {
+        reviewCollapsed.add(msg.id);
+      } else {
+        reviewCollapsed.delete(msg.id);
+      }
+    }
+    paintReviewPage();
+  }
+
+  /** Parent body without the `lock:` meta line. */
+  function reviewDisplayText(content) {
+    if (typeof content !== 'string') {
+      return '';
+    }
+    return content
+      .split(/\r?\n/)
+      .filter((line) => !/^lock:\s*(true|false)\s*$/i.test(line.trim()))
+      .filter((line) => !/^(?:Branch|Ветка)\s*:/i.test(line.trim()))
+      .join('\n')
+      .trim();
+  }
+
+  /** @param {string} messageId */
+  function toggleReviewCollapsed(messageId) {
+    const msg = (reviewState?.messages || []).find((item) => item.id === messageId);
+    if (msg?.locked) {
+      flashReviewLock(messageId);
+      return;
+    }
+    if (reviewCollapsed.has(messageId)) {
+      reviewCollapsed.delete(messageId);
+    } else {
+      reviewCollapsed.add(messageId);
+    }
+    paintReviewPage();
+  }
+
+  function syncReviewCollapsed() {
+    root.querySelectorAll('.review-node[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const collapsed = reviewCollapsed.has(node.dataset.reviewId || '');
+      node.classList.toggle('is-collapsed', collapsed);
+      const tri = node.querySelector(
+        ':scope > .review-body > .review-mr-head .link-chip-tri, :scope > .review-body > .review-plain > .link-chip-tri, :scope > .review-body > .review-chip-wrap .review-talk-chip > .link-chip-tri',
+      );
+      if (tri) {
+        tri.classList.toggle('is-collapsed', collapsed);
+      }
+    });
+  }
+
+  function syncReviewFileMark() {
+    const reviewOpen =
+      reviewFileView && activePage()?.kind === 'review' ? reviewFileView.messageId : '';
+    const explainOpen =
+      explainFileView && activePage()?.kind === 'review' ? explainFileView.messageId : '';
+    const openId = reviewOpen || explainOpen;
+    root.querySelectorAll('[data-review-reply-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewReplyId === openId);
+    });
+    root.querySelectorAll('.review-node.is-review-root[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewId === openId);
+    });
+    root.querySelectorAll('.review-node.is-explain-root[data-review-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.classList.toggle('is-file-open', !!openId && node.dataset.reviewId === openId);
+    });
+  }
+
+  /** Stamp block above content (10px * 1.2) + body gap — must match .review-stamp / .review-body. */
+  const REVIEW_STAMP_BLOCK = 12;
+  const REVIEW_BODY_GAP = 4;
+
+  /**
+   * Elbow mid Y like links: padding gap + optional stamp + half of the target row.
+   * @param {{ leadingGap?: boolean, hasStamp?: boolean, contentHalf: number, rowGap?: number }} opts
+   */
+  function reviewElbowMid(opts) {
+    return (
+      (opts.leadingGap ? opts.rowGap || LINK_ROW_GAP : 0) +
+      (opts.hasStamp ? REVIEW_STAMP_BLOCK + REVIEW_BODY_GAP : 0) +
+      opts.contentHalf
+    );
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   * @param {boolean} leadingGap
+   * @param {string} nextColor
+   */
+  function renderReviewNode(msg, pageId, leadingGap, nextColor) {
+    const color = msg.color || reviewChipFallback(msg);
+    const showReviewSkeleton =
+      !!(msg.isMr || msg.isReviewRoot) &&
+      (activePendingReviewId(pageId) === msg.id || activePendingExplainId(pageId) === msg.id);
+    const canFold = reviewMessageCanFold(msg);
+    const mrCanFold = !!msg.isMr && canFold;
+    const rootCanFold = !!msg.isReviewRoot && canFold;
+    const explainCanFold = !!msg.isExplainRoot && canFold;
+    const plainCanFold = !msg.isMr && !msg.isReviewRoot && !msg.isExplainRoot && canFold;
+    const collapsed = canFold && reviewCollapsed.has(msg.id);
+    const plainOpen =
+      !msg.isMr && !msg.isReviewRoot && !msg.isExplainRoot && reviewPlainExpanded.has(msg.id);
+    const stampDate = formatReviewStamp(msg.timestamp);
+    const isChipRow = !!(msg.isMr || msg.isReviewRoot || msg.isExplainRoot);
+    const alwaysBranch = !!(msg.isMr || msg.isReviewRoot);
+    const branchOpts = reviewStampOpts(msg.branch, isChipRow ? 'msg:' + msg.id : '');
+    const revealBranch = isChipRow && !alwaysBranch && !!branchOpts.name;
+    const stampBranch =
+      branchOpts.name && (alwaysBranch || revealBranch || !branchOpts.checkout)
+        ? branchOpts.name
+        : '';
+    const branchRevealId = revealBranch ? 'msg:' + msg.id : '';
+    const hasStamp = !!(stampDate || stampBranch);
+    const row = el(
+      'div',
+      'review-node' +
+        (msg.isMr
+          ? ' is-mr'
+          : msg.isReviewRoot
+            ? ' is-review-root'
+            : msg.isExplainRoot
+              ? ' is-explain-root'
+              : msg.isTalk
+                ? ' is-talk'
+                : ' is-plain') +
+        (leadingGap ? ' has-gap' : '') +
+        (collapsed ? ' is-collapsed' : '') +
+        (plainOpen ? ' is-plain-open' : ''),
+    );
+    row.dataset.reviewId = msg.id;
+    row.style.setProperty('--link-color', color);
+    row.append(
+      linkElbow(
+        reviewElbowMid({
+          leadingGap,
+          hasStamp,
+          contentHalf: msg.isMr || msg.isReviewRoot || msg.isExplainRoot ? 20 : msg.isTalk ? 16 : 12,
+          rowGap: msg.isMr || msg.isReviewRoot ? REVIEW_ROOT_GAP : LINK_ROW_GAP,
+        }),
+        nextColor,
+      ),
+    );
+
+    const body = el('div', 'review-body');
+    if (hasStamp) {
+      const stamp = stampBranch
+        ? renderReviewStamp(stampDate, stampBranch, {
+            own: branchOpts.checkout,
+            reveal: revealBranch,
+            revealId: branchRevealId,
+          })
+        : el('div', 'review-stamp', stampDate);
+      if (msg.isReviewRoot) {
+        stamp.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
+        });
+      } else if (msg.isExplainRoot) {
+        stamp.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openExplainContextMenu(event.clientX, event.clientY, pageId, msg.id);
+        });
+      }
+      body.append(stamp);
+    }
+
+    if (msg.isMr) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-mr-pill');
+      chip.type = 'button';
+      bindCheckoutBranchHover(chip, branchRevealId);
+      chip.append(msg.status === 'closed' ? reviewClosedIcon() : reviewPrIcon());
+      chip.append(el('span', 'review-chip-badge', msg.draft ? 'D: MR' : 'MR'));
+      dressReviewChip(chip, 'mr');
+      if (canFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        if (!mrCanFold) {
+          return;
+        }
+        toggleReviewCollapsed(msg.id);
+      });
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(chip);
+      const side = el('div', 'review-side');
+      side.append(reviewPersonIcon());
+      chipWrap.append(side);
+
+      const titleText =
+        msg.title ||
+        (() => {
+          const head =
+            typeof msg.content === 'string' ? msg.content.trimStart().split('\n')[0] || '' : '';
+          const match = /^\(?(?:MR_SYN3|DMR_SYN3)\)?:\s*(.*)$/.exec(head);
+          return match ? match[1].trim() : '';
+        })() ||
+        t('reviewEmptyMessage');
+      chipWrap.append(
+        reviewTalkButton(
+          pageId,
+          msg.id,
+          reviewTalkLabel(titleText),
+          !!(msg.locked || msg.status === 'closed'),
+        ),
+      );
+      const title = el(
+        'button',
+        'review-mr-title-text' + (reviewTitleExpanded.has(msg.id) ? ' is-expanded' : ''),
+        titleText,
+      );
+      title.type = 'button';
+      title.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
+        if (reviewTitleExpanded.has(msg.id)) {
+          reviewTitleExpanded.delete(msg.id);
+        } else {
+          reviewTitleExpanded.add(msg.id);
+        }
+        paintReviewPage();
+      });
+      title.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      if (msg.webUrl) {
+        title.title = msg.webUrl;
+        title.addEventListener('dblclick', (event) => {
+          event.preventDefault();
+          vscode.postMessage({ type: 'openExternal', url: msg.webUrl });
+        });
+      }
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap);
+      if (msg.locked) {
+        head.append(reviewLockMark(msg.id, pageId));
+      }
+      head.append(title);
+      body.append(head);
+
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, true, showReviewSkeleton));
+      }
+    } else if (msg.isReviewRoot) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-review-pill');
+      chip.type = 'button';
+      bindCheckoutBranchHover(chip, branchRevealId);
+      if (!reviewSchemeIconStyle()) {
+        chip.append(reviewStatusIcon(msg.reviewStatus));
+      }
+      const rootLabel = el('span', 'review-chip-label');
+      setReviewPillText(rootLabel, msg.pillLabel || t('reviewFileTitle'));
+      chip.append(rootLabel);
+      dressReviewChip(chip, 'review');
+      if (rootCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewFileView(pageId, msg);
+      });
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewRootContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(chip);
+      const reviewHead = String(msg.pillLabel || '').split(/\s*\|\s*/)[0].trim();
+      chipWrap.append(
+        reviewTalkButton(
+          pageId,
+          msg.id,
+          reviewTalkLabel(reviewHead || t('reviewFileTitle')),
+          !!msg.locked,
+        ),
+      );
+      chipWrap.append(reviewNeurofixButton(pageId, msg.id));
+
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap);
+      if (msg.locked) {
+        head.append(reviewLockMark(msg.id, pageId));
+      }
+      body.append(head);
+
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, true, showReviewSkeleton));
+      }
+    } else if (msg.isExplainRoot) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      const chip = el('button', 'review-chip is-review-pill is-explain-pill');
+      chip.type = 'button';
+      bindCheckoutBranchHover(chip, branchRevealId);
+      const explainLabel = el('span', 'review-chip-label');
+      setReviewPillText(explainLabel, msg.pillLabel || t('explainFileTitle'));
+      chip.append(explainLabel);
+      dressReviewChip(chip, 'explain');
+      if (explainCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        chip.append(tri);
+      }
+      chip.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.link-chip-tri')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainFileView(pageId, msg);
+      });
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      chipWrap.append(chip);
+      const head = el('div', 'review-mr-head');
+      head.append(chipWrap);
+      body.append(head);
+      if (canFold) {
+        body.append(renderReviewThread(msg, pageId, true, false));
+      }
+    } else if (msg.isTalk) {
+      const chipWrap = el('div', 'review-chip-wrap');
+      let talkTri = null;
+      if (plainCanFold) {
+        talkTri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        talkTri.append(linkCaretIcon());
+        talkTri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+      }
+      chipWrap.append(
+        reviewTalkChip(
+          msg.profileName,
+          msg.avatar,
+          talkTri,
+          false,
+          reviewTalkReplyPhrase(msg.talkSourceType, msg.talkSourceTitle),
+        ),
+      );
+      chipWrap.append(
+        reviewTalkButton(pageId, msg.id, reviewTalkMsLabel(msg.profileName), !!msg.locked),
+      );
+      const talkText = reviewTalkText(msg, plainOpen);
+      const openTalkMenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      };
+      chipWrap.addEventListener('contextmenu', openTalkMenu);
+      talkText.addEventListener('contextmenu', openTalkMenu);
+      body.append(chipWrap);
+      if (canFold) {
+        const follow = el('div', 'review-talk-follow');
+        const copy = el('div', 'review-talk-copy');
+        copy.append(talkText);
+        follow.append(copy);
+        follow.append(renderReviewThread(msg, pageId, false, false));
+        body.append(follow);
+      } else {
+        body.append(talkText);
+      }
+    } else {
+      const raw = reviewDisplayText(msg.content);
+      const missing = msg.contentMissing === true || !raw;
+      const preview = el('button', 'review-plain' + (plainOpen ? ' is-open' : ''));
+      preview.type = 'button';
+      const ico = el('span', 'review-plain-ico');
+      ico.append(reviewCommentIcon());
+      if (plainCanFold) {
+        ico.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+      }
+      preview.append(ico);
+      if (plainCanFold) {
+        const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+        tri.append(linkCaretIcon());
+        tri.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleReviewCollapsed(msg.id);
+        });
+        preview.append(tri);
+      }
+      if (msg.locked) {
+        preview.append(reviewLockMark(msg.id, pageId));
+      }
+      const text = el(
+        'span',
+        'review-plain-text' + (missing ? ' is-missing' : ''),
+        missing ? t('reviewEmptyMessage') : raw,
+      );
+      preview.append(text);
+      preview.addEventListener('click', () => {
+        if (msg.locked) {
+          flashReviewLock(msg.id);
+          return;
+        }
+        if (reviewPlainExpanded.has(msg.id)) {
+          reviewPlainExpanded.delete(msg.id);
+        } else {
+          reviewPlainExpanded.add(msg.id);
+        }
+        paintReviewPage();
+      });
+      preview.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, msg.id);
+      });
+      body.append(preview);
+      if ((msg.replies && msg.replies.length) || msg.repliesHasMore || msg.repliesHasNewer) {
+        body.append(renderReviewThread(msg, pageId, false));
+      }
+    }
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {'older' | 'newer'} direction
+   */
+  function requestReviewThreadLoad(pageId, messageId, direction) {
+    if (reviewPaintEdge(pageId)) {
+      return;
+    }
+    if (reviewThreadLoadPending && reviewThreadLoadPending.pageId === pageId) {
+      return;
+    }
+    const pending = { pageId, messageId, direction, armed: false };
+    reviewThreadLoadPending = pending;
+    vscode.postMessage({
+      type: 'reviewLoadThread',
+      pageId,
+      messageId,
+      direction,
+    });
+    paintReviewPage();
+    setTimeout(() => {
+      if (reviewThreadLoadPending === pending) {
+        reviewThreadLoadPending.armed = true;
+      }
+    }, 0);
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {'older' | 'newer'} direction
+   */
+  function reviewThreadLoadActive(pageId, messageId, direction) {
+    return !!(
+      reviewThreadLoadPending &&
+      reviewThreadLoadPending.pageId === pageId &&
+      reviewThreadLoadPending.messageId === messageId &&
+      reviewThreadLoadPending.direction === direction
+    );
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]} msg
+   * @param {string} pageId
+   * @param {'older' | 'newer'} direction
+   * @param {string} color
+   */
+  function renderReviewThreadLoadRow(msg, pageId, direction, color) {
+    if (reviewThreadLoadActive(pageId, msg.id, direction)) {
+      return renderReviewThreadLoadSkeleton(color);
+    }
+    return renderReviewLoadChip('thread', direction, {
+      leadingGap: true,
+      nextColor: color,
+      spineColor: color,
+      label: direction === 'older' ? t('reviewLoadMoreThread') : t('reviewLoadNewer'),
+      disabled: reviewLoadsBusy(pageId),
+      onClick: () => requestReviewThreadLoad(pageId, msg.id, direction),
+    });
+  }
+
+  function renderReviewThread(msg, pageId, allowPills, withReviewSkeleton) {
+    const children = el('div', 'review-children');
+    const clip = el('div', 'review-children-clip');
+    const slide = el('div', 'review-children-slide');
+    const color = msg.color || reviewChipFallback(msg);
+    const pendingExplain = activePendingExplainId(pageId) === msg.id;
+    const showSkeleton = !!withReviewSkeleton || pendingExplain;
+    const pendingFix = activePendingNeurofixId(pageId) === msg.id;
+    const pendingRereview = activePendingRereviewId(pageId) === msg.id;
+    appendLevelNoteNodes(slide, pageId, msg.id, msg, color, 'study');
+    if (reviewHasFixes(msg) || pendingFix) {
+      const replies = msg.replies || [];
+      const hasRereview = levelNoteFiles(msg.rereviewNote).length > 0 || pendingRereview;
+      const hasNext =
+        hasRereview ||
+        replies.length > 0 ||
+        showSkeleton ||
+        !!msg.repliesHasMore ||
+        !!msg.repliesHasNewer;
+      if (reviewHasFixes(msg)) {
+        slide.append(
+          renderReviewFixNode(pageId, msg.id, msg, hasNext ? color : '', pendingFix, msg.branch),
+        );
+      } else if (pendingFix) {
+        slide.append(renderReviewFixSkeleton(hasNext ? color : ''));
+      }
+    }
+    appendLevelNoteNodes(slide, pageId, msg.id, msg, color, 'rereview');
+    if (msg.repliesHasMore) {
+      slide.append(renderReviewThreadLoadRow(msg, pageId, 'older', color));
+    }
+    const replies = msg.replies || [];
+    const gapReplyId = msg.gapBeforeReplyId || '';
+    const tailNewer = !!msg.repliesHasNewer && !gapReplyId;
+    const talkBlocked = !!(msg.locked || (msg.isMr && msg.status === 'closed'));
+    for (let index = 0; index < replies.length; index += 1) {
+      if (gapReplyId && replies[index].id === gapReplyId && msg.repliesHasNewer) {
+        slide.append(renderReviewThreadLoadRow(msg, pageId, 'newer', color));
+      }
+      const next = replies[index + 1];
+      const hasNext = !!next || showSkeleton || tailNewer;
+      slide.append(
+        renderReviewReply(
+          replies[index],
+          color,
+          allowPills,
+          true,
+          hasNext ? color : '',
+          pageId,
+          msg.branch,
+          msg.isMr || msg.isReviewRoot ? reviewProfileId(msg) : '',
+          talkBlocked,
+        ),
+      );
+    }
+    if (msg.repliesHasNewer && !gapReplyId) {
+      slide.append(renderReviewThreadLoadRow(msg, pageId, 'newer', color));
+    }
+    if (showSkeleton) {
+      slide.append(
+        renderReviewReplySkeleton(color, {
+          withStamp: pendingExplain,
+          branch: msg.branch || reviewState?.checkout || '',
+        }),
+      );
+    }
+    clip.append(slide);
+    children.append(clip);
+    return children;
+  }
+
+  /**
+   * @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply
+   * @param {string} color
+   * @param {boolean} allowPills
+   * @param {boolean} leadingGap
+   * @param {string} nextColor stem below this turn (hidden on :last-child via CSS)
+   * @param {string} [pageId]
+   * @param {string} [parentBranch]
+   * @param {string} [authorProfileId] profile of the MR or review author; empty outside those threads
+   * @param {boolean} [talkBlocked] thread owner is locked or the MR is closed
+   */
+  function renderReviewReply(reply, color, allowPills, leadingGap, nextColor, pageId, parentBranch, authorProfileId, talkBlocked) {
+    const isExplain = !!reply.isExplain;
+    const stampDate = formatReviewStamp(reply.timestamp);
+    const isPill = !!(allowPills && reply.isPill && reply.pillLabel);
+    const branchOpts = isPill
+      ? reviewStampOpts(stampBranchName(reply.branch, parentBranch), 'reply:' + reply.id)
+      : { name: '', checkout: false, revealId: '' };
+    const stampBranch = branchOpts.name;
+    const hasStamp = !!(stampDate || stampBranch);
+    const replyColor =
+      reply.color ||
+      (reply.isExplain
+        ? reviewRoleColor('explain')
+        : reply.isRereview
+          ? reviewRoleColor('rereview')
+          : reply.isStudy
+            ? reviewRoleColor('study')
+            : color || reviewRoleColor('review'));
+    const row = el(
+      'div',
+      'review-reply-node' + (isExplain ? ' is-explain' : '') + (leadingGap ? ' has-gap' : ''),
+    );
+    row.dataset.reviewReplyId = reply.id;
+    row.style.setProperty('--link-color', replyColor);
+    row.append(
+      linkElbow(
+        reviewElbowMid({
+          leadingGap,
+          hasStamp,
+          contentHalf: reply.isTalk ? 16 : isPill || isExplain ? 17 : 12,
+        }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    if (hasStamp) {
+      body.append(
+        stampBranch
+          ? renderReviewStamp(stampDate, stampBranch, {
+              own: branchOpts.checkout,
+              reveal: true,
+              revealId: 'reply:' + reply.id,
+            })
+          : el('div', 'review-stamp', stampDate),
+      );
+    }
+    const replyText = typeof reply.content === 'string' ? reply.content.trim() : '';
+    const replyMissing = reply.contentMissing === true || !replyText;
+    if (isExplain && isPill) {
+      const wrap = el('div', 'review-chip-wrap');
+      const chip = el('div', 'review-chip is-review-pill is-explain-pill');
+      const revealId = 'reply:' + reply.id;
+      bindCheckoutBranchHover(chip, revealId);
+      const explainLabel = el('span', 'review-chip-label');
+      setReviewPillText(explainLabel, reply.pillLabel || t('explainFileTitle'));
+      chip.append(explainLabel);
+      dressReviewChip(chip, 'explain');
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      chip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExplainFileView(pageId || '', reply);
+      });
+      wrap.append(chip);
+      wrap.append(reviewReplyTalkButton(reply, pageId, talkBlocked));
+      body.append(wrap);
+    } else if (isPill) {
+      const wrap = el('div', 'review-chip-wrap');
+      const chip = el('div', 'review-chip is-review-pill');
+      const revealId = 'reply:' + reply.id;
+      bindCheckoutBranchHover(chip, revealId);
+      if (!reviewSchemeIconStyle()) {
+        chip.append(reviewStatusIcon(reply.status));
+      }
+      const replyLabel = el('span', 'review-chip-label');
+      const replyPill = reply.isRereview
+        ? normalizeRereviewPill(reply.pillLabel || '')
+        : reply.pillLabel || '';
+      const parentJump =
+        reply.isRereview || reply.isStudy ? rereviewParentJump(reply.id, replyPill) : 0;
+      setReviewPillText(
+        replyLabel,
+        replyPill,
+        parentJump
+          ? {
+              jumpNumber: parentJump,
+              onReviewJump: () => revealParentReview(reply.id, parentJump),
+            }
+          : undefined,
+      );
+      chip.append(replyLabel);
+      dressReviewChip(
+        chip,
+        reply.isRereview ? 'rereview' : reply.isStudy ? 'study' : 'review',
+      );
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewPillContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      chip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewFileView(pageId || '', reply);
+      });
+      wrap.append(chip);
+      wrap.append(reviewReplyTalkButton(reply, pageId, talkBlocked));
+      if (
+        !reply.isStudy &&
+        (!reply.isRereview ||
+          rereviewRemainingCounts(reply).H +
+            rereviewRemainingCounts(reply).M +
+            rereviewRemainingCounts(reply).L >
+            0)
+      ) {
+        wrap.append(reviewNeurofixButton(pageId || '', reply.id));
+      }
+      body.append(wrap);
+    } else if (reply.isTalk) {
+      const author = !!authorProfileId && reviewProfileId(reply) === authorProfileId;
+      const block = el('div', 'review-talk-block');
+      const revealId = 'reply:' + reply.id;
+      const head = reviewTalkChip(
+        reply.profileName,
+        reply.avatar,
+        null,
+        author,
+        reviewTalkReplyPhrase(reply.talkSourceType, reply.talkSourceTitle),
+      );
+      bindCheckoutBranchHover(head, revealId);
+      head.append(reviewReplyTalkButton(reply, pageId, talkBlocked));
+      block.append(head);
+      const talkText = reviewTalkText(reply, reviewPlainExpanded.has(reply.id));
+      const openTalkMenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      };
+      block.addEventListener('contextmenu', openTalkMenu);
+      talkText.addEventListener('contextmenu', openTalkMenu);
+      block.append(talkText);
+      body.append(block);
+    } else {
+      const plain = el('div', 'review-plain is-child');
+      const ico = el('span', 'review-plain-ico');
+      ico.append(reviewCommentIcon());
+      plain.append(ico);
+      let shown = replyMissing
+        ? t('reviewEmptyMessage')
+        : reply.isReview
+          ? replyText.split('\n').slice(0, 2).join('\n') || 'R_SYN3'
+          : replyText;
+      plain.append(
+        el('span', 'review-plain-text' + (replyMissing ? ' is-missing' : ''), shown),
+      );
+      plain.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId || '', reply.id);
+      });
+      body.append(plain);
+    }
+    const pendingFix = !!(pageId && activePendingNeurofixId(pageId) === reply.id);
+    const pendingStudy = !!(pageId && activePendingStudyId(pageId) === reply.id);
+    const pendingRereview = !!(pageId && activePendingRereviewId(pageId) === reply.id);
+    const hasStudy = levelNoteFiles(reply.studyNote).length > 0 || pendingStudy;
+    const hasRereview = levelNoteFiles(reply.rereviewNote).length > 0 || pendingRereview;
+    if ((reviewHasFixes(reply) || pendingFix || hasStudy || hasRereview) && pageId) {
+      const children = el('div', 'review-children');
+      const clip = el('div', 'review-children-clip');
+      const slide = el('div', 'review-children-slide');
+      appendLevelNoteNodes(slide, pageId, reply.id, reply, color, 'study');
+      const noteNext = hasRereview ? color : '';
+      if (reviewHasFixes(reply)) {
+        slide.append(
+          renderReviewFixNode(
+            pageId,
+            reply.id,
+            reply,
+            noteNext,
+            pendingFix,
+            stampBranchName(reply.branch, parentBranch),
+          ),
+        );
+      } else if (pendingFix) {
+        slide.append(renderReviewFixSkeleton(noteNext));
+      }
+      appendLevelNoteNodes(slide, pageId, reply.id, reply, color, 'rereview');
+      clip.append(slide);
+      children.append(clip);
+      body.append(children);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ fixes?: { at?: string } }} source
+   * @param {string} nextColor
+   * @param {boolean} [busy] neurofix is running against this chip
+   * @param {string} [branchRaw]
+   */
+  function levelNoteFiles(note) {
+    const files = note && Array.isArray(note.files) ? note.files : [];
+    return files.filter((file) => file && file.filename && Array.isArray(file.indexes) && file.indexes.length);
+  }
+
+  function levelNoteLabel(kind, note) {
+    const title = kind === 'study' ? t('studyChip') : t('rereviewChip');
+    const n = Number(note && note.n) || 0;
+    const parts = [n > 0 ? `${title} ${n}` : title];
+    for (const letter of ['H', 'M', 'L']) {
+      const file = levelNoteFiles(note).find((item) => item.level === letter);
+      if (file) {
+        parts.push(`${letter}:${file.indexes.join(', ')}`);
+      }
+    }
+    return parts.join(' | ');
+  }
+
+  function levelNoteFileList(note, level) {
+    const files = levelNoteFiles(note);
+    if (!level) {
+      return ['H', 'M', 'L']
+        .map((letter) => files.find((file) => file.level === letter))
+        .filter(Boolean)
+        .map((file) => file.filename);
+    }
+    const match = /^([HML])/i.exec(level.trim());
+    const letter = match ? match[1].toUpperCase() : '';
+    const file = files.find((item) => item.level === letter);
+    return file ? [file.filename] : [];
+  }
+
+  function openLevelNoteView(pageId, messageId, title, filenames) {
+    if (!pageId || !filenames.length) {
+      return;
+    }
+    const fileKey = filenames.join('|');
+    closeExplainFileView();
+    closeReviewFixesView();
+    if (
+      reviewFileView &&
+      reviewFileView.pageId === pageId &&
+      reviewFileView.messageId === messageId &&
+      reviewFileView.fileKey === fileKey
+    ) {
+      closeReviewFileView();
+      return;
+    }
+    reviewFileView = {
+      pageId,
+      messageId,
+      title,
+      filename: filenames.join(', '),
+      filenames,
+      fileKey,
+      levelNote: true,
+      status: 'loading',
+      text: '',
+      html: '',
+      error: '',
+    };
+    mountReviewFile();
+    vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId, filenames });
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {'rereview' | 'study'} kind
+   * @param {{ n?: number, at?: string, files?: Array<{ level: string, indexes: number[], filename: string }> }} note
+   * @param {string} nextColor
+   * @param {boolean} [busy] this note's run is in progress; loader sits to the right of the chip
+   */
+  function renderLevelNoteNode(pageId, messageId, kind, note, nextColor, busy) {
+    const stampDate = (note && note.at) || '';
+    const row = el('div', 'review-reply-node is-note has-gap');
+    row.dataset.reviewNoteFor = messageId;
+    row.dataset.reviewNoteKind = kind;
+    row.style.setProperty('--link-color', reviewRoleColor(kind));
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp: !!stampDate, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    if (stampDate) {
+      body.append(el('div', 'review-stamp', stampDate));
+    }
+    const chip = el('div', 'review-chip is-review-pill is-note');
+    const label = el('span', 'review-chip-label');
+    const title = levelNoteLabel(kind, note);
+    setReviewPillText(label, title, {
+      onTitle: () => openLevelNoteView(pageId, messageId, title, levelNoteFileList(note)),
+      onLevel: (bit) => openLevelNoteView(pageId, messageId, bit, levelNoteFileList(note, bit)),
+    });
+    chip.append(label);
+    dressReviewChip(chip, kind);
+    chip.addEventListener('click', (event) => {
+      if (event.target instanceof Element && event.target.closest('button')) {
+        return;
+      }
+      openLevelNoteView(pageId, messageId, title, levelNoteFileList(note));
+    });
+    if (busy) {
+      row.dataset.reviewSkel = kind;
+      row.setAttribute('aria-busy', 'true');
+      const line = el('div', 'review-fix-line is-busy');
+      const loader = el('span', 'review-fix-loader');
+      loader.setAttribute('role', 'status');
+      loader.setAttribute('aria-label', kind === 'study' ? t('studyChip') : t('rereviewChip'));
+      loader.append(reviewProgressIcon());
+      line.append(chip, loader);
+      body.append(line);
+    } else {
+      body.append(chip);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /**
+   * @param {HTMLElement} parent
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {{ studyNote?: { files?: unknown[] }, rereviewNote?: { files?: unknown[] } }} source
+   * @param {string} nextColor
+   * @param {'study' | 'rereview'} kind
+   */
+  function appendLevelNoteNodes(parent, pageId, messageId, source, nextColor, kind) {
+    const busy =
+      kind === 'study'
+        ? !!(pageId && activePendingStudyId(pageId) === messageId)
+        : !!(pageId && activePendingRereviewId(pageId) === messageId);
+    const note = source && source[kind === 'rereview' ? 'rereviewNote' : 'studyNote'];
+    if (levelNoteFiles(note).length) {
+      parent.append(renderLevelNoteNode(pageId, messageId, kind, note, nextColor, busy));
+      return;
+    }
+    if (busy) {
+      parent.append(renderReviewStudySkeleton(nextColor, kind));
+    }
+  }
+
+  function renderReviewFixNode(pageId, messageId, source, nextColor, busy, branchRaw) {
+    const stampDate = (source.fixes && source.fixes.at) || '';
+    const branchOpts = reviewStampOpts(branchRaw, 'fix:' + messageId);
+    const hasStamp = !!(stampDate || branchOpts.name);
+    const row = el('div', 'review-reply-node is-fix has-gap');
+    row.dataset.reviewFixFor = messageId;
+    row.style.setProperty('--link-color', reviewRoleColor('fix'));
+    row.append(
+      linkElbow(
+        reviewElbowMid({ leadingGap: true, hasStamp, contentHalf: 17 }),
+        nextColor,
+      ),
+    );
+    const body = el('div', 'review-body');
+    if (hasStamp) {
+      body.append(
+        branchOpts.name
+          ? renderReviewStamp(stampDate, branchOpts.name, {
+              own: branchOpts.checkout,
+              reveal: true,
+              revealId: 'fix:' + messageId,
+            })
+          : el('div', 'review-stamp', stampDate),
+      );
+    }
+    const chip = el('button', 'review-chip is-review-pill is-fix');
+    chip.type = 'button';
+    bindCheckoutBranchHover(chip, branchOpts.name ? 'fix:' + messageId : '');
+    const label = el('span', 'review-chip-label');
+    setReviewPillText(label, reviewFixLabel(source));
+    chip.append(label);
+    dressReviewChip(chip, 'fix');
+    chip.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openReviewFixesView(pageId, messageId);
+    });
+    if (busy) {
+      row.dataset.reviewSkel = 'neurofix';
+      row.setAttribute('aria-busy', 'true');
+      const line = el('div', 'review-fix-line is-busy');
+      const loader = el('span', 'review-fix-loader');
+      loader.setAttribute('role', 'status');
+      loader.setAttribute('aria-label', t('neurofix'));
+      loader.append(reviewProgressIcon());
+      line.append(chip, loader);
+      body.append(line);
+    } else {
+      body.append(chip);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /** @param {string} pageId @param {NonNullable<ReviewState['messages']>[number]['replies'][number]} reply */
+  function openReviewFileView(pageId, reply) {
+    if (!pageId) {
+      return;
+    }
+    closeExplainFileView();
+    closeReviewFixesView();
+    if (reviewFileView && reviewFileView.pageId === pageId && reviewFileView.messageId === reply.id) {
+      closeReviewFileView();
+      return;
+    }
+    const cached = reviewFileCache.get(reply.id);
+    const replyPill = reply.isRereview
+      ? normalizeRereviewPill(reply.pillLabel || '')
+      : reply.pillLabel || '';
+    reviewFileView = {
+      pageId,
+      messageId: reply.id,
+      title: replyPill || reply.filename || t('reviewFileTitle'),
+      filename: (cached && cached.filename) || reply.filename || '',
+      status: cached ? 'ready' : reply.hasFile === false ? 'error' : 'loading',
+      text: cached ? cached.text : '',
+      html: cached && cached.html ? cached.html : '',
+      error: reply.hasFile === false ? t('reviewFileMissing') : '',
+    };
+    mountReviewFile();
+    if (!cached && reply.hasFile !== false) {
+      vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId: reply.id });
+    }
+  }
+
+  function closeReviewFileView() {
+    if (!reviewFileView) {
+      mountReviewFile();
+      return;
+    }
+    reviewFileView = null;
+    mountReviewFile();
+    if (neuroFixListPanel && !neuroFixListPanel.pointerInside) {
+      closeNeuroFixListPanel();
+    }
+  }
+
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   title: string,
+   *   filename: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   text: string,
+   *   html: string,
+   *   error: string
+   * } | null}
+   */
+  let explainFileView = null;
+
+  /**
+   * @param {string} pageId
+   * @param {{ id: string, pillLabel?: string, filename?: string, hasFile?: boolean }} chip
+   */
+  function openExplainFileView(pageId, chip) {
+    if (!pageId) {
+      return;
+    }
+    closeReviewFileView();
+    closeReviewFixesView();
+    if (explainFileView && explainFileView.pageId === pageId && explainFileView.messageId === chip.id) {
+      closeExplainFileView();
+      return;
+    }
+    const cached = reviewFileCache.get(chip.id);
+    explainFileView = {
+      pageId,
+      messageId: chip.id,
+      title: chip.pillLabel || t('explainFileTitle'),
+      filename: (cached && cached.filename) || chip.filename || '',
+      status: cached ? 'ready' : chip.hasFile === false ? 'error' : 'loading',
+      text: cached ? cached.text : '',
+      html: cached && cached.html ? cached.html : '',
+      error: chip.hasFile === false ? t('reviewFileMissing') : '',
+    };
+    mountExplainFile();
+    if (!cached && chip.hasFile !== false) {
+      vscode.postMessage({ type: 'reviewOpenFile', pageId, messageId: chip.id });
+    }
+  }
+
+  function closeExplainFileView() {
+    if (!explainFileView) {
+      mountExplainFile();
+      return;
+    }
+    explainFileView = null;
+    mountExplainFile();
+  }
+
+  /**
+   * @type {{
+   *   pageId: string,
+   *   messageId: string,
+   *   status: 'loading' | 'ready' | 'error',
+   *   html: string,
+   *   error: string
+   * } | null}
+   */
+  let reviewFixesView = null;
+
+  /** @param {string} pageId @param {string} messageId */
+  function openReviewFixesView(pageId, messageId) {
+    if (!pageId || !messageId) {
+      return;
+    }
+    if (reviewFixesView && reviewFixesView.pageId === pageId && reviewFixesView.messageId === messageId) {
+      closeReviewFixesView();
+      return;
+    }
+    closeReviewFileView();
+    closeExplainFileView();
+    reviewFixesView = {
+      pageId,
+      messageId,
+      status: 'loading',
+      html: '',
+      error: '',
+    };
+    mountReviewFixes();
+    vscode.postMessage({ type: 'reviewOpenFixes', pageId, messageId });
+  }
+
+  function closeReviewFixesView() {
+    if (!reviewFixesView) {
+      mountReviewFixes();
+      return;
+    }
+    reviewFixesView = null;
+    mountReviewFixes();
+  }
+
+  function mountReviewFixes() {
+    if (!reviewFixesPane || !reviewFixesBody) {
+      return;
+    }
+    const view = reviewFixesView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      reviewFixesPane.hidden = true;
+      syncReviewTalk();
+      return;
+    }
+    reviewFixesPane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      reviewFixesPane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    if (reviewFixesClose) {
+      reviewFixesClose.title = t('reviewFileClose');
+      reviewFixesClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    reviewFixesBody.replaceChildren();
+    if (view.status === 'loading') {
+      reviewFixesBody.append(reviewFileSkeleton());
+    } else if (view.status === 'error') {
+      reviewFixesBody.append(el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')));
+    } else {
+      const table = el('div', 'explain-md');
+      table.innerHTML = view.html || '';
+      layoutReviewUsage(table);
+      reviewFixesBody.append(table);
+    }
+    syncReviewTalk();
+  }
+
+  /** @param {{ messageId?: string, ok?: boolean, html?: string, message?: string }} message */
+  function onReviewFixesResult(message) {
+    if (!reviewFixesView || reviewFixesView.messageId !== message.messageId) {
+      return;
+    }
+    if (message.ok && typeof message.html === 'string') {
+      reviewFixesView.status = 'ready';
+      reviewFixesView.html = message.html;
+      reviewFixesView.error = '';
+    } else {
+      reviewFixesView.status = 'error';
+      reviewFixesView.error = message.message || t('reviewFileDownloadFail');
+    }
+    mountReviewFixes();
+  }
+
+  function mountExplainFile() {
+    if (!explainFilePane || !explainFileBody || !explainFileTitle) {
+      return;
+    }
+    const view = explainFileView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      explainFilePane.hidden = true;
+      syncReviewFileMark();
+      syncReviewTalk();
+      return;
+    }
+    explainFilePane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      explainFilePane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    explainFileTitle.textContent = view.title || t('explainFileTitle');
+    explainFileTitle.title = view.filename || '';
+    if (explainFileClose) {
+      explainFileClose.title = t('reviewFileClose');
+      explainFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    if (explainFileLink) {
+      explainFileLink.disabled = view.status !== 'ready';
+      explainFileLink.title = t('reviewFileLink');
+      explainFileLink.setAttribute('aria-label', t('reviewFileLink'));
+    }
+    if (explainFileSave) {
+      explainFileSave.disabled = view.status !== 'ready';
+    }
+    explainFileBody.replaceChildren();
+    if (view.status === 'loading') {
+      explainFileBody.append(reviewFileSkeleton());
+    } else if (view.status === 'error') {
+      explainFileBody.append(
+        el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')),
+      );
+    } else {
+      const md = el('div', 'explain-md');
+      md.innerHTML = view.html || '';
+      layoutReviewUsage(md);
+      explainFileBody.append(md);
+    }
+    syncReviewFileMark();
+    syncReviewTalk();
+  }
+
+  /** @param {{ messageId?: string, ok?: boolean, text?: string, html?: string, filename?: string, message?: string }} message */
+  function onReviewFileResult(message) {
+    if (message.levelNote) {
+      if (
+        reviewFileView &&
+        reviewFileView.messageId === message.messageId &&
+        (!message.fileKey || reviewFileView.fileKey === message.fileKey)
+      ) {
+        if (message.ok && typeof message.text === 'string') {
+          reviewFileView.status = 'ready';
+          reviewFileView.text = message.text;
+          reviewFileView.html = typeof message.html === 'string' ? message.html : '';
+          reviewFileView.filename = message.filename || reviewFileView.filename;
+          reviewFileView.error = '';
+        } else {
+          reviewFileView.status = 'error';
+          reviewFileView.error = message.message || t('reviewFileDownloadFail');
+        }
+        mountReviewFile();
+      }
+      return;
+    }
+    if (message.ok && typeof message.text === 'string' && message.messageId) {
+      const filename =
+        message.filename ||
+        (reviewFileView && reviewFileView.messageId === message.messageId
+          ? reviewFileView.filename
+          : '') ||
+        (explainFileView && explainFileView.messageId === message.messageId
+          ? explainFileView.filename
+          : '') ||
+        '';
+      reviewFileCache.set(message.messageId, {
+        text: message.text,
+        filename,
+        html: typeof message.html === 'string' ? message.html : '',
+      });
+    }
+    if (explainFileView && explainFileView.messageId === message.messageId) {
+      if (message.ok && typeof message.text === 'string') {
+        explainFileView.status = 'ready';
+        explainFileView.text = message.text;
+        explainFileView.html =
+          typeof message.html === 'string' ? message.html : explainFileView.html;
+        explainFileView.filename = message.filename || explainFileView.filename;
+        explainFileView.error = '';
+      } else {
+        explainFileView.status = 'error';
+        explainFileView.error = message.message || t('reviewFileDownloadFail');
+      }
+      mountExplainFile();
+    }
+    if (neuroFixListPanel && neuroFixListPanel.messageId === message.messageId) {
+      if (message.ok && typeof message.text === 'string') {
+        fillNeuroFixListFromText(message.text);
+      } else {
+        neuroFixListPanel.status = 'error';
+        neuroFixListPanel.error = message.message || t('reviewFileDownloadFail');
+        mountNeuroFixListPanel();
+      }
+    }
+    if (!reviewFileView || reviewFileView.messageId !== message.messageId) {
+      return;
+    }
+    if (message.ok && typeof message.text === 'string') {
+      const filename = message.filename || reviewFileView.filename;
+      reviewFileView.status = 'ready';
+      reviewFileView.text = message.text;
+      reviewFileView.html = typeof message.html === 'string' ? message.html : '';
+      reviewFileView.filename = filename;
+      reviewFileView.error = '';
+    } else {
+      reviewFileView.status = 'error';
+      reviewFileView.error = message.message || t('reviewFileDownloadFail');
+    }
+    mountReviewFile();
+  }
+
+  function reviewFileSkeleton() {
+    const wrap = el('div', 'review-file-skel');
+    for (const width of ['78%', '100%', '92%', '64%', '100%', '84%', '70%']) {
+      const bar = el('div', 'review-file-skel-bar');
+      bar.style.width = width;
+      wrap.append(bar);
+    }
+    return wrap;
+  }
+
+  /**
+   * @param {MouseEvent} event
+   */
+  function openReviewFileLink(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const link = target.closest('a.review-file-link');
+    if (!(link instanceof HTMLAnchorElement)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const relPath = link.getAttribute('data-syn3-file') || '';
+    const line = Number(link.getAttribute('data-syn3-line') || '');
+    if (!relPath) {
+      return;
+    }
+    if (Number.isInteger(line) && line > 0) {
+      const zero = line - 1;
+      vscode.postMessage({
+        type: 'openAt',
+        relPath,
+        line: zero,
+        character: 0,
+        endLine: zero,
+        endCharacter: 0,
+      });
+      return;
+    }
+    vscode.postMessage({ type: 'open', relPath });
+  }
+
+  function stepReviewFont(delta) {
+    const current = typeof data?.appearance?.fontReview === 'number' ? data.appearance.fontReview : 1;
+    const next = Math.round((current + delta) * 20) / 20;
+    const snapped = Math.min(2, Math.max(0.6, next));
+    if (Math.abs(snapped - current) < 0.001) {
+      return;
+    }
+    if (data?.appearance) {
+      data.appearance.fontReview = snapped;
+      applyAppearance(data.appearance);
+    }
+    vscode.postMessage({ type: 'setAppearance', appearance: { fontReview: snapped } });
+  }
+
+  /** Webview CSP drops inline styles, so segment widths and score ink are applied here. */
+  function layoutReviewUsage(root) {
+    root.querySelectorAll('.md-ink[data-ink]').forEach((node) => {
+      const ink = node.getAttribute('data-ink') || '';
+      if (/^#[0-9A-Fa-f]{6}$/.test(ink)) {
+        node.style.color = ink;
+      }
+    });
+    root.querySelectorAll('.review-usage-bar').forEach((bar) => {
+      const segs = Array.from(bar.querySelectorAll('.review-usage-seg'));
+      const total = segs.reduce((sum, seg) => sum + Number(seg.getAttribute('data-count') || 0), 0);
+      if (!total) {
+        return;
+      }
+      segs.forEach((seg) => {
+        const count = Number(seg.getAttribute('data-count') || 0);
+        const pct = (count / total) * 100;
+        seg.style.flex = `0 0 ${pct}%`;
+      });
+    });
+  }
+
+  function mountReviewFile() {
+    if (!reviewFilePane || !reviewFileBody || !reviewFileTitle) {
+      return;
+    }
+    const view = reviewFileView;
+    const onReview = activePage()?.kind === 'review';
+    if (!view || !onReview) {
+      reviewFilePane.hidden = true;
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+      syncReviewFileMark();
+      syncReviewTalk();
+      return;
+    }
+    reviewFilePane.hidden = false;
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      reviewFilePane.style.top = chrome.getBoundingClientRect().bottom + 'px';
+    }
+    setReviewPillText(reviewFileTitle, view.title || t('reviewFileTitle'));
+    reviewFileTitle.title = view.filename || view.title || '';
+    if (reviewFileClose) {
+      reviewFileClose.title = t('reviewFileClose');
+      reviewFileClose.setAttribute('aria-label', t('reviewFileClose'));
+    }
+    if (reviewFileLink) {
+      reviewFileLink.disabled = view.status !== 'ready';
+      reviewFileLink.title = t('reviewFileLink');
+      reviewFileLink.setAttribute('aria-label', t('reviewFileLink'));
+    }
+    if (reviewFileSave) {
+      reviewFileSave.hidden = !!view.levelNote;
+      reviewFileSave.disabled = view.status !== 'ready';
+    }
+    reviewFileBody.replaceChildren();
+    if (view.status === 'loading') {
+      reviewFileBody.append(reviewFileSkeleton());
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+    } else if (view.status === 'error') {
+      reviewFileBody.append(el('div', 'review-file-error', view.error || t('reviewFileDownloadFail')));
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = true;
+      }
+    } else {
+      const md = el('div', 'explain-md');
+      md.innerHTML = view.html || '';
+      layoutReviewUsage(md);
+      reviewFileBody.append(md);
+      if (toolbarReviewTab) {
+        toolbarReviewTab.hidden = false;
+        const label = t('reviewOpenTab');
+        toolbarReviewTab.title = label;
+        toolbarReviewTab.setAttribute('aria-label', label);
+      }
+    }
+    syncReviewFileMark();
+    syncReviewTalk();
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewMr', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewRootContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewRoot', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  function openExplainContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewExplain', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewPillContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewPill', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  function reviewTalkLineIcon() {
+    return reviewSvgIcon(
+      'review-talk-line',
+      'M5.76282 17H20V5H4V18.3851L5.76282 17ZM6.45455 19L2 22.5V4C2 3.44772 2.44772 3 3 3H21C21.5523 3 22 3.44772 22 4V18C22 18.5523 21.5523 19 21 19H6.45455Z',
+    );
+  }
+
+  /** assets/send.svg */
+  function reviewTalkFillIcon() {
+    return reviewSvgIcon(
+      'review-talk-fill',
+      'M1.94607 9.31531C1.42353 9.14113 1.4194 8.8601 1.95682 8.68096L21.043 2.31889C21.5715 2.14273 21.8746 2.43854 21.7265 2.95682L16.2733 22.0431C16.1223 22.5715 15.8177 22.5899 15.5944 22.0875L11.9999 13.9999L17.9999 5.99993L9.99992 11.9999L1.94607 9.31531Z',
+    );
+  }
+
+  function reviewTalkCloseIcon() {
+    return reviewSvgIcon(
+      'review-talk-close',
+      'M10.5859 12.0001L2.79297 4.20718L4.20718 2.79297L12.0001 10.5858L19.793 2.79297L21.2072 4.20718L13.4143 12.0001L21.2072 19.7929L19.793 21.2072L12.0001 13.4143L4.20718 21.2072L2.79297 19.7929L10.5859 12.0001Z',
+    );
+  }
+
+  /** @param {string | undefined} detail */
+  function reviewTalkLabel(detail) {
+    const tail = String(detail || '').trim();
+    return tail ? t('reviewTalkThread') + ' ' + tail : t('reviewTalkThread');
+  }
+
+  /** @param {string | undefined} detail */
+  function reviewTalkReplyLabel(detail) {
+    const tail = String(detail || '').trim();
+    return tail
+      ? t('reviewTalkThread') + ' ' + t('reviewTalkReplyOn') + ' ' + tail
+      : t('reviewTalkThread') + ' ' + t('reviewTalkReplyOn');
+  }
+
+  /** Short chip title shown after «ответ на» in the composer. */
+  function reviewTalkSourceTitle(reply) {
+    if (reply.isTalk) {
+      return String(reply.profileName || '').trim() || '—';
+    }
+    if (reply.isExplain) {
+      return 'Что сделано';
+    }
+    if (reply.isStudy) {
+      return 'Изучено';
+    }
+    const pill = String(reply.pillLabel || '').trim();
+    const head = pill.split(/\s*\|\s*/)[0].trim();
+    if (reply.isRereview) {
+      const match = /(?:Реревью|Rereview)\s+\d+/i.exec(head || pill);
+      return match ? match[0] : head;
+    }
+    const review = /(?:Ревью|Review)\s+\d+/i.exec(head || pill);
+    return review ? review[0] : head;
+  }
+
+  const TALK_SOURCE_COLUMN = new Set(['R_SYN3', 'RR_SYN3', 'W_SYN3', 'Z_SYN3']);
+
+  /** Third column beside the profile name. Message replies keep the name only. */
+  function reviewTalkReplyPhrase(type, title) {
+    const kind = String(type || '').trim();
+    const label = String(title || '').trim();
+    if (!label || !TALK_SOURCE_COLUMN.has(kind)) {
+      return '';
+    }
+    return t('reviewTalkReplyOn') + ' ' + label;
+  }
+
+  /**
+   * @param {{ isTalk?: boolean, isExplain?: boolean, isStudy?: boolean, isRereview?: boolean, pillLabel?: string, profileName?: string, locked?: boolean, id: string }} reply
+   * @param {string | undefined} pageId
+   * @param {boolean | undefined} blocked
+   */
+  function reviewReplyTalkButton(reply, pageId, blocked) {
+    return reviewTalkButton(
+      pageId || '',
+      reply.id,
+      reviewTalkReplyLabel(reviewTalkSourceTitle(reply)),
+      !!(blocked || reply.locked),
+      'reply:' + reply.id,
+    );
+  }
+
+  /** @param {string | undefined} name */
+  function reviewTalkMsLabel(name) {
+    const who = String(name || '').trim() || '—';
+    return t('reviewTalkThread') + ' ' + t('reviewTalkReplyTo') + ' · ' + who;
+  }
+
+  /** @param {{ profileId?: string } | null | undefined} node */
+  function reviewProfileId(node) {
+    const id = node && typeof node.profileId === 'string' ? node.profileId.trim() : '';
+    return id || '1';
+  }
+
+  /**
+   * @param {string} pageId
+   * @param {string} messageId
+   * @param {string} label
+   * @param {boolean} disabled
+   * @param {string} [revealId] show with the branch hover timers
+   */
+  function reviewTalkButton(pageId, messageId, label, disabled, revealId) {
+    const shown = !!revealId && checkoutBranchShown.has(revealId);
+    const button = el(
+      'button',
+      'review-side review-talk-btn' +
+        (revealId ? ' is-reveal' : '') +
+        (shown ? ' is-shown' : ''),
+    );
+    button.type = 'button';
+    button.disabled = !!disabled;
+    button.title = t('reviewTalkReplyTo');
+    button.setAttribute('aria-label', button.title);
+    button.append(reviewTalkLineIcon());
+    if (revealId) {
+      button.dataset.branchReveal = revealId;
+      bindCheckoutBranchHover(button, revealId);
+    }
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
+      reviewTalkSource.set(pageId, { messageId, label });
+      syncReviewTalk();
+      resizeReviewTalk();
+      reviewTalkInput?.focus();
+    });
+    return button;
+  }
+
+  /** @param {string | undefined} value */
+  function reviewTalkAvatarSrc(value) {
+    const raw = String(value || '').trim();
+    if (/^https?:\/\//i.test(raw) || /^data:image\//i.test(raw)) {
+      return raw;
+    }
+    return '';
+  }
+
+  /** Person glyph centered in the 22×22 avatar circle. */
+  function reviewTalkUserGlyph() {
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.setAttribute('transform', 'translate(4 4) scale(0.58333)');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute(
+      'd',
+      'M20 22H4V20C4 17.2386 6.23858 15 9 15H15C17.7614 15 20 17.2386 20 20V22ZM12 13C8.68629 13 6 10.3137 6 7C6 3.68629 8.68629 1 12 1C15.3137 1 18 3.68629 18 7C18 10.3137 15.3137 13 12 13Z',
+    );
+    path.setAttribute('fill', '#fff');
+    g.append(path);
+    return g;
+  }
+
+  let reviewTalkAvatarSeq = 0;
+
+  /**
+   * Square SVG so the disc stays a circle even when the flex row squeezes the box.
+   * @param {string | undefined} avatar
+   */
+  function reviewTalkAvatarNode(avatar) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'review-talk-avatar');
+    svg.setAttribute('viewBox', '0 0 22 22');
+    svg.setAttribute('width', '22');
+    svg.setAttribute('height', '22');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.setAttribute('aria-hidden', 'true');
+    const disc = document.createElementNS(SVG_NS, 'circle');
+    disc.setAttribute('cx', '11');
+    disc.setAttribute('cy', '11');
+    disc.setAttribute('r', '11');
+    disc.setAttribute('fill', '#5b6b80');
+    svg.append(disc);
+    const src = reviewTalkAvatarSrc(avatar);
+    if (!src) {
+      svg.append(reviewTalkUserGlyph());
+      return svg;
+    }
+    const clipId = 'review-talk-avatar-' + ++reviewTalkAvatarSeq;
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    const clip = document.createElementNS(SVG_NS, 'clipPath');
+    clip.setAttribute('id', clipId);
+    const clipDisc = document.createElementNS(SVG_NS, 'circle');
+    clipDisc.setAttribute('cx', '11');
+    clipDisc.setAttribute('cy', '11');
+    clipDisc.setAttribute('r', '11');
+    clip.append(clipDisc);
+    defs.append(clip);
+    svg.append(defs);
+    const img = document.createElementNS(SVG_NS, 'image');
+    img.setAttribute('href', src);
+    img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', src);
+    img.setAttribute('x', '0');
+    img.setAttribute('y', '0');
+    img.setAttribute('width', '22');
+    img.setAttribute('height', '22');
+    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+    img.setAttribute('clip-path', 'url(#' + clipId + ')');
+    img.addEventListener('error', () => {
+      img.remove();
+      svg.append(reviewTalkUserGlyph());
+    });
+    svg.append(img);
+    return svg;
+  }
+
+  /**
+   * Pill with a circle inside. The fold caret sits in the pill. The name stays outside it.
+   * Without a caret the pill is a square ring, so the disc stays centered.
+   * @param {string | undefined} name
+   * @param {string | undefined} avatar
+   * @param {HTMLElement | null} [tri]
+   * @param {boolean} [author] MR or review author: orange ring
+   * @param {string} [replyPhrase] «ответ на Ревью N» and the other chip replies
+   */
+  function reviewTalkChip(name, avatar, tri, author, replyPhrase) {
+    const head = el('div', 'review-talk-head');
+    const chip = el(
+      'div',
+      'review-talk-chip' + (tri ? '' : ' is-solo') + (author ? ' is-author' : ''),
+    );
+    chip.append(reviewTalkAvatarNode(avatar));
+    if (tri) {
+      chip.append(tri);
+    }
+    head.append(chip);
+    head.append(el('span', 'review-talk-name', String(name || '').trim() || '—'));
+    const phrase = String(replyPhrase || '').trim();
+    if (phrase) {
+      head.append(el('span', 'review-talk-reply', phrase));
+    }
+    return head;
+  }
+
+  /**
+   * @param {{ id: string, talkText?: string, contentMissing?: boolean, locked?: boolean }} msg
+   * @param {boolean} open
+   */
+  function reviewTalkText(msg, open) {
+    const raw = typeof msg.talkText === 'string' ? msg.talkText : '';
+    const missing = msg.contentMissing === true || !raw.trim();
+    const text = el(
+      'button',
+      'review-talk-text' + (open ? ' is-open' : '') + (missing ? ' is-missing' : ''),
+      missing ? t('reviewEmptyMessage') : raw,
+    );
+    text.type = 'button';
+    text.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (msg.locked) {
+        flashReviewLock(msg.id);
+        return;
+      }
+      if (reviewPlainExpanded.has(msg.id)) {
+        reviewPlainExpanded.delete(msg.id);
+      } else {
+        reviewPlainExpanded.add(msg.id);
+      }
+      paintReviewPage();
+    });
+    return text;
+  }
+
+  function resizeReviewTalk() {
+    const input = reviewTalkInput;
+    if (!input) {
+      return;
+    }
+    const line = 18;
+    const pad = 12;
+    const max = line * 6 + pad;
+    input.style.overflowY = 'hidden';
+    input.style.height = 'auto';
+    const full = input.scrollHeight;
+    const over = full > max + 1;
+    input.style.height = (over ? max : full) + 'px';
+    input.style.overflowY = over ? 'auto' : 'hidden';
+    if (over) {
+      bindThinScroll(input);
+    } else {
+      releaseThinScroll(input);
+    }
+    scheduleThinScroll(true);
+    const bar = reviewTalk;
+    const space = bar && !bar.hidden ? bar.offsetHeight + 16 : 0;
+    document.documentElement.style.setProperty('--review-talk-space', space + 'px');
+  }
+
+  /** Review, re-review, study, explain, and neurofix readers cover the message field. */
+  function reviewPreviewOpen() {
+    return !!(
+      (reviewFilePane && !reviewFilePane.hidden) ||
+      (explainFilePane && !explainFilePane.hidden) ||
+      (reviewFixesPane && !reviewFixesPane.hidden)
+    );
+  }
+
+  function syncReviewTalk() {
+    const onReview = activePage()?.kind === 'review';
+    const previewOpen = onReview && reviewPreviewOpen();
+    if (reviewTalk) {
+      reviewTalk.hidden = !onReview || previewOpen;
+    }
+    if (!onReview || previewOpen) {
+      document.documentElement.style.setProperty('--review-talk-space', '0px');
+      if (previewOpen && reviewTalkInput && document.activeElement === reviewTalkInput) {
+        reviewTalkInput.blur();
+      }
+      return;
+    }
+    const pageId = activePage()?.id || '';
+    const source = pageId ? reviewTalkSource.get(pageId) : undefined;
+    if (reviewTalkSourceRow) {
+      reviewTalkSourceRow.hidden = !source;
+    }
+    if (reviewTalkSourceLabel) {
+      reviewTalkSourceLabel.textContent = source ? source.label : '';
+    }
+    const empty = !reviewTalkInput || !reviewTalkInput.value.trim();
+    if (reviewTalkSend) {
+      reviewTalkSend.disabled = reviewTalkBusy || empty;
+      reviewTalkSend.title = t('reviewTalkSend');
+      reviewTalkSend.setAttribute('aria-label', reviewTalkSend.title);
+      paintReviewTalkSend();
+    }
+    if (reviewTalkSourceClear) {
+      reviewTalkSourceClear.title = t('reviewTalkClear');
+      reviewTalkSourceClear.setAttribute('aria-label', reviewTalkSourceClear.title);
+    }
+    resizeReviewTalk();
+  }
+
+  /** Send glyph while idle, spinning loader while the post is in flight. */
+  function paintReviewTalkSend() {
+    if (!reviewTalkSend) {
+      return;
+    }
+    const mode = reviewTalkBusy ? 'loader' : 'send';
+    reviewTalkSend.classList.toggle('is-sending', reviewTalkBusy);
+    reviewTalkSend.setAttribute('aria-busy', reviewTalkBusy ? 'true' : 'false');
+    if (reviewTalkSend.dataset.icon === mode && reviewTalkSend.firstChild) {
+      return;
+    }
+    reviewTalkSend.replaceChildren(reviewTalkBusy ? reviewProgressIcon() : reviewTalkFillIcon());
+    reviewTalkSend.dataset.icon = mode;
+  }
+
+  function sendReviewTalk() {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || !reviewTalkInput || reviewTalkBusy) {
+      return;
+    }
+    const text = reviewTalkInput.value;
+    if (!text.trim()) {
+      return;
+    }
+    reviewTalkBusy = true;
+    syncReviewTalk();
+    const source = reviewTalkSource.get(page.id);
+    vscode.postMessage({
+      type: 'reviewTalk',
+      pageId: page.id,
+      text,
+      parentMessageId: source ? source.messageId : '',
+    });
+  }
+
+  function clearReviewTalkSource() {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    reviewTalkSource.delete(page.id);
+    syncReviewTalk();
+  }
+
+  function reviewTalkEscapeBlocked() {
+    if (openMenuState) {
+      return true;
+    }
+    if (!contextMenu.hidden) {
+      return true;
+    }
+    if (toolbarMenu && !toolbarMenu.hidden) {
+      return true;
+    }
+    if (reviewFileView || explainFileView || reviewFixesView) {
+      return true;
+    }
+    if (openColorPanel || openGroupPanel || openLinkPanelId) {
+      return true;
+    }
+    if (dirPopoverState || problemPanelState) {
+      return true;
+    }
+    if (!dropDialog.hidden) {
+      return true;
+    }
+    return false;
+  }
+
+  function bindReviewTalk() {
+    reviewTalk?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      sendReviewTalk();
+    });
+    paintReviewTalkSend();
+    if (reviewTalkSourceClear && !reviewTalkSourceClear.firstChild) {
+      reviewTalkSourceClear.append(reviewTalkCloseIcon());
+    }
+    reviewTalkInput?.addEventListener('input', () => {
+      syncReviewTalk();
+    });
+    reviewTalkInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendReviewTalk();
+      }
+    });
+    reviewTalkSend?.addEventListener('click', (event) => {
+      event.preventDefault();
+      sendReviewTalk();
+    });
+    reviewTalkSourceClear?.addEventListener('click', (event) => {
+      event.preventDefault();
+      clearReviewTalkSource();
+    });
+    document.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented) {
+          return;
+        }
+        if (reviewTalkEscapeBlocked()) {
+          return;
+        }
+        const page = activePage();
+        if (!page || page.kind !== 'review' || !reviewTalkSource.has(page.id)) {
+          return;
+        }
+        event.preventDefault();
+        clearReviewTalkSource();
+      },
+      true,
+    );
+  }
+
+  /**
+   * Sparkle beside a review chip. On a foreign branch it stays visible and muted.
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function reviewNeurofixButton(pageId, messageId) {
+    const side = el('button', 'review-side review-neurofix-btn');
+    side.type = 'button';
+    side.title = t('neurofix');
+    side.setAttribute('aria-label', side.title);
+    side.append(reviewSparkleIcon());
+    side.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openNeuroFixMenu(event.clientX, event.clientY, pageId, messageId);
+    });
+    return side;
+  }
+
+  function openNeuroFixMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewNeurofix', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  /**
+   * Counts from a pill label. The label may be
+   * `Ревью N | H:n | M:n | S:n` or `Ревью N | branch | rd | H:n | M:n | S:n`.
+   * @param {string | undefined} pillLabel
+   * @returns {{ H: number, M: number, S: number } | undefined}
+   */
+  /**
+   * Chip label. Review: `Ревью N | branch|changes | rl|rm|rd | H:n | M:n | L:n`.
+   * Re-review: `Реревью N | Ревью K | branch|changes | rl|rm|rd | L:1, 2`.
+   * Explain: `Что сделано | branch|changes | rl|rm|rd`. Older explain chips are the title alone.
+   * Severity, scope and depth each get their own color. `rs` and `rl` share the shallow color.
+   * @param {HTMLElement} node
+   * @param {string} label
+   * @param {{ jumpNumber?: number, onReviewJump?: (number: number) => void, onTitle?: () => void, onLevel?: (label: string) => void }} [opts]
+   */
+  function setReviewPillText(node, label, opts) {
+    const text = String(label || '');
+    node.replaceChildren();
+    const chunks = text.split(/\s*\|\s*/);
+    const anyTone = chunks.some((chunk) => reviewPillTone(chunk.trim()));
+    const jumpNumber = opts && opts.jumpNumber;
+    const interactive = !!(opts && (opts.onTitle || opts.onLevel));
+    if (!anyTone && !jumpNumber && !interactive) {
+      node.textContent = text.replace(/\s*\|\s*/g, ' | ');
+      return;
+    }
+    let wrote = false;
+    let lastLevel = false;
+    chunks.forEach((chunk, index) => {
+      const shown = chunk.trim();
+      if (reviewSchemeLevelPills() && /^[HMLS]:\s*0\s*$/i.test(shown)) {
+        return;
+      }
+      const tone = reviewPillTone(shown);
+      const isLevel =
+        reviewSchemeLevelPills() && (tone === 'high' || tone === 'medium' || tone === 'low');
+      const levelClass = isLevel ? ' review-level-pill' : '';
+      if (wrote && !(lastLevel && isLevel)) {
+        const sep = el('span', 'review-pill-sep');
+        sep.textContent = ' | ';
+        node.append(sep);
+      }
+      wrote = true;
+      lastLevel = isLevel;
+      if (opts && opts.onLevel && /^[HMLS]:\s*\d/i.test(shown)) {
+        const levelBtn = el(
+          'button',
+          'review-pill-jump' + (tone ? ' review-pill-bit review-pill-' + tone : '') + levelClass,
+        );
+        levelBtn.type = 'button';
+        levelBtn.append(document.createTextNode(shown));
+        levelBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          opts.onLevel(shown);
+        });
+        node.append(levelBtn);
+        return;
+      }
+      if (index === 0 && opts && opts.onTitle) {
+        const titleBtn = el('button', 'review-pill-jump', shown);
+        titleBtn.type = 'button';
+        titleBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          opts.onTitle();
+        });
+        node.append(titleBtn);
+        return;
+      }
+      const parentJump = /^(?:Ревью|Review)\s+(\d+)$/i.exec(shown);
+      if (
+        parentJump &&
+        jumpNumber &&
+        Number(parentJump[1]) === jumpNumber &&
+        opts.onReviewJump
+      ) {
+        const jump = el('button', 'review-pill-jump', shown);
+        jump.type = 'button';
+        jump.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          opts.onReviewJump(jumpNumber);
+        });
+        node.append(jump);
+        return;
+      }
+      const toneSeen = reviewPillTone(shown);
+      if (!toneSeen) {
+        node.append(document.createTextNode(shown));
+        return;
+      }
+      const bit = el('span', 'review-pill-bit review-pill-' + toneSeen + levelClass);
+      if (toneSeen === 'branch' && reviewSchemeIconStyle() && reviewSchemeId !== 'softSemantic') {
+        bit.append(reviewSvgIcon('review-branch-ico', REVIEW_BRANCH_ICON));
+      }
+      bit.append(document.createTextNode(shown));
+      node.append(bit);
+    });
+  }
+
+  /**
+   * Chip text. Stored messages still say `Реревью N на Ревью K`.
+   * @param {string} label
+   */
+  function normalizeRereviewPill(label) {
+    return String(label || '').replace(
+      /^((?:Реревью|Rereview)\s+\d+)\s+на\s+((?:Ревью|Review)\s+\d+)\b/i,
+      '$1 | $2',
+    );
+  }
+
+  /** @param {string | undefined} label */
+  function reviewChipNumber(label) {
+    const head = String(label || '').split(/\s*\|\s*/)[0].trim();
+    const match = /^(?:Ревью|Review)\s+(\d+)$/i.exec(head);
+    return match ? Number(match[1]) : 0;
+  }
+
+  /**
+   * Review already painted in the same thread: a sibling reply, or the channel root
+   * when that root is the numbered review.
+   * @param {string} fromReplyId
+   * @param {number} number
+   * @returns {{ parentId: string, kind: 'root' | 'reply', id: string } | null}
+   */
+  function loadedReviewTarget(fromReplyId, number) {
+    if (!number) {
+      return null;
+    }
+    const parent = (reviewState?.messages || []).find((msg) =>
+      (msg.replies || []).some((item) => item.id === fromReplyId),
+    );
+    if (!parent) {
+      return null;
+    }
+    if (parent.isReviewRoot && reviewChipNumber(parent.pillLabel) === number) {
+      return { parentId: parent.id, kind: 'root', id: parent.id };
+    }
+    const found = (parent.replies || []).find((item) => {
+      if (!item.isPill || item.isRereview || item.isExplain) {
+        return false;
+      }
+      return reviewChipNumber(item.pillLabel) === number;
+    });
+    if (!found) {
+      return null;
+    }
+    return { parentId: parent.id, kind: 'reply', id: found.id };
+  }
+
+  /**
+   * Parent number from `Реревью N | Ревью K | …` when that review is already in the thread.
+   * @param {string} replyId
+   * @param {string} label
+   */
+  function rereviewParentJump(replyId, label) {
+    const chunks = String(label || '').split(/\s*\|\s*/);
+    for (const chunk of chunks) {
+      const match = /^(?:Ревью|Review)\s+(\d+)$/i.exec(chunk.trim());
+      if (!match) {
+        continue;
+      }
+      const number = Number(match[1]);
+      if (loadedReviewTarget(replyId, number)) {
+        return number;
+      }
+    }
+    return 0;
+  }
+
+  /** @type {number} */
+  let reviewChipFlashTimer = 0;
+
+  /**
+   * @param {string} fromReplyId
+   * @param {number} number
+   */
+  function revealParentReview(fromReplyId, number) {
+    const target = loadedReviewTarget(fromReplyId, number);
+    if (!target) {
+      return;
+    }
+    const collapsed = target.kind === 'reply' && reviewCollapsed.has(target.parentId);
+    if (collapsed) {
+      reviewCollapsed.delete(target.parentId);
+      syncReviewCollapsed();
+    }
+    const run = () => {
+      const selector =
+        target.kind === 'root'
+          ? '.review-node[data-review-id="' + CSS.escape(target.id) + '"]'
+          : '[data-review-reply-id="' + CSS.escape(target.id) + '"]';
+      const node = root.querySelector(selector);
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      flashReviewChipBorder(
+        node.querySelector(':scope > .review-body > .review-chip-wrap > .review-chip'),
+      );
+    };
+    if (collapsed) {
+      window.setTimeout(run, 340);
+    } else {
+      run();
+    }
+  }
+
+  /** @param {Element | null} chip */
+  function flashReviewChipBorder(chip) {
+    if (!(chip instanceof HTMLElement)) {
+      return;
+    }
+    root.querySelectorAll('.review-chip.is-rereview-flash').forEach((node) => {
+      if (node !== chip) {
+        node.classList.remove('is-rereview-flash');
+      }
+    });
+    chip.classList.remove('is-rereview-flash');
+    void chip.offsetWidth;
+    chip.classList.add('is-rereview-flash');
+    window.clearTimeout(reviewChipFlashTimer);
+    reviewChipFlashTimer = window.setTimeout(() => {
+      chip.classList.remove('is-rereview-flash');
+    }, 2000);
+  }
+
+  /** @param {string} token */
+  function reviewPillTone(token) {
+    const value = token.trim().toLowerCase();
+    if (value === 'changes' || value === 'change') {
+      return 'changes';
+    }
+    if (value === 'branch') {
+      return 'branch';
+    }
+    if (value === 'rd') {
+      return 'rd';
+    }
+    if (value === 'rm') {
+      return 'rm';
+    }
+    if (value === 'rs' || value === 'rl') {
+      return 'rs';
+    }
+    if (/^h:\s*(?:all|\d+(?:\s*,\s*\d+)*)$/.test(value)) {
+      return 'high';
+    }
+    if (/^m:\s*(?:all|\d+(?:\s*,\s*\d+)*)$/.test(value)) {
+      return 'medium';
+    }
+    if (/^[ls]:\s*(?:all|\d+(?:\s*,\s*\d+)*)$/.test(value)) {
+      return 'low';
+    }
+    return '';
+  }
+
+  /**
+   * Client-side mirror of parseReviewFixGroups for the Neurofix list panel.
+   * @param {string} text
+   * @returns {{
+   *   ok: true,
+   *   counts: { H: number, M: number, S: number },
+   *   groups: { H: string[], M: string[], L: string[] },
+   * } | { ok: false, message: string }}
+   */
+  function parseReviewFixGroupsClient(text) {
+    const lines = String(text || '').split(/\r?\n/);
+    const severityRaw = (lines[2] || '')
+      .trim()
+      .replace(/^(?:branch|changes?)\s*\|\s*(?:rs|rl|rm|rd)\s*\|\s*/i, '');
+    const rereviewFile = /^(?:Реревью|Rereview)\b/i.test((lines[0] || '').trim());
+    const selectionShape = /^([HML]:(?:all|\d+(?:\s*,\s*\d+)*)(?:\s*\|\s*[HML]:(?:all|\d+(?:\s*,\s*\d+)*))*)$/i.test(
+      severityRaw,
+    );
+    const sevMatch = rereviewFile
+      ? null
+      : severityRaw.match(/^H:\s*(\d+)\s*\|\s*M:\s*(\d+)\s*\|\s*([LS]):\s*(\d+)\s*$/i);
+    const selectionLine = rereviewFile ? selectionShape : !sevMatch && selectionShape;
+    if (!sevMatch && !selectionLine) {
+      return { ok: false, message: t('neurofixListParseFail') };
+    }
+    const counts = sevMatch
+      ? {
+          H: Number(sevMatch[1]),
+          M: Number(sevMatch[2]),
+          L: Number(sevMatch[4]),
+        }
+      : null;
+    /** @type {{ H: string[], M: string[], L: string[] }} */
+    const groups = { H: [], M: [], L: [] };
+    /** @type {Set<'H' | 'M' | 'L'>} */
+    const seen = new Set();
+    /** @type {'H' | 'M' | 'L' | undefined} */
+    let current;
+    for (const raw of lines.slice(3)) {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const header = /^([HMLS])\s*$/i.exec(trimmed);
+      if (header) {
+        const upper = header[1].toUpperCase();
+        const letter = upper === 'S' || upper === 'L' ? 'L' : upper === 'H' || upper === 'M' ? upper : '';
+        if (letter !== 'H' && letter !== 'M' && letter !== 'L') {
+          continue;
+        }
+        if (seen.has(letter)) {
+          return { ok: false, message: t('neurofixListParseFail') };
+        }
+        seen.add(letter);
+        current = letter;
+        continue;
+      }
+      if (/^-\s+/.test(trimmed)) {
+        if (!current) {
+          return { ok: false, message: t('neurofixListParseFail') };
+        }
+        groups[current].push(trimmed.replace(/^-\s+/, '').trim());
+        continue;
+      }
+    }
+    const resolved = counts || {
+      H: groups.H.length,
+      M: groups.M.length,
+      L: groups.L.length,
+    };
+    if (counts) {
+      for (const letter of /** @type {Array<'H' | 'M' | 'L'>} */ (['H', 'M', 'L'])) {
+        const expected = counts[letter];
+        const actual = groups[letter].length;
+        if (expected === 0 && actual === 0) {
+          continue;
+        }
+        if (expected !== actual) {
+          return { ok: false, message: t('neurofixListParseFail') };
+        }
+      }
+    }
+    return { ok: true, counts: resolved, groups };
+  }
+
+  /**
+   * @param {{ pageId: string, messageId: string, left: number, top: number, width: number, mode?: 'neurofix' | 'rereview' | 'study' }} opts
+   */
+  function openNeuroFixListPanel(opts) {
+    closeNeuroFixListPanel();
+    const cached = reviewFileCache.get(opts.messageId);
+    neuroFixListPanel = {
+      pageId: opts.pageId,
+      messageId: opts.messageId,
+      left: opts.left,
+      top: opts.top,
+      width: Math.max(opts.width || 240, 240),
+      mode: opts.mode === 'rereview' ? 'rereview' : opts.mode === 'study' ? 'study' : 'neurofix',
+      selected: { H: [], M: [], L: [] },
+      status: cached ? 'ready' : 'loading',
+      error: '',
+      entered: false,
+      pointerInside: false,
+      el: null,
+    };
+    if (cached && typeof cached.text === 'string') {
+      fillNeuroFixListFromText(cached.text);
+      return;
+    }
+    mountNeuroFixListPanel();
+    vscode.postMessage({
+      type: 'reviewOpenFile',
+      pageId: opts.pageId,
+      messageId: opts.messageId,
+    });
+  }
+
+  function closeNeuroFixListPanel() {
+    if (!neuroFixListPanel) {
+      return;
+    }
+    neuroFixListPanel.el?.remove();
+    neuroFixListPanel = null;
+  }
+
+  /** @param {string} text */
+  function fillNeuroFixListFromText(text) {
+    if (!neuroFixListPanel) {
+      return;
+    }
+    const parsed = parseReviewFixGroupsClient(text);
+    if (!parsed.ok) {
+      neuroFixListPanel.status = 'error';
+      neuroFixListPanel.error = parsed.message;
+      mountNeuroFixListPanel();
+      return;
+    }
+    neuroFixListPanel.status = 'ready';
+    neuroFixListPanel.error = '';
+    mountNeuroFixListPanel(parsed);
+  }
+
+  /**
+   * @param {{
+   *   counts: { H: number, M: number, S: number },
+   *   groups: { H: string[], M: string[], S: string[] },
+   * } | undefined} [parsed]
+   */
+  function mountNeuroFixListPanel(parsed) {
+    if (!neuroFixListPanel) {
+      return;
+    }
+    const prev = neuroFixListPanel.el;
+    const entered = neuroFixListPanel.entered;
+    const pointerInside = neuroFixListPanel.pointerInside;
+    prev?.remove();
+    const panel = document.createElement('div');
+    panel.className = 'syn3-menu syn3-neurofix-list';
+    panel.setAttribute('role', 'menu');
+    panel.style.left = neuroFixListPanel.left + 'px';
+    panel.style.top = neuroFixListPanel.top + 'px';
+    panel.style.minWidth = neuroFixListPanel.width + 'px';
+    panel.addEventListener('mouseenter', () => {
+      if (!neuroFixListPanel) {
+        return;
+      }
+      neuroFixListPanel.entered = true;
+      neuroFixListPanel.pointerInside = true;
+    });
+    panel.addEventListener('mouseleave', () => {
+      if (!neuroFixListPanel) {
+        return;
+      }
+      neuroFixListPanel.pointerInside = false;
+      if (!neuroFixListPanel.entered) {
+        return;
+      }
+      const fileOpen =
+        !!reviewFileView && reviewFileView.messageId === neuroFixListPanel.messageId;
+      if (fileOpen) {
+        return;
+      }
+      closeNeuroFixListPanel();
+    });
+
+    if (neuroFixListPanel.status === 'loading') {
+      panel.append(reviewFileSkeleton());
+    } else if (neuroFixListPanel.status === 'error') {
+      panel.append(
+        el('div', 'syn3-neurofix-list-error', neuroFixListPanel.error || t('neurofixListParseFail')),
+      );
+    } else if (parsed) {
+      const counts = parsed.counts;
+      const pageId = neuroFixListPanel.pageId;
+      const messageId = neuroFixListPanel.messageId;
+      const source =
+        findReviewReply(messageId) ||
+        (reviewState?.messages || []).find((item) => item.id === messageId);
+      const rereviewMode = neuroFixListPanel.mode === 'rereview' || neuroFixListPanel.mode === 'study';
+      const studyMode = neuroFixListPanel.mode === 'study';
+      const bullets = reviewFixBullets(source);
+      const open = reviewOpenBullets(source);
+      const fixedBy = {
+        H: new Set(rereviewMode ? [] : bullets.H),
+        M: new Set(rereviewMode ? [] : bullets.M),
+        L: new Set(rereviewMode ? [] : bullets.L),
+      };
+      const limitToOpen = !rereviewMode && !!source?.isRereview;
+      const remaining = {
+        H: Math.max(0, counts.H - fixedBy.H.size),
+        M: Math.max(0, counts.M - fixedBy.M.size),
+        L: Math.max(0, counts.L - fixedBy.L.size),
+      };
+      panel.append(
+        el(
+          'div',
+          'syn3-neurofix-list-counts',
+          `H:${remaining.H} | M:${remaining.M} | L:${remaining.L}`,
+        ),
+      );
+      panel.append(el('div', 'syn3-neurofix-list-hint', t('rereviewShiftHint')));
+      const selected = neuroFixListPanel.selected || { H: [], M: [], L: [] };
+      /** @type {Array<{ letter: 'H' | 'M' | 'L', label: string }>} */
+      const groupMeta = [
+        { letter: 'H', label: 'High' },
+        { letter: 'M', label: 'Medium' },
+        { letter: 'L', label: 'Low' },
+      ];
+      for (const group of groupMeta) {
+        const items = parsed.groups[group.letter];
+        if (!items.length) {
+          continue;
+        }
+        const visible = items.some((_, index) => {
+          const number = index + 1;
+          if (fixedBy[group.letter].has(number)) {
+            return false;
+          }
+          if (limitToOpen && !open[group.letter].includes(number)) {
+            return false;
+          }
+          return true;
+        });
+        if (!visible) {
+          continue;
+        }
+        panel.append(el('div', 'syn3-neurofix-list-group', group.label));
+        for (let index = 0; index < items.length; index += 1) {
+          const number = index + 1;
+          if (fixedBy[group.letter].has(number)) {
+            continue;
+          }
+          if (limitToOpen && !open[group.letter].includes(number)) {
+            continue;
+          }
+          const full = items[index];
+          const short =
+            full.length > 80 ? full.slice(0, 80).replace(/\s+\S*$/, '').trimEnd() + '…' : full;
+          const row = document.createElement('div');
+          row.className =
+            'syn3-neurofix-list-item' +
+            (selected[group.letter].includes(number) ? ' is-selected' : '');
+          row.setAttribute('role', 'menuitem');
+          const main = document.createElement('button');
+          main.type = 'button';
+          main.className = 'syn3-neurofix-list-item-main';
+          main.textContent = `${index + 1}. ${short}`;
+          main.title = full;
+          if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
+            muteNeurofixAction(main);
+          }
+          main.addEventListener('click', (event) => {
+            event.preventDefault();
+            if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
+              denyForeignNeurofix();
+              return;
+            }
+            if (event.shiftKey) {
+              const bucket = selected[group.letter];
+              const at = bucket.indexOf(number);
+              if (at >= 0) {
+                bucket.splice(at, 1);
+              } else {
+                bucket.push(number);
+              }
+              neuroFixListPanel.selected = selected;
+              mountNeuroFixListPanel(parsed);
+              return;
+            }
+            closeNeuroFixListPanel();
+            if (rereviewMode) {
+              const selection = { [group.letter]: [number] };
+              if (studyMode) {
+                postStudy(pageId, messageId, selection);
+              } else {
+                postRereview(pageId, messageId, selection);
+              }
+              return;
+            }
+            beginLocalNeurofixSkeleton(pageId, messageId);
+            vscode.postMessage({
+              type: 'reviewNeurofix',
+              pageId,
+              messageId,
+              scope: group.letter,
+              itemIndex: index,
+            });
+          });
+          const openBtn = document.createElement('button');
+          openBtn.type = 'button';
+          openBtn.className = 'syn3-neurofix-list-open';
+          openBtn.title = t('reviewFileTitle');
+          openBtn.setAttribute('aria-label', t('reviewFileTitle'));
+          openBtn.append(reviewVarInstanceIcon());
+          openBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const chip =
+              (reviewState?.messages || []).find((item) => item.id === messageId) ||
+              findReviewReply(messageId) ||
+              { id: messageId };
+            openReviewFileView(pageId, chip);
+          });
+          row.append(main, openBtn);
+          panel.append(row);
+        }
+      }
+      const pickedCount = selected.H.length + selected.M.length + selected.L.length;
+      if (pickedCount > 0) {
+        const launch = document.createElement('button');
+        launch.type = 'button';
+        launch.className = 'syn3-neurofix-list-launch';
+        launch.textContent = t(studyMode ? 'studyLaunch' : 'rereviewLaunch');
+        launch.addEventListener('click', (event) => {
+          event.preventDefault();
+          if (!rereviewMode && reviewNeurofixBlocked(messageId)) {
+            denyForeignNeurofix();
+            return;
+          }
+          const picks = {
+            H: selected.H.slice(),
+            M: selected.M.slice(),
+            L: selected.L.slice(),
+          };
+          closeNeuroFixListPanel();
+          if (rereviewMode) {
+            if (studyMode) {
+              postStudy(pageId, messageId, picks);
+            } else {
+              postRereview(pageId, messageId, picks);
+            }
+            return;
+          }
+          beginLocalNeurofixSkeleton(pageId, messageId);
+          vscode.postMessage({
+            type: 'reviewNeurofix',
+            pageId,
+            messageId,
+            scope: 'all',
+            picks,
+          });
+        });
+        panel.append(launch);
+      }
+    }
+
+    document.body.append(panel);
+    const maxH = Math.max(120, window.innerHeight - neuroFixListPanel.top - 8);
+    panel.style.maxHeight = maxH + 'px';
+    let top = neuroFixListPanel.top;
+    if (top + panel.offsetHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - panel.offsetHeight);
+      panel.style.top = top + 'px';
+      neuroFixListPanel.top = top;
+    }
+    neuroFixListPanel.el = panel;
+    neuroFixListPanel.entered = entered;
+    neuroFixListPanel.pointerInside = pointerInside;
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {string} pageId
+   * @param {string} messageId
+   */
+  function openReviewMessageContextMenu(x, y, pageId, messageId) {
+    openContextMenu(
+      { webviewSection: 'reviewMsg', reviewPageId: pageId, reviewMessageId: messageId },
+      x,
+      y,
+    );
+  }
+
+  function dismissReviewMrPanel() {
+    removeOverlay('review-mr-panel');
+  }
+
+  function closeReviewMrPanel() {
+    dismissReviewMrPanel();
+    reviewMrPanel = null;
+  }
+
+  function clearBranchDepthMenu() {
+    branchDepthMenu?.remove();
+    branchDepthMenu = null;
+  }
+
+  function clearBranchSearchTimer() {
+    if (branchSearchTimer != null) {
+      clearTimeout(branchSearchTimer);
+      branchSearchTimer = null;
+    }
+  }
+
+  function closeHostBranchPanel() {
+    clearBranchDepthMenu();
+    clearBranchSearchTimer();
+    removeOverlay('host-branch-panel');
+    branchPicker = null;
+  }
+
+  function newBranchRequestId() {
+    return 'br-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  /**
+   * @param {'pull' | 'review' | 'explain'} mode
+   * @param {{ parentMessageId?: string }} [opts]
+   */
+  function openHostBranchPanel(mode, opts) {
+    const pageId = String(activePage()?.id || '');
+    if (!pageId) {
+      return;
+    }
+    closeHostBranchPanel();
+    dismissReviewMrPanel();
+    branchPicker = {
+      mode,
+      pageId,
+      parentMessageId: opts?.parentMessageId || '',
+      source: 'mrs',
+      currentBranch: '',
+      branches: [],
+      branchesLoaded: false,
+      branchNextPage: undefined,
+      loadingBranches: false,
+      inflightBranches: '',
+      requests: [],
+      requestsLoaded: false,
+      requestNextPage: undefined,
+      loadingMrs: false,
+      inflightRequests: '',
+      resolvingParent: false,
+      step: 'branches',
+      query: '',
+      activeQuery: '',
+      pendingSearchFocus: true,
+    };
+    requestHostOpenRequests(1);
+  }
+
+  /** @param {number} page */
+  function requestHostBranches(page) {
+    if (!branchPicker) {
+      return;
+    }
+    const requestId = newBranchRequestId();
+    branchPicker.inflightBranches = requestId;
+    branchPicker.loadingBranches = true;
+    branchPicker.branchNextPage = undefined;
+    renderHostBranchPanel();
+    vscode.postMessage({
+      type: 'reviewListBranches',
+      pageId: branchPicker.pageId,
+      page,
+      requestId,
+    });
+  }
+
+  /** @param {number} page */
+  function requestHostOpenRequests(page) {
+    if (!branchPicker) {
+      return;
+    }
+    const requestId = newBranchRequestId();
+    branchPicker.inflightRequests = requestId;
+    branchPicker.loadingMrs = true;
+    branchPicker.requestNextPage = undefined;
+    renderHostBranchPanel();
+    vscode.postMessage({
+      type: 'reviewListOpenRequests',
+      pageId: branchPicker.pageId,
+      page,
+      requestId,
+    });
+  }
+
+  /** @param {'mrs' | 'branches'} next */
+  function selectBranchPickerSource(next) {
+    if (!branchPicker || branchPicker.step !== 'branches' || branchPicker.source === next) {
+      return;
+    }
+    clearBranchDepthMenu();
+    clearBranchSearchTimer();
+    branchPicker.source = next;
+    branchPicker.query = '';
+    branchPicker.activeQuery = '';
+    branchPicker.pendingSearchFocus = true;
+    if (next === 'mrs') {
+      if (!branchPicker.requestsLoaded && !branchPicker.loadingMrs) {
+        requestHostOpenRequests(1);
+        return;
+      }
+    } else if (!branchPicker.branchesLoaded && !branchPicker.loadingBranches) {
+      requestHostBranches(1);
+      return;
+    }
+    renderHostBranchPanel();
+  }
+
+  function requestHostParent(branch) {
+    if (!branchPicker) {
+      return;
+    }
+    const requestId = newBranchRequestId();
+    branchPicker.requestId = requestId;
+    branchPicker.resolvingParent = true;
+    branchPicker.step = 'bases';
+    branchPicker.selectedBranch = branch;
+    branchPicker.query = '';
+    branchPicker.activeQuery = '';
+    clearBranchSearchTimer();
+    renderHostBranchPanel();
+    vscode.postMessage({
+      type: 'reviewResolveParent',
+      pageId: branchPicker.pageId,
+      branch,
+      requestId,
+    });
+  }
+
+  /** @param {typeof branchPicker} picker */
+  function pickerShowsRequests(picker) {
+    return !!picker && picker.step !== 'bases' && picker.source === 'mrs';
+  }
+
+  /** @param {NonNullable<typeof branchPicker>} picker */
+  function pickerListLoading(picker) {
+    if (pickerShowsRequests(picker)) {
+      return !!picker.loadingMrs;
+    }
+    return !!picker.loadingBranches || (!!picker.resolvingParent && !picker.branchesLoaded);
+  }
+
+  /** @param {NonNullable<typeof branchPicker>} picker */
+  function pickerListNext(picker) {
+    return pickerShowsRequests(picker) ? picker.requestNextPage : picker.branchNextPage;
+  }
+
+  /**
+   * @param {string[]} names
+   * @param {string} [hide]
+   */
+  /**
+   * Commit the typed name: Enter, or 3s after the last character.
+   * Shorter than 3 characters does not search.
+   */
+  function commitBranchSearch() {
+    if (!branchPicker) {
+      return;
+    }
+    clearBranchSearchTimer();
+    const query = (branchPicker.query || '').trim();
+    if (query.length < 3) {
+      return;
+    }
+    branchPicker.activeQuery = query;
+    if (pickerListNext(branchPicker) != null && !pickerListLoading(branchPicker)) {
+      pumpBranchSearch();
+      return;
+    }
+    renderHostBranchPanel();
+  }
+
+  /** Keep loading later pages while a search is active so matches below the input can appear. */
+  function pumpBranchSearch() {
+    if (!branchPicker?.activeQuery || pickerListLoading(branchPicker) || pickerListNext(branchPicker) == null) {
+      return;
+    }
+    const page = pickerListNext(branchPicker);
+    if (pickerShowsRequests(branchPicker)) {
+      requestHostOpenRequests(page);
+      return;
+    }
+    requestHostBranches(page);
+  }
+
+  /**
+   * @param {string} name
+   * @param {string} query
+   */
+  function branchNameMatches(name, query) {
+    return name.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  }
+
+  function filterPickerBranches(names, hide) {
+    const seen = new Set();
+    const out = [];
+    for (const name of names) {
+      if (!name || name === hide || seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      out.push(name);
+    }
+    return out;
+  }
+
+  /**
+   * @param {unknown} raw
+   */
+  function readOpenRequests(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    const out = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const sourceBranch = typeof item.sourceBranch === 'string' ? item.sourceBranch : '';
+      if (!sourceBranch) {
+        continue;
+      }
+      out.push({
+        title: typeof item.title === 'string' ? item.title : '',
+        sourceBranch,
+        author: typeof item.author === 'string' ? item.author : '',
+        draft: item.draft === true,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * @param {{ sourceBranch: string, title: string, author: string, draft: boolean }} item
+   */
+  function openRequestKey(item) {
+    return [item.sourceBranch, item.title, item.author, item.draft ? '1' : '0'].join('\0');
+  }
+
+  /**
+   * @param {Array<{ sourceBranch: string, title: string, author: string, draft: boolean }>} items
+   * @param {string} hide
+   */
+  function filterPickerRequests(items, hide) {
+    const seen = new Set();
+    const out = [];
+    for (const item of items) {
+      if (!item?.sourceBranch || item.sourceBranch === hide || seen.has(openRequestKey(item))) {
+        continue;
+      }
+      seen.add(openRequestKey(item));
+      out.push(item);
+    }
+    return out;
+  }
+
+  /**
+   * @param {{ title?: string }} item
+   * @param {string} query
+   */
+  function requestTitleMatches(item, query) {
+    return (item.title || '').toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  }
+
+  /**
+   * @param {{ sourceBranch: string, author?: string }} item
+   */
+  function requestMeta(item) {
+    const author = item.author || '';
+    return author ? `${item.sourceBranch} · ${author}` : item.sourceBranch;
+  }
+
+  /**
+   * @param {string} name
+   */
+  function activatePickerBranch(name) {
+    if (!branchPicker || !name) {
+      return;
+    }
+    if (branchPicker.mode === 'pull') {
+      const pageId = branchPicker.pageId;
+      closeHostBranchPanel();
+      beginLocalMrSkeleton(pageId, '…', false);
+      vscode.postMessage({ type: 'reviewPullOther', pageId, branch: name });
+      return;
+    }
+    branchPicker.selectedBranch = name;
+    renderHostBranchPanel();
+    const panelNode = document.getElementById('host-branch-panel');
+    let anchor = null;
+    for (const node of panelNode?.querySelectorAll('[data-branch]') || []) {
+      if (node instanceof HTMLElement && node.dataset.branch === name) {
+        anchor = node;
+        break;
+      }
+    }
+    if (anchor instanceof HTMLElement) {
+      mountBranchPanelDepthMenu(anchor, name);
+    }
+  }
+
+  function renderHostBranchPanel() {
+    if (!branchPicker) {
+      return;
+    }
+    clearBranchDepthMenu();
+    const previousList = document.querySelector('#host-branch-panel .host-branch-list');
+    const previousScroll = previousList instanceof HTMLElement ? previousList.scrollTop : 0;
+    const previousSearch = document.querySelector('#host-branch-panel .host-branch-search');
+    const searchFocused = previousSearch instanceof HTMLInputElement && document.activeElement === previousSearch;
+    const searchCaret = searchFocused ? previousSearch.selectionStart : null;
+    removeOverlay('host-branch-panel');
+    const picker = branchPicker;
+    const panel = el('div', 'review-mr-panel host-branch-panel');
+    panel.id = 'host-branch-panel';
+
+    const titleKey =
+      picker.step === 'bases'
+        ? 'branchPanelBaseTitle'
+        : picker.mode === 'pull'
+          ? 'branchPanelPullTitle'
+          : picker.mode === 'explain'
+            ? 'branchPanelExplainTitle'
+            : 'branchPanelReviewTitle';
+    const head = el('div', 'host-branch-head');
+    head.append(el('div', 'host-branch-title', t(titleKey)));
+    const closeBtn = el('button', 'review-btn host-branch-close', '×');
+    closeBtn.type = 'button';
+    closeBtn.addEventListener('click', () => closeHostBranchPanel());
+    head.append(closeBtn);
+    panel.append(head);
+
+    const showingRequests = pickerShowsRequests(picker);
+    if (picker.step !== 'bases') {
+      const tabs = el('div', 'host-branch-tabs');
+      tabs.setAttribute('role', 'tablist');
+      const mrKey = data?.reviewProvider === 'github' ? 'branchPanelTabPr' : 'branchPanelTabMr';
+      const mrTab = el('button', 'host-branch-tab', t(mrKey));
+      mrTab.type = 'button';
+      mrTab.setAttribute('role', 'tab');
+      const mrsSelected = picker.source === 'mrs';
+      mrTab.setAttribute('aria-selected', mrsSelected ? 'true' : 'false');
+      if (mrsSelected) {
+        mrTab.classList.add('is-selected');
+      }
+      mrTab.addEventListener('click', () => selectBranchPickerSource('mrs'));
+      const branchTab = el('button', 'host-branch-tab', t('branchPanelTabBranches'));
+      branchTab.type = 'button';
+      branchTab.setAttribute('role', 'tab');
+      const branchesSelected = picker.source === 'branches';
+      branchTab.setAttribute('aria-selected', branchesSelected ? 'true' : 'false');
+      if (branchesSelected) {
+        branchTab.classList.add('is-selected');
+      }
+      branchTab.addEventListener('click', () => selectBranchPickerSource('branches'));
+      tabs.append(mrTab, branchTab);
+      panel.append(tabs);
+    }
+
+    const searchKey = showingRequests ? 'branchPanelSearchMrs' : 'branchPanelSearch';
+    const search = document.createElement('input');
+    search.className = 'review-mr-title host-branch-search';
+    search.type = 'text';
+    search.spellcheck = false;
+    search.autocomplete = 'off';
+    search.placeholder = t(searchKey);
+    search.setAttribute('aria-label', t(searchKey));
+    search.value = picker.query || '';
+    search.addEventListener('input', () => {
+      if (!branchPicker) {
+        return;
+      }
+      branchPicker.query = search.value;
+      clearBranchSearchTimer();
+      const typed = search.value.trim();
+      if (typed.length < 3) {
+        if (branchPicker.activeQuery) {
+          branchPicker.activeQuery = '';
+          renderHostBranchPanel();
+        }
+        return;
+      }
+      branchSearchTimer = setTimeout(() => commitBranchSearch(), BRANCH_SEARCH_MS);
+    });
+    search.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      commitBranchSearch();
+    });
+    panel.append(search);
+
+    if (picker.step === 'bases' && picker.selectedBranch) {
+      panel.append(el('div', 'host-branch-sub', picker.selectedBranch));
+    }
+
+    const list = el('div', 'host-branch-list');
+    list.setAttribute('role', 'listbox');
+
+    const hide =
+      picker.step === 'bases' ? picker.selectedBranch || '' : picker.currentBranch || '';
+    const activeQuery = (picker.activeQuery || '').trim();
+    const loading = pickerListLoading(picker);
+
+    if (showingRequests) {
+      let items = filterPickerRequests(picker.requests, picker.currentBranch || '');
+      if (activeQuery.length >= 3) {
+        items = items.filter((item) => requestTitleMatches(item, activeQuery));
+      }
+      if (loading && items.length === 0) {
+        for (let i = 0; i < 4; i += 1) {
+          list.append(el('div', 'host-branch-skeleton'));
+        }
+      } else if (!loading && items.length === 0) {
+        list.append(
+          el(
+            'div',
+            'host-branch-empty',
+            t(activeQuery ? 'branchPanelMrsNoMatch' : 'branchPanelMrsEmpty'),
+          ),
+        );
+      } else {
+        for (const item of items) {
+          const row = el('button', 'host-branch-row');
+          row.type = 'button';
+          row.setAttribute('role', 'option');
+          const main = el('span', 'host-branch-row-main');
+          main.append(el('span', 'host-branch-row-label', item.title || item.sourceBranch));
+          main.append(el('span', 'host-branch-row-meta', requestMeta(item)));
+          row.append(main);
+          if (item.draft) {
+            row.append(el('span', 'host-branch-row-mark', t('branchPanelDraft')));
+          }
+          if (item.sourceBranch === picker.selectedBranch) {
+            row.classList.add('is-selected');
+          }
+          row.dataset.branch = item.sourceBranch;
+          row.addEventListener('click', () => activatePickerBranch(item.sourceBranch));
+          list.append(row);
+        }
+        if (loading) {
+          for (let i = 0; i < 2; i += 1) {
+            list.append(el('div', 'host-branch-skeleton'));
+          }
+        }
+      }
+    } else {
+      let names = filterPickerBranches(picker.branches, hide);
+      if (activeQuery.length >= 3) {
+        names = names.filter((name) => branchNameMatches(name, activeQuery));
+      }
+      if (picker.step === 'bases' && picker.parentBranch && !names.includes(picker.parentBranch)) {
+        names = [picker.parentBranch, ...names];
+      }
+
+      if (loading && names.length === 0) {
+        for (let i = 0; i < 4; i += 1) {
+          list.append(el('div', 'host-branch-skeleton'));
+        }
+      } else if (!loading && names.length === 0) {
+        list.append(
+          el('div', 'host-branch-empty', t(activeQuery ? 'branchPanelNoMatch' : 'branchPanelEmpty')),
+        );
+      } else {
+        for (const name of names) {
+          const row = el('button', 'host-branch-row');
+          row.type = 'button';
+          row.setAttribute('role', 'option');
+          const label = el('span', 'host-branch-row-label', name);
+          row.append(label);
+          if (picker.step === 'bases' && name === picker.parentBranch) {
+            row.append(el('span', 'host-branch-row-mark', t('branchPanelParentMark')));
+          }
+          if (picker.step === 'bases' && name === picker.selectedBase) {
+            row.classList.add('is-selected');
+            row.setAttribute('aria-selected', 'true');
+          } else if (picker.step === 'branches' && name === picker.selectedBranch) {
+            row.classList.add('is-selected');
+          }
+          row.dataset.branch = name;
+          if (picker.step === 'branches') {
+            row.addEventListener('click', () => activatePickerBranch(name));
+          } else {
+            row.addEventListener('click', () => {
+              picker.selectedBase = name;
+              renderHostBranchPanel();
+            });
+          }
+          list.append(row);
+        }
+        if (loading) {
+          for (let i = 0; i < 2; i += 1) {
+            list.append(el('div', 'host-branch-skeleton'));
+          }
+        }
+      }
+    }
+
+    list.addEventListener('scroll', () => {
+      if (!branchPicker || pickerListLoading(branchPicker) || pickerListNext(branchPicker) == null) {
+        return;
+      }
+      if (list.scrollTop + list.clientHeight < list.scrollHeight - 40) {
+        return;
+      }
+      const page = pickerListNext(branchPicker);
+      if (pickerShowsRequests(branchPicker)) {
+        requestHostOpenRequests(page);
+        return;
+      }
+      requestHostBranches(page);
+    });
+    panel.append(list);
+
+    if (picker.step === 'bases') {
+      const actions = el('div', 'host-branch-actions');
+      const explainMode = picker.mode === 'explain';
+      const start = el(
+        'button',
+        'review-btn is-primary',
+        t(explainMode ? 'branchPanelStartExplain' : 'branchPanelStart'),
+      );
+      start.type = 'button';
+      start.disabled = !picker.selectedBase || !picker.selectedDepth || !!picker.resolvingParent || !!picker.loadingBranches;
+      start.addEventListener('click', () => {
+        if (!branchPicker?.selectedBranch || !branchPicker.selectedBase || !branchPicker.selectedDepth) {
+          return;
+        }
+        const pageId = branchPicker.pageId;
+        const branch = branchPicker.selectedBranch;
+        const baseBranch = branchPicker.selectedBase;
+        const depth = branchPicker.selectedDepth;
+        const parentMessageId = branchPicker.parentMessageId || '';
+        closeHostBranchPanel();
+        if (explainMode) {
+          if (parentMessageId) {
+            beginLocalExplainSkeleton(pageId, parentMessageId);
+          } else {
+            beginLocalExplainRootSkeleton(pageId, branch);
+          }
+          vscode.postMessage({
+            type: 'explainStartOther',
+            pageId,
+            branch,
+            baseBranch,
+            depth,
+            parentMessageId: parentMessageId || undefined,
+          });
+          return;
+        }
+        beginLocalRootSkeleton(pageId, branch);
+        vscode.postMessage({
+          type: 'reviewStartOther',
+          pageId,
+          branch,
+          baseBranch,
+          depth,
+        });
+      });
+      actions.append(start);
+      panel.append(actions);
+    }
+
+    document.body.append(panel);
+    if (previousScroll > 0) {
+      list.scrollTop = previousScroll;
+    }
+    if (picker.pendingSearchFocus || searchFocused) {
+      picker.pendingSearchFocus = false;
+      search.focus();
+      if (searchFocused && typeof searchCaret === 'number') {
+        search.setSelectionRange(searchCaret, searchCaret);
+      }
+    }
+  }
+
+  /**
+   * @param {HTMLElement} anchor
+   * @param {string} branch
+   */
+  function mountBranchPanelDepthMenu(anchor, branch) {
+    clearBranchDepthMenu();
+    const fly = document.createElement('div');
+    fly.className = 'syn3-menu syn3-menu-sub';
+    fly.setAttribute('role', 'menu');
+    const depths = [
+      ['shallow', 'reviewDepthShallow'],
+      ['medium', 'reviewDepthMedium'],
+      ['deep', 'reviewDepthDeep'],
+    ];
+    for (const [depth, key] of depths) {
+      const btn = menuAction(t(key));
+      btn.dataset.branchDepth = depth;
+      btn.dataset.branch = branch;
+      fly.append(btn);
+    }
+    fly.addEventListener('click', (event) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const button = target?.closest('button');
+      if (!(button instanceof HTMLButtonElement) || !button.dataset.branchDepth) {
+        return;
+      }
+      event.stopPropagation();
+      if (!branchPicker) {
+        return;
+      }
+      branchPicker.selectedDepth = button.dataset.branchDepth;
+      branchPicker.selectedBranch = button.dataset.branch || branch;
+      clearBranchDepthMenu();
+      requestHostParent(branchPicker.selectedBranch);
+    });
+    document.body.append(fly);
+    branchDepthMenu = fly;
+    const rect = anchor.getBoundingClientRect();
+    const flyWidth = fly.offsetWidth || 196;
+    const flyHeight = fly.offsetHeight || 96;
+    let top = rect.top;
+    if (top + flyHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - 8 - flyHeight);
+    }
+    const roomRight = window.innerWidth - rect.right;
+    const left = roomRight >= flyWidth + 8 ? rect.right - 6 : Math.max(8, rect.left - flyWidth + 6);
+    fly.style.top = top + 'px';
+    fly.style.left = left + 'px';
+  }
+
+  /**
+   * @param {{
+   *   requestId: string,
+   *   ok: boolean,
+   *   branches?: string[],
+   *   nextPage?: number,
+   *   currentBranch?: string,
+   *   message?: string,
+   * }} message
+   */
+  function onReviewBranchesMessage(message) {
+    if (!branchPicker || branchPicker.inflightBranches !== message.requestId) {
+      return;
+    }
+    branchPicker.inflightBranches = '';
+    branchPicker.loadingBranches = false;
+    if (!message.ok) {
+      closeHostBranchPanel();
+      return;
+    }
+    const incoming = Array.isArray(message.branches) ? message.branches : [];
+    if (typeof message.currentBranch === 'string' && message.currentBranch) {
+      branchPicker.currentBranch = message.currentBranch;
+    }
+    const seen = new Set(branchPicker.branches);
+    for (const name of incoming) {
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        branchPicker.branches.push(name);
+      }
+    }
+    branchPicker.branchesLoaded = true;
+    branchPicker.branchNextPage =
+      typeof message.nextPage === 'number' ? message.nextPage : undefined;
+    renderHostBranchPanel();
+    if (branchPicker?.activeQuery && !pickerShowsRequests(branchPicker)) {
+      pumpBranchSearch();
+    }
+  }
+
+  /**
+   * @param {{
+   *   requestId: string,
+   *   ok: boolean,
+   *   requests?: Array<{ title: string, sourceBranch: string, author: string, draft: boolean }>,
+   *   nextPage?: number,
+   *   currentBranch?: string,
+   *   message?: string,
+   * }} message
+   */
+  function onReviewOpenRequestsMessage(message) {
+    if (!branchPicker || branchPicker.inflightRequests !== message.requestId) {
+      return;
+    }
+    branchPicker.inflightRequests = '';
+    branchPicker.loadingMrs = false;
+    if (!message.ok) {
+      closeHostBranchPanel();
+      return;
+    }
+    const incoming = Array.isArray(message.requests) ? message.requests : [];
+    if (typeof message.currentBranch === 'string' && message.currentBranch) {
+      branchPicker.currentBranch = message.currentBranch;
+    }
+    const seen = new Set(branchPicker.requests.map((item) => openRequestKey(item)));
+    for (const item of incoming) {
+      const key = openRequestKey(item);
+      if (!item.sourceBranch || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      branchPicker.requests.push(item);
+    }
+    branchPicker.requestsLoaded = true;
+    branchPicker.requestNextPage =
+      typeof message.nextPage === 'number' ? message.nextPage : undefined;
+    renderHostBranchPanel();
+    if (branchPicker?.activeQuery && pickerShowsRequests(branchPicker)) {
+      pumpBranchSearch();
+    }
+  }
+
+  /**
+   * @param {{
+   *   requestId: string,
+   *   ok: boolean,
+   *   parent?: string,
+   *   message?: string,
+   * }} message
+   */
+  function onReviewParentMessage(message) {
+    if (!branchPicker || branchPicker.requestId !== message.requestId) {
+      return;
+    }
+    if (!message.ok || !message.parent) {
+      closeHostBranchPanel();
+      if (message.message) {
+        // Host already surfaces errors for pull; parent resolve uses the same toast path via empty panel close.
+      }
+      return;
+    }
+    branchPicker.parentBranch = message.parent;
+    branchPicker.selectedBase = message.parent;
+    branchPicker.resolvingParent = false;
+    branchPicker.step = 'bases';
+    if (!branchPicker.branchesLoaded && !branchPicker.loadingBranches) {
+      requestHostBranches(1);
+      return;
+    }
+    renderHostBranchPanel();
+    if (branchPicker?.activeQuery && !pickerShowsRequests(branchPicker)) {
+      pumpBranchSearch();
+    }
+  }
+
+  function removeOverlay(id) {
+    const node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    const backdrop = node.closest('.map-settings-backdrop');
+    if (backdrop) {
+      backdrop.remove();
+      return;
+    }
+    node.remove();
+  }
+
+  /**
+   * Full-panel busy overlay: disables interaction and covers the whole panel.
+   * @param {HTMLElement | null | undefined} panel
+   * @param {boolean} busy
+   */
+  function setPanelBusy(panel, busy) {
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    panel.classList.toggle('is-busy', busy);
+    panel.setAttribute('aria-busy', busy ? 'true' : 'false');
+    let overlay = panel.querySelector(':scope > .panel-busy-overlay');
+    if (busy) {
+      if (!(overlay instanceof HTMLElement)) {
+        overlay = el('div', 'panel-busy-overlay');
+        overlay.setAttribute('role', 'status');
+        overlay.setAttribute('aria-live', 'polite');
+        overlay.append(reviewProgressIcon());
+        panel.append(overlay);
+      }
+      for (const btn of panel.querySelectorAll('button')) {
+        if (btn instanceof HTMLButtonElement) {
+          btn.disabled = true;
+        }
+      }
+      for (const input of panel.querySelectorAll('input, textarea, select')) {
+        if (
+          input instanceof HTMLInputElement ||
+          input instanceof HTMLTextAreaElement ||
+          input instanceof HTMLSelectElement
+        ) {
+          input.disabled = true;
+        }
+      }
+      return;
+    }
+    if (overlay) {
+      overlay.remove();
+    }
+    for (const btn of panel.querySelectorAll('button')) {
+      if (btn instanceof HTMLButtonElement) {
+        btn.disabled = false;
+      }
+    }
+    for (const input of panel.querySelectorAll('input, textarea, select')) {
+      if (
+        input instanceof HTMLInputElement ||
+        input instanceof HTMLTextAreaElement ||
+        input instanceof HTMLSelectElement
+      ) {
+        input.disabled = false;
+      }
+    }
+  }
+
+  /**
+   * Enter commits a settings panel. A textarea keeps the line break, a button keeps its click.
+   * @param {KeyboardEvent} event
+   */
+  function isSettingsCommitKey(event) {
+    if (event.key !== 'Enter' || event.repeat || event.isComposing) {
+      return false;
+    }
+    if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) {
+      return false;
+    }
+    const target = event.target;
+    return !(target instanceof HTMLTextAreaElement || target instanceof HTMLButtonElement);
+  }
+
+  /**
+   * @param {HTMLElement} panel
+   * @param {() => void} commit
+   */
+  function bindSettingsCommitKey(panel, commit) {
+    panel.addEventListener('keydown', (event) => {
+      if (!isSettingsCommitKey(event) || panel.classList.contains('is-busy')) {
+        return;
+      }
+      event.preventDefault();
+      commit();
+    });
+  }
+
+  /**
+   * @param {HTMLElement} panel
+   * @param {() => void} close
+   */
+  function mountSettingsOverlay(panel, close) {
+    const backdrop = el('div', 'map-settings-backdrop');
+    let pressed = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressed = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (panel.classList.contains('is-busy')) {
+        pressed = false;
+        return;
+      }
+      if (pressed && event.target === backdrop) {
+        close();
+      }
+      pressed = false;
+    });
+    backdrop.append(panel);
+    document.body.append(backdrop);
+  }
+
+  function closeProjectCreatePanel() {
+    removeOverlay('project-create-panel');
+  }
+
+  function closeProjectEditPanel() {
+    removeOverlay('project-edit-panel');
+  }
+
+  /**
+   * @param {{
+   *   id: string,
+   *   name: string,
+   *   repoUrl: string,
+   *   profileName: string,
+   *   githubToken: string,
+   *   gitlabToken: string
+   * }} opts
+   */
+  function openProjectEditPanel(opts) {
+    closeMapSettingsPanels();
+    const panel = el('div', 'review-mr-panel review-create-page-panel project-create-panel');
+    panel.id = 'project-edit-panel';
+    panel.append(el('div', 'review-mr-people-title', t('projectSettingsTitle')));
+
+    const nameLabel = el('label', 'review-mr-field', t('projectName'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 64;
+    nameInput.value = opts.name;
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+
+    const repoLabel = el('label', 'review-mr-field', t('projectRepoUrl'));
+    const repoRow = el('div', 'project-repo-row');
+    const repoInput = document.createElement('input');
+    repoInput.className = 'review-mr-title';
+    repoInput.type = 'text';
+    repoInput.spellcheck = false;
+    repoInput.readOnly = true;
+    repoInput.value = opts.repoUrl;
+    repoInput.setAttribute('aria-readonly', 'true');
+    const repoHost = el('span', 'project-repo-host');
+    repoHost.hidden = true;
+    repoHost.setAttribute('aria-live', 'polite');
+    repoRow.append(repoInput, repoHost);
+    repoLabel.append(repoRow);
+    panel.append(repoLabel);
+
+    const hostTokenLabel = el('label', 'review-mr-field');
+    hostTokenLabel.hidden = true;
+    const hostTokenCaption = document.createElement('span');
+    const hostTokenInput = document.createElement('input');
+    hostTokenInput.className = 'review-mr-title';
+    hostTokenInput.type = 'password';
+    hostTokenInput.spellcheck = false;
+    hostTokenInput.autocomplete = 'new-password';
+    hostTokenLabel.append(hostTokenCaption, hostTokenInput);
+    panel.append(hostTokenLabel);
+
+    const provider = recognizedRepoProvider(opts.repoUrl);
+    if (provider) {
+      repoHost.hidden = false;
+      repoHost.textContent = provider === 'github' ? t('reviewProviderGithub') : t('reviewProviderGitlab');
+      hostTokenCaption.textContent = t(
+        provider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab',
+      ).replace('{name}', opts.profileName || '');
+      hostTokenInput.value = provider === 'github' ? opts.githubToken : opts.gitlabToken;
+      hostTokenLabel.hidden = false;
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    function mark(label, invalid) {
+      label.classList.toggle('has-error', invalid);
+    }
+
+    nameInput.addEventListener('input', () => {
+      if (nameInput.value.trim()) mark(nameLabel, false);
+    });
+    hostTokenInput.addEventListener('input', () => {
+      if (hostTokenInput.value.trim()) mark(hostTokenLabel, false);
+    });
+
+    const actions = el('div', 'project-edit-actions');
+    const danger = el('div', 'project-edit-danger');
+    const trash = el('button', 'project-edit-trash');
+    trash.type = 'button';
+    trash.title = t('projectDelete');
+    trash.setAttribute('aria-label', t('projectDelete'));
+    trash.append(reviewSvgIcon('project-edit-trash-ico', PROJECT_DELETE_D));
+    const confirmRow = el('div', 'project-edit-confirm');
+    confirmRow.hidden = true;
+    const confirmInput = document.createElement('input');
+    confirmInput.className = 'review-mr-title';
+    confirmInput.type = 'text';
+    confirmInput.spellcheck = false;
+    confirmInput.autocomplete = 'off';
+    confirmInput.placeholder = t('projectDeletePlaceholder');
+    confirmInput.setAttribute('aria-label', t('projectDeletePlaceholder'));
+    const confirmBtn = el('button', 'review-btn project-edit-delete', t('projectDelete'));
+    confirmBtn.type = 'button';
+    confirmBtn.disabled = true;
+    const expectedName = opts.name.trim();
+    const syncDelete = () => {
+      confirmBtn.disabled = confirmInput.value.trim() !== expectedName;
+    };
+    confirmInput.addEventListener('input', syncDelete);
+    const sendDelete = () => {
+      if (panel.classList.contains('is-busy') || confirmBtn.disabled) {
+        return;
+      }
+      error.hidden = true;
+      error.textContent = '';
+      if (confirmInput.value.trim() !== expectedName) {
+        confirmBtn.disabled = true;
+        confirmInput.focus();
+        return;
+      }
+      panel.classList.add('is-busy');
+      vscode.postMessage({
+        type: 'projectDelete',
+        id: opts.id,
+        name: expectedName,
+      });
+    };
+    confirmBtn.addEventListener('click', sendDelete);
+    confirmInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendDelete();
+      }
+    });
+    trash.addEventListener('click', () => {
+      if (panel.classList.contains('is-busy')) {
+        return;
+      }
+      trash.hidden = true;
+      confirmRow.hidden = false;
+      submit.hidden = true;
+      confirmInput.focus();
+    });
+    confirmRow.append(confirmInput, confirmBtn);
+    danger.append(trash, confirmRow);
+
+    const submit = el('button', 'review-btn is-primary', t('profileSettingsSave'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      if (panel.classList.contains('is-busy')) {
+        return;
+      }
+      error.hidden = true;
+      error.textContent = '';
+      mark(nameLabel, false);
+      mark(hostTokenLabel, false);
+      const name = nameInput.value.trim();
+      if (!name) {
+        mark(nameLabel, true);
+        error.textContent = t('projectNameEmpty');
+        error.hidden = false;
+        nameInput.focus();
+        return;
+      }
+      if (provider) {
+        const hostToken = hostTokenInput.value.trim();
+        if (!hostToken) {
+          mark(hostTokenLabel, true);
+          error.textContent = hostTokenCaption.textContent || '';
+          error.hidden = false;
+          hostTokenInput.focus();
+          return;
+        }
+        panel.classList.add('is-busy');
+        vscode.postMessage({
+          type: 'projectSaveSettings',
+          id: opts.id,
+          name,
+          githubToken: provider === 'github' ? hostToken : opts.githubToken,
+          gitlabToken: provider === 'gitlab' ? hostToken : opts.gitlabToken,
+        });
+        return;
+      }
+      panel.classList.add('is-busy');
+      vscode.postMessage({
+        type: 'projectSaveSettings',
+        id: opts.id,
+        name,
+      });
+    });
+    actions.append(danger, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeProjectEditPanel);
+    nameInput.focus();
+    nameInput.select();
+  }
+
+  /**
+   * Create mode needs a non-empty project name. Select mode does not.
+   * @param {HTMLElement} panel
+   */
+  function projectCreateSubmitAllowed(panel) {
+    if (panel.dataset.projectMode === 'select') {
+      return true;
+    }
+    const nameInput = panel.querySelector('[data-project-name]');
+    return nameInput instanceof HTMLInputElement && nameInput.value.trim().length > 0;
+  }
+
+  /**
+   * Busy state for project create: disable Create/Retry and show a spinner to its left.
+   * Cancel stays available.
+   * @param {boolean} busy
+   */
+  function setProjectCreateBusy(busy) {
+    const panel = document.getElementById('project-create-panel');
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    panel.classList.toggle('is-creating', busy);
+    const submit = panel.querySelector('[data-project-create-submit]');
+    if (submit instanceof HTMLButtonElement) {
+      submit.disabled = busy;
+      if (!busy) {
+        submit.classList.add('is-primary');
+        const selectMode = panel.dataset.projectMode === 'select';
+        submit.classList.toggle('is-idle', !selectMode && !projectCreateSubmitAllowed(panel));
+      }
+    }
+    panel.querySelectorAll('.project-create-modes button').forEach((btn) => {
+      if (btn instanceof HTMLButtonElement) {
+        btn.disabled = busy;
+      }
+    });
+    const loader = panel.querySelector('.project-create-loader');
+    if (loader instanceof HTMLElement) {
+      loader.hidden = !busy;
+      if (busy) {
+        loader.replaceChildren(reviewProgressIcon());
+      } else {
+        loader.replaceChildren();
+      }
+    }
+  }
+
+  /**
+   * Host from an https, ssh://, or git@ URL. Mirrors hostFromRepoUrl in reviewHost.ts.
+   * @param {string} repoUrl
+   */
+  function repoHostFromUrl(repoUrl) {
+    const raw = repoUrl.trim().replace(/\.git$/i, '');
+    const ssh = /^git@([^:]+):/.exec(raw);
+    if (ssh) {
+      return ssh[1].toLowerCase();
+    }
+    const sshUrl = /^ssh:\/\/[^@]+@([^/]+)\//.exec(raw);
+    if (sshUrl) {
+      return sshUrl[1].toLowerCase();
+    }
+    const https = /^https?:\/\/([^/]+)/i.exec(raw);
+    return https ? https[1].toLowerCase() : '';
+  }
+
+  /**
+   * GitHub or GitLab once the link has a real host and a repository path.
+   * Mirrors recognizedRepoProvider in reviewHost.ts.
+   * @param {string} repoUrl
+   * @returns {'github' | 'gitlab' | ''}
+   */
+  function recognizedRepoProvider(repoUrl) {
+    const host = repoHostFromUrl(repoUrl);
+    const name = host.replace(/:\d+$/, '');
+    if (!host || (name !== 'localhost' && !name.includes('.'))) {
+      return '';
+    }
+    const raw = repoUrl.trim().replace(/\.git$/i, '').replace(/\/+$/, '');
+    const hasPath =
+      /^git@[^:]+:(.+)$/.test(raw) ||
+      /^ssh:\/\/[^@]+@[^/]+\/(.+)$/.test(raw) ||
+      /^https?:\/\/[^/]+\/(.+)$/i.test(raw);
+    if (!hasPath) {
+      return '';
+    }
+    if (host === 'github.com' || host.endsWith('.github.com') || host.includes('github')) {
+      return 'github';
+    }
+    return 'gitlab';
+  }
+
+  /**
+   * @param {{ needChannel: boolean, gate?: boolean, hasDiscord?: boolean, mode?: 'create' | 'select', profileName?: string }} opts
+   */
+  function openProjectCreatePanel(opts) {
+    if (opts.gate && document.getElementById('project-create-panel')) {
+      return;
+    }
+    closeProjectCreatePanel();
+    closeMapSettingsPanels();
+    const panel = el('div', 'review-mr-panel review-create-page-panel project-create-panel');
+    panel.id = 'project-create-panel';
+    const title = el('div', 'review-mr-people-title', '');
+    panel.append(title);
+
+    const modes = el('div', 'project-create-modes');
+    const createModeBtn = el('button', 'review-btn', t('projectModeCreate'));
+    createModeBtn.type = 'button';
+    const selectModeBtn = el('button', 'review-btn', t('projectSelect'));
+    selectModeBtn.type = 'button';
+    modes.append(createModeBtn, selectModeBtn);
+    panel.append(modes);
+
+    const nameLabel = el('label', 'review-mr-field', t('projectName'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.required = true;
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 64;
+    nameInput.dataset.projectName = '1';
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+
+    const channelLabel = el('label', 'review-mr-field', t('projectChannel'));
+    const channelInput = document.createElement('input');
+    channelInput.className = 'review-mr-title';
+    channelInput.type = 'text';
+    channelInput.spellcheck = false;
+    channelInput.inputMode = 'numeric';
+    channelInput.placeholder = t('channelIdPlaceholder');
+    channelLabel.append(channelInput);
+    panel.append(channelLabel);
+
+    const repoLabel = el('label', 'review-mr-field', t('projectRepoUrl'));
+    const repoRow = el('div', 'project-repo-row');
+    const repoInput = document.createElement('input');
+    repoInput.className = 'review-mr-title';
+    repoInput.type = 'text';
+    repoInput.spellcheck = false;
+    repoInput.placeholder = t('projectRepoPlaceholder');
+    repoInput.dataset.projectRepo = '1';
+    const repoHost = el('span', 'project-repo-host');
+    repoHost.hidden = true;
+    repoHost.setAttribute('aria-live', 'polite');
+    repoRow.append(repoInput, repoHost);
+    repoLabel.append(repoRow);
+    panel.append(repoLabel);
+
+    const hostTokenLabel = el('label', 'review-mr-field');
+    hostTokenLabel.hidden = true;
+    const hostTokenCaption = document.createElement('span');
+    const hostTokenInput = document.createElement('input');
+    hostTokenInput.className = 'review-mr-title';
+    hostTokenInput.type = 'password';
+    hostTokenInput.spellcheck = false;
+    hostTokenInput.autocomplete = 'new-password';
+    hostTokenLabel.append(hostTokenCaption, hostTokenInput);
+    panel.append(hostTokenLabel);
+
+    /** @type {HTMLInputElement | null} */
+    let tokenInput = null;
+    if (opts.hasDiscord === false) {
+      const tokenLabel = el('label', 'review-mr-field', t('reviewFieldDiscordToken'));
+      tokenInput = document.createElement('input');
+      tokenInput.className = 'review-mr-title';
+      tokenInput.type = 'password';
+      tokenInput.spellcheck = false;
+      tokenInput.autocomplete = 'new-password';
+      tokenLabel.append(tokenInput);
+      panel.append(tokenLabel);
+    }
+
+    if (opts.gate) {
+      const howToBtn = el('button', 'review-btn discord-gate-howto', t('discordGateHowTo'));
+      howToBtn.type = 'button';
+      howToBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'discordGateOpenHowTo' });
+      });
+      panel.append(howToBtn);
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    const actions = el('div', 'review-mr-actions');
+    /** @type {HTMLButtonElement | null} */
+    let cancel = null;
+    if (!opts.gate) {
+      cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        closeProjectCreatePanel();
+      });
+    }
+    const submitWrap = el('span', 'project-create-submit-wrap');
+    const loader = el('span', 'project-create-loader');
+    loader.hidden = true;
+    loader.setAttribute('role', 'status');
+    loader.setAttribute('aria-live', 'polite');
+    const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+    submit.type = 'button';
+    submit.dataset.projectCreateSubmit = '1';
+
+    /** @type {'create' | 'select'} */
+    let mode = opts.mode === 'select' ? 'select' : 'create';
+
+    function channelRequired() {
+      return mode === 'select' || opts.needChannel || opts.gate === true;
+    }
+
+    function applyMode(next) {
+      mode = next;
+      panel.dataset.projectMode = mode;
+      createModeBtn.classList.toggle('is-primary', mode === 'create');
+      selectModeBtn.classList.toggle('is-primary', mode === 'select');
+      title.textContent = mode === 'select' ? t('projectSelect') : t('projectModeCreate');
+      nameLabel.hidden = mode !== 'create';
+      repoLabel.hidden = mode !== 'create';
+      channelLabel.hidden = !channelRequired();
+      if (mode !== 'create') {
+        hostTokenLabel.hidden = true;
+      } else {
+        syncRepoHost();
+      }
+      if (submit.dataset.projectCreateRetry !== '1' || mode !== 'create') {
+        delete submit.dataset.projectCreateRetry;
+        submit.textContent = mode === 'select' ? t('projectSelect') : t('reviewCreatePageSubmit');
+      }
+      syncProjectCreateSubmit();
+    }
+
+    function syncProjectCreateSubmit() {
+      if (panel.classList.contains('is-creating')) {
+        return;
+      }
+      submit.disabled = false;
+      submit.classList.add('is-primary');
+      submit.classList.toggle('is-idle', mode === 'create' && nameInput.value.trim().length === 0);
+    }
+
+    function markProjectField(label, invalid) {
+      label.classList.toggle('has-error', invalid);
+    }
+
+    nameInput.addEventListener('input', () => {
+      if (nameInput.value.trim()) {
+        markProjectField(nameLabel, false);
+      }
+      syncProjectCreateSubmit();
+    });
+    function syncRepoHost() {
+      const provider = recognizedRepoProvider(repoInput.value);
+      if (mode !== 'create' || !provider) {
+        repoHost.hidden = true;
+        repoHost.textContent = '';
+        hostTokenLabel.hidden = true;
+        return;
+      }
+      repoHost.hidden = false;
+      repoHost.textContent = provider === 'github' ? t('reviewProviderGithub') : t('reviewProviderGitlab');
+      const tokenKey = provider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab';
+      hostTokenCaption.textContent = t(tokenKey).replace('{name}', opts.profileName || '');
+      hostTokenLabel.hidden = false;
+    }
+
+    channelInput.addEventListener('input', () => {
+      if (channelInput.value.trim()) {
+        markProjectField(channelLabel, false);
+      }
+    });
+    repoInput.addEventListener('input', () => {
+      if (recognizedRepoProvider(repoInput.value)) {
+        markProjectField(repoLabel, false);
+      }
+      syncRepoHost();
+    });
+    hostTokenInput.addEventListener('input', () => {
+      if (hostTokenInput.value.trim()) {
+        markProjectField(hostTokenLabel, false);
+      }
+    });
+
+    createModeBtn.addEventListener('click', () => {
+      if (submit.disabled) {
+        return;
+      }
+      applyMode('create');
+      nameInput.focus();
+    });
+    selectModeBtn.addEventListener('click', () => {
+      if (submit.disabled) {
+        return;
+      }
+      applyMode('select');
+      channelInput.focus();
+    });
+
+    submit.addEventListener('click', () => {
+      if (submit.disabled) {
+        return;
+      }
+      error.hidden = true;
+      error.textContent = '';
+      markProjectField(nameLabel, false);
+      markProjectField(channelLabel, false);
+      markProjectField(repoLabel, false);
+      markProjectField(hostTokenLabel, false);
+      if (tokenInput?.parentElement instanceof HTMLElement) {
+        tokenInput.parentElement.classList.remove('has-error');
+      }
+      const discordToken = tokenInput ? tokenInput.value.trim() : '';
+      if (tokenInput && !discordToken) {
+        if (tokenInput.parentElement instanceof HTMLElement) {
+          tokenInput.parentElement.classList.add('has-error');
+        }
+        error.textContent = t('reviewFieldDiscordToken');
+        error.hidden = false;
+        tokenInput.focus();
+        return;
+      }
+      if (mode === 'select') {
+        const channelId = channelInput.value.trim();
+        if (!channelId || !/^\d{5,}$/.test(channelId)) {
+          markProjectField(channelLabel, true);
+          error.textContent = channelId ? t('projectChannelInvalid') : t('projectChannelEmpty');
+          error.hidden = false;
+          channelInput.focus();
+          return;
+        }
+        setProjectCreateBusy(true);
+        vscode.postMessage({
+          type: 'project',
+          action: 'selectSubmit',
+          channelId,
+          discordToken: discordToken || undefined,
+        });
+        return;
+      }
+      const name = nameInput.value.trim();
+      if (!name) {
+        markProjectField(nameLabel, true);
+        error.textContent = t('projectNameEmpty');
+        error.hidden = false;
+        nameInput.focus();
+        return;
+      }
+      let channelId = '';
+      if (channelRequired()) {
+        channelId = channelInput.value.trim();
+        if (!channelId || !/^\d{5,}$/.test(channelId)) {
+          markProjectField(channelLabel, true);
+          error.textContent = channelId ? t('projectChannelInvalid') : t('projectChannelEmpty');
+          error.hidden = false;
+          channelInput.focus();
+          return;
+        }
+      }
+      const repoUrl = repoInput.value.trim();
+      const repoProvider = recognizedRepoProvider(repoUrl);
+      if (!repoProvider) {
+        markProjectField(repoLabel, true);
+        error.textContent = t('projectRepositoryRequired');
+        error.hidden = false;
+        repoInput.focus();
+        return;
+      }
+      const hostToken = hostTokenInput.value.trim();
+      if (!hostToken) {
+        markProjectField(hostTokenLabel, true);
+        error.textContent = t(
+          repoProvider === 'github' ? 'projectHostTokenGithub' : 'projectHostTokenGitlab',
+        ).replace('{name}', opts.profileName || '');
+        error.hidden = false;
+        hostTokenInput.focus();
+        return;
+      }
+      setProjectCreateBusy(true);
+      vscode.postMessage({
+        type: 'project',
+        action: 'createSubmit',
+        name,
+        channelId: channelId || undefined,
+        discordToken: discordToken || undefined,
+        repoUrl,
+        githubToken: repoProvider === 'github' ? hostToken : undefined,
+        gitlabToken: repoProvider === 'gitlab' ? hostToken : undefined,
+      });
+    });
+    submitWrap.append(loader, submit);
+    if (cancel) {
+      actions.append(cancel, submitWrap);
+    } else {
+      actions.append(submitWrap);
+    }
+    panel.append(actions);
+    mountSettingsOverlay(panel, opts.gate ? () => {} : closeProjectCreatePanel);
+    if (opts.gate && panel.parentElement) {
+      panel.parentElement.classList.add('discord-gate-backdrop');
+    }
+    applyMode(mode);
+    if (mode === 'select') {
+      channelInput.focus();
+    } else {
+      nameInput.focus();
+    }
+  }
+
+  function closeMapSettingsPanels() {
+    closeProfileSettingsPanel();
+    closePageSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeReviewRenamePanel();
+    closeProjectCreatePanel();
+    closeProjectEditPanel();
+  }
+
+  function closeDiscordGatePanel() {
+    removeOverlay('discord-gate-panel');
+  }
+
+  /**
+   * @param {string} field
+   * @param {string} message
+   */
+  function applyDiscordGateError(field, message) {
+    const panel = document.getElementById('discord-gate-panel');
+    if (!(panel instanceof HTMLElement)) {
+      return;
+    }
+    const saveBtn = panel.querySelector('[data-gate-save]');
+    if (saveBtn instanceof HTMLButtonElement) {
+      saveBtn.disabled = false;
+    }
+    panel.querySelectorAll('.discord-gate-field').forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.classList.remove('has-error');
+      }
+    });
+    panel.querySelectorAll('.discord-gate-field-error').forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.hidden = true;
+        node.textContent = '';
+      }
+    });
+    const target = panel.querySelector(`[data-gate-field="${field}"]`);
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (
+      field === 'explorer' ||
+      field === 'notes' ||
+      field === 'links' ||
+      field === 'review'
+    ) {
+      const extra = panel.querySelector('[data-gate-extra]');
+      const extraBtn = panel.querySelector('[data-gate-extra-toggle]');
+      if (extra instanceof HTMLElement) {
+        extra.hidden = false;
+      }
+      if (extraBtn instanceof HTMLButtonElement) {
+        extraBtn.setAttribute('aria-expanded', 'true');
+      }
+    }
+    target.classList.add('has-error');
+    const err = target.querySelector('.discord-gate-field-error');
+    if (err instanceof HTMLElement) {
+      err.hidden = false;
+      err.textContent = message || '';
+    }
+    const input = target.querySelector('input');
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+    }
+  }
+
+  function closeReviewRenamePanel() {
+    removeOverlay('review-rename-panel');
+  }
+
+  /**
+   * @param {{ pageId: string, messageId: string, title: string, isPr: boolean }} opts
+   */
+  function openReviewRenamePanel(opts) {
+    closeReviewRenamePanel();
+    closeReviewCreatePagePanel();
+    closePageSettingsPanel();
+    closeProfileSettingsPanel();
+    dismissReviewMrPanel();
+    const panel = el('div', 'review-mr-panel');
+    panel.id = 'review-rename-panel';
+    panel.append(
+      el('div', 'review-mr-people-title', t(opts.isPr ? 'reviewRenamePr' : 'reviewRenameMr')),
+    );
+    const nameLabel = el('label', 'review-mr-field', t('reviewRenameTitle'));
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.maxLength = 200;
+    nameInput.value = opts.title || '';
+    nameLabel.append(nameInput);
+    panel.append(nameLabel);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewRenamePanel());
+    const submit = el('button', 'review-btn is-primary', t('reviewRenameTitle'));
+    submit.type = 'button';
+    const send = () => {
+      const title = nameInput.value.trim();
+      if (!title) {
+        nameInput.focus();
+        return;
+      }
+      vscode.postMessage({
+        type: 'reviewUpdateMr',
+        pageId: opts.pageId,
+        messageId: opts.messageId,
+        title,
+      });
+      closeReviewRenamePanel();
+    };
+    submit.addEventListener('click', send);
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        send();
+      }
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeReviewRenamePanel);
+    nameInput.focus();
+    nameInput.select();
+  }
+
+  function closeProfileSettingsPanel() {
+    removeOverlay('profile-settings-panel');
+  }
+
+  /** @type {(() => void) | null} */
+  let detachFigmaPathNav = null;
+
+  function closePageSettingsPanel() {
+    closeFigmaIconPanel();
+    if (detachFigmaPathNav) {
+      detachFigmaPathNav();
+      detachFigmaPathNav = null;
+    }
+    removeOverlay('page-settings-panel');
+  }
+
+  /**
+   * @param {{
+   *   id: string,
+   *   creating: boolean,
+   *   nameLocked: boolean,
+   *   name: string,
+   *   githubNick: string,
+   *   gitlabNick: string,
+   *   githubToken: string,
+   *   gitlabToken: string
+   * }} opts
+   */
+  function openProfileSettingsPanel(opts) {
+    closeProfileSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    const panel = el('div', 'review-mr-panel review-create-page-panel profile-settings-panel');
+    panel.id = 'profile-settings-panel';
+    panel.append(
+      el(
+        'div',
+        'review-mr-people-title',
+        t(opts.creating ? 'profileSettingsCreateTitle' : 'profileSettingsTitle'),
+      ),
+    );
+
+    /**
+     * @param {string} labelKey
+     * @param {{ value?: string, password?: boolean, disabled?: boolean, placeholderKey?: string }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = field.value || '';
+      if (field.password) {
+        input.autocomplete = 'new-password';
+      }
+      if (field.placeholderKey) {
+        input.placeholder = t(field.placeholderKey);
+      }
+      if (field.disabled) {
+        input.disabled = true;
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = fieldRow('profileFieldName', {
+      value: opts.name,
+      disabled: opts.nameLocked,
+    });
+    nameInput.maxLength = 64;
+    panel.append(el('div', 'review-mr-people-title', t('labelGithub')));
+    const githubNick = fieldRow('gitNickPlaceholder', {
+      value: opts.githubNick,
+      placeholderKey: 'gitNickPlaceholder',
+    });
+    const githubToken = fieldRow('gitTokenPlaceholder', {
+      value: opts.githubToken,
+      password: true,
+      placeholderKey: 'gitTokenPlaceholder',
+    });
+    panel.append(el('div', 'review-mr-people-title', t('labelGitlab')));
+    const gitlabNick = fieldRow('gitNickPlaceholder', {
+      value: opts.gitlabNick,
+      placeholderKey: 'gitNickPlaceholder',
+    });
+    const gitlabToken = fieldRow('gitTokenPlaceholder', {
+      value: opts.gitlabToken,
+      password: true,
+      placeholderKey: 'gitTokenPlaceholder',
+    });
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeProfileSettingsPanel());
+    const submit = el('button', 'review-btn is-primary', t('profileSettingsSave'));
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      error.hidden = true;
+      error.textContent = '';
+      const name = nameInput.value.trim();
+      if (!opts.nameLocked) {
+        if (!name) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+        if (!isCreatableProfileName(name, opts.creating ? undefined : opts.id)) {
+          error.textContent = t('profileNameTaken');
+          error.hidden = false;
+          nameInput.focus();
+          return;
+        }
+      }
+      vscode.postMessage({
+        type: 'profileSaveSettings',
+        id: opts.creating ? undefined : opts.id,
+        name,
+        githubNick: githubNick.value,
+        gitlabNick: gitlabNick.value,
+        githubToken: githubToken.value,
+        gitlabToken: gitlabToken.value,
+      });
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeProfileSettingsPanel);
+    if (opts.nameLocked) {
+      githubNick.focus();
+    } else {
+      nameInput.focus();
+      nameInput.select();
+    }
+  }
+
+  /** @type {(() => void) | null} */
+  let detachReviewPathNav = null;
+  /** @type {(() => void) | null} */
+  let detachReviewTheme = null;
+
+  function closeReviewCreatePagePanel() {
+    if (detachReviewTheme) {
+      detachReviewTheme();
+      detachReviewTheme = null;
+    }
+    if (detachReviewPathNav) {
+      detachReviewPathNav();
+      detachReviewPathNav = null;
+    }
+    removeOverlay('review-create-page-panel');
+  }
+
+  /**
+   * Page description: two lines tall, stretchable to three, 144 characters.
+   * @param {string} value
+   * @returns {{ label: HTMLLabelElement, input: HTMLTextAreaElement }}
+   */
+  function pageDescriptionField(value) {
+    const label = el('label', 'review-mr-field');
+    const head = el('span', 'review-desc-head');
+    head.append(document.createTextNode(t('groupDescription')));
+    const counter = el('span', 'group-panel-counter');
+    const input = document.createElement('textarea');
+    input.className = 'review-mr-title';
+    input.rows = 2;
+    input.maxLength = MAX_GROUP_DESCRIPTION_LENGTH;
+    input.value = clipGroupDescriptionInput(value || '');
+    const sync = () => {
+      const next = clipGroupDescriptionInput(input.value);
+      if (next !== input.value) {
+        const caret = input.selectionStart;
+        input.value = next;
+        if (typeof caret === 'number') {
+          const pos = Math.min(caret, next.length);
+          input.setSelectionRange(pos, pos);
+        }
+      }
+      counter.textContent = input.value.length + '/' + MAX_GROUP_DESCRIPTION_LENGTH;
+    };
+    input.addEventListener('input', sync);
+    sync();
+    head.append(counter);
+    label.append(head, input);
+    return { label, input };
+  }
+
+  /**
+   * Name, description, Discord channel and bot of a map page, inside the map window.
+   * @param {{
+   *   mode: 'create' | 'edit',
+   *   pageId?: string,
+   *   kind?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   hasDiscord?: boolean,
+   *   figmaToken?: string,
+   *   figmaSkillPath?: string,
+   *   figmaModel?: string,
+   *   figmaPrintThinking?: boolean,
+   *   figmaPrintTools?: boolean,
+   *   figmaOpenInApp?: boolean,
+   *   figmaFiles?: string[]
+   * }} opts
+   */
+  /**
+   * @param {string} raw
+   * @returns {{ fileKey: string, nodeId: string, url: string } | null}
+   */
+  function figmaLinkFromInput(raw) {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) {
+      return null;
+    }
+    const keyRe = /^[0-9A-Za-z]+$/;
+    const canonical = (fileKey, nodeId) => {
+      const base = 'https://www.figma.com/design/' + fileKey;
+      return nodeId ? base + '?node-id=' + nodeId.replace(/:/g, '-') : base;
+    };
+    let url;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return keyRe.test(trimmed) ? { fileKey: trimmed, nodeId: '', url: canonical(trimmed, '') } : null;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    const host = url.hostname.toLowerCase();
+    if (host !== 'figma.com' && !host.endsWith('.figma.com')) {
+      return null;
+    }
+    const kinds = new Set(['file', 'design', 'proto', 'board', 'slides']);
+    const parts = url.pathname.split('/').filter((part) => part.length > 0);
+    const kindAt = parts.findIndex((part) => kinds.has(part.toLowerCase()));
+    if (kindAt < 0) {
+      return null;
+    }
+    const pathKey = parts[kindAt + 1];
+    if (!pathKey || !keyRe.test(pathKey)) {
+      return null;
+    }
+    let fileKey = pathKey;
+    if (parts[kindAt + 2] && parts[kindAt + 2].toLowerCase() === 'branch') {
+      const branchKey = parts[kindAt + 3];
+      if (branchKey && keyRe.test(branchKey)) {
+        fileKey = branchKey;
+      }
+    }
+    const nodeRaw = (url.searchParams.get('node-id') || '').split(',')[0].trim();
+    const nodeId = nodeRaw ? nodeRaw.replace(/-/g, ':') : '';
+    return { fileKey, nodeId, url: canonical(fileKey, nodeId) };
+  }
+
+  /**
+   * A saved link is a URL string or `{ url, label }`.
+   * @param {unknown} raw
+   * @returns {{ url: string, label: string }[]}
+   */
+  function figmaFileEntries(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    /** @type {{ url: string, label: string }[]} */
+    const entries = [];
+    for (const item of raw) {
+      if (typeof item === 'string') {
+        entries.push({ url: item, label: '' });
+      } else if (item && typeof item.url === 'string') {
+        entries.push({ url: item.url, label: typeof item.label === 'string' ? item.label : '' });
+      }
+    }
+    return entries;
+  }
+
+  /**
+   * A file link covers every page and layer of that file. The same node covers itself.
+   * @param {{ fileKey: string, nodeId: string }} left
+   * @param {{ fileKey: string, nodeId: string }} right
+   */
+  function figmaLinksOverlap(left, right) {
+    if (!left || !right || left.fileKey !== right.fileKey) {
+      return false;
+    }
+    return !left.nodeId || !right.nodeId || left.nodeId === right.nodeId;
+  }
+
+  /** @type {{ pageId: string, rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean, whole: boolean } | null} */
+  let figmaIconDraft = null;
+  /** Latest save post. A reply closes the panel only when it matches a save that asked to close. */
+  let figmaIconSaveSeq = 0;
+  let figmaIconCloseSeq = 0;
+  /** @type {number} */
+  let figmaIconSaveTimer = 0;
+  /** Name or icon edited since the last successful post. */
+  let figmaIconDirty = false;
+
+  function closeFigmaIconPicker() {
+    const picker = document.getElementById('figma-icon-picker');
+    if (picker) {
+      picker.remove();
+    }
+  }
+
+  /**
+   * The field is the source of the name. The draft can lag a keystroke behind it.
+   * @param {{ rows: { text: string }[] }} draft
+   */
+  function syncFigmaIconInputs(draft) {
+    if (draft !== figmaIconDraft) {
+      return;
+    }
+    const inputs = document.querySelectorAll('#figma-icon-panel .figma-icon-scroll input');
+    inputs.forEach((input, index) => {
+      const row = draft.rows[index];
+      if (row && input instanceof HTMLInputElement) {
+        row.text = input.value;
+      }
+    });
+  }
+
+  function closeFigmaIconPanel() {
+    window.clearTimeout(figmaIconSaveTimer);
+    figmaIconSaveTimer = 0;
+    const draft = figmaIconDraft;
+    const panel = document.getElementById('figma-icon-panel');
+    if (draft && figmaIconDirty && panel && !panel.classList.contains('is-busy')) {
+      if (!postFigmaIconBindings(draft, false)) {
+        return;
+      }
+    }
+    closeFigmaIconPicker();
+    removeOverlay('figma-icon-panel');
+    figmaIconDraft = null;
+    figmaIconDirty = false;
+  }
+
+  /**
+   * @param {string} text
+   * @param {boolean} caseSensitive
+   */
+  function figmaIconTextKey(text, caseSensitive) {
+    const trimmed = text.trim();
+    return caseSensitive ? trimmed : trimmed.toLocaleLowerCase();
+  }
+
+  /**
+   * @param {{ text: string }[]} rows
+   * @param {boolean} caseSensitive
+   */
+  function figmaIconDraftDuplicate(rows, caseSensitive) {
+    const seen = new Set();
+    for (const row of rows) {
+      const key = figmaIconTextKey(row.text, caseSensitive);
+      if (seen.has(key)) {
+        return true;
+      }
+      seen.add(key);
+    }
+    return false;
+  }
+
+  /**
+   * @param {number} index
+   * @param {string} hex
+   */
+  function setFigmaIconRowColor(index, hex) {
+    const row = figmaIconDraft?.rows[index];
+    if (!row) {
+      return;
+    }
+    const next = String(hex || '').trim().toLowerCase();
+    if (!next || next === FIGMA_ICON_GRAY) {
+      delete row.color;
+    } else {
+      row.color = next;
+    }
+    const swatch = document.querySelector(
+      '#figma-icon-panel [data-icon-index="' + index + '"] .link-color-well',
+    );
+    if (swatch instanceof HTMLElement) {
+      swatch.style.setProperty('--swatch', row.color || FIGMA_ICON_GRAY);
+    }
+    const avatar = document.querySelector(
+      '#figma-icon-panel [data-icon-index="' + index + '"] .figma-chip-avatar',
+    );
+    if (avatar instanceof HTMLElement) {
+      avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+    }
+    paintLinkPanelBinding(row);
+    scheduleFigmaIconSave();
+  }
+
+  /**
+   * Draft for the open icon list, or a fresh copy of the active Figma page.
+   * @param {*} page
+   */
+  function figmaChipBindingDraft(page) {
+    if (figmaIconDraft && figmaIconDraft.pageId === page.id) {
+      return figmaIconDraft;
+    }
+    const match = page.figmaIconMatch || {};
+    const draft = {
+      pageId: page.id,
+      rows: cloneFigmaIconRows(page),
+      caseSensitive: match.caseSensitive === true,
+      whole: match.whole === true,
+    };
+    if (!document.getElementById('figma-icon-panel')) {
+      figmaIconDraft = draft;
+    }
+    return draft;
+  }
+
+  /**
+   * Exact binding for this chip label. Creates one when `create` is set.
+   * @param {{ rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean }} draft
+   * @param {string} label
+   * @param {boolean} create
+   * @param {{ icon: string, color?: string }} [seed]
+   */
+  function figmaChipBindingIndex(draft, label, create, seed) {
+    const key = figmaIconTextKey(label, draft.caseSensitive);
+    if (!key) {
+      return -1;
+    }
+    const found = draft.rows.findIndex((row) => figmaIconTextKey(row.text, draft.caseSensitive) === key);
+    if (found >= 0 || !create) {
+      return found;
+    }
+    if (draft.rows.length >= 80) {
+      return -1;
+    }
+    const color = freshenFigmaIconColor(seed?.color || '');
+    draft.rows.push({
+      icon: seed?.icon || FIGMA_ICON_FALLBACK,
+      text: label.trim(),
+      ...(color && color.toLowerCase() !== FIGMA_ICON_GRAY ? { color: color.toLowerCase() } : {}),
+    });
+    if (draft === figmaIconDraft && document.getElementById('figma-icon-panel')) {
+      paintFigmaIconRows();
+    }
+    return draft.rows.length - 1;
+  }
+
+  /** Name shown in the open chip card. Falls back to the saved label. */
+  function figmaChipBindingLabel(link) {
+    const host = document.querySelector('.link-panel .figma-chip-binding');
+    const shown = host instanceof HTMLElement ? String(host.dataset.bindingLabel || '').trim() : '';
+    return shown || String(link?.label || '').trim();
+  }
+
+  /**
+   * Keep the card row in step with the binding it edits.
+   * @param {{ icon: string, text: string, color?: string }} row
+   * @param {boolean} [caseSensitive]
+   */
+  function paintLinkPanelBinding(row, caseSensitive) {
+    const host = document.querySelector('.link-panel .figma-chip-binding');
+    if (!(host instanceof HTMLElement)) {
+      return;
+    }
+    const matchCase = caseSensitive ?? figmaIconDraft?.caseSensitive === true;
+    const shown = figmaIconTextKey(host.dataset.bindingLabel || '', matchCase);
+    if (!shown || shown !== figmaIconTextKey(row.text, matchCase)) {
+      return;
+    }
+    const avatar = host.querySelector('.figma-chip-avatar');
+    if (avatar instanceof HTMLElement) {
+      avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+      if (avatar.dataset.icon !== row.icon) {
+        mountLucide(avatar, row.icon);
+      }
+    }
+    const well = host.querySelector('.link-color-well');
+    if (well instanceof HTMLElement) {
+      well.style.setProperty('--swatch', row.color || FIGMA_ICON_GRAY);
+    }
+  }
+
+  /**
+   * @param {string} linkId
+   * @param {string} hex
+   */
+  function commitFigmaChipColor(linkId, hex) {
+    const link = linkRecord(linkId);
+    const page = activePage();
+    if (!link || page?.kind !== 'figma') {
+      return;
+    }
+    const label = figmaChipBindingLabel(link);
+    if (!label) {
+      return;
+    }
+    const draft = figmaChipBindingDraft(page);
+    const index = figmaChipBindingIndex(draft, label, true, {
+      icon: link.figmaIcon || FIGMA_ICON_FALLBACK,
+      color: freshenFigmaIconColor(link.figmaIconColor),
+    });
+    if (index < 0) {
+      return;
+    }
+    if (draft !== figmaIconDraft) {
+      const row = draft.rows[index];
+      const next = String(hex || '').trim().toLowerCase();
+      if (!next || next === FIGMA_ICON_GRAY) {
+        delete row.color;
+      } else {
+        row.color = next;
+      }
+      paintLinkPanelBinding(row, draft.caseSensitive);
+      postFigmaIconBindings(draft, false);
+      return;
+    }
+    setFigmaIconRowColor(index, hex);
+  }
+
+  /**
+   * @param {*} link
+   * @param {string} iconName
+   */
+  function commitFigmaChipIcon(link, iconName) {
+    const page = activePage();
+    if (!link || page?.kind !== 'figma' || !iconName) {
+      return;
+    }
+    const label = figmaChipBindingLabel(link);
+    if (!label) {
+      return;
+    }
+    const draft = figmaChipBindingDraft(page);
+    const index = figmaChipBindingIndex(draft, label, true, {
+      icon: iconName,
+      color: freshenFigmaIconColor(link.figmaIconColor),
+    });
+    const row = index >= 0 ? draft.rows[index] : undefined;
+    if (!row) {
+      return;
+    }
+    row.icon = iconName;
+    paintLinkPanelBinding(row, draft.caseSensitive);
+    if (draft !== figmaIconDraft) {
+      postFigmaIconBindings(draft, false);
+      return;
+    }
+    const panelAvatar = document.querySelector(
+      '#figma-icon-panel [data-icon-index="' + index + '"] .figma-chip-avatar',
+    );
+    if (panelAvatar instanceof HTMLElement) {
+      mountLucide(panelAvatar, iconName);
+    }
+    scheduleFigmaIconSave();
+  }
+
+  /**
+   * Longest matching text wins. Equal length keeps the earlier row.
+   * @param {string} label
+   * @param {{ icon: string, text: string, color?: string }[]} rows
+   * @param {boolean} caseSensitive
+   * @param {boolean} whole
+   */
+  function figmaIconMatchForLabel(label, rows, caseSensitive, whole) {
+    const hay = caseSensitive ? label : label.toLocaleLowerCase();
+    /** @type {{ icon: string, color: string, length: number, index: number } | undefined} */
+    let best;
+    rows.forEach((row, index) => {
+      const needleRaw = String(row.text || '').trim();
+      if (!needleRaw) {
+        return;
+      }
+      const needle = caseSensitive ? needleRaw : needleRaw.toLocaleLowerCase();
+      const hit = whole ? hay === needle : hay.includes(needle);
+      if (!hit) {
+        return;
+      }
+      if (!best || needleRaw.length > best.length || (needleRaw.length === best.length && index < best.index)) {
+        const color = String(row.color || '').trim().toLowerCase();
+        best = {
+          icon: row.icon || FIGMA_ICON_FALLBACK,
+          color: color && color !== FIGMA_ICON_GRAY ? color : FIGMA_ICON_GRAY,
+          length: needleRaw.length,
+          index,
+        };
+      }
+    });
+    return {
+      icon: best ? best.icon : FIGMA_ICON_FALLBACK,
+      color: best ? best.color : FIGMA_ICON_GRAY,
+    };
+  }
+
+  /**
+   * Paint the open draft onto the chips and remember it on the page, so a reopen
+   * before the next state still shows the chosen color.
+   * @param {{ pageId: string, rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean, whole: boolean }} draft
+   */
+  function paintFigmaIconsOntoLinks(draft) {
+    if (data && Array.isArray(data.links)) {
+      for (const link of data.links) {
+        if (pageOfLink(link) !== draft.pageId) {
+          continue;
+        }
+        const matched = figmaIconMatchForLabel(
+          link.label || '',
+          draft.rows,
+          draft.caseSensitive,
+          draft.whole,
+        );
+        link.figmaIcon = matched.icon;
+        link.figmaIconColor = matched.color;
+      }
+    }
+    const page = pages().find((item) => item.id === draft.pageId);
+    if (page) {
+      page.figmaIconBindings = draft.rows.map((row) => ({
+        icon: row.icon,
+        text: row.text,
+        ...(row.color ? { color: row.color } : {}),
+        ...(row.builtin ? { builtin: true } : {}),
+      }));
+      if (draft.caseSensitive || draft.whole) {
+        page.figmaIconMatch = {
+          ...(draft.caseSensitive ? { caseSensitive: true } : {}),
+          ...(draft.whole ? { whole: true } : {}),
+        };
+      } else {
+        delete page.figmaIconMatch;
+      }
+    }
+    paintLinksPage();
+  }
+
+  /**
+   * @param {{ pageId: string, rows: { icon: string, text: string, color?: string, builtin?: true }[], caseSensitive: boolean, whole: boolean }} draft
+   * @param {boolean} closeOnSave
+   */
+  function postFigmaIconBindings(draft, closeOnSave) {
+    syncFigmaIconInputs(draft);
+    if (figmaIconDraftDuplicate(draft.rows, draft.caseSensitive)) {
+      showFigmaIconError(t('figmaIconDuplicate'));
+      return false;
+    }
+    showFigmaIconError('');
+    const seq = ++figmaIconSaveSeq;
+    if (closeOnSave) {
+      figmaIconCloseSeq = seq;
+    }
+    paintFigmaIconsOntoLinks(draft);
+    vscode.postMessage({
+      type: 'saveFigmaIconBindings',
+      pageId: draft.pageId,
+      bindings: draft.rows.map((row) => ({
+        icon: row.icon,
+        text: row.text.trim(),
+        ...(row.color ? { color: row.color } : {}),
+        ...(row.builtin ? { builtin: true } : {}),
+      })),
+      match: {
+        ...(draft.caseSensitive ? { caseSensitive: true } : {}),
+        ...(draft.whole ? { whole: true } : {}),
+      },
+    });
+    figmaIconDirty = false;
+    return true;
+  }
+
+  /**
+   * @param {number} [delayMs] Pause while the name is still being typed.
+   */
+  function scheduleFigmaIconSave(delayMs = 0) {
+    const draft = figmaIconDraft;
+    const panel = document.getElementById('figma-icon-panel');
+    if (!draft || panel?.classList.contains('is-busy')) {
+      return;
+    }
+    figmaIconDirty = true;
+    window.clearTimeout(figmaIconSaveTimer);
+    figmaIconSaveTimer = 0;
+    const run = () => {
+      figmaIconSaveTimer = 0;
+      const current = figmaIconDraft;
+      const host = document.getElementById('figma-icon-panel');
+      if (!current || host?.classList.contains('is-busy')) {
+        return;
+      }
+      postFigmaIconBindings(current, false);
+    };
+    if (delayMs > 0) {
+      figmaIconSaveTimer = window.setTimeout(run, delayMs);
+      return;
+    }
+    run();
+  }
+
+  function showFigmaIconError(text) {
+    const error = document.querySelector('#figma-icon-panel .review-panel-error');
+    if (!(error instanceof HTMLElement)) {
+      return;
+    }
+    if (!text) {
+      error.hidden = true;
+      error.textContent = '';
+      return;
+    }
+    error.hidden = false;
+    error.textContent = text;
+  }
+
+  /**
+   * @param {'fill' | 'stroke'} mode
+   * @param {string} d
+   */
+  function figmaFlagGlyph(mode, d) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    if (mode === 'stroke') {
+      svg.setAttribute('fill', 'none');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('stroke-linejoin', 'round');
+    } else {
+      path.setAttribute('fill', 'currentColor');
+    }
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * @param {*} page
+   */
+  function cloneFigmaIconRows(page) {
+    const source =
+      page && Array.isArray(page.figmaIconBindings) && page.figmaIconBindings.length
+        ? page.figmaIconBindings
+        : [
+            { icon: 'house', text: 'Главная', color: FIGMA_ICON_MINT, builtin: true },
+            { icon: 'image', text: 'Баннеры', color: FIGMA_ICON_MINT, builtin: true },
+            { icon: 'smartphone', text: 'Мобайл', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'monitor', text: 'Веб', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'tag', text: 'Жанры', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'file-text', text: 'Список', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'puzzle', text: 'Футер', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'box', text: 'Заглушки', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'tag', text: 'Теги', color: FIGMA_ICON_LIGHT, builtin: true },
+            { icon: 'layout-grid', text: 'LayoutPage', color: FIGMA_ICON_AMBER, builtin: true },
+          ];
+    return source.map((row) => {
+      const color = freshenFigmaIconColor(typeof row.color === 'string' ? row.color : '');
+      return {
+        icon: typeof row.icon === 'string' && row.icon ? row.icon : FIGMA_ICON_FALLBACK,
+        text: typeof row.text === 'string' ? row.text : '',
+        ...(color ? { color } : {}),
+        ...(row.builtin ? { builtin: true } : {}),
+      };
+    });
+  }
+
+  /**
+   * @param {HTMLButtonElement} anchor
+   * @param {number} index
+   * @param {(name: string) => void} [onPick]
+   */
+  function openFigmaIconPicker(anchor, index, onPick) {
+    closeFigmaIconPicker();
+    const picker = el('div', 'figma-icon-picker');
+    picker.id = 'figma-icon-picker';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'review-mr-title';
+    search.placeholder = t('figmaIconSearch');
+    search.setAttribute('aria-label', t('figmaIconSearch'));
+    const list = el('div', 'figma-icon-picker-list');
+    picker.append(search, list);
+    const rect = anchor.getBoundingClientRect();
+    picker.style.left = Math.max(8, rect.left) + 'px';
+    picker.style.top = Math.min(window.innerHeight - 280, rect.bottom + 4) + 'px';
+    document.body.append(picker);
+    /**
+     * @param {string[]} names
+     */
+    const paint = (names) => {
+      const query = search.value.trim().toLowerCase();
+      const matches = (query ? names.filter((name) => name.includes(query)) : names).slice(0, 48);
+      list.replaceChildren();
+      for (const name of matches) {
+        const button = el('button', 'figma-icon-choice');
+        button.type = 'button';
+        button.title = name;
+        button.setAttribute('aria-label', name);
+        const glyph = el('span', 'figma-chip-avatar');
+        mountLucide(glyph, name);
+        button.append(glyph, el('span', 'figma-icon-choice-name', name));
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (onPick) {
+            onPick(name);
+          } else {
+            const row = figmaIconDraft?.rows[index];
+            if (row) {
+              row.icon = name;
+              paintLinkPanelBinding(row);
+            }
+            const host = anchor.querySelector('.figma-chip-avatar');
+            if (host instanceof HTMLElement) {
+              mountLucide(host, name);
+            }
+            scheduleFigmaIconSave();
+          }
+          closeFigmaIconPicker();
+        });
+        list.append(button);
+      }
+    };
+    loadLucideNames().then((names) => {
+      if (!picker.isConnected) {
+        return;
+      }
+      paint(names);
+    });
+    search.addEventListener('input', () => {
+      loadLucideNames().then((names) => {
+        if (picker.isConnected) {
+          paint(names);
+        }
+      });
+    });
+    search.focus();
+    window.setTimeout(() => {
+      const onPointer = (event) => {
+        const target = event.target;
+        if (target instanceof Node && (picker.contains(target) || anchor.contains(target))) {
+          return;
+        }
+        closeFigmaIconPicker();
+        document.removeEventListener('pointerdown', onPointer, true);
+      };
+      document.addEventListener('pointerdown', onPointer, true);
+    }, 0);
+  }
+
+  function paintFigmaIconRows() {
+    const draft = figmaIconDraft;
+    const list = document.querySelector('#figma-icon-panel .figma-icon-scroll');
+    if (!draft || !(list instanceof HTMLElement)) {
+      return;
+    }
+    list.replaceChildren();
+    draft.rows.forEach((row, index) => {
+      const line = el('div', 'figma-icon-row');
+      line.dataset.iconIndex = String(index);
+      const pick = el('button', 'figma-icon-pick');
+      pick.type = 'button';
+      pick.title = t('figmaIconPick');
+      pick.setAttribute('aria-label', t('figmaIconPick'));
+      const avatar = el('span', 'figma-chip-avatar');
+      avatar.style.setProperty('--avatar-color', row.color || FIGMA_ICON_GRAY);
+      mountLucide(avatar, row.icon);
+      pick.append(avatar);
+      pick.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openFigmaIconPicker(pick, index);
+      });
+      const well = el('button', 'link-color-well');
+      well.type = 'button';
+      well.style.setProperty('--swatch', row.color || FIGMA_ICON_GRAY);
+      well.title = t('figmaIconColor');
+      well.setAttribute('aria-label', t('figmaIconColor'));
+      well.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openColorsPanel({
+          kind: 'figma-icon',
+          index,
+          currentHex: row.color || FIGMA_ICON_GRAY,
+          allowNone: true,
+          noneDisabled: false,
+          locked: false,
+        });
+      });
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'review-mr-title';
+      input.maxLength = 80;
+      input.spellcheck = false;
+      input.placeholder = t('figmaIconWord');
+      input.setAttribute('aria-label', t('figmaIconWord'));
+      input.value = row.text;
+      input.addEventListener('input', () => {
+        row.text = input.value;
+        showFigmaIconError('');
+        scheduleFigmaIconSave(300);
+      });
+      line.append(pick, well, input);
+      if (!row.builtin) {
+        const remove = el('button', 'figma-icon-remove', '×');
+        remove.type = 'button';
+        remove.title = t('figmaIconRemove');
+        remove.setAttribute('aria-label', t('figmaIconRemove'));
+        remove.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          draft.rows.splice(index, 1);
+          paintFigmaIconRows();
+          scheduleFigmaIconSave();
+        });
+        line.append(remove);
+      }
+      list.append(line);
+    });
+  }
+
+  /**
+   * @param {string} pageId
+   */
+  function openFigmaIconPanel(pageId) {
+    closeFigmaIconPanel();
+    const page = pages().find((item) => item.id === pageId);
+    const match = page?.figmaIconMatch || {};
+    figmaIconDraft = {
+      pageId,
+      rows: cloneFigmaIconRows(page),
+      caseSensitive: match.caseSensitive === true,
+      whole: match.whole === true,
+    };
+    const panel = el('div', 'review-mr-panel figma-icon-panel');
+    panel.id = 'figma-icon-panel';
+    panel.append(el('div', 'review-mr-people-title', t('figmaIconBindings')));
+    const flags = el('div', 'figma-icon-flags');
+    /**
+     * @param {'caseSensitive' | 'whole'} key
+     * @param {string} label
+     * @param {SVGElement} icon
+     */
+    const flagButton = (key, label, icon) => {
+      const button = el('button', 'figma-icon-flag');
+      button.type = 'button';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', figmaIconDraft && figmaIconDraft[key] ? 'true' : 'false');
+      button.append(icon);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        const draft = figmaIconDraft;
+        if (!draft) {
+          return;
+        }
+        const next = !draft[key];
+        const probe = { caseSensitive: draft.caseSensitive, whole: draft.whole, [key]: next };
+        if (figmaIconDraftDuplicate(draft.rows, probe.caseSensitive)) {
+          showFigmaIconError(t('figmaIconDuplicate'));
+          return;
+        }
+        draft[key] = next;
+        button.setAttribute('aria-pressed', next ? 'true' : 'false');
+        showFigmaIconError('');
+        scheduleFigmaIconSave();
+      });
+      return button;
+    };
+    flags.append(
+      flagButton(
+        'caseSensitive',
+        t('figmaIconMatchCase'),
+        figmaFlagGlyph(
+          'fill',
+          'M11.246 15H4.75416L2.75416 20H0.600098L7.0001 4H9.0001L15.4001 20H13.246L11.246 15ZM10.446 13L8.0001 6.88516L5.55416 13H10.446ZM21.0001 12.5351V12H23.0001V20H21.0001V19.4649C20.4118 19.8052 19.7287 20 19.0001 20C16.791 20 15.0001 18.2091 15.0001 16C15.0001 13.7909 16.791 12 19.0001 12C19.7287 12 20.4118 12.1948 21.0001 12.5351ZM19.0001 18C20.1047 18 21.0001 17.1046 21.0001 16C21.0001 14.8954 20.1047 14 19.0001 14C17.8955 14 17.0001 14.8954 17.0001 16C17.0001 17.1046 17.8955 18 19.0001 18Z',
+        ),
+      ),
+      flagButton(
+        'whole',
+        t('figmaIconMatchWhole'),
+        figmaFlagGlyph('stroke', 'M22 17v1c0 .5-.5 1-1 1H3c-.5 0-1-.5-1-1v-1'),
+      ),
+    );
+    panel.append(flags);
+    const scroll = el('div', 'figma-icon-scroll');
+    panel.append(scroll);
+    const add = el('button', 'review-btn figma-icon-add', t('figmaIconAdd'));
+    add.type = 'button';
+    add.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (!figmaIconDraft || figmaIconDraft.rows.length >= 80) {
+        return;
+      }
+      figmaIconDraft.rows.push({ icon: FIGMA_ICON_FALLBACK, text: '' });
+      paintFigmaIconRows();
+      scheduleFigmaIconSave();
+      const inputs = scroll.querySelectorAll('input');
+      const last = inputs[inputs.length - 1];
+      if (last instanceof HTMLInputElement) {
+        last.focus();
+      }
+    });
+    panel.append(add);
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => {
+      if (!panel.classList.contains('is-busy')) {
+        closeFigmaIconPanel();
+      }
+    });
+    const save = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+    save.type = 'button';
+    const commit = () => {
+      const draft = figmaIconDraft;
+      if (!draft || panel.classList.contains('is-busy')) {
+        return;
+      }
+      window.clearTimeout(figmaIconSaveTimer);
+      figmaIconSaveTimer = 0;
+      if (!postFigmaIconBindings(draft, true)) {
+        return;
+      }
+      setPanelBusy(panel, true);
+    };
+    save.addEventListener('click', commit);
+    bindSettingsCommitKey(panel, commit);
+    actions.append(cancel, save);
+    panel.append(actions);
+    mountSettingsOverlay(panel, () => {
+      if (!panel.classList.contains('is-busy')) {
+        closeFigmaIconPanel();
+      }
+    });
+    paintFigmaIconRows();
+  }
+
+  function openPageSettingsPanel(opts) {
+    closePageSettingsPanel();
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeProfileSettingsPanel();
+    const creating = opts.mode !== 'edit';
+    const panel = el('div', 'review-mr-panel review-create-page-panel page-settings-panel');
+    panel.id = 'page-settings-panel';
+    panel.append(
+      el('div', 'review-mr-people-title', t(creating ? 'pageSettingsCreateTitle' : 'pageSettingsTitle')),
+    );
+
+    /**
+     * @param {string} labelKey
+     * @param {{ value?: string, password?: boolean, placeholderKey?: string }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = field.value || '';
+      if (field.password) {
+        input.autocomplete = 'new-password';
+      }
+      if (field.placeholderKey) {
+        input.placeholder = t(field.placeholderKey);
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.type = 'text';
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 64;
+    nameInput.value = opts.name || '';
+    nameInput.setAttribute('aria-label', t('reviewFieldPageName'));
+    panel.append(nameInput);
+
+    const selectedKind =
+      opts.kind === 'notes' || opts.kind === 'links' || opts.kind === 'figma' || opts.kind === 'files'
+        ? opts.kind
+        : 'files';
+    const kindKey =
+      selectedKind === 'notes'
+        ? 'pageKindNotes'
+        : selectedKind === 'links'
+          ? 'pageKindLinks'
+          : selectedKind === 'figma'
+            ? 'pageKindFigma'
+            : 'pageKindFiles';
+    panel.append(el('div', 'page-kind-line', t('labelPageKind') + ': ' + t(kindKey)));
+
+    const pageDesc = pageDescriptionField(opts.description || '');
+    const descInput = pageDesc.input;
+    panel.append(pageDesc.label);
+
+    const channelInput = fieldRow('labelChannelDiscord', {
+      value: opts.channelId || '',
+      placeholderKey: 'channelIdPlaceholder',
+    });
+
+    /** @type {HTMLInputElement | null} */
+    let figmaInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaSkillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaModelInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaPrintThinkingInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaPrintToolsInput = null;
+    /** @type {HTMLInputElement | null} */
+    let figmaOpenInAppInput = null;
+    /** @type {{ label: HTMLElement, input: HTMLInputElement, nameInput: HTMLInputElement }[]} */
+    const figmaFileRows = [];
+    /** @type {HTMLButtonElement | null} */
+    let figmaAdd = null;
+    let onFigmaFilesChanged = () => {};
+    /** @type {(markInvalid: boolean) => { invalid: boolean, duplicate: boolean, links: { url: string, label: string }[] }} */
+    let noteFigmaLinkRows = () => ({ invalid: false, duplicate: false, links: [] });
+    const figmaFileMax = 20;
+    /**
+     * @param {string} value
+     */
+    function figmaScopeCaption(value) {
+      const text = String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 80);
+      return text || t('figmaLinkLabel');
+    }
+    if (selectedKind === 'figma') {
+      const figmaLabel = el('label', 'review-mr-field', t('figmaTokenField'));
+      const figmaRow = el('div', 'figma-token-row');
+      const figmaTokenInput = document.createElement('input');
+      figmaTokenInput.className = 'review-mr-title';
+      figmaTokenInput.type = 'password';
+      figmaTokenInput.spellcheck = false;
+      figmaTokenInput.autocomplete = 'new-password';
+      figmaTokenInput.placeholder = t('figmaTokenPlaceholder');
+      figmaTokenInput.value = opts.figmaToken || '';
+      const figmaHelp = el('button', 'figma-token-help', '?');
+      figmaHelp.type = 'button';
+      figmaHelp.title = t('figmaTokenHelp');
+      figmaHelp.setAttribute('aria-label', t('figmaTokenHelp'));
+      figmaHelp.setAttribute('aria-expanded', 'false');
+      const figmaHint = el('div', 'figma-token-hint', t('figmaTokenHelpBody'));
+      figmaHint.hidden = true;
+      figmaHelp.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const open = figmaHint.hidden;
+        figmaHint.hidden = !open;
+        figmaHelp.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      figmaHelp.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.stopPropagation();
+        }
+      });
+      figmaRow.append(figmaTokenInput, figmaHelp);
+      figmaLabel.append(figmaRow);
+      panel.append(figmaLabel, figmaHint);
+      figmaInput = figmaTokenInput;
+
+      /**
+       * @param {string} labelKey
+       * @param {boolean} checked
+       */
+      function figmaTerminalFlag(labelKey, checked) {
+        const label = el('label', 'review-terminal-flag');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        label.append(input, el('span', 'review-terminal-flag-text', t(labelKey)));
+        panel.append(label);
+        return input;
+      }
+      figmaOpenInAppInput = figmaTerminalFlag('figmaOpenInApp', opts.figmaOpenInApp !== false);
+
+      const skillLabel = el('label', 'review-mr-field', t('figmaSkillPath'));
+      const skillRow = el('div', 'review-path-field');
+      const skillPathInput = document.createElement('input');
+      skillPathInput.className = 'review-mr-title';
+      skillPathInput.type = 'text';
+      skillPathInput.spellcheck = false;
+      skillPathInput.value = opts.figmaSkillPath || '';
+      const skillBrowse = el('button', 'review-btn review-path-browse', '…');
+      skillBrowse.type = 'button';
+      skillBrowse.title = t('browseProject');
+      skillBrowse.setAttribute('aria-label', t('browseProject'));
+      skillRow.append(skillPathInput, skillBrowse);
+      skillLabel.append(skillRow);
+      panel.append(skillLabel);
+      figmaSkillInput = skillPathInput;
+
+      const modelLabel = el('label', 'review-mr-field', t('labelReviewModel'));
+      const modelInput = document.createElement('input');
+      modelInput.className = 'review-mr-title review-model-input';
+      modelInput.type = 'text';
+      modelInput.spellcheck = false;
+      modelInput.autocapitalize = 'none';
+      modelInput.autocomplete = 'off';
+      modelInput.placeholder = 'grok-4.7-high-fast';
+      modelInput.value = (opts.figmaModel || '').toLowerCase();
+      modelInput.addEventListener('input', () => {
+        const next = modelInput.value.toLowerCase();
+        if (next === modelInput.value) {
+          return;
+        }
+        const start = modelInput.selectionStart;
+        const end = modelInput.selectionEnd;
+        modelInput.value = next;
+        if (start !== null && end !== null) {
+          modelInput.setSelectionRange(start, end);
+        }
+      });
+      modelLabel.append(modelInput);
+      panel.append(modelLabel);
+      figmaModelInput = modelInput;
+
+      figmaPrintThinkingInput = figmaTerminalFlag(
+        'labelReviewPrintThinking',
+        opts.figmaPrintThinking === true,
+      );
+      figmaPrintToolsInput = figmaTerminalFlag(
+        'labelReviewPrintTools',
+        opts.figmaPrintTools !== false,
+      );
+      skillLabel.after(modelLabel);
+      const thinkingLabel = figmaPrintThinkingInput.parentElement;
+      const toolsLabel = figmaPrintToolsInput.parentElement;
+      if (thinkingLabel) {
+        modelLabel.after(thinkingLabel);
+      }
+      if (toolsLabel && thinkingLabel) {
+        thinkingLabel.after(toolsLabel);
+      }
+
+      const pathNav = el('div', 'review-path-nav');
+      pathNav.hidden = true;
+      const pathPanel = el('div', 'review-path-nav-panel');
+      pathPanel.setAttribute('role', 'dialog');
+      const pathTitle = el('div', 'review-path-nav-title', t('figmaSkillPath'));
+      const pathBar = el('div', 'review-path-nav-bar');
+      const pathUp = el('button', 'review-path-nav-icon', '↑');
+      pathUp.type = 'button';
+      pathUp.title = t('pathNavUp');
+      const pathCrumbs = el('div', 'review-path-nav-crumbs');
+      const pathClose = el('button', 'review-path-nav-icon', '×');
+      pathClose.type = 'button';
+      pathClose.title = t('pathNavClose');
+      pathBar.append(pathUp, pathCrumbs, pathClose);
+      const pathList = el('div', 'review-path-nav-list');
+      pathList.tabIndex = -1;
+      const pathFoot = el('div', 'review-path-nav-foot');
+      const pathPick = el('button', 'review-btn', t('pathNavSelectDir'));
+      pathPick.type = 'button';
+      pathFoot.append(pathPick);
+      pathPanel.append(pathTitle, pathBar, pathList, pathFoot);
+      pathNav.append(pathPanel);
+      document.body.append(pathNav);
+
+      let browseSeq = 0;
+      let navRel = '';
+
+      function closeFigmaPathNav() {
+        pathNav.hidden = true;
+      }
+
+      function requestFigmaDir(rel) {
+        browseSeq += 1;
+        navRel = rel || '';
+        vscode.postMessage({ type: 'listProjectDir', seq: browseSeq, rel: navRel });
+      }
+
+      function chooseFigmaPath(rel) {
+        skillPathInput.value = rel || '.';
+        closeFigmaPathNav();
+        skillPathInput.dispatchEvent(new Event('change'));
+      }
+
+      /**
+       * @param {{ relDir?: string, entries?: Array<{ name: string, relPath: string, isDir: boolean }>, error?: string }} payload
+       */
+      function renderFigmaPathNav(payload) {
+        navRel = payload && typeof payload.relDir === 'string' ? payload.relDir : '';
+        pathUp.disabled = !navRel;
+        pathCrumbs.replaceChildren();
+        const rootBtn = el('button', 'review-path-crumb', t('pathNavRoot'));
+        rootBtn.type = 'button';
+        rootBtn.addEventListener('click', () => requestFigmaDir(''));
+        pathCrumbs.append(rootBtn);
+        if (navRel) {
+          let acc = '';
+          for (const part of navRel.split('/')) {
+            acc = acc ? acc + '/' + part : part;
+            pathCrumbs.append(el('span', 'review-path-crumb-sep', '/'));
+            const crumb = el('button', 'review-path-crumb', part);
+            crumb.type = 'button';
+            const target = acc;
+            crumb.addEventListener('click', () => requestFigmaDir(target));
+            pathCrumbs.append(crumb);
+          }
+        }
+        pathList.replaceChildren();
+        const entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (payload && payload.error) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavUnreadable')));
+        } else if (entries.length === 0) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavEmpty')));
+        }
+        for (const entry of entries) {
+          const row = el('div', 'review-path-nav-row');
+          const open = el('button', 'review-path-nav-open');
+          open.type = 'button';
+          open.append(
+            el('span', 'review-path-nav-mark', entry.isDir ? '▸' : ''),
+            el('span', 'review-path-nav-name', entry.name),
+          );
+          if (entry.isDir) {
+            open.addEventListener('click', () => requestFigmaDir(entry.relPath));
+            const pick = el('button', 'review-btn review-path-nav-pick', t('pathNavPick'));
+            pick.type = 'button';
+            pick.addEventListener('click', () => chooseFigmaPath(entry.relPath));
+            row.append(open, pick);
+          } else {
+            open.title = t('pathNavPick');
+            open.addEventListener('click', () => chooseFigmaPath(entry.relPath));
+            row.append(open);
+          }
+          pathList.append(row);
+        }
+      }
+
+      function onFigmaPathMessage(event) {
+        if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {
+          renderFigmaPathNav(event.data);
+        }
+      }
+
+      function onFigmaPathKey(event) {
+        if (event.key === 'Escape' && !pathNav.hidden) {
+          event.stopPropagation();
+          closeFigmaPathNav();
+        }
+      }
+
+      skillBrowse.addEventListener('click', () => {
+        pathNav.hidden = false;
+        requestFigmaDir(skillPathInput.value);
+        pathList.focus();
+      });
+      pathUp.addEventListener('click', () => {
+        requestFigmaDir(navRel.includes('/') ? navRel.slice(0, navRel.lastIndexOf('/')) : '');
+      });
+      pathClose.addEventListener('click', () => closeFigmaPathNav());
+      pathPick.addEventListener('click', () => chooseFigmaPath(navRel));
+      pathNav.addEventListener('click', (event) => {
+        if (event.target === pathNav) {
+          closeFigmaPathNav();
+        }
+      });
+      document.addEventListener('keydown', onFigmaPathKey, true);
+      window.addEventListener('message', onFigmaPathMessage);
+      detachFigmaPathNav = () => {
+        document.removeEventListener('keydown', onFigmaPathKey, true);
+        window.removeEventListener('message', onFigmaPathMessage);
+        pathNav.remove();
+      };
+
+      const figmaScopeSection = el('div', 'figma-scope-section');
+      figmaScopeSection.append(el('div', 'figma-scope-title', t('figmaScopeSection')));
+      const figmaScopeList = el('div', 'figma-scope-list');
+      figmaAdd = el('button', 'review-btn figma-scope-add', t('figmaFilesAdd'));
+      figmaAdd.type = 'button';
+      figmaAdd.addEventListener('click', (event) => {
+        event.preventDefault();
+        addFigmaFileRow('', '');
+        const last = figmaFileRows[figmaFileRows.length - 1];
+        if (last) {
+          last.nameInput.focus();
+          last.nameInput.select();
+        }
+      });
+      figmaScopeSection.append(figmaScopeList, figmaAdd);
+      if (!creating && opts.pageId) {
+        const openIcons = el('button', 'review-btn figma-icon-open', t('figmaIconBindings'));
+        openIcons.type = 'button';
+        openIcons.addEventListener('click', (event) => {
+          event.preventDefault();
+          openFigmaIconPanel(opts.pageId);
+        });
+        figmaScopeSection.append(openIcons);
+      }
+      panel.append(figmaScopeSection);
+      /**
+       * @param {string} value
+       * @param {string} name
+       */
+      function addFigmaFileRow(value, name) {
+        if (!figmaAdd || figmaFileRows.length >= figmaFileMax) {
+          return;
+        }
+        const label = el('div', 'review-mr-field figma-scope-row');
+        const nameInput = document.createElement('input');
+        nameInput.className = 'figma-scope-label';
+        nameInput.type = 'text';
+        nameInput.maxLength = 80;
+        nameInput.spellcheck = false;
+        nameInput.autocomplete = 'off';
+        nameInput.setAttribute('aria-label', t('figmaScopeSection'));
+        nameInput.value = figmaScopeCaption(name);
+        nameInput.addEventListener('blur', () => {
+          nameInput.value = figmaScopeCaption(nameInput.value);
+        });
+        const row = el('div', 'figma-token-row');
+        const input = document.createElement('input');
+        input.className = 'review-mr-title';
+        input.type = 'text';
+        input.spellcheck = false;
+        input.placeholder = t('figmaFilePlaceholder');
+        input.setAttribute('aria-label', t('figmaFilePlaceholder'));
+        input.value = value || '';
+        /** @type {{ label: HTMLElement, input: HTMLInputElement, nameInput: HTMLInputElement }} */
+        const entry = { label, input, nameInput };
+        input.addEventListener('input', () => noteFigmaLinkRows(false));
+        input.addEventListener('change', () => onFigmaFilesChanged());
+        nameInput.addEventListener('change', () => onFigmaFilesChanged());
+        const remove = el('button', 'figma-token-help', '×');
+        remove.type = 'button';
+        remove.title = t('figmaFileRemove');
+        remove.setAttribute('aria-label', t('figmaFileRemove'));
+        remove.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const index = figmaFileRows.findIndex((item) => item.input === input);
+          if (index >= 0) {
+            figmaFileRows.splice(index, 1);
+          }
+          label.remove();
+          syncFigmaAdd();
+          noteFigmaLinkRows(false);
+          onFigmaFilesChanged();
+        });
+        row.append(input, remove);
+        label.append(nameInput, row);
+        figmaScopeList.append(label);
+        figmaFileRows.push(entry);
+        syncFigmaAdd();
+      }
+      function syncFigmaAdd() {
+        if (figmaAdd) {
+          figmaAdd.hidden = figmaFileRows.length >= figmaFileMax;
+        }
+      }
+      const savedFiles = figmaFileEntries(opts.figmaFiles);
+      if (savedFiles.length === 0) {
+        for (let slot = 0; slot < 3; slot += 1) {
+          addFigmaFileRow('', '');
+        }
+      } else {
+        for (const item of savedFiles.slice(0, figmaFileMax)) {
+          addFigmaFileRow(item.url, item.label);
+        }
+      }
+    }
+
+    /** @type {HTMLInputElement | null} */
+    let discordInput = null;
+    if (opts.hasDiscord) {
+      panel.append(
+        el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved')),
+      );
+    } else {
+      discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
+    }
+
+    if (selectedKind === 'figma') {
+      const skillIconPath = {
+        download:
+          'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z',
+        copy:
+          'M6.99979 7V3C6.99979 2.44772 7.4475 2 7.99979 2H20.9998C21.5521 2 21.9998 2.44772 21.9998 3V16C21.9998 16.5523 21.5521 17 20.9998 17H17V20.9925C17 21.5489 16.551 22 15.9925 22H3.00728C2.45086 22 2 21.5511 2 20.9925L2.00276 8.00748C2.00288 7.45107 2.4518 7 3.01025 7H6.99979ZM8.99979 7H15.9927C16.549 7 17 7.44892 17 8.00748V15H19.9998V4H8.99979V7ZM4.00255 9L4.00021 20H15V9H4.00255Z',
+      };
+      /**
+       * @param {'download' | 'copy'} kind
+       * @param {string} label
+       * @param {() => void} onClick
+       */
+      function figmaSkillIconButton(kind, label, onClick) {
+        const button = el('button', 'review-skill-icon');
+        button.type = 'button';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('fill', 'currentColor');
+        path.setAttribute('d', skillIconPath[kind]);
+        svg.append(path);
+        button.append(svg);
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onClick();
+        });
+        return button;
+      }
+      const docs = el('div', 'review-settings-docs');
+      const howTo = el('button', 'review-doc-card', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'figmaOpenSetupDoc' });
+      });
+      const card = el('div', 'review-doc-card');
+      const openSkill = el('button', 'review-doc-open', t('figmaSkillRequired'));
+      openSkill.type = 'button';
+      openSkill.addEventListener('click', () => {
+        vscode.postMessage({ type: 'figmaSkillFile', action: 'open' });
+      });
+      const icons = el('div', 'review-skill-icons');
+      icons.append(
+        figmaSkillIconButton('download', t('reviewSkillDownload'), () => {
+          vscode.postMessage({ type: 'figmaSkillFile', action: 'save' });
+        }),
+        figmaSkillIconButton('copy', t('reviewSkillCopy'), () => {
+          vscode.postMessage({ type: 'figmaSkillFile', action: 'copy' });
+        }),
+      );
+      card.append(openSkill, icons);
+      docs.append(howTo, card);
+      const copied = el('p', 'review-skill-copied');
+      copied.id = 'review-skill-copied';
+      copied.hidden = true;
+      copied.setAttribute('aria-live', 'polite');
+      panel.append(docs, copied);
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    noteFigmaLinkRows = (markInvalid) => {
+      /** @type {{ url: string, label: string }[]} */
+      const links = [];
+      /** @type {{ fileKey: string, nodeId: string, label: HTMLElement, url: string, name: string }[]} */
+      const described = [];
+      let invalid = false;
+      let duplicate = false;
+      for (const row of figmaFileRows) {
+        row.label.classList.remove('has-error');
+        const raw = row.input.value.trim();
+        if (!raw) {
+          continue;
+        }
+        const ref = figmaLinkFromInput(raw);
+        if (!ref) {
+          if (markInvalid) {
+            invalid = true;
+            row.label.classList.add('has-error');
+          }
+          continue;
+        }
+        described.push({
+          fileKey: ref.fileKey,
+          nodeId: ref.nodeId,
+          label: row.label,
+          url: ref.url,
+          name: figmaScopeCaption(row.nameInput.value),
+        });
+      }
+      for (let i = 0; i < described.length; i += 1) {
+        for (let j = i + 1; j < described.length; j += 1) {
+          if (figmaLinksOverlap(described[i], described[j])) {
+            duplicate = true;
+            described[i].label.classList.add('has-error');
+            described[j].label.classList.add('has-error');
+          }
+        }
+      }
+      if (!invalid && !duplicate) {
+        for (const item of described) {
+          links.push(item.name ? { url: item.url, label: item.name } : { url: item.url });
+        }
+        if (
+          error.textContent === t('figmaFileInvalid') ||
+          error.textContent === t('figmaFileDuplicate')
+        ) {
+          error.hidden = true;
+          error.textContent = '';
+        }
+      } else if (!markInvalid && duplicate) {
+        error.textContent = t('figmaFileDuplicate');
+        error.hidden = false;
+      }
+      return { invalid, duplicate, links };
+    };
+
+    /**
+     * @param {boolean} report
+     * @returns {{ name: string, kind: string, description: string | undefined, channelId: string, discordToken: string | undefined, figmaToken: string | undefined, figmaSkillPath: string | undefined, figmaModel: string | undefined, figmaPrintThinking: boolean | undefined, figmaPrintTools: boolean | undefined, figmaOpenInApp: boolean | undefined, figmaFiles: { url: string, label?: string }[] | undefined } | null}
+     */
+    function readPageForm(report) {
+      const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const kind = selectedKind;
+      if (!name) {
+        if (report) {
+          error.textContent = t('profileNameEmpty');
+          error.hidden = false;
+          nameInput.focus();
+        }
+        return null;
+      }
+      if (creating && !/^\d{5,}$/.test(channelId)) {
+        if (report) {
+          const channelLabel = channelInput.closest('.review-mr-field');
+          if (channelLabel instanceof HTMLElement) {
+            channelLabel.classList.add('has-error');
+          }
+          error.textContent = channelId ? t('projectChannelInvalid') : t('projectChannelEmpty');
+          error.hidden = false;
+          channelInput.focus();
+        }
+        return null;
+      }
+      if (!creating && channelId && !/^\d{5,}$/.test(channelId)) {
+        if (report) {
+          error.textContent = t('projectChannelInvalid');
+          error.hidden = false;
+          channelInput.focus();
+        }
+        return null;
+      }
+      /** @type {{ url: string, label?: string }[] | undefined} */
+      let figmaFiles;
+      if (selectedKind === 'figma') {
+        const checked = noteFigmaLinkRows(true);
+        if (checked.invalid || checked.duplicate) {
+          if (report) {
+            error.textContent = t(checked.invalid ? 'figmaFileInvalid' : 'figmaFileDuplicate');
+            error.hidden = false;
+            const bad = panel.querySelector('.review-mr-field.has-error input');
+            if (bad instanceof HTMLElement) {
+              bad.focus();
+            }
+          }
+          return null;
+        }
+        figmaFiles = checked.links;
+      }
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
+      return {
+        name,
+        kind,
+        description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        channelId,
+        discordToken: discordInput?.value.trim() || undefined,
+        figmaToken: figmaInput ? figmaInput.value.trim() : undefined,
+        figmaSkillPath: figmaSkillInput ? figmaSkillInput.value.trim() : undefined,
+        figmaModel: figmaModelInput ? figmaModelInput.value.trim().toLowerCase() : undefined,
+        figmaPrintThinking: figmaPrintThinkingInput ? figmaPrintThinkingInput.checked : undefined,
+        figmaPrintTools: figmaPrintToolsInput ? figmaPrintToolsInput.checked : undefined,
+        figmaOpenInApp: figmaOpenInAppInput ? figmaOpenInAppInput.checked : undefined,
+        figmaFiles,
+      };
+    }
+
+    if (creating) {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        closePageSettingsPanel();
+      });
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      const syncPageCreateSubmit = () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        submit.classList.toggle('is-idle', !/^\d{5,}$/.test(channelInput.value.trim()));
+      };
+      channelInput.addEventListener('input', () => {
+        if (/^\d{5,}$/.test(channelInput.value.trim())) {
+          const channelLabel = channelInput.closest('.review-mr-field');
+          if (channelLabel instanceof HTMLElement) {
+            channelLabel.classList.remove('has-error');
+          }
+        }
+        syncPageCreateSubmit();
+      });
+      syncPageCreateSubmit();
+      const submitCreate = () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        const fields = readPageForm(true);
+        if (!fields) {
+          return;
+        }
+        setPanelBusy(panel, true);
+        vscode.postMessage({
+          type: 'pageSaveSettings',
+          kind: fields.kind,
+          name: fields.name,
+          description: fields.description,
+          channelId: fields.channelId,
+          discordToken: fields.discordToken,
+          figmaToken: fields.figmaToken,
+          figmaSkillPath: fields.figmaSkillPath,
+          figmaModel: fields.figmaModel,
+          figmaPrintThinking: fields.figmaPrintThinking,
+          figmaPrintTools: fields.figmaPrintTools,
+          figmaOpenInApp: fields.figmaOpenInApp,
+          figmaFiles: fields.figmaFiles,
+        });
+      };
+      submit.addEventListener('click', submitCreate);
+      bindSettingsCommitKey(panel, submitCreate);
+      actions.append(cancel, submit);
+      panel.append(actions);
+    } else {
+      let savedSig = JSON.stringify({
+        name: (opts.name || '').trim(),
+        description: clipGroupDescriptionInput(opts.description || '').trim(),
+        channelId: (opts.channelId || '').trim(),
+        discordToken: '',
+        figmaToken: figmaInput ? figmaInput.value.trim() : '',
+        figmaSkillPath: figmaSkillInput ? figmaSkillInput.value.trim() : '',
+        figmaModel: figmaModelInput ? figmaModelInput.value.trim().toLowerCase() : '',
+        figmaPrintThinking: figmaPrintThinkingInput ? figmaPrintThinkingInput.checked : false,
+        figmaPrintTools: !figmaPrintToolsInput || figmaPrintToolsInput.checked,
+        figmaOpenInApp: !figmaOpenInAppInput || figmaOpenInAppInput.checked,
+        figmaFiles: JSON.stringify(selectedKind === 'figma' ? noteFigmaLinkRows(false).links : []),
+      });
+      /**
+       * @param {boolean} [closeAfter]
+       */
+      const saveEditing = (closeAfter) => {
+        const fields = readPageForm(true);
+        if (!fields) {
+          return;
+        }
+        const sig = JSON.stringify({
+          name: fields.name,
+          description: fields.description || '',
+          channelId: fields.channelId,
+          discordToken: fields.discordToken || '',
+          figmaToken: fields.figmaToken || '',
+          figmaSkillPath: fields.figmaSkillPath || '',
+          figmaModel: (fields.figmaModel || '').toLowerCase(),
+          figmaPrintThinking: fields.figmaPrintThinking === true,
+          figmaPrintTools: fields.figmaPrintTools !== false,
+          figmaOpenInApp: fields.figmaOpenInApp !== false,
+          figmaFiles: JSON.stringify(fields.figmaFiles || []),
+        });
+        if (sig !== savedSig) {
+          savedSig = sig;
+          vscode.postMessage({
+            type: 'pageSaveSettings',
+            pageId: opts.pageId,
+            name: fields.name,
+            description: fields.description,
+            channelId: fields.channelId,
+            discordToken: fields.discordToken,
+            figmaToken: fields.figmaToken,
+            figmaSkillPath: fields.figmaSkillPath,
+            figmaModel: fields.figmaModel,
+            figmaPrintThinking: fields.figmaPrintThinking,
+            figmaPrintTools: fields.figmaPrintTools,
+            figmaOpenInApp: fields.figmaOpenInApp,
+            figmaFiles: fields.figmaFiles,
+          });
+        }
+        if (closeAfter) {
+          closePageSettingsPanel();
+        }
+      };
+      nameInput.addEventListener('change', () => saveEditing(false));
+      descInput.addEventListener('change', () => saveEditing(false));
+      channelInput.addEventListener('change', () => saveEditing(false));
+      if (discordInput) {
+        discordInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaInput) {
+        figmaInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaSkillInput) {
+        figmaSkillInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaModelInput) {
+        figmaModelInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaPrintThinkingInput) {
+        figmaPrintThinkingInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaPrintToolsInput) {
+        figmaPrintToolsInput.addEventListener('change', () => saveEditing(false));
+      }
+      if (figmaOpenInAppInput) {
+        figmaOpenInAppInput.addEventListener('change', () => saveEditing(false));
+      }
+      onFigmaFilesChanged = () => saveEditing(false);
+      bindSettingsCommitKey(panel, () => saveEditing(true));
+    }
+    mountSettingsOverlay(panel, closePageSettingsPanel);
+    nameInput.focus();
+    if (!creating) {
+      nameInput.select();
+    }
+  }
+
+  /**
+   * Scheme name list under the page description. The menu stays in the panel flow
+   * so the settings scroller does not clip it.
+   * @param {unknown} initial
+   * @param {(scheme: string) => void} onPick
+   */
+  function mountReviewThemeField(initial, onPick) {
+    let scheme = normalizeReviewScheme(initial);
+    let open = false;
+    const label = el('div', 'review-mr-field');
+    label.append(el('span', 'review-desc-head', t('reviewFieldTheme')));
+    const strip = el('button', 'review-theme-strip');
+    strip.type = 'button';
+    strip.setAttribute('aria-haspopup', 'listbox');
+    const current = el('span', 'review-theme-current');
+    strip.append(current);
+    const menu = el('div', 'review-theme-menu');
+    menu.hidden = true;
+    menu.setAttribute('role', 'listbox');
+    /** @type {HTMLButtonElement[]} */
+    const options = REVIEW_SCHEME_IDS.map((id) => {
+      const option = el('button', 'review-theme-option', REVIEW_SCHEME_LABELS[id] || id);
+      option.type = 'button';
+      option.dataset.scheme = id;
+      option.setAttribute('role', 'option');
+      option.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        scheme = id;
+        open = false;
+        menu.hidden = true;
+        paintOptions();
+        fill();
+        onPick(scheme);
+      });
+      return option;
+    });
+    menu.append(...options);
+    const paintOptions = () => {
+      for (const option of options) {
+        const active = option.dataset.scheme === scheme;
+        option.classList.toggle('is-active', active);
+        option.setAttribute('aria-selected', active ? 'true' : 'false');
+      }
+    };
+    const fill = () => {
+      current.textContent = REVIEW_SCHEME_LABELS[scheme] || scheme;
+      strip.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    strip.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      open = !open;
+      menu.hidden = !open;
+      fill();
+    });
+    const onPointer = (event) => {
+      if (!open || !(event.target instanceof Node) || label.contains(event.target)) {
+        return;
+      }
+      open = false;
+      menu.hidden = true;
+      fill();
+    };
+    const onKey = (event) => {
+      if (!open || event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      open = false;
+      menu.hidden = true;
+      fill();
+    };
+    document.addEventListener('pointerdown', onPointer, true);
+    document.addEventListener('keydown', onKey, true);
+    detachReviewTheme = () => {
+      document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+    fill();
+    paintOptions();
+    label.append(strip, menu);
+    return { label, theme: () => scheme };
+  }
+
+  /**
+   * @param {{
+   *   origin: string,
+   *   suggestedProvider: 'gitlab' | 'github',
+   *   hasGitlab: boolean,
+   *   hasGithub: boolean,
+   *   hasDiscord: boolean,
+   *   pageId?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   repoUrl?: string,
+   *   projectRepoLocked?: boolean,
+   *   githubToken?: string,
+   *   gitlabToken?: string,
+   *   reviewSkillPath?: string,
+   *   reviewFixSkillPath?: string,
+   *   explainSkillPath?: string,
+   *   studySkillPath?: string,
+   *   reviewDirPath?: string,
+   *   reviewModel?: string,
+   *   reviewFixModel?: string,
+   *   reviewPrintThinking?: boolean,
+   *   reviewPrintTools?: boolean,
+   *   reviewScheme?: string
+   * }} opts
+   */
+  function openReviewCreatePagePanel(opts) {
+    closeReviewCreatePagePanel();
+    closeReviewMrPanel();
+    closeProfileSettingsPanel();
+    const editing = !!opts.pageId;
+    const panel = el('div', 'review-mr-panel review-create-page-panel');
+    panel.id = 'review-create-page-panel';
+    if (editing) {
+      panel.append(el('div', 'review-mr-people-title', t('reviewPageSettingsTitle')));
+    } else {
+      const header = el('div', 'review-create-page-header');
+      header.append(el('div', 'review-mr-people-title', t('reviewCreatePageTitle')));
+      const headerLinks = el('div', 'review-create-page-links');
+      const howTo = el('button', 'review-howto-link', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      const promptEx = el('button', 'review-howto-link', t('reviewPromptExample'));
+      promptEx.type = 'button';
+      promptEx.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenPromptExample' });
+      });
+      headerLinks.append(howTo, promptEx);
+      header.append(headerLinks);
+      panel.append(header);
+    }
+
+    /**
+     * @param {string} labelKey
+     * @param {{ type?: string, value?: string, placeholder?: string, password?: boolean }} field
+     */
+    function fieldRow(labelKey, field) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = field.password ? 'password' : field.type || 'text';
+      if (field.value) {
+        input.value = field.value;
+      }
+      if (field.placeholder) {
+        input.placeholder = field.placeholder;
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    const nameInput = fieldRow('reviewFieldPageName', {
+      placeholder: 'Review',
+      value: opts.name || '',
+    });
+    const pageDesc = pageDescriptionField(opts.description || '');
+    const descInput = pageDesc.input;
+    panel.append(pageDesc.label);
+    const themeField = mountReviewThemeField(opts.reviewScheme, (scheme) => {
+      vscode.postMessage({ type: 'reviewSetScheme', scheme });
+    });
+    panel.append(themeField.label);
+    const channelInput = fieldRow('reviewFieldChannelId', {
+      placeholder: '123456789012345678',
+      value: opts.channelId || '',
+    });
+
+    /** @type {'gitlab' | 'github'} */
+    let provider = opts.suggestedProvider === 'github' ? 'github' : 'gitlab';
+    const hostBox = el('div', 'review-provider-row');
+    hostBox.append(el('div', 'review-mr-people-title', t('reviewFieldProvider')));
+    const repoRow = el('div', 'project-repo-row');
+    const repoInput = document.createElement('input');
+    repoInput.className = 'review-mr-title';
+    repoInput.type = 'text';
+    repoInput.spellcheck = false;
+    repoInput.placeholder = t('projectRepoPlaceholder');
+    repoInput.value = opts.repoUrl || (opts.projectRepoLocked ? '' : opts.origin);
+    if (opts.projectRepoLocked) {
+      repoInput.readOnly = true;
+      repoInput.setAttribute('aria-readonly', 'true');
+    }
+    const repoHost = el('span', 'project-repo-host');
+    repoHost.hidden = true;
+    repoHost.setAttribute('aria-live', 'polite');
+    repoRow.append(repoInput, repoHost);
+    hostBox.append(repoRow);
+    panel.append(hostBox);
+
+    const hostTokenSlot = el('div', 'review-host-token-slot');
+    hostTokenSlot.hidden = true;
+    panel.append(hostTokenSlot);
+
+    /** @type {HTMLInputElement | null} */
+    let hostTokenInput = null;
+    /** @type {'' | 'gitlab' | 'github'} */
+    let renderedHost = '';
+
+    function renderHostToken() {
+      hostTokenSlot.replaceChildren();
+      const labelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title';
+      input.type = 'password';
+      input.spellcheck = false;
+      input.autocomplete = 'new-password';
+      input.value = provider === 'github' ? opts.githubToken || '' : opts.gitlabToken || '';
+      label.append(input);
+      hostTokenSlot.append(label);
+      hostTokenInput = input;
+      renderedHost = provider;
+      if (editing) {
+        input.addEventListener('change', () => saveEditing());
+      }
+    }
+
+    function syncReviewRepoHost() {
+      const detected = recognizedRepoProvider(repoInput.value);
+      if (!detected) {
+        if (hostTokenInput) {
+          if (provider === 'github') opts.githubToken = hostTokenInput.value;
+          else opts.gitlabToken = hostTokenInput.value;
+        }
+        repoHost.hidden = true;
+        repoHost.textContent = '';
+        hostTokenSlot.hidden = true;
+        renderedHost = '';
+        return;
+      }
+      if (hostTokenInput && provider !== detected) {
+        if (provider === 'github') opts.githubToken = hostTokenInput.value;
+        else opts.gitlabToken = hostTokenInput.value;
+      }
+      provider = detected;
+      repoHost.hidden = false;
+      repoHost.textContent = t(detected === 'github' ? 'reviewProviderGithub' : 'reviewProviderGitlab');
+      hostTokenSlot.hidden = false;
+      if (renderedHost !== detected) {
+        renderHostToken();
+      }
+    }
+
+    repoInput.addEventListener('input', () => {
+      syncReviewRepoHost();
+    });
+    syncReviewRepoHost();
+
+    /** @type {HTMLInputElement | null} */
+    let discordInput = null;
+    if (opts.hasDiscord) {
+      const saved = el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved'));
+      panel.append(saved);
+    } else {
+      discordInput = fieldRow('reviewFieldDiscordToken', { password: true });
+    }
+
+    /** @type {HTMLInputElement | null} */
+    let skillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let fixSkillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let explainSkillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let studySkillInput = null;
+    /** @type {HTMLInputElement | null} */
+    let dirInput = null;
+    /** @type {HTMLInputElement | null} */
+    let modelInput = null;
+    /** @type {HTMLInputElement | null} */
+    let printThinkingInput = null;
+    /** @type {HTMLInputElement | null} */
+    let printToolsInput = null;
+    /** Flushes skill, directory, and model fields. Set when the review page is being edited. */
+    let flushReviewAgentFields = () => {};
+    if (editing) {
+      /**
+       * @param {string} labelKey
+       * @param {string} value
+       * @param {'skill' | 'fix' | 'explain' | 'study' | 'dir' | 'model'} kind
+       */
+      function reviewAgentField(labelKey, value, kind) {
+        const label = el('label', 'review-mr-field', t(labelKey));
+        const row = el('div', 'review-path-field');
+        const input = document.createElement('input');
+        input.className = 'review-mr-title' + (kind === 'model' ? ' review-model-input' : '');
+        input.type = 'text';
+        input.spellcheck = false;
+        input.value = value;
+        if (kind === 'model') {
+          input.autocapitalize = 'none';
+          input.autocomplete = 'off';
+          input.placeholder = 'grok-4.7-high-fast';
+          input.addEventListener('input', () => {
+            const next = input.value.toLowerCase();
+            if (next === input.value) {
+              return;
+            }
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            input.value = next;
+            if (start !== null && end !== null) {
+              input.setSelectionRange(start, end);
+            }
+          });
+        }
+        row.append(input);
+        if (kind !== 'model') {
+          const browse = el('button', 'review-btn review-path-browse', '…');
+          browse.type = 'button';
+          browse.title = t('browseProject');
+          browse.setAttribute('aria-label', t('browseProject'));
+          browse.addEventListener('click', () => openReviewPathNav(kind, input));
+          row.append(browse);
+        }
+        label.append(row);
+        panel.append(label);
+        return input;
+      }
+
+      skillInput = reviewAgentField('labelReviewSkillPath', opts.reviewSkillPath || '', 'skill');
+      fixSkillInput = reviewAgentField('labelReviewFixSkillPath', opts.reviewFixSkillPath || '', 'fix');
+      explainSkillInput = reviewAgentField(
+        'labelExplainSkillPath',
+        opts.explainSkillPath || '',
+        'explain',
+      );
+      studySkillInput = reviewAgentField(
+        'labelStudySkillPath',
+        opts.studySkillPath || '',
+        'study',
+      );
+      dirInput = reviewAgentField('labelReviewDirPath', opts.reviewDirPath || '', 'dir');
+      modelInput = reviewAgentField('labelReviewModel', (opts.reviewModel || '').toLowerCase(), 'model');
+
+      /**
+       * @param {string} labelKey
+       * @param {boolean} checked
+       */
+      function reviewAgentFlag(labelKey, checked) {
+        const label = el('label', 'review-terminal-flag');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        label.append(input, el('span', 'review-terminal-flag-text', t(labelKey)));
+        panel.append(label);
+        return input;
+      }
+
+      printThinkingInput = reviewAgentFlag('labelReviewPrintThinking', opts.reviewPrintThinking === true);
+      printToolsInput = reviewAgentFlag('labelReviewPrintTools', opts.reviewPrintTools !== false);
+
+      function saveReviewPaths() {
+        if (!(skillInput instanceof HTMLInputElement) || !(dirInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const reviewSkillPath = skillInput.value.trim();
+        const reviewFixSkillPath =
+          fixSkillInput instanceof HTMLInputElement ? fixSkillInput.value.trim() : '';
+        const explainSkillPath =
+          explainSkillInput instanceof HTMLInputElement ? explainSkillInput.value.trim() : '';
+        const studySkillPath =
+          studySkillInput instanceof HTMLInputElement ? studySkillInput.value.trim() : '';
+        const reviewDirPath = dirInput.value.trim();
+        const reviewModel = modelInput instanceof HTMLInputElement ? modelInput.value.trim().toLowerCase() : '';
+        const reviewPrintThinking =
+          printThinkingInput instanceof HTMLInputElement && printThinkingInput.checked;
+        const reviewPrintTools = !(printToolsInput instanceof HTMLInputElement) || printToolsInput.checked;
+        if (
+          reviewSkillPath === (opts.reviewSkillPath || '') &&
+          reviewFixSkillPath === (opts.reviewFixSkillPath || '') &&
+          explainSkillPath === (opts.explainSkillPath || '') &&
+          studySkillPath === (opts.studySkillPath || '') &&
+          reviewDirPath === (opts.reviewDirPath || '') &&
+          reviewModel === (opts.reviewModel || '').toLowerCase() &&
+          reviewPrintThinking === (opts.reviewPrintThinking === true) &&
+          reviewPrintTools === (opts.reviewPrintTools !== false)
+        ) {
+          return;
+        }
+        opts.reviewSkillPath = reviewSkillPath;
+        opts.reviewFixSkillPath = reviewFixSkillPath;
+        opts.explainSkillPath = explainSkillPath;
+        opts.studySkillPath = studySkillPath;
+        opts.reviewDirPath = reviewDirPath;
+        opts.reviewModel = reviewModel;
+        opts.reviewPrintThinking = reviewPrintThinking;
+        opts.reviewPrintTools = reviewPrintTools;
+        vscode.postMessage({
+          type: 'setReviewPaths',
+          reviewSkillPath,
+          reviewFixSkillPath,
+          explainSkillPath,
+          studySkillPath,
+          reviewDirPath,
+          reviewModel,
+          reviewPrintThinking,
+          reviewPrintTools,
+        });
+      }
+
+      flushReviewAgentFields = saveReviewPaths;
+      for (const input of [skillInput, fixSkillInput, explainSkillInput, studySkillInput, dirInput, modelInput, printThinkingInput, printToolsInput]) {
+        input.addEventListener('change', () => saveReviewPaths());
+      }
+
+      /** @type {HTMLInputElement | null} */
+      let navTarget = null;
+      let browseSeq = 0;
+      let navRel = '';
+      const pathNav = el('div', 'review-path-nav');
+      pathNav.id = 'review-path-nav';
+      pathNav.hidden = true;
+      const pathPanel = el('div', 'review-path-nav-panel');
+      pathPanel.setAttribute('role', 'dialog');
+      const pathTitle = el('div', 'review-path-nav-title', '');
+      const pathBar = el('div', 'review-path-nav-bar');
+      const pathUp = el('button', 'review-path-nav-icon', '↑');
+      pathUp.type = 'button';
+      pathUp.title = t('pathNavUp');
+      const pathCrumbs = el('div', 'review-path-nav-crumbs');
+      const pathClose = el('button', 'review-path-nav-icon', '×');
+      pathClose.type = 'button';
+      pathClose.title = t('pathNavClose');
+      pathBar.append(pathUp, pathCrumbs, pathClose);
+      const pathList = el('div', 'review-path-nav-list');
+      pathList.tabIndex = -1;
+      const pathFoot = el('div', 'review-path-nav-foot');
+      const pathPick = el('button', 'review-btn', t('pathNavSelectDir'));
+      pathPick.type = 'button';
+      pathFoot.append(pathPick);
+      pathPanel.append(pathTitle, pathBar, pathList, pathFoot);
+      pathNav.append(pathPanel);
+      document.body.append(pathNav);
+
+      function closeReviewPathNav() {
+        pathNav.hidden = true;
+      }
+
+      function requestReviewDir(rel) {
+        browseSeq += 1;
+        navRel = rel || '';
+        vscode.postMessage({ type: 'listProjectDir', seq: browseSeq, rel: navRel });
+      }
+
+      function chooseReviewPath(rel) {
+        if (!(navTarget instanceof HTMLInputElement)) {
+          return;
+        }
+        navTarget.value = rel || '.';
+        closeReviewPathNav();
+        navTarget.dispatchEvent(new Event('change'));
+      }
+
+      /**
+       * @param {{ relDir?: string, entries?: Array<{ name: string, relPath: string, isDir: boolean }>, error?: string }} payload
+       */
+      function renderReviewPathNav(payload) {
+        navRel = payload && typeof payload.relDir === 'string' ? payload.relDir : '';
+        pathUp.disabled = !navRel;
+        pathCrumbs.replaceChildren();
+        const rootBtn = el('button', 'review-path-crumb', t('pathNavRoot'));
+        rootBtn.type = 'button';
+        rootBtn.addEventListener('click', () => requestReviewDir(''));
+        pathCrumbs.append(rootBtn);
+        if (navRel) {
+          let acc = '';
+          for (const part of navRel.split('/')) {
+            acc = acc ? acc + '/' + part : part;
+            pathCrumbs.append(el('span', 'review-path-crumb-sep', '/'));
+            const crumb = el('button', 'review-path-crumb', part);
+            crumb.type = 'button';
+            const target = acc;
+            crumb.addEventListener('click', () => requestReviewDir(target));
+            pathCrumbs.append(crumb);
+          }
+        }
+        pathList.replaceChildren();
+        const entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (payload && payload.error) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavUnreadable')));
+        } else if (entries.length === 0) {
+          pathList.append(el('p', 'review-path-nav-empty', t('pathNavEmpty')));
+        }
+        for (const entry of entries) {
+          const row = el('div', 'review-path-nav-row');
+          const open = el('button', 'review-path-nav-open');
+          open.type = 'button';
+          open.append(el('span', 'review-path-nav-mark', entry.isDir ? '▸' : ''), el('span', 'review-path-nav-name', entry.name));
+          if (entry.isDir) {
+            open.addEventListener('click', () => requestReviewDir(entry.relPath));
+            const pick = el('button', 'review-btn review-path-nav-pick', t('pathNavPick'));
+            pick.type = 'button';
+            pick.addEventListener('click', () => chooseReviewPath(entry.relPath));
+            row.append(open, pick);
+          } else {
+            open.title = t('pathNavPick');
+            open.addEventListener('click', () => chooseReviewPath(entry.relPath));
+            row.append(open);
+          }
+          pathList.append(row);
+        }
+      }
+
+      /**
+       * @param {'skill' | 'fix' | 'explain' | 'study' | 'dir'} kind
+       * @param {HTMLInputElement} input
+       */
+      function openReviewPathNav(kind, input) {
+        navTarget = input;
+        pathTitle.textContent = t(
+          kind === 'dir'
+            ? 'labelReviewDirPath'
+            : kind === 'explain'
+              ? 'labelExplainSkillPath'
+              : kind === 'study'
+                ? 'labelStudySkillPath'
+              : kind === 'fix'
+                ? 'labelReviewFixSkillPath'
+                : 'labelReviewSkillPath',
+        );
+        pathNav.hidden = false;
+        requestReviewDir(input.value);
+        pathList.focus();
+      }
+
+      pathUp.addEventListener('click', () => {
+        requestReviewDir(navRel.includes('/') ? navRel.slice(0, navRel.lastIndexOf('/')) : '');
+      });
+      pathClose.addEventListener('click', () => closeReviewPathNav());
+      pathPick.addEventListener('click', () => chooseReviewPath(navRel));
+      pathNav.addEventListener('click', (event) => {
+        if (event.target === pathNav) {
+          closeReviewPathNav();
+        }
+      });
+      function onReviewPathKey(event) {
+        if (event.key === 'Escape' && !pathNav.hidden) {
+          event.stopPropagation();
+          closeReviewPathNav();
+        }
+      }
+      function onReviewPathMessage(event) {
+        if (event.data?.type === 'projectDir' && event.data.seq === browseSeq) {
+          renderReviewPathNav(event.data);
+        }
+      }
+      document.addEventListener('keydown', onReviewPathKey, true);
+      window.addEventListener('message', onReviewPathMessage);
+      detachReviewPathNav = () => {
+        document.removeEventListener('keydown', onReviewPathKey, true);
+        window.removeEventListener('message', onReviewPathMessage);
+        pathNav.remove();
+      };
+    }
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    /**
+     * @param {boolean | 'focus'} report
+     * @returns {Record<string, string | undefined> | null}
+     */
+    function readReviewPageForm(report) {
+      const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const repoUrl = repoInput.value.trim();
+      const fail = (key, input) => {
+        if (report) {
+          error.textContent = t(key);
+          error.hidden = false;
+          if (report === 'focus' && input instanceof HTMLElement) {
+            input.focus();
+          }
+        }
+        return null;
+      };
+      if (!name) {
+        return fail('reviewFieldPageName', nameInput);
+      }
+      if (!/^\d{5,}$/.test(channelId)) {
+        return fail('reviewFieldChannelId', channelInput);
+      }
+      const detected = recognizedRepoProvider(repoUrl);
+      if (!detected) {
+        return fail('projectRepositoryRequired', repoInput);
+      }
+      provider = detected;
+      if (hostTokenSlot.hidden) {
+        syncReviewRepoHost();
+      }
+      const hostLabelKey = provider === 'github' ? 'reviewFieldGithubToken' : 'reviewFieldGitlabToken';
+      if (!(hostTokenInput?.value || '').trim()) {
+        return fail(hostLabelKey, hostTokenInput);
+      }
+      if (!opts.hasDiscord && !(discordInput?.value || '').trim()) {
+        return fail('reviewFieldDiscordToken', discordInput);
+      }
+      const hostToken = hostTokenInput?.value.trim() || '';
+      if (provider === 'github') opts.githubToken = hostToken;
+      else opts.gitlabToken = hostToken;
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
+      return {
+        name,
+        provider,
+        channelId,
+        repoUrl,
+        description: clipGroupDescriptionInput(descInput.value).trim() || undefined,
+        gitlabToken: (opts.gitlabToken || '').trim() || undefined,
+        githubToken: (opts.githubToken || '').trim() || undefined,
+        discordToken: discordInput?.value.trim() || undefined,
+      };
+    }
+
+    let savedSig = '';
+
+    /**
+     * @param {boolean | 'focus'} [report]
+     * @returns {boolean}
+     */
+    function saveEditing(report) {
+      if (!editing) {
+        return false;
+      }
+      const fields = readReviewPageForm(report === undefined ? true : report);
+      if (!fields) {
+        return false;
+      }
+      const sig = JSON.stringify(fields);
+      if (sig !== savedSig) {
+        savedSig = sig;
+        vscode.postMessage({
+          type: 'reviewUpdatePage',
+          pageId: opts.pageId,
+          ...fields,
+        });
+      }
+      return true;
+    }
+
+    const reviewSkillIconPath = {
+      download:
+        'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z',
+      copy:
+        'M6.99979 7V3C6.99979 2.44772 7.4475 2 7.99979 2H20.9998C21.5521 2 21.9998 2.44772 21.9998 3V16C21.9998 16.5523 21.5521 17 20.9998 17H17V20.9925C17 21.5489 16.551 22 15.9925 22H3.00728C2.45086 22 2 21.5511 2 20.9925L2.00276 8.00748C2.00288 7.45107 2.4518 7 3.01025 7H6.99979ZM8.99979 7H15.9927C16.549 7 17 7.44892 17 8.00748V15H19.9998V4H8.99979V7ZM4.00255 9L4.00021 20H15V9H4.00255Z',
+    };
+
+    /**
+     * @param {'download' | 'copy'} kind
+     * @param {string} label
+     * @param {() => void} onClick
+     */
+    function reviewSkillIconButton(kind, label, onClick) {
+      const button = el('button', 'review-skill-icon');
+      button.type = 'button';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('fill', 'currentColor');
+      path.setAttribute('d', reviewSkillIconPath[kind]);
+      svg.append(path);
+      button.append(svg);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
+      return button;
+    }
+
+    /**
+     * Skill sample: the label opens the doc, the icons save or copy it.
+     * @param {'review' | 'explain' | 'study'} which
+     * @param {string} label
+     */
+    function reviewSkillCard(which, label) {
+      const card = el('div', 'review-doc-card');
+      const open = el('button', 'review-doc-open', label);
+      open.type = 'button';
+      open.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewSkillFile', which, action: 'open' });
+      });
+      const icons = el('div', 'review-skill-icons');
+      icons.append(
+        reviewSkillIconButton('download', t('reviewSkillDownload'), () => {
+          vscode.postMessage({ type: 'reviewSkillFile', which, action: 'save' });
+        }),
+        reviewSkillIconButton('copy', t('reviewSkillCopy'), () => {
+          vscode.postMessage({ type: 'reviewSkillFile', which, action: 'copy' });
+        }),
+      );
+      card.append(open, icons);
+      return card;
+    }
+
+    if (editing) {
+      const initial = readReviewPageForm(false);
+      savedSig = initial ? JSON.stringify(initial) : '';
+      for (const input of [nameInput, descInput, channelInput, repoInput, discordInput]) {
+        input?.addEventListener('change', () => saveEditing());
+      }
+      const docs = el('div', 'review-settings-docs');
+      const howTo = el('button', 'review-doc-card', t('reviewHowToConnect'));
+      howTo.type = 'button';
+      howTo.addEventListener('click', () => {
+        vscode.postMessage({ type: 'reviewOpenSetupDoc' });
+      });
+      docs.append(
+        howTo,
+        reviewSkillCard('review', t('reviewPromptExampleShort')),
+        reviewSkillCard('explain', t('explainMenu')),
+        reviewSkillCard('study', t('studyPromptExample')),
+      );
+      panel.append(docs);
+      const whyWrap = el('div', 'review-skill-why-wrap');
+      const whyLink = el('button', 'review-skill-why-link');
+      whyLink.type = 'button';
+      whyLink.setAttribute('aria-expanded', 'false');
+      const whyChev = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      whyChev.setAttribute('viewBox', '0 0 16 16');
+      whyChev.setAttribute('class', 'review-skill-why-chev');
+      whyChev.setAttribute('aria-hidden', 'true');
+      const whyChevPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      whyChevPath.setAttribute('d', 'M6 4l4 4-4 4');
+      whyChevPath.setAttribute('fill', 'none');
+      whyChevPath.setAttribute('stroke', 'currentColor');
+      whyChevPath.setAttribute('stroke-width', '1.5');
+      whyChevPath.setAttribute('stroke-linecap', 'round');
+      whyChevPath.setAttribute('stroke-linejoin', 'round');
+      whyChev.append(whyChevPath);
+      whyLink.append(whyChev, document.createTextNode(t('reviewSkillsWhy')));
+      const whyBody = el('p', 'review-skill-why', t('reviewSkillsWhyBody'));
+      whyBody.hidden = true;
+      whyLink.addEventListener('click', () => {
+        const open = whyBody.hidden;
+        whyBody.hidden = !open;
+        whyLink.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      const copied = el('p', 'review-skill-copied');
+      copied.id = 'review-skill-copied';
+      copied.hidden = true;
+      copied.setAttribute('aria-live', 'polite');
+      whyWrap.append(whyLink, whyBody, copied);
+      panel.append(whyWrap);
+    } else {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        closeReviewCreatePagePanel();
+      });
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      const submitCreate = () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        const fields = readReviewPageForm('focus');
+        if (!fields) {
+          return;
+        }
+        setPanelBusy(panel, true);
+        vscode.postMessage({
+          type: 'reviewCreatePage',
+          ...fields,
+        });
+      };
+      submit.addEventListener('click', submitCreate);
+      bindSettingsCommitKey(panel, submitCreate);
+      actions.append(cancel, submit);
+      panel.append(actions);
+    }
+    if (editing) {
+      bindSettingsCommitKey(panel, () => {
+        if (!saveEditing('focus')) {
+          return;
+        }
+        flushReviewAgentFields();
+        closeReviewCreatePagePanel();
+      });
+    }
+    mountSettingsOverlay(panel, closeReviewCreatePagePanel);
+    nameInput.focus();
+  }
+
+  function openReviewMrPanel() {
+    dismissReviewMrPanel();
+    closeHostBranchPanel();
+    closeProfileSettingsPanel();
+    if (!reviewMrPanel) {
+      return;
+    }
+    const isGithub = reviewMrPanel.provider === 'github';
+    const createLabel = t(isGithub ? 'createPr' : 'createMr');
+    const panel = el('div', 'review-mr-panel');
+    panel.id = 'review-mr-panel';
+    const titleRow = el('div', 'review-mr-title-row');
+    const draftChip = el('button', 'review-btn review-draft-chip is-primary', 'Draft');
+    draftChip.type = 'button';
+    draftChip.dataset.on = '1';
+    draftChip.addEventListener('click', () => {
+      const on = draftChip.dataset.on === '1';
+      draftChip.dataset.on = on ? '0' : '1';
+      draftChip.classList.toggle('is-primary', !on);
+    });
+    const titleInput = document.createElement('input');
+    titleInput.className = 'review-mr-title';
+    titleInput.placeholder = t(isGithub ? 'reviewPrTitlePlaceholder' : 'reviewMrTitlePlaceholder');
+    titleRow.append(draftChip, titleInput);
+    panel.append(titleRow);
+
+    const branchLabel = el('label', 'review-mr-field', createLabel);
+    const branchSelect = document.createElement('select');
+    branchSelect.className = 'review-mr-select';
+    for (const branch of reviewMrPanel.branches) {
+      const opt = document.createElement('option');
+      opt.value = branch;
+      opt.textContent = branch + (branch === reviewMrPanel.parent ? ' ←' : '');
+      if (branch === reviewMrPanel.parent) {
+        opt.selected = true;
+      }
+      branchSelect.append(opt);
+    }
+    if (!reviewMrPanel.branches.length && reviewMrPanel.parent) {
+      const opt = document.createElement('option');
+      opt.value = reviewMrPanel.parent;
+      opt.textContent = reviewMrPanel.parent;
+      opt.selected = true;
+      branchSelect.append(opt);
+    }
+    branchLabel.append(branchSelect);
+    panel.append(branchLabel);
+
+    /** @type {Set<string>} */
+    const reviewers = new Set();
+    /** @type {Set<string>} */
+    const assignees = new Set();
+    if (reviewMrPanel.defaultAssignee) {
+      assignees.add(reviewMrPanel.defaultAssignee);
+    }
+    const peopleBox = el('div', 'review-mr-people');
+    peopleBox.append(el('div', 'review-mr-people-title', 'Reviewers / Assignees'));
+    for (const person of reviewMrPanel.people) {
+      const row = el('div', 'review-mr-person');
+      const label = person.name ? person.name + ' (' + person.nick + ')' : person.nick;
+      row.append(el('span', 'review-mr-person-name', label));
+      const rev = el('button', 'review-person-toggle', 'R');
+      rev.type = 'button';
+      rev.title = 'Reviewer';
+      rev.addEventListener('click', () => {
+        if (reviewers.has(person.nick)) {
+          reviewers.delete(person.nick);
+          rev.classList.remove('is-on');
+        } else {
+          reviewers.add(person.nick);
+          rev.classList.add('is-on');
+        }
+      });
+      const asg = el('button', 'review-person-toggle', 'A');
+      asg.type = 'button';
+      asg.title = 'Assignee';
+      if (assignees.has(person.nick)) {
+        asg.classList.add('is-on');
+      }
+      asg.addEventListener('click', () => {
+        if (assignees.has(person.nick)) {
+          assignees.delete(person.nick);
+          asg.classList.remove('is-on');
+        } else {
+          assignees.add(person.nick);
+          asg.classList.add('is-on');
+        }
+      });
+      row.append(rev, asg);
+      peopleBox.append(row);
+    }
+    if (reviewMrPanel.people.length) {
+      panel.append(peopleBox);
+    }
+
+    const squash = document.createElement('input');
+    squash.type = 'checkbox';
+    squash.checked = true;
+    if (!isGithub) {
+      const squashRow = el('label', 'review-mr-field review-mr-squash');
+      squashRow.append(squash, document.createTextNode(' Squash'));
+      panel.append(squashRow);
+    }
+
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', 'Cancel');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeReviewMrPanel());
+    const submit = el('button', 'review-btn is-primary', createLabel);
+    submit.type = 'button';
+    submit.addEventListener('click', () => {
+      const title = titleInput.value.trim();
+      if (!title) {
+        titleInput.focus();
+        return;
+      }
+      const pageId = reviewMrPanel?.pageId;
+      if (!pageId) {
+        return;
+      }
+      beginLocalMrSkeleton(pageId, title, draftChip.dataset.on === '1');
+      vscode.postMessage({
+        type: 'reviewCreateMr',
+        pageId,
+        title,
+        draft: draftChip.dataset.on === '1',
+        targetBranch: branchSelect.value,
+        reviewers: [...reviewers],
+        assignees: [...assignees],
+        squash: squash.checked,
+      });
+      closeReviewMrPanel();
+    });
+    actions.append(cancel, submit);
+    panel.append(actions);
+    mountSettingsOverlay(panel, closeReviewMrPanel);
+    titleInput.focus();
+  }
+
   function paintLinksPage() {
     const links = pageLinks();
     const key = linkStructureKey(links);
+    const page = activePage();
     const tree = root.querySelector(':scope > .links-tree');
-    if (key === linksStructureKey && tree && root.classList.contains('links-page') && !data?.error) {
+    const figmaEmpty = root.querySelector(':scope > .figma-empty');
+    const showFormSkel = page?.kind === 'figma' && links.length === 0 && (figmaFormRunning || figmaEmptySkel);
+    const showingFormSkel = root.querySelector(':scope > .links-tree.figma-form-skel');
+    const paintedOk = showFormSkel
+      ? !!showingFormSkel
+      : !!((tree && !tree.classList.contains('page-skel')) || figmaEmpty);
+    if (
+      key === linksStructureKey &&
+      root.dataset.linksPageId === (page?.id || '') &&
+      root.dataset.linksKind === (page?.kind || '') &&
+      paintedOk &&
+      !root.classList.contains('is-page-skeleton') &&
+      root.classList.contains('links-page') &&
+      !data?.error
+    ) {
       syncLinkCollapsed();
       setCollapseButton();
       mountLinkPanel(links);
@@ -3852,28 +17206,87 @@
     root.textContent = '';
     root.removeAttribute('data-syn3-context');
     root.className = 'map-page links-page';
+    root.removeAttribute('aria-busy');
     clearDropHighlights();
     if (data.error) {
       root.append(el('div', 'error', data.error));
     }
+    root.dataset.linksPageId = page?.id || '';
+    root.dataset.linksKind = page?.kind || '';
     const roots = links.filter((link) => !link.parent).sort((a, b) => a.order - b.order);
+    if (page?.kind === 'figma' && links.length === 0) {
+      if (figmaFormRunning || figmaEmptySkel) {
+        paintFigmaFormSkeleton();
+      } else {
+        paintFigmaEmpty();
+      }
+      mountLinkPanel(links);
+      return;
+    }
     if (roots.length === 0) {
       root.append(el('div', 'empty', 'Пока пусто. Нажми «Создать», чтобы добавить макет.'));
       return;
     }
     const byId = Object.fromEntries(links.map((link) => [link.id, link]));
+    const figmaPage = page?.kind === 'figma';
     const nextTree = el('div', 'links-tree');
     roots.forEach((link, index) => {
-      nextTree.append(renderLinkNode(link, byId, index > 0, roots[index + 1]?.color || ''));
+      const next = roots[index + 1];
+      const stem = figmaPage ? (next ? figmaThreadColorOf(next, byId) : '') : next?.color || '';
+      nextTree.append(renderLinkNode(link, byId, index > 0, stem));
     });
+    nextTree.append(renderLinkTail(roots[roots.length - 1]));
     root.append(nextTree);
     mountLinkPanel(links);
     playFolds(folds);
   }
 
+  /** Empty Figma map: caption only. Assemble stays on the filter bar. */
+  function paintFigmaEmpty() {
+    root.classList.add('is-figma-empty');
+    syncFigmaChromeHeight();
+    const box = el('div', 'figma-empty');
+    box.append(el('p', 'figma-empty-text', t('figmaEmpty')));
+    root.append(box);
+  }
+
+  /** Two parent chips, two children each, while an empty Figma map is forming. */
+  function paintFigmaFormSkeleton() {
+    const colors = pageSkelParentColors(2);
+    const tree = el('div', 'links-tree page-skel figma-form-skel');
+    tree.setAttribute('aria-hidden', 'true');
+    root.setAttribute('aria-busy', 'true');
+    for (let parent = 0; parent < 2; parent += 1) {
+      tree.append(
+        pageSkelLinkNode({
+          depth: 0,
+          layout: true,
+          leadingGap: parent > 0,
+          width: '150px',
+          delay: parent * 90,
+          color: colors[parent] || '#6e6e6e',
+          nextColor: parent < 1 ? colors[parent + 1] || '' : '',
+          children: 2,
+        }),
+      );
+    }
+    root.append(tree);
+  }
+
+  function syncFigmaChromeHeight() {
+    if (!root.classList.contains('is-figma-empty')) {
+      return;
+    }
+    const chrome = document.querySelector('.map-chrome');
+    if (chrome instanceof HTMLElement) {
+      document.documentElement.style.setProperty('--syn3-chrome-h', chrome.offsetHeight + 'px');
+    }
+  }
+
   const LINK_BRANCH_GAP = 18;
   const LINK_ELBOW_RADIUS = 8;
   const LINK_ROW_GAP = 10;
+  const REVIEW_ROOT_GAP = 16;
 
   /** Half of the chip height. Root 40, depth 1 is 15% shorter, depth 2 is 20% shorter. */
   function linkChipHalf(depth) {
@@ -3886,6 +17299,17 @@
     return 16;
   }
 
+  /** Half of a Figma chip. Root 46px, child 42.78px, grandchild 39.79px. */
+  function figmaChipHalf(depth) {
+    if (!depth) {
+      return 23;
+    }
+    if (depth === 1) {
+      return 21.39;
+    }
+    return 19.895;
+  }
+
   /**
    * Rounded elbow into the chip. This branch's color stops at the turn.
    * The spine below that point is the next sibling's color.
@@ -3894,23 +17318,21 @@
    * @returns {SVGSVGElement}
    */
   function linkElbow(mid, stemColor) {
-    const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('class', 'link-elbow');
-    svg.setAttribute('width', String(LINK_BRANCH_GAP));
-    svg.setAttribute('height', '100%');
-    svg.setAttribute('aria-hidden', 'true');
+    const elbow = document.createElement('div');
+    elbow.className = 'link-elbow';
+    elbow.setAttribute('aria-hidden', 'true');
     const radius = Math.min(LINK_ELBOW_RADIUS, Math.max(2, mid - 1));
     const turnY = mid - radius;
     if (stemColor) {
-      const stem = document.createElementNS(SVG_NS, 'path');
-      stem.setAttribute('class', 'link-elbow-stem');
-      stem.setAttribute('d', `M1 ${turnY} V9999`);
-      stem.setAttribute('fill', 'none');
-      stem.setAttribute('stroke', stemColor);
-      stem.setAttribute('stroke-width', '1.4');
-      stem.setAttribute('stroke-linecap', 'butt');
-      svg.append(stem);
+      const stem = document.createElement('span');
+      stem.className = 'link-elbow-stem';
+      stem.style.top = turnY + 'px';
+      stem.style.background = stemColor;
+      elbow.append(stem);
     }
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('width', String(LINK_BRANCH_GAP));
+    svg.setAttribute('height', '100%');
     const turn = document.createElementNS(SVG_NS, 'path');
     turn.setAttribute('d', `M1 0 V${turnY} Q1 ${mid} ${1 + radius} ${mid} H${LINK_BRANCH_GAP}`);
     turn.setAttribute('fill', 'none');
@@ -3918,6 +17340,41 @@
     turn.setAttribute('stroke-width', '1.4');
     turn.setAttribute('stroke-linecap', 'butt');
     svg.append(turn);
+    elbow.append(svg);
+    return elbow;
+  }
+
+  /** assets/lock-2-fill.svg — name in the chip card cannot be edited. @returns {SVGSVGElement} */
+  function figmaBindingLockIcon() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute(
+      'd',
+      'M18 8H20C20.5523 8 21 8.44772 21 9V21C21 21.5523 20.5523 22 20 22H4C3.44772 22 3 21.5523 3 21V9C3 8.44772 3.44772 8 4 8H6V7C6 3.68629 8.68629 1 12 1C15.3137 1 18 3.68629 18 7V8ZM11 15.7324V18H13V15.7324C13.5978 15.3866 14 14.7403 14 14C14 12.8954 13.1046 12 12 12C10.8954 12 10 12.8954 10 14C10 14.7403 10.4022 15.3866 11 15.7324ZM16 8V7C16 4.79086 14.2091 3 12 3C9.79086 3 8 4.79086 8 7V8H16Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * assets/arrow-down-s-line.svg — Figma thread fold.
+   * Points down while the thread can be expanded; CSS flips it while the thread can be collapsed.
+   * @returns {SVGSVGElement}
+   */
+  function figmaFoldIcon() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute(
+      'd',
+      'M11.9999 13.1714L16.9497 8.22168L18.3639 9.63589L11.9999 15.9999L5.63599 9.63589L7.0502 8.22168L11.9999 13.1714Z',
+    );
+    path.setAttribute('fill', 'currentColor');
+    svg.append(path);
     return svg;
   }
 
@@ -3948,12 +17405,119 @@
    * @param {boolean} leadingGap
    * @param {string} [nextColor] color of the following sibling; paints the spine below this turn
    */
+  /**
+   * Second row exists when a parent lock, an alert, or an unsync mark has to show.
+   * @param {*} link
+   */
+  function figmaChipHasMeta(link) {
+    const children = link.children || [];
+    if (children.length > 0) {
+      return true;
+    }
+    if (link.figmaTag && !link.url) {
+      return true;
+    }
+    return !!link.figmaUnsynced;
+  }
+
+  /**
+   * @param {HTMLElement} chip
+   * @param {*} link
+   * @param {string[]} childIds
+   * @param {boolean} collapsed
+   * @param {boolean} locked
+   * @param {HTMLElement} chipWrap
+   */
+  function fillFigmaChip(chip, link, childIds, collapsed, locked, chipWrap) {
+    const avatarColor = freshenFigmaIconColor(link.figmaIconColor) || FIGMA_ICON_GRAY;
+    chip.style.setProperty('--avatar-color', avatarColor);
+    const avatar = el('span', 'figma-chip-avatar');
+    avatar.style.setProperty('--avatar-color', avatarColor);
+    mountLucide(avatar, link.figmaIcon || FIGMA_ICON_FALLBACK);
+    const main = el('span', 'figma-chip-main');
+    main.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
+    const metaBits = [];
+    if (childIds.length > 0) {
+      metaBits.push(el('span', 'link-child-count', String(childIds.length)));
+    }
+    if (link.figmaTag && !link.url) {
+      metaBits.push(figmaTagAlertIcon());
+    }
+    if (link.figmaUnsynced) {
+      metaBits.push(figmaUnsyncIcon());
+    }
+    if (childIds.length > 0) {
+      const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+      lock.type = 'button';
+      lock.title = locked ? t('unlockLink') : t('lockLink');
+      lock.setAttribute('aria-label', lock.title);
+      lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+      lock.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
+      });
+      metaBits.push(lock);
+      const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+      tri.append(figmaFoldIcon());
+      tri.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (locked) {
+          flashLock(link.id, chipWrap);
+          return;
+        }
+        toggleLinkCollapsed(link.id);
+      });
+      tri.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      metaBits.push(tri);
+    }
+    if (metaBits.length > 0) {
+      const meta = el('span', 'figma-chip-meta');
+      meta.append(...metaBits);
+      main.append(meta);
+    }
+    chip.append(avatar, main);
+  }
+
+  /** @param {*} link */
+  function figmaChipAvatarColor(link) {
+    return freshenFigmaIconColor(link && link.figmaIconColor) || FIGMA_ICON_GRAY;
+  }
+
+  /**
+   * Elbow into a Figma chip: avatar color of the nearest ancestor that has children.
+   * @param {*} link
+   * @param {Record<string, *>} byId
+   */
+  function figmaThreadColorOf(link, byId) {
+    let parentId = link && link.parent;
+    const seen = new Set();
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId[parentId];
+      if (!parent) {
+        break;
+      }
+      if ((parent.children || []).length > 0) {
+        return figmaChipAvatarColor(parent);
+      }
+      parentId = parent.parent;
+    }
+    return FIGMA_ICON_GRAY;
+  }
+
   function renderLinkNode(link, byId, leadingGap, nextColor) {
     const childIds = link.children || [];
     const children = childIds.map((id) => byId[id]).filter(Boolean);
     const collapsed = childIds.length > 0 && isCollapsed(link.id);
     const locked = isLocked(link);
     const depth = link.depth || 0;
+    const figmaChip = activePage()?.kind === 'figma';
+    const figmaMeta = figmaChip && figmaChipHasMeta(link);
     const row = el(
       'div',
       'link-node depth-' +
@@ -3961,19 +17525,32 @@
         (leadingGap ? ' has-gap' : '') +
         (collapsed ? ' is-collapsed' : '') +
         (locked ? ' is-locked' : '') +
-        (!link.parent ? ' is-layout' : ' is-component'),
+        (!link.parent ? ' is-layout' : ' is-component') +
+        (figmaChip ? ' is-figma-chip' : '') +
+        (figmaMeta ? ' has-figma-meta' : ''),
     );
     row.dataset.linkId = link.id;
     row.dataset.depth = String(depth);
-    row.style.setProperty('--link-color', link.color || 'var(--vscode-foreground)');
-    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + linkChipHalf(depth), nextColor));
+    row.style.setProperty(
+      '--link-color',
+      figmaChip ? figmaThreadColorOf(link, byId) : link.color || 'var(--vscode-foreground)',
+    );
+    if (figmaChip && childIds.length > 0) {
+      row.style.setProperty('--figma-thread', figmaChipAvatarColor(link));
+    }
+    const chipHalf = figmaChip ? figmaChipHalf(depth) : linkChipHalf(depth);
+    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + chipHalf, nextColor));
 
     const body = el('div', 'link-body');
     const chipWrap = el('div', 'link-chip-wrap');
-    const chip = el('button', 'link-chip' + (entityLinkIsBroken(link.url) ? ' is-broken' : ''));
-    chip.type = 'button';
-    chip.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
-    if (childIds.length > 0) {
+    const chip = el(figmaChip ? 'div' : 'button', 'link-chip' + (entityLinkIsBroken(link.url) ? ' is-broken' : ''));
+    if (figmaChip) {
+      fillFigmaChip(chip, link, childIds, collapsed, locked, chipWrap);
+    } else {
+      chip.type = 'button';
+      chip.append(el('span', 'link-chip-label', link.label || t('linkComponentFallback')));
+    }
+    if (!figmaChip && childIds.length > 0) {
       const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
       tri.append(linkCaretIcon());
       tri.addEventListener('click', (event) => {
@@ -4001,7 +17578,10 @@
         return;
       }
       const target = event.target;
-      if (target instanceof Element && target.closest('.link-chip-tri')) {
+      if (
+        target instanceof Element &&
+        target.closest('.link-chip-tri, .lock-btn, .figma-tag-alert, .figma-tag-unsync')
+      ) {
         return;
       }
       if (!link.url) {
@@ -4019,21 +17599,43 @@
     chip.addEventListener('dblclick', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      const dblTarget = event.target;
+      if (
+        dblTarget instanceof Element &&
+        dblTarget.closest('.link-chip-tri, .lock-btn, .figma-tag-alert, .figma-tag-unsync')
+      ) {
+        return;
+      }
       window.clearTimeout(openTimer);
       openTimer = 0;
       openLinkPanelId = link.id;
       focusLinkNameOnOpen = true;
       paintLinksPage();
     });
-    if (link.url && !parseEntityLink(link.url)) {
+    /** @type {HTMLElement | null} */
+    let previewLoader = null;
+    if (link.url && !parseEntityLink(link.url) && (figmaLinkPreviewEnabled || !isFigmaPreviewUrl(link.url))) {
       chip.dataset.previewUrl = link.url;
+      const figmaPreview = isFigmaPreviewUrl(link.url);
+      if (figmaPreview) {
+        previewLoader = el('span', 'link-preview-loader');
+        previewLoader.hidden = true;
+        previewLoader.setAttribute('role', 'status');
+        previewLoader.setAttribute('aria-label', t('linkPreviewLoading'));
+      }
       let previewGen = linkPreviewGen;
       chip.addEventListener('mouseenter', () => {
         previewGen = linkPreviewGen;
         window.clearTimeout(previewTimer);
+        if (previewLoader) {
+          armLinkPreviewLoader(previewLoader);
+        }
         previewTimer = window.setTimeout(() => {
           previewTimer = 0;
           if (previewGen !== linkPreviewGen || !chip.isConnected) {
+            if (previewLoader) {
+              clearLinkPreviewLoader(previewLoader);
+            }
             return;
           }
           showLinkPreview(chip);
@@ -4046,25 +17648,39 @@
           return;
         }
         scheduleHideLinkPreview();
+        if (previewLoader && linkPreviewUrl !== link.url) {
+          clearLinkPreviewLoader(previewLoader);
+        }
       });
     }
     chipWrap.append(chip);
-
-    const side = el('div', 'link-side');
-    const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
-    lock.type = 'button';
-    lock.title = locked ? t('unlockLink') : t('lockLink');
-    lock.setAttribute('aria-label', lock.title);
-    lock.append(locked ? lockClosedIcon() : lockOpenIcon());
-    lock.addEventListener('click', (event) => {
-      event.stopPropagation();
-      vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
-    });
-    if (childIds.length > 0) {
-      side.append(el('span', 'link-child-count', String(childIds.length)));
+    if (!figmaChip && link.figmaTag && !link.url) {
+      chipWrap.append(figmaTagAlertIcon());
     }
-    side.append(lock);
-    chipWrap.append(side);
+    if (!figmaChip && activePage()?.kind === 'figma' && link.figmaUnsynced) {
+      chipWrap.append(figmaUnsyncIcon());
+    }
+    if (previewLoader) {
+      chipWrap.append(previewLoader);
+    }
+
+    if (!figmaChip) {
+      const side = el('div', 'link-side');
+      const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+      lock.type = 'button';
+      lock.title = locked ? t('unlockLink') : t('lockLink');
+      lock.setAttribute('aria-label', lock.title);
+      lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+      lock.addEventListener('click', (event) => {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'toggleLinkLock', linkId: link.id });
+      });
+      if (childIds.length > 0) {
+        side.append(el('span', 'link-child-count', String(childIds.length)));
+      }
+      side.append(lock);
+      chipWrap.append(side);
+    }
     body.append(chipWrap);
 
     if (!locked) {
@@ -4083,6 +17699,7 @@
           link.label || '',
         );
         chip.classList.add('dragging');
+        revealLinkTail(link.id);
       });
       chip.addEventListener('dragend', () => {
         chip.classList.remove('dragging');
@@ -4095,43 +17712,37 @@
       if (!payload || payload.kind !== 'link' || payload.id === link.id) {
         return;
       }
-      event.preventDefault();
-      if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = event.altKey ? 'copy' : 'move';
-      }
-      row.classList.add('link-drop-target');
-    });
-    row.addEventListener('dragleave', () => row.classList.remove('link-drop-target'));
-    row.addEventListener('drop', (event) => {
-      row.classList.remove('link-drop-target');
-      const payload = readPayload(event);
-      if (!payload || payload.kind !== 'link' || payload.id === link.id) {
+      // A parent cannot land on its own subtree: the slot would nest it inside itself.
+      if (isLinkDescendant(payload.id, link.id)) {
+        event.stopPropagation();
+        clearLinkDropCue();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'none';
+        }
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      const rect = row.getBoundingClientRect();
-      const edge =
-        event.clientY < rect.top + rect.height / 3
-          ? 'before'
-          : event.clientY > rect.bottom - rect.height / 3
-            ? 'after'
-            : 'into';
-      if (edge === 'into') {
-        const nextDepth = (link.depth || 0) + 1 + (payload.subtreeHeight || 0);
-        if (nextDepth > MAX_DEPTH) {
-          vscode.postMessage({ type: 'nestLink', id: payload.id, parentId: link.id });
-          return;
-        }
-        openLinkDropChoose({ id: payload.id, targetId: link.id, mode: 'nest' });
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      showLinkRowCue(row, linkDropEdge(event, row));
+    });
+    row.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (
+        !payload ||
+        payload.kind !== 'link' ||
+        payload.id === link.id ||
+        isLinkDescendant(payload.id, link.id)
+      ) {
         return;
       }
-      openLinkDropChoose({
-        id: payload.id,
-        targetId: link.id,
-        mode: 'place',
-        position: edge,
-      });
+      event.preventDefault();
+      event.stopPropagation();
+      const edge = linkDropEdge(event, row);
+      clearLinkDropCue();
+      applyLinkRowDrop(payload, link, edge);
     });
 
     row.addEventListener('contextmenu', (event) => {
@@ -4157,7 +17768,9 @@
       });
       const ordered = children.slice().sort((a, b) => a.order - b.order);
       ordered.forEach((child, index) => {
-        slide.append(renderLinkNode(child, byId, true, ordered[index + 1]?.color || ''));
+        const next = ordered[index + 1];
+        const stem = figmaChip ? (next ? figmaThreadColorOf(next, byId) : '') : next?.color || '';
+        slide.append(renderLinkNode(child, byId, true, stem));
       });
       clip.append(slide);
       kids.append(foldRail, clip);
@@ -4166,6 +17779,248 @@
     row.append(body);
     return row;
   }
+
+  /**
+   * Top third of the whole branch is before, bottom third is after, middle nests.
+   * @param {DragEvent} event
+   * @param {HTMLElement} row
+   * @returns {'before' | 'after' | 'into'}
+   */
+  function linkDropEdge(event, row) {
+    const rect = row.getBoundingClientRect();
+    if (event.clientY < rect.top + rect.height / 3) {
+      return 'before';
+    }
+    if (event.clientY > rect.bottom - rect.height / 3) {
+      return 'after';
+    }
+    return 'into';
+  }
+
+  /** @param {string} id */
+  function linkRecord(id) {
+    return (data?.links || []).find((item) => item.id === id) || null;
+  }
+
+  /**
+   * True when `nodeId` is inside the subtree rooted at `ancestorId`.
+   * @param {string} ancestorId
+   * @param {string} nodeId
+   */
+  function isLinkDescendant(ancestorId, nodeId) {
+    const seen = new Set();
+    let current = linkRecord(nodeId);
+    while (current?.parent) {
+      if (current.parent === ancestorId) {
+        return true;
+      }
+      if (seen.has(current.parent)) {
+        return false;
+      }
+      seen.add(current.parent);
+      current = linkRecord(current.parent);
+    }
+    return false;
+  }
+
+  /**
+   * Strip under the last root, below its children. Drop here places after that root.
+   * @param {*} lastRoot
+   */
+  function renderLinkTail(lastRoot) {
+    const tail = el('div', 'link-drop-tail');
+    tail.hidden = true;
+    tail.dataset.linkId = lastRoot.id;
+    tail.setAttribute('aria-hidden', 'true');
+    tail.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'link' || payload.id === lastRoot.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      showLinkTailCue(tail);
+    });
+    tail.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'link' || payload.id === lastRoot.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      clearLinkDropCue();
+      finishLinkDrop({
+        id: payload.id,
+        targetId: lastRoot.id,
+        mode: 'place',
+        position: 'after',
+      });
+    });
+    return tail;
+  }
+
+  /** @param {string} dragId */
+  function revealLinkTail(dragId) {
+    const tail = root.querySelector('.link-drop-tail');
+    if (!(tail instanceof HTMLElement)) {
+      return;
+    }
+    const draggingLast = tail.dataset.linkId === dragId;
+    tail.hidden = draggingLast;
+    if (draggingLast) {
+      return;
+    }
+    const nodes = root.querySelectorAll('.links-tree > .link-node.is-layout');
+    const last = nodes[nodes.length - 1];
+    const chip =
+      last instanceof HTMLElement
+        ? last.querySelector(':scope > .link-body > .link-chip-wrap > .link-chip')
+        : null;
+    if (last instanceof HTMLElement) {
+      const color = last.style.getPropertyValue('--link-color');
+      if (color) {
+        tail.style.setProperty('--link-color', color);
+      }
+    }
+    if (chip instanceof HTMLElement) {
+      tail.style.width = Math.max(140, chip.getBoundingClientRect().width) + 'px';
+    }
+  }
+
+  function hideLinkTail() {
+    const tail = root.querySelector('.link-drop-tail');
+    if (!(tail instanceof HTMLElement)) {
+      return;
+    }
+    tail.hidden = true;
+    tail.classList.remove('is-active');
+  }
+
+  function linkSlotEl() {
+    if (!linkDropSlotEl) {
+      const slot = el('div', 'link-drop-slot');
+      slot.setAttribute('aria-hidden', 'true');
+      linkDropSlotEl = slot;
+    }
+    return linkDropSlotEl;
+  }
+
+  function clearLinkDropCue() {
+    hideDropEdge();
+    if (linkDropSlotEl && linkDropSlotEl.isConnected) {
+      linkDropSlotEl.remove();
+    }
+    linkCue = null;
+    root.querySelectorAll('.link-node.link-drop-into').forEach((node) => {
+      node.classList.remove('link-drop-into');
+    });
+    root.querySelectorAll('.link-drop-tail.is-active').forEach((node) => {
+      node.classList.remove('is-active');
+    });
+  }
+
+  /**
+   * @param {HTMLElement} row
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function showLinkRowCue(row, edge) {
+    const same = linkCue && linkCue.kind === 'row' && linkCue.row === row && linkCue.edge === edge;
+    if (!same) {
+      clearLinkDropCue();
+      linkCue = { kind: 'row', row, edge };
+      if (edge === 'into') {
+        row.classList.add('link-drop-into');
+      }
+    }
+    if (edge === 'into') {
+      return;
+    }
+    showDropEdge(row, edge);
+    placeLinkSlot(row, edge);
+  }
+
+  /** @param {HTMLElement} tail */
+  function showLinkTailCue(tail) {
+    if (linkCue && linkCue.kind === 'tail' && linkCue.tail === tail) {
+      return;
+    }
+    clearLinkDropCue();
+    linkCue = { kind: 'tail', tail };
+    tail.classList.add('is-active');
+  }
+
+  /**
+   * @param {HTMLElement} row
+   * @param {'before' | 'after'} edge
+   */
+  function placeLinkSlot(row, edge) {
+    const slot = linkSlotEl();
+    const rect = row.getBoundingClientRect();
+    const height = 24;
+    slot.style.left = rect.left + 'px';
+    slot.style.width = Math.max(rect.width, 0) + 'px';
+    slot.style.top = (edge === 'before' ? rect.top - height : rect.bottom) + 'px';
+    if (!slot.isConnected) {
+      document.body.append(slot);
+    }
+  }
+
+  /**
+   * @param {*} payload
+   * @param {*} link
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function applyLinkRowDrop(payload, link, edge) {
+    if (edge === 'into') {
+      const nextDepth = (link.depth || 0) + 1 + (payload.subtreeHeight || 0);
+      if (nextDepth > MAX_DEPTH) {
+        vscode.postMessage({ type: 'nestLink', id: payload.id, parentId: link.id });
+        return;
+      }
+      finishLinkDrop({ id: payload.id, targetId: link.id, mode: 'nest' });
+      return;
+    }
+    finishLinkDrop({
+      id: payload.id,
+      targetId: link.id,
+      mode: 'place',
+      position: edge,
+    });
+  }
+
+  /**
+   * Same parent reorders immediately. A new parent, or nesting into a chip, asks Move / Copy.
+   * @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending
+   */
+  function finishLinkDrop(pending) {
+    if (pending.mode !== 'nest') {
+      const source = linkRecord(pending.id);
+      const target = linkRecord(pending.targetId);
+      if ((source?.parent || '') === (target?.parent || '')) {
+        commitLinkDrop(pending, false);
+        return;
+      }
+    }
+    openLinkDropChoose(pending);
+  }
+
+  root.addEventListener('dragover', (event) => {
+    if (!dragPayload || (dragPayload.kind !== 'link' && dragPayload.kind !== 'scenario')) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (target.closest('.link-node, .link-drop-tail, .link-drop-slot')) {
+      return;
+    }
+    clearLinkDropCue();
+    clearScenarioDropCue();
+  });
 
   /** @param {{ id: string, targetId: string, mode: 'place' | 'nest', position?: 'before' | 'after' }} pending */
   function openLinkDropChoose(pending) {
@@ -4271,6 +18126,14 @@
         vscode.postMessage({ type: 'createLinkChild', parentId: link.id });
       }
     });
+    const deleteBtn = menuAction(t('menuDelete'));
+    deleteBtn.disabled = isLocked(link) || !link.canDelete;
+    deleteBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (!deleteBtn.disabled) {
+        vscode.postMessage({ type: 'deleteLink', linkId: link.id });
+      }
+    });
     openMenuState = {
       kind: 'context',
       viewExpanded: false,
@@ -4281,7 +18144,7 @@
       y,
     };
     const scroller = ensureMenuChrome(contextMenu).scroller;
-    scroller.replaceChildren(settingsBtn, createBtn);
+    scroller.replaceChildren(settingsBtn, createBtn, deleteBtn);
     updateMenuScrollbar(contextMenu);
     contextMenu.hidden = false;
     positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
@@ -4358,18 +18221,76 @@
     }
     panel.append(descWrap);
 
-    if (!link.parent) {
+    if (activePage()?.kind === 'figma') {
+      const avatarColor = freshenFigmaIconColor(link.figmaIconColor) || FIGMA_ICON_GRAY;
+      const binding = el('div', 'figma-icon-row figma-chip-binding');
+      binding.dataset.bindingLabel = String(link.label || '').trim();
+      const pick = el('button', 'figma-icon-pick');
+      pick.type = 'button';
+      pick.disabled = locked;
+      pick.title = t('figmaIconPick');
+      pick.setAttribute('aria-label', t('figmaIconPick'));
+      const avatar = el('span', 'figma-chip-avatar');
+      avatar.style.setProperty('--avatar-color', avatarColor);
+      mountLucide(avatar, link.figmaIcon || FIGMA_ICON_FALLBACK);
+      pick.append(avatar);
+      pick.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pick.disabled) {
+          return;
+        }
+        openFigmaIconPicker(pick, -1, (name) => {
+          commitFigmaChipIcon(link, name);
+        });
+      });
+      const well = el('button', 'link-color-well');
+      well.type = 'button';
+      well.disabled = locked;
+      well.style.setProperty('--swatch', avatarColor);
+      well.title = t('figmaIconColor');
+      well.setAttribute('aria-label', t('figmaIconColor'));
+      well.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (well.disabled) {
+          return;
+        }
+        openColorsPanel({
+          kind: 'figma-chip',
+          id: link.id,
+          currentHex: well.style.getPropertyValue('--swatch') || avatarColor,
+          allowNone: true,
+          noneDisabled: false,
+          locked: false,
+        });
+      });
+      const bindingName = document.createElement('input');
+      bindingName.type = 'text';
+      bindingName.className = 'review-mr-title figma-chip-binding-name';
+      bindingName.readOnly = true;
+      bindingName.tabIndex = -1;
+      bindingName.value = link.label || '';
+      bindingName.setAttribute('aria-label', t('figmaIconWord'));
+      const lock = el('span', 'figma-chip-binding-lock');
+      lock.title = 'Нельзя изменить название';
+      lock.append(figmaBindingLockIcon());
+      binding.append(pick, well, bindingName, lock);
+      panel.append(binding);
+    }
+
+    if (activePage()?.kind !== 'figma' && !link.parent) {
       const colorField = el('div', 'link-panel-field link-panel-color');
       const colorRow = el('div', 'link-color-row');
       const colorCaption = el('span', 'link-color-caption');
       colorCaption.textContent = t('changeColor');
       const raw = String(link.colorId || link.color || '');
-      const match = raw.match(/#([0-9a-f]{6})/i);
-      const currentHex = match ? '#' + match[1].toLowerCase() : '#3658d3';
+      const parsed = splitHexAlpha(raw);
+      const currentHex = parsed ? hexWithAlpha(parsed.rgb, parsed.alpha) : '#3658d3';
       const well = el('button', 'link-color-well');
       well.type = 'button';
       well.disabled = locked;
-      well.style.background = currentHex;
+      well.style.setProperty('--swatch', currentHex);
       well.setAttribute('aria-label', t('changeColor'));
       well.addEventListener('click', () => {
         if (locked) {
@@ -4453,8 +18374,1736 @@
     return panel;
   }
 
+  const SCENARIO_PREVIEW_W = 300;
+  const SCENARIO_PREVIEW_H = 188;
+
+  function pageScenarioMessages() {
+    const pageId = activePage()?.id;
+    if (!pageId) {
+      return [];
+    }
+    const state = scenarioState && scenarioState.pageId === pageId ? scenarioState : scenarioByPage.get(pageId);
+    return state?.messages || [];
+  }
+
+  /** @param {ScenarioChip[]} messages */
+  function scenarioStructureKey(messages) {
+    return messages
+      .map((chip) => {
+        const kids = (chip.children || [])
+          .map((child) =>
+            [child.id, child.title || '', child.order ?? '', child.hasFile ? 1 : 0].join('\u001f'),
+          )
+          .join(',');
+        return [
+          chip.id,
+          chip.isGroup ? 1 : 0,
+          chip.title || '',
+          chip.color || '',
+          chip.locked ? 1 : 0,
+          chip.hasFile ? 1 : 0,
+          chip.md ? 1 : 0,
+          kids,
+        ].join('\u001e');
+      })
+      .join('\u001d');
+  }
+
+  function syncScenarioCollapsed() {
+    root.querySelectorAll('.link-node[data-scenario-id]').forEach((node) => {
+      if (!(node instanceof HTMLElement) || !node.dataset.scenarioId) {
+        return;
+      }
+      const collapsed = isCollapsed(node.dataset.scenarioId);
+      node.classList.toggle('is-collapsed', collapsed);
+      const tri = node.querySelector(':scope .link-chip-tri');
+      if (tri) {
+        tri.classList.toggle('is-collapsed', collapsed);
+      }
+      const preview = node.querySelector(':scope .scenario-preview-wrap');
+      if (preview instanceof HTMLElement) {
+        preview.hidden = collapsed;
+      }
+      const kids = node.querySelector(':scope .link-children');
+      if (kids instanceof HTMLElement) {
+        kids.hidden = collapsed;
+      }
+    });
+  }
+
+  function paintScenariosPage() {
+    mountScenarioFormPanel();
+    const pageId = activePage()?.id || '';
+    const cached =
+      scenarioState && scenarioState.pageId === pageId
+        ? scenarioState
+        : scenarioByPage.get(pageId);
+    const state = cached || { pageId, loading: true, messages: [] };
+    const messages = state.messages || [];
+    const settled = !!cached && state.loading !== true;
+    if (pageId && !settled && !scenarioAutoLoad.has(pageId)) {
+      scenarioAutoLoad.add(pageId);
+      vscode.postMessage({ type: 'scenarioReload', pageId });
+    }
+    const key = scenarioStructureKey(messages) + (settled ? '|ready' : '|wait');
+    const tree = root.querySelector(':scope > .links-tree');
+    const emptyNode = root.querySelector(':scope > .empty');
+    if (
+      key === scenariosStructureKey &&
+      (tree || emptyNode) &&
+      root.classList.contains('scenarios-page') &&
+      openScenarioGroupPanelId === null
+    ) {
+      syncScenarioCollapsed();
+      setCollapseButton();
+      mountScenarioGroupPanel();
+      return;
+    }
+    scenariosStructureKey = key;
+    dismissLinkPreview();
+    closeScenarioOverlay();
+    const folds = captureFolds();
+    foldToken += 1;
+    isFolding = false;
+    setCollapseButton();
+    root.textContent = '';
+    root.removeAttribute('data-syn3-context');
+    root.className = 'map-page links-page scenarios-page';
+    clearDropHighlights();
+    if (state.error && settled) {
+      root.removeAttribute('aria-busy');
+      const box = el('div', 'review-error');
+      box.append(el('div', 'review-error-text', state.error));
+      const retry = el('button', 'review-btn', t('reviewRetry'));
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        scenarioAutoLoad.delete(pageId);
+        vscode.postMessage({ type: 'scenarioReload', pageId });
+      });
+      box.append(retry);
+      root.append(box);
+      return;
+    }
+    if (messages.length === 0) {
+      // Empty channel (hello only): show CTA instead of a stuck page skeleton.
+      if (!settled) {
+        root.setAttribute('aria-busy', 'true');
+      } else {
+        root.removeAttribute('aria-busy');
+      }
+      root.append(el('div', 'empty', t('scenarioEmpty')));
+      return;
+    }
+    root.removeAttribute('aria-busy');
+    const roots = messages.slice().sort((a, b) => {
+      const ao = a.order ?? 0;
+      const bo = b.order ?? 0;
+      return ao - bo || a.id.localeCompare(b.id);
+    });
+    const nextTree = el('div', 'links-tree');
+    roots.forEach((chip, index) => {
+      const next = roots[index + 1];
+      nextTree.append(
+        renderScenarioNode(chip, null, index > 0, next ? next.color || 'var(--vscode-foreground)' : ''),
+      );
+    });
+    nextTree.append(renderScenarioTail(roots[roots.length - 1]));
+    root.append(nextTree);
+    mountScenarioGroupPanel();
+    playFolds(folds);
+  }
+
+  /**
+   * @param {ScenarioChip | ScenarioChildChip} chip
+   * @param {string | null} groupId
+   * @param {boolean} leadingGap
+   * @param {string} [nextColor]
+   */
+  function renderScenarioNode(chip, groupId, leadingGap, nextColor) {
+    const isGroup = !!chip.isGroup;
+    const childList = isGroup ? chip.children || [] : [];
+    const canFoldChildren = isGroup && childList.length > 0;
+    const canFoldPreview = !isGroup && !!(chip.md && chip.hasFile);
+    const canFold = canFoldChildren || canFoldPreview;
+    const collapsed = canFold && isCollapsed(chip.id);
+    const locked = !!chip.locked;
+    const depth = groupId ? 1 : 0;
+    const row = el(
+      'div',
+      'link-node depth-' +
+        depth +
+        (leadingGap ? ' has-gap' : '') +
+        (collapsed ? ' is-collapsed' : '') +
+        (locked ? ' is-locked' : '') +
+        (depth ? ' is-component' : ' is-layout'),
+    );
+    row.dataset.scenarioId = chip.id;
+    if (groupId) {
+      row.dataset.scenarioGroup = groupId;
+    }
+    const parentGroup = groupId ? pageScenarioMessages().find((item) => item.id === groupId) : null;
+    row.style.setProperty(
+      '--link-color',
+      chip.color || parentGroup?.color || 'var(--vscode-foreground)',
+    );
+    row.append(linkElbow((leadingGap ? LINK_ROW_GAP : 0) + linkChipHalf(depth), nextColor));
+
+    const body = el('div', 'link-body');
+    const chipWrap = el('div', 'link-chip-wrap scenario-chip-wrap');
+    const chipBtn = el('button', 'link-chip scenario-chip');
+    chipBtn.type = 'button';
+    const label = el('span', 'link-chip-label scenario-chip-label', chip.title || t('scenarioDefaultTitle'));
+    label.title = chip.title || '';
+    chipBtn.append(label);
+    if (canFold) {
+      const tri = el('span', 'link-chip-tri' + (collapsed ? ' is-collapsed' : ''));
+      tri.append(linkCaretIcon());
+      tri.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (locked) {
+          flashLock(chip.id, chipWrap);
+          return;
+        }
+        toggleScenarioCollapsed(chip.id);
+      });
+      tri.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      chipBtn.append(tri);
+    }
+    label.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (isGroup) {
+        openScenarioGroupPanelId = chip.id;
+        focusScenarioGroupNameOnOpen = true;
+        paintScenariosPage();
+        return;
+      }
+      if (locked) {
+        return;
+      }
+      beginScenarioRename(label, chip.id);
+    });
+    chipWrap.append(chipBtn);
+    if (!isGroup && !(chip.md && chip.hasFile)) {
+      const formBtn = el('button', 'scenario-form-btn');
+      formBtn.type = 'button';
+      formBtn.title = t('formScenario');
+      formBtn.setAttribute('aria-label', t('formScenario'));
+      formBtn.append(reviewSparkleIcon());
+      formBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openScenarioSparkMenu(event.clientX, event.clientY, chip);
+      });
+      chipWrap.append(formBtn);
+    }
+    if (isGroup) {
+      const side = el('div', 'link-side scenario-group-side');
+      const lock = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+      lock.type = 'button';
+      lock.title = locked ? t('scenarioUnlock') : t('lockGroup');
+      lock.setAttribute('aria-label', lock.title);
+      lock.setAttribute('aria-pressed', locked ? 'true' : 'false');
+      lock.append(locked ? lockClosedIcon() : lockOpenIcon());
+      lock.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (!locked) {
+          return;
+        }
+        unlockScenarioGroup(chip.id);
+      });
+      side.append(lock);
+      if (childList.length) {
+        side.append(el('span', 'count', String(childList.length)));
+      }
+      chipWrap.append(side);
+    }
+    body.append(chipWrap);
+    if (!isGroup && chip.md && chip.hasFile) {
+      const previewWrap = el('div', 'scenario-preview-wrap');
+      previewWrap.hidden = collapsed;
+      const preview = el('button', 'scenario-preview');
+      preview.type = 'button';
+      preview.setAttribute('aria-label', t('openScenarioScheme'));
+      const svg = buildScenarioMermaidSvg(chip.md);
+      if (svg) {
+        preview.append(svg);
+      }
+      preview.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openScenarioOverlay(chip.id, chip.md || '');
+      });
+      chipBtn.addEventListener('click', (event) => {
+        if (event.detail > 1) {
+          return;
+        }
+        const target = event.target;
+        if (target instanceof Element && target.closest('.link-chip-tri, .scenario-preview, .scenario-form-btn')) {
+          return;
+        }
+        openScenarioOverlay(chip.id, chip.md || '');
+      });
+      previewWrap.append(preview);
+      body.append(previewWrap);
+    }
+
+    if (!locked && !isGroup) {
+      chipBtn.draggable = true;
+      chipBtn.addEventListener('dragstart', (event) => {
+        beginDrag(
+          event,
+          {
+            kind: 'scenario',
+            id: chip.id,
+            groupId: groupId || '',
+            title: chip.title,
+          },
+          'copyMove',
+          chip.title || '',
+        );
+        chipBtn.classList.add('dragging');
+        revealScenarioTail();
+      });
+      chipBtn.addEventListener('dragend', () => {
+        chipBtn.classList.remove('dragging');
+        endDrag();
+      });
+    }
+
+    row.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || payload.id === chip.id) {
+        return;
+      }
+      if (isGroup) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'move';
+        }
+        showScenarioRowCue(row, scenarioDropEdge(event, row));
+        return;
+      }
+      if (!groupId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      showScenarioRowCue(row, scenarioDropEdge(event, row));
+    });
+    row.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || payload.id === chip.id) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const edge = scenarioDropEdge(event, row);
+      clearScenarioDropCue();
+      applyScenarioRowDrop(payload, chip, groupId, isGroup, edge);
+    });
+
+    row.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openScenarioContextMenu(event.clientX, event.clientY, chip, groupId);
+    });
+
+    chipBtn.addEventListener('dblclick', (event) => {
+      if (!isGroup) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openScenarioGroupPanelId = chip.id;
+      focusScenarioGroupNameOnOpen = true;
+      paintScenariosPage();
+    });
+
+    if (isGroup && childList.length > 0) {
+      const kids = el('div', 'link-children');
+      kids.hidden = collapsed;
+      const clip = el('div', 'link-children-clip');
+      const slide = el('div', 'link-children-slide');
+      const foldRail = el('button', 'link-fold-rail');
+      foldRail.type = 'button';
+      foldRail.title = t('toolbarCollapse');
+      foldRail.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (locked) {
+          flashLock(chip.id, chipWrap);
+          return;
+        }
+        toggleScenarioCollapsed(chip.id);
+      });
+      const ordered = childList.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+      ordered.forEach((child, index) => {
+        const next = ordered[index + 1];
+        slide.append(
+          renderScenarioNode(
+            { ...child, locked },
+            chip.id,
+            true,
+            next ? chip.color || 'var(--vscode-foreground)' : '',
+          ),
+        );
+      });
+      clip.append(slide);
+      kids.append(foldRail, clip);
+      body.append(kids);
+    }
+    row.append(body);
+    return row;
+  }
+
+  /** @param {string} md */
+  function buildScenarioMermaidSvg(md) {
+    const body = extractMermaidSource(md);
+    if (!body) {
+      return null;
+    }
+    const participants = [];
+    const messages = [];
+    for (const line of body.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('%%') || /^sequenceDiagram/i.test(trimmed)) {
+        continue;
+      }
+      const part = /^(?:participant|actor)\s+([^\s:]+)/i.exec(trimmed);
+      if (part) {
+        const name = part[1].replace(/["']/g, '').trim();
+        if (name && !participants.includes(name)) {
+          participants.push(name);
+        }
+        continue;
+      }
+      const arrow = /^([^-]+?)\s*(->>|-->>)\s*([^:]+?)(?::\s*(.*))?$/.exec(trimmed);
+      if (arrow) {
+        const from = arrow[1].trim();
+        const to = arrow[3].trim();
+        if (!participants.includes(from)) {
+          participants.push(from);
+        }
+        if (!participants.includes(to)) {
+          participants.push(to);
+        }
+        messages.push({ from, to, dashed: arrow[2] === '-->>' });
+      }
+    }
+    if (!participants.length) {
+      return null;
+    }
+    const w = SCENARIO_PREVIEW_W;
+    const h = SCENARIO_PREVIEW_H;
+    const pad = 12;
+    const boxW = Math.max(48, (w - pad * 2) / Math.max(1, participants.length) - 8);
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'scenario-mermaid-thumb');
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('aria-hidden', 'true');
+  const colX = (index) => pad + index * ((w - pad * 2) / Math.max(1, participants.length - 1 || 1));
+    participants.forEach((name, index) => {
+      const x = participants.length === 1 ? w / 2 - boxW / 2 : colX(index) - boxW / 2;
+      const box = document.createElementNS(SVG_NS, 'rect');
+      box.setAttribute('x', String(Math.max(pad, x)));
+      box.setAttribute('y', '16');
+      box.setAttribute('width', String(boxW));
+      box.setAttribute('height', '28');
+      box.setAttribute('rx', '6');
+      box.setAttribute('fill', 'color-mix(in srgb, var(--vscode-foreground) 8%, transparent)');
+      box.setAttribute('stroke', 'currentColor');
+      box.setAttribute('stroke-opacity', '0.35');
+      svg.append(box);
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('x', String(Math.max(pad, x) + boxW / 2));
+      text.setAttribute('y', '34');
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('fill', 'currentColor');
+      text.setAttribute('font-size', '11');
+      const short = name.length > 10 ? name.slice(0, 9) + '…' : name;
+      text.textContent = short;
+      svg.append(text);
+      const stem = document.createElementNS(SVG_NS, 'line');
+      const cx = Math.max(pad, x) + boxW / 2;
+      stem.setAttribute('x1', String(cx));
+      stem.setAttribute('x2', String(cx));
+      stem.setAttribute('y1', '44');
+      stem.setAttribute('y2', String(h - 12));
+      stem.setAttribute('stroke', 'currentColor');
+      stem.setAttribute('stroke-opacity', '0.2');
+      svg.append(stem);
+    });
+    const idx = (name) => participants.indexOf(name);
+    const arrowId = 'scenario-arrow-' + Math.random().toString(36).slice(2, 9);
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    const marker = document.createElementNS(SVG_NS, 'marker');
+    marker.setAttribute('id', arrowId);
+    marker.setAttribute('markerWidth', '6');
+    marker.setAttribute('markerHeight', '6');
+    marker.setAttribute('refX', '5');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    const head = document.createElementNS(SVG_NS, 'path');
+    head.setAttribute('d', 'M0,0 L6,3 L0,6 Z');
+    head.setAttribute('fill', 'currentColor');
+    marker.append(head);
+    defs.append(marker);
+    svg.prepend(defs);
+    messages.slice(0, 14).forEach((msg, line) => {
+      const y = 56 + line * 9;
+      const x1 = idx(msg.from) < 0 ? w / 2 : colX(idx(msg.from));
+      const x2 = idx(msg.to) < 0 ? w / 2 : colX(idx(msg.to));
+      const path = document.createElementNS(SVG_NS, 'path');
+      const left = Math.min(x1, x2);
+      const right = Math.max(x1, x2);
+      path.setAttribute('d', `M${left} ${y} H${right}`);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '1.2');
+      if (msg.dashed) {
+        path.setAttribute('stroke-dasharray', '4 3');
+      }
+      path.setAttribute('marker-end', 'url(#' + arrowId + ')');
+      svg.append(path);
+    });
+    return svg;
+  }
+
+  /** @param {string} md */
+  function extractMermaidSource(md) {
+    const match = /```\s*mermaid\s*\n([\s\S]*?)```/i.exec(String(md || ''));
+    return match ? match[1] : '';
+  }
+
+  /** @param {HTMLElement} label @param {string} messageId */
+  function beginScenarioRename(label, messageId) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'scenario-rename-input';
+    input.value = label.textContent || '';
+    input.style.width = Math.max(80, label.offsetWidth + 16) + 'px';
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      const title = input.value.trim();
+      const pageId = activePage()?.id;
+      if (pageId && title) {
+        vscode.postMessage({ type: 'scenarioRename', pageId, messageId, title });
+      }
+      paintScenariosPage();
+    };
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        paintScenariosPage();
+      }
+    });
+    input.addEventListener('blur', () => {
+      commit();
+    });
+  }
+
+  /** @param {string} id */
+  function toggleScenarioCollapsed(id) {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    const next = { ...(page.collapsed || {}) };
+    if (next[id]) {
+      delete next[id];
+    } else {
+      next[id] = true;
+    }
+    vscode.postMessage({
+      type: 'setCollapsed',
+      pageId: page.id,
+      collapsed: next,
+      allTopCollapsed: allTopCollapsed(),
+    });
+    page.collapsed = next;
+    paintScenariosPage();
+  }
+
+  function setAllScenarioCollapsed(collapsed) {
+    const page = activePage();
+    if (!page) {
+      return;
+    }
+    const next = { ...(page.collapsed || {}) };
+    for (const chip of collapsibleTopGroups()) {
+      if (collapsed) {
+        next[chip.id] = true;
+      } else {
+        delete next[chip.id];
+      }
+    }
+    vscode.postMessage({
+      type: 'setCollapsed',
+      pageId: page.id,
+      collapsed: next,
+      allTopCollapsed: allTopCollapsed(),
+    });
+    page.collapsed = next;
+    paintScenariosPage();
+  }
+
+  /** @param {string} groupId */
+  function unlockScenarioGroup(groupId) {
+    const pageId = activePage()?.id;
+    if (!pageId) {
+      return;
+    }
+    vscode.postMessage({
+      type: 'scenarioUpdateGroup',
+      pageId,
+      groupId,
+      status: 'open',
+    });
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {ScenarioChip | ScenarioChildChip} chip
+   * @param {string | null} groupId
+   */
+  function openScenarioContextMenu(x, y, chip, groupId) {
+    cancelMenuClose('context');
+    closeToolbarMenus();
+    const pageId = activePage()?.id || '';
+    const isGroup = !!chip.isGroup;
+    const locked = !!chip.locked;
+    /** @type {HTMLElement[]} */
+    const items = [];
+    if (isGroup) {
+      const createBtn = menuActionChoice(t('createScenario'), {});
+      createBtn.disabled = locked;
+      createBtn.addEventListener('click', () => {
+        closeContextMenu();
+        if (!createBtn.disabled && pageId) {
+          vscode.postMessage({ type: 'scenarioCreate', pageId, groupId: chip.id });
+        }
+      });
+      items.push(createBtn);
+      const settingsBtn = menuAction(t('menuSettings'));
+      settingsBtn.addEventListener('click', () => {
+        closeContextMenu();
+        openScenarioGroupPanelId = chip.id;
+        focusScenarioGroupNameOnOpen = true;
+        paintScenariosPage();
+      });
+      items.push(settingsBtn);
+    } else if (!chip.hasFile) {
+      const formBtn = menuAction(t('formScenario'));
+      formBtn.disabled = !!scenarioFormBusy;
+      formBtn.addEventListener('click', () => {
+        closeContextMenu();
+        if (!formBtn.disabled && pageId) {
+          vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
+        }
+      });
+      items.push(formBtn);
+    }
+    const copyBtn = menuAction(t('menuCopyLink'));
+    copyBtn.addEventListener('click', () => {
+      closeContextMenu();
+      const url = scenarioEntityLink(chip.id, isGroup ? undefined : groupId || undefined);
+      if (url) {
+        vscode.postMessage({ type: 'clipboardWrite', text: url });
+      }
+    });
+    items.push(copyBtn);
+    const delBtn = menuAction(t('menuDelete'));
+    delBtn.disabled = locked && isGroup;
+    delBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (pageId && (!locked || !isGroup)) {
+        vscode.postMessage({ type: 'scenarioDelete', pageId, messageId: chip.id });
+      }
+    });
+    items.push(delBtn);
+    if (isGroup && locked) {
+      const unlockBtn = menuAction(t('scenarioUnlock'));
+      unlockBtn.addEventListener('click', () => {
+        closeContextMenu();
+        unlockScenarioGroup(chip.id);
+      });
+      items.push(unlockBtn);
+    }
+    openMenuState = { kind: 'context', viewExpanded: false, ctx: { scenarioId: chip.id }, x, y };
+    const scroller = ensureMenuChrome(contextMenu).scroller;
+    scroller.replaceChildren(...items);
+    updateMenuScrollbar(contextMenu);
+    contextMenu.hidden = false;
+    positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  /**
+   * @param {string} messageId
+   * @param {string | undefined} groupId
+   */
+  function scenarioEntityLink(messageId, groupId) {
+    const pageId = uiState.activePageId;
+    if (!pageId) {
+      return '';
+    }
+    if (groupId) {
+      return pageId + '://scenario/' + groupId + '/' + messageId;
+    }
+    const chip = pageScenarioMessages().find((item) => item.id === messageId);
+    if (chip?.isGroup) {
+      return pageId + '://group/' + messageId;
+    }
+    return pageId + '://scenario/' + messageId;
+  }
+
+  /**
+   * @param {DragEvent} event
+   * @param {HTMLElement} row
+   */
+  function scenarioDropEdge(event, row) {
+    return linkDropEdge(event, row);
+  }
+
+  function scenarioSlotEl() {
+    if (!scenarioDropSlotEl) {
+      scenarioDropSlotEl = el('div', 'link-drop-slot');
+      scenarioDropSlotEl.setAttribute('aria-hidden', 'true');
+    }
+    return scenarioDropSlotEl;
+  }
+
+  function clearScenarioDropCue() {
+    hideDropEdge();
+    if (scenarioDropSlotEl && scenarioDropSlotEl.isConnected) {
+      scenarioDropSlotEl.remove();
+    }
+    scenarioCue = null;
+    root.querySelectorAll('.link-node.link-drop-into').forEach((node) => {
+      node.classList.remove('link-drop-into');
+    });
+    root.querySelectorAll('.link-drop-tail.is-active').forEach((node) => {
+      node.classList.remove('is-active');
+    });
+  }
+
+  /**
+   * @param {HTMLElement} row
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function showScenarioRowCue(row, edge) {
+    const same = scenarioCue && scenarioCue.kind === 'row' && scenarioCue.row === row && scenarioCue.edge === edge;
+    if (!same) {
+      clearScenarioDropCue();
+      scenarioCue = { kind: 'row', row, edge };
+      if (edge === 'into') {
+        row.classList.add('link-drop-into');
+      }
+    }
+    if (edge === 'into') {
+      return;
+    }
+    showDropEdge(row, edge);
+    const slot = scenarioSlotEl();
+    const rect = row.getBoundingClientRect();
+    slot.style.left = rect.left + 'px';
+    slot.style.width = Math.max(rect.width, 0) + 'px';
+    slot.style.top = (edge === 'before' ? rect.top - 24 : rect.bottom) + 'px';
+    if (!slot.isConnected) {
+      document.body.append(slot);
+    }
+  }
+
+  /**
+   * @param {*} payload
+   * @param {*} target
+   * @param {string | null} targetGroupId
+   * @param {boolean} targetIsGroup
+   * @param {'before' | 'after' | 'into'} edge
+   */
+  function applyScenarioRowDrop(payload, target, targetGroupId, targetIsGroup, edge) {
+    const pageId = activePage()?.id;
+    if (!pageId || payload.isGroup) {
+      return;
+    }
+    const sourceGroup = payload.groupId || '';
+    const destGroup = targetIsGroup && edge === 'into' ? target.id : targetGroupId || '';
+    if (!destGroup && !sourceGroup && edge !== 'into') {
+      return;
+    }
+    if (sourceGroup === destGroup && destGroup) {
+      const group = pageScenarioMessages().find((item) => item.id === destGroup);
+      const ids = (group?.children || []).map((child) => child.id);
+      const from = ids.indexOf(payload.id);
+      let to = ids.indexOf(target.id);
+      if (from < 0 || to < 0) {
+        return;
+      }
+      if (edge === 'after') {
+        to += 1;
+      }
+      if (from < to) {
+        to -= 1;
+      }
+      ids.splice(from, 1);
+      ids.splice(to, 0, payload.id);
+      vscode.postMessage({ type: 'scenarioReorder', pageId, groupId: destGroup, orderedIds: ids });
+      return;
+    }
+    pendingScenarioDrop = {
+      id: payload.id,
+      groupId: sourceGroup,
+      targetGroupId: destGroup || undefined,
+    };
+    pendingLinkDrop = null;
+    pendingChipDrop = null;
+    dialogKind = 'drop';
+    choiceDismiss = null;
+    dropDialog.hidden = false;
+    dropDialog.replaceChildren();
+    const panel = el('div', 'drop-dialog-panel');
+    const actions = el('div', 'drop-dialog-actions');
+    const moveBtn = el('button', 'drop-dialog-btn');
+    moveBtn.type = 'button';
+    moveBtn.textContent = t('dropMove');
+    moveBtn.addEventListener('click', () => {
+      const pending = pendingScenarioDrop;
+      closeDropDialog();
+      pendingScenarioDrop = null;
+      if (pending && pageId) {
+        vscode.postMessage({
+          type: 'scenarioTransfer',
+          pageId,
+          messageId: pending.id,
+          targetGroupId: pending.targetGroupId,
+          copy: false,
+        });
+      }
+    });
+    const copyBtn = el('button', 'drop-dialog-btn');
+    copyBtn.type = 'button';
+    copyBtn.textContent = t('dropCopy');
+    copyBtn.addEventListener('click', () => {
+      const pending = pendingScenarioDrop;
+      closeDropDialog();
+      pendingScenarioDrop = null;
+      if (pending && pageId) {
+        vscode.postMessage({
+          type: 'scenarioTransfer',
+          pageId,
+          messageId: pending.id,
+          targetGroupId: pending.targetGroupId,
+          copy: true,
+        });
+      }
+    });
+    actions.append(moveBtn, copyBtn);
+    panel.append(actions);
+    dropDialog.append(panel);
+    moveBtn.focus();
+  }
+
+  /** @param {*} lastRoot */
+  function renderScenarioTail(lastRoot) {
+    const tail = el('div', 'link-drop-tail');
+    tail.hidden = true;
+    tail.addEventListener('dragover', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || !payload.groupId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      clearScenarioDropCue();
+      tail.classList.add('is-active');
+    });
+    tail.addEventListener('drop', (event) => {
+      const payload = readPayload(event);
+      if (!payload || payload.kind !== 'scenario' || !payload.groupId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      clearScenarioDropCue();
+      const pageId = activePage()?.id;
+      if (!pageId) {
+        return;
+      }
+      pendingScenarioDrop = { id: payload.id, groupId: payload.groupId, targetGroupId: undefined };
+      pendingLinkDrop = null;
+      pendingChipDrop = null;
+      dialogKind = 'drop';
+      choiceDismiss = null;
+      dropDialog.hidden = false;
+      dropDialog.replaceChildren();
+      const panel = el('div', 'drop-dialog-panel');
+      const actions = el('div', 'drop-dialog-actions');
+      const moveBtn = el('button', 'drop-dialog-btn');
+      moveBtn.type = 'button';
+      moveBtn.textContent = t('dropMove');
+      moveBtn.addEventListener('click', () => {
+        const pending = pendingScenarioDrop;
+        closeDropDialog();
+        pendingScenarioDrop = null;
+        if (pending) {
+          vscode.postMessage({
+            type: 'scenarioTransfer',
+            pageId,
+            messageId: pending.id,
+            targetGroupId: pending.targetGroupId,
+            copy: false,
+          });
+        }
+      });
+      const copyBtn = el('button', 'drop-dialog-btn');
+      copyBtn.type = 'button';
+      copyBtn.textContent = t('dropCopy');
+      copyBtn.addEventListener('click', () => {
+        const pending = pendingScenarioDrop;
+        closeDropDialog();
+        pendingScenarioDrop = null;
+        if (pending) {
+          vscode.postMessage({
+            type: 'scenarioTransfer',
+            pageId,
+            messageId: pending.id,
+            targetGroupId: pending.targetGroupId,
+            copy: true,
+          });
+        }
+      });
+      actions.append(moveBtn, copyBtn);
+      panel.append(actions);
+      dropDialog.append(panel);
+      moveBtn.focus();
+    });
+    return tail;
+  }
+
+  function revealScenarioTail() {
+    const tail = root.querySelector('.link-drop-tail');
+    if (tail instanceof HTMLElement) {
+      tail.hidden = false;
+    }
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {ScenarioChip | ScenarioChildChip} chip
+   */
+  function openScenarioSparkMenu(x, y, chip) {
+    cancelMenuClose('context');
+    closeToolbarMenus();
+    const pageId = activePage()?.id || '';
+    const formBtn = menuAction(t('formScenario'));
+    formBtn.disabled = !!scenarioFormBusy;
+    formBtn.addEventListener('click', () => {
+      closeContextMenu();
+      if (!formBtn.disabled && pageId) {
+        vscode.postMessage({ type: 'scenarioForm', pageId, messageId: chip.id });
+      }
+    });
+    openMenuState = { kind: 'context', viewExpanded: false, ctx: { scenarioId: chip.id }, x, y };
+    const scroller = ensureMenuChrome(contextMenu).scroller;
+    scroller.replaceChildren(formBtn);
+    updateMenuScrollbar(contextMenu);
+    contextMenu.hidden = false;
+    positionMenu(contextMenu, { left: x, top: y, preferBelow: true });
+  }
+
+  /**
+   * @param {boolean} cancel
+   */
+  function closeScenarioFormPanel(cancel) {
+    const session = scenarioFormQuestions;
+    scenarioFormQuestions = null;
+    scenarioFormPicks = {};
+    document.querySelectorAll('.scenario-form-panel-backdrop').forEach((node) => node.remove());
+    if (cancel && session) {
+      vscode.postMessage({
+        type: 'scenarioFormCancel',
+        pageId: session.pageId,
+        messageId: session.messageId,
+      });
+    }
+  }
+
+  function mountScenarioFormPanel() {
+    const existing = document.querySelector('.scenario-form-panel-backdrop');
+    const session = scenarioFormQuestions;
+    const page = activePage();
+    if (!session || page?.kind !== 'scenarios' || page.id !== session.pageId) {
+      if (existing) {
+        existing.remove();
+      }
+      return;
+    }
+    if (existing instanceof HTMLElement && existing.dataset.messageId === session.messageId) {
+      return;
+    }
+    if (existing) {
+      existing.remove();
+    }
+    const chip = pageScenarioMessages().find((item) => item.id === session.messageId);
+    const backdrop = el('div', 'link-panel-backdrop scenario-form-panel-backdrop');
+    backdrop.dataset.messageId = session.messageId;
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        closeScenarioFormPanel(true);
+      }
+    });
+    const panel = el('aside', 'link-panel scenario-form-panel');
+    panel.append(el('div', 'review-mr-people-title', chip?.title || t('formScenario')));
+    const questions = Array.isArray(session.questions) ? session.questions : [];
+    for (const question of questions) {
+      const block = el('fieldset', 'scenario-form-q');
+      const legend = el('legend', 'scenario-form-q-prompt', question.prompt || '');
+      block.append(legend);
+      const options = Array.isArray(question.options) ? question.options : [];
+      for (const option of options) {
+        const label = el('label', 'scenario-form-option');
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'scenario-form-' + question.id;
+        input.value = option.id;
+        input.checked = scenarioFormPicks[question.id] === option.id;
+        input.addEventListener('change', () => {
+          if (input.checked) {
+            scenarioFormPicks[question.id] = option.id;
+            syncRun();
+          }
+        });
+        label.append(input, el('span', '', option.label || option.id));
+        block.append(label);
+      }
+      panel.append(block);
+    }
+    const actions = el('div', 'link-panel-actions');
+    const run = el('button', 'link-panel-primary', t('formScenario'));
+    run.type = 'button';
+    const syncRun = () => {
+      run.disabled = questions.some((question) => !scenarioFormPicks[question.id]);
+    };
+    syncRun();
+    run.addEventListener('click', () => {
+      if (run.disabled) {
+        return;
+      }
+      const answers = questions.map((question) => ({
+        id: question.id,
+        optionId: scenarioFormPicks[question.id],
+      }));
+      const pageId = session.pageId;
+      const messageId = session.messageId;
+      closeScenarioFormPanel(false);
+      vscode.postMessage({ type: 'scenarioFormAnswer', pageId, messageId, answers });
+    });
+    actions.append(run);
+    panel.append(actions);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+  }
+
+  function mountScenarioGroupPanel() {
+    if (!openScenarioGroupPanelId) {
+      document.querySelectorAll('.scenario-group-panel-backdrop').forEach((node) => node.remove());
+      return;
+    }
+    const chip = pageScenarioMessages().find((item) => item.id === openScenarioGroupPanelId);
+    if (!chip || !chip.isGroup) {
+      openScenarioGroupPanelId = null;
+      return;
+    }
+    const locked = !!chip.locked;
+    document.querySelectorAll('.scenario-group-panel-backdrop').forEach((node) => node.remove());
+    const backdrop = el('div', 'link-panel-backdrop scenario-group-panel-backdrop');
+    let pressedBackdrop = false;
+    backdrop.addEventListener('mousedown', (event) => {
+      pressedBackdrop = event.target === backdrop;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (pressedBackdrop && event.target === backdrop) {
+        openScenarioGroupPanelId = null;
+        paintScenariosPage();
+      }
+    });
+    const panel = el('aside', 'link-panel' + (locked ? ' is-locked' : ''));
+    const nameRow = el('div', 'link-panel-name-row');
+    const nameInput = el('input', 'link-panel-input');
+    nameInput.type = 'text';
+    nameInput.value = chip.title || '';
+    nameInput.disabled = locked;
+    const lockBtn = el('button', 'lock-btn' + (locked ? ' is-locked' : ''));
+    lockBtn.type = 'button';
+    lockBtn.title = locked ? t('scenarioUnlock') : t('lockGroup');
+    lockBtn.append(locked ? lockClosedIcon() : lockOpenIcon());
+    lockBtn.addEventListener('click', () => {
+      if (locked) {
+        unlockScenarioGroup(chip.id);
+      } else {
+        vscode.postMessage({
+          type: 'scenarioUpdateGroup',
+          pageId: activePage()?.id || '',
+          groupId: chip.id,
+          status: 'lock',
+        });
+      }
+    });
+    nameRow.append(nameInput, lockBtn);
+    panel.append(nameRow);
+    const aliasLabel = el('label', 'link-panel-field');
+    aliasLabel.append(document.createTextNode(t('groupAlias')));
+    const aliasInput = el('input', 'link-panel-input');
+    aliasInput.type = 'text';
+    aliasInput.value = chip.alias || '';
+    aliasInput.disabled = locked;
+    aliasLabel.append(aliasInput);
+    panel.append(aliasLabel);
+    const descField = el('div', 'link-panel-field');
+    const descInput = el('textarea', 'link-panel-input');
+    descInput.rows = 3;
+    descInput.value = chip.description || '';
+    descInput.disabled = locked;
+    descField.append(el('span', 'link-color-caption', t('groupDescription')), descInput);
+    panel.append(descField);
+    const colorField = el('div', 'link-panel-field link-panel-color');
+    const well = el('button', 'link-color-well' + (!chip.color ? ' is-empty' : ''));
+    well.type = 'button';
+    well.disabled = locked;
+    if (chip.color) {
+      well.style.setProperty('--swatch', chip.color);
+    }
+    well.addEventListener('click', () => {
+      if (locked) {
+        return;
+      }
+      openColorsPanel({
+        kind: 'scenario-group',
+        id: chip.id,
+        currentHex: chip.color || '',
+        allowNone: false,
+        locked: false,
+      });
+    });
+    colorField.append(el('span', 'link-color-caption', t('changeColor')), well);
+    panel.append(colorField);
+    const pageId = activePage()?.id || '';
+    const save = (partial) => {
+      if (locked || !pageId) {
+        return;
+      }
+      vscode.postMessage({ type: 'scenarioUpdateGroup', pageId, groupId: chip.id, ...partial });
+    };
+    nameInput.addEventListener('change', () => {
+      if (nameInput.value.trim()) {
+        save({ title: nameInput.value.trim() });
+      }
+    });
+    aliasInput.addEventListener('change', () => save({ alias: aliasInput.value.trim() }));
+    descInput.addEventListener('change', () => save({ description: descInput.value.trim() }));
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    if (focusScenarioGroupNameOnOpen) {
+      focusScenarioGroupNameOnOpen = false;
+      nameInput.focus();
+      nameInput.select();
+    }
+  }
+
+  /** @param {string} messageId @param {string} md */
+  function openScenarioOverlay(messageId, md) {
+    if (!md) {
+      return;
+    }
+    closeScenarioOverlay();
+    scenarioOverlayMessageId = messageId;
+    const backdrop = el('div', 'scenario-overlay-backdrop');
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) {
+        closeScenarioOverlay();
+      }
+    });
+    const panel = el('div', 'scenario-overlay-panel');
+    const screen = el('div', 'scenario-overlay-screen');
+    const svg = buildScenarioMermaidSvg(md);
+    const inner = document.createElementNS(SVG_NS, 'svg');
+    inner.setAttribute('class', 'scenario-overlay-svg');
+    if (svg) {
+      inner.setAttribute('viewBox', svg.getAttribute('viewBox') || '0 0 300 188');
+      while (svg.firstChild) {
+        if (svg.firstChild.tagName !== 'defs') {
+          inner.append(svg.firstChild);
+        } else {
+          svg.removeChild(svg.firstChild);
+        }
+      }
+    }
+    screen.append(inner);
+    bindScenarioOverlayPan(screen, inner);
+    panel.append(screen);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    scenarioOverlayEl = backdrop;
+    document.addEventListener(
+      'keydown',
+      scenarioOverlayEsc,
+      true,
+    );
+  }
+
+  function scenarioOverlayEsc(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeScenarioOverlay();
+    }
+  }
+
+  function closeScenarioOverlay() {
+    if (scenarioOverlayEl) {
+      scenarioOverlayEl.remove();
+      scenarioOverlayEl = null;
+    }
+    scenarioOverlayMessageId = null;
+    document.removeEventListener('keydown', scenarioOverlayEsc, true);
+  }
+
+  /**
+   * @param {HTMLElement} screen
+   * @param {SVGSVGElement} inner
+   */
+  function bindScenarioOverlayPan(screen, inner) {
+    let scale = 1;
+    let x = 0;
+    let y = 0;
+    const apply = () => {
+      inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    };
+    apply();
+    screen.addEventListener(
+      'wheel',
+      (event) => {
+        event.preventDefault();
+        const rect = screen.getBoundingClientRect();
+        const mx = event.clientX - rect.left;
+        const my = event.clientY - rect.top;
+        const next = scale * Math.exp(-event.deltaY * 0.0016);
+        const clamped = Math.min(8, Math.max(0.4, next));
+        const k = clamped / scale;
+        x = mx - (mx - x) * k;
+        y = my - (my - y) * k;
+        scale = clamped;
+        apply();
+      },
+      { passive: false },
+    );
+    screen.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      screen.setPointerCapture(event.pointerId);
+      screen.classList.add('is-panning');
+      const sx = event.clientX;
+      const sy = event.clientY;
+      const ox = x;
+      const oy = y;
+      const move = (ev) => {
+        x = ox + (ev.clientX - sx);
+        y = oy + (ev.clientY - sy);
+        apply();
+      };
+      const up = () => {
+        screen.removeEventListener('pointermove', move);
+        screen.removeEventListener('pointerup', up);
+        screen.removeEventListener('pointercancel', up);
+        screen.classList.remove('is-panning');
+      };
+      screen.addEventListener('pointermove', move);
+      screen.addEventListener('pointerup', up);
+      screen.addEventListener('pointercancel', up);
+    });
+  }
+
+  /**
+   * @param {{
+   *   mode: 'create' | 'edit',
+   *   pageId?: string,
+   *   name?: string,
+   *   description?: string,
+   *   channelId?: string,
+   *   hasDiscord?: boolean,
+   *   scenarioSkillPath?: string,
+   *   scenarioModel?: string,
+   *   scenarioPrintThinking?: boolean,
+   *   scenarioPrintTools?: boolean
+   * }} opts
+   */
+  function openScenarioPagePanel(opts) {
+    closeScenarioPagePanel();
+    const editing = opts.mode === 'edit';
+    const panel = el('div', 'review-mr-panel review-create-page-panel');
+    panel.id = 'scenario-page-panel';
+    panel.append(
+      el(
+        'div',
+        'review-mr-people-title',
+        t(editing ? 'pageSettingsTitle' : 'scenarioCreatePageTitle'),
+      ),
+    );
+    const nameInput = document.createElement('input');
+    nameInput.className = 'review-mr-title';
+    nameInput.value = opts.name || '';
+    panel.append(nameInput);
+    const pageDesc = pageDescriptionField(opts.description || '');
+    panel.append(pageDesc.label);
+    const channelLabel = el('label', 'review-mr-field', t('labelChannelDiscord'));
+    const channelInput = document.createElement('input');
+    channelInput.className = 'review-mr-title';
+    channelInput.value = opts.channelId || '';
+    channelLabel.append(channelInput);
+    panel.append(channelLabel);
+    if (opts.hasDiscord) {
+      panel.append(el('div', 'review-token-hint', t('reviewFieldDiscordToken') + ': ' + t('reviewTokenSaved')));
+    } else {
+      const discordLabel = el('label', 'review-mr-field', t('reviewFieldDiscordToken'));
+      const discordInput = document.createElement('input');
+      discordInput.className = 'review-mr-title';
+      discordInput.type = 'password';
+      discordLabel.append(discordInput);
+      panel.append(discordLabel);
+    }
+    /**
+     * @param {string} labelKey
+     * @param {string} value
+     * @param {boolean} [model]
+     */
+    function scenarioTextField(labelKey, value, model) {
+      const label = el('label', 'review-mr-field', t(labelKey));
+      const input = document.createElement('input');
+      input.className = 'review-mr-title' + (model ? ' review-model-input' : '');
+      input.type = 'text';
+      input.spellcheck = false;
+      input.value = value;
+      if (model) {
+        input.autocapitalize = 'none';
+        input.autocomplete = 'off';
+        input.placeholder = 'grok-4.7-high-fast';
+        input.addEventListener('input', () => {
+          const next = input.value.toLowerCase();
+          if (next === input.value) {
+            return;
+          }
+          const start = input.selectionStart;
+          const end = input.selectionEnd;
+          input.value = next;
+          if (start !== null && end !== null) {
+            input.setSelectionRange(start, end);
+          }
+        });
+      }
+      label.append(input);
+      panel.append(label);
+      return input;
+    }
+
+    /**
+     * @param {string} labelKey
+     * @param {boolean} checked
+     */
+    function scenarioFlag(labelKey, checked) {
+      const label = el('label', 'review-terminal-flag');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = checked;
+      label.append(input, el('span', '', t(labelKey)));
+      panel.append(label);
+      return input;
+    }
+
+    const skillInput = scenarioTextField('labelScenarioSkillPath', opts.scenarioSkillPath || '');
+    const modelInput = scenarioTextField('labelScenarioModel', opts.scenarioModel || '', true);
+    const thinking = scenarioFlag('labelScenarioPrintThinking', !!opts.scenarioPrintThinking);
+    const tools = scenarioFlag('labelScenarioPrintTools', opts.scenarioPrintTools !== false);
+
+    const skillIcons = {
+      download:
+        'M3 19H21V21H3V19ZM13 13.1716L19.0711 7.1005L20.4853 8.51472L12 17L3.51472 8.51472L4.92893 7.1005L11 13.1716V2H13V13.1716Z',
+      copy:
+        'M6.99979 7V3C6.99979 2.44772 7.4475 2 7.99979 2H20.9998C21.5521 2 21.9998 2.44772 21.9998 3V16C21.9998 16.5523 21.5521 17 20.9998 17H17V20.9925C17 21.5489 16.551 22 15.9925 22H3.00728C2.45086 22 2 21.5511 2 20.9925L2.00276 8.00748C2.00288 7.45107 2.4518 7 3.01025 7H6.99979ZM8.99979 7H15.9927C16.549 7 17 7.44892 17 8.00748V15H19.9998V4H8.99979V7ZM4.00255 9L4.00021 20H15V9H4.00255Z',
+    };
+    const promptCard = el('div', 'review-doc-card');
+    const promptOpen = el('button', 'review-doc-open', t('scenarioPromptExample'));
+    promptOpen.type = 'button';
+    promptOpen.addEventListener('click', () => {
+      vscode.postMessage({ type: 'scenarioSkillFile', action: 'open' });
+    });
+    const promptIconRow = el('div', 'review-skill-icons');
+    for (const kind of ['download', 'copy']) {
+      const button = el('button', 'review-skill-icon');
+      button.type = 'button';
+      const label = t(kind === 'download' ? 'reviewSkillDownload' : 'reviewSkillCopy');
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('fill', 'currentColor');
+      path.setAttribute('d', skillIcons[kind]);
+      svg.append(path);
+      button.append(svg);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({
+          type: 'scenarioSkillFile',
+          action: kind === 'download' ? 'save' : 'copy',
+        });
+      });
+      promptIconRow.append(button);
+    }
+    promptCard.append(promptOpen, promptIconRow);
+    const promptDocs = el('div', 'review-settings-docs');
+    promptDocs.append(promptCard);
+    const promptCopied = el('p', 'review-skill-copied');
+    promptCopied.id = 'scenario-skill-copied';
+    promptCopied.hidden = true;
+    promptCopied.setAttribute('aria-live', 'polite');
+    panel.append(promptDocs, promptCopied);
+
+    const error = el('div', 'review-panel-error');
+    error.hidden = true;
+    panel.append(error);
+
+    /**
+     * @param {boolean} report
+     */
+    function readScenarioForm(report) {
+      const name = nameInput.value.trim();
+      const channelId = channelInput.value.trim();
+      const fail = (key, input) => {
+        if (report) {
+          error.textContent = t(key);
+          error.hidden = false;
+          input.focus();
+        }
+        return null;
+      };
+      if (!name) {
+        return fail('profileNameEmpty', nameInput);
+      }
+      if (!/^\d{5,}$/.test(channelId)) {
+        return fail(channelId ? 'projectChannelInvalid' : 'projectChannelEmpty', channelInput);
+      }
+      if (report) {
+        error.hidden = true;
+        error.textContent = '';
+      }
+      const discordInput = panel.querySelector('input[type="password"]');
+      return {
+        name,
+        description: clipGroupDescriptionInput(pageDesc.input.value).trim(),
+        channelId,
+        discordToken: discordInput instanceof HTMLInputElement ? discordInput.value.trim() : '',
+        scenarioSkillPath: skillInput.value.trim(),
+        scenarioModel: modelInput.value.trim().toLowerCase(),
+        scenarioPrintThinking: thinking.checked,
+        scenarioPrintTools: tools.checked,
+      };
+    }
+
+    /**
+     * @param {NonNullable<ReturnType<typeof readScenarioForm>>} fields
+     */
+    function postScenarioForm(fields) {
+      vscode.postMessage({
+        type: 'scenarioSavePage',
+        pageId: editing ? opts.pageId : undefined,
+        name: fields.name,
+        description: fields.description || undefined,
+        channelId: fields.channelId,
+        discordToken: fields.discordToken || undefined,
+        scenarioSkillPath: fields.scenarioSkillPath,
+        scenarioModel: fields.scenarioModel,
+        scenarioPrintThinking: fields.scenarioPrintThinking,
+        scenarioPrintTools: fields.scenarioPrintTools,
+      });
+    }
+
+    /** Writes a valid edit form. Reports field errors only when asked. */
+    let flushScenarioEdit = () => {};
+    if (editing) {
+      const initial = readScenarioForm(false);
+      let savedSig = initial ? JSON.stringify(initial) : '';
+      /**
+       * @param {boolean} report
+       */
+      const saveEditing = (report) => {
+        const fields = readScenarioForm(report);
+        if (!fields) {
+          return false;
+        }
+        const sig = JSON.stringify(fields);
+        if (sig !== savedSig) {
+          savedSig = sig;
+          postScenarioForm(fields);
+        }
+        return true;
+      };
+      flushScenarioEdit = () => saveEditing(false);
+      for (const input of [nameInput, pageDesc.input, channelInput, skillInput, modelInput, thinking, tools]) {
+        input.addEventListener('change', () => saveEditing(true));
+      }
+      const discordLive = panel.querySelector('input[type="password"]');
+      if (discordLive instanceof HTMLInputElement) {
+        discordLive.addEventListener('change', () => saveEditing(true));
+      }
+      bindSettingsCommitKey(panel, () => {
+        if (saveEditing(true)) {
+          closeScenarioPagePanel();
+        }
+      });
+    } else {
+      const actions = el('div', 'review-mr-actions');
+      const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        closeScenarioPagePanel();
+      });
+      const submit = el('button', 'review-btn is-primary', t('reviewCreatePageSubmit'));
+      submit.type = 'button';
+      const submitCreate = () => {
+        if (panel.classList.contains('is-busy')) {
+          return;
+        }
+        const fields = readScenarioForm(true);
+        if (!fields) {
+          return;
+        }
+        setPanelBusy(panel, true);
+        postScenarioForm(fields);
+      };
+      submit.addEventListener('click', submitCreate);
+      bindSettingsCommitKey(panel, submitCreate);
+      actions.append(cancel, submit);
+      panel.append(actions);
+    }
+    mountSettingsOverlay(panel, () => {
+      if (panel.classList.contains('is-busy')) {
+        return;
+      }
+      flushScenarioEdit();
+      closeScenarioPagePanel();
+    });
+    nameInput.focus();
+  }
+
+  function closeScenarioPagePanel() {
+    removeOverlay('scenario-page-panel');
+  }
+
+  function currentReviewFilters() {
+    const filters = reviewState && reviewState.filters;
+    return {
+      checkout: !!(filters && filters.checkout),
+      general: !filters || filters.general !== false,
+      discussions: !filters || filters.discussions !== false,
+    };
+  }
+
+  /** @param {HTMLButtonElement | null} button @param {boolean} on */
+  function setReviewFilterPressed(button, on) {
+    if (!button) {
+      return;
+    }
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  function syncFigmaFilters() {
+    const onFigma = activePage()?.kind === 'figma';
+    if (figmaFilters) {
+      figmaFilters.hidden = !onFigma;
+    }
+    if (figmaFormButton) {
+      figmaFormButton.disabled = figmaFormRunning;
+      figmaFormButton.textContent = t('figmaForm');
+    }
+    if (figmaRefreshButton) {
+      figmaRefreshButton.disabled = figmaFormRunning || pageLinks().length === 0;
+      figmaRefreshButton.textContent = t('figmaRefresh');
+    }
+    if (figmaResetButton) {
+      figmaResetButton.disabled = figmaFormRunning || pageLinks().length === 0;
+      figmaResetButton.textContent = t('figmaReset');
+    }
+    if (figmaFormLoader) {
+      figmaFormLoader.hidden = !figmaFormRunning;
+      if (figmaFormRunning) {
+        if (figmaFormLoader.childElementCount === 0) {
+          figmaFormLoader.append(reviewProgressIcon());
+        }
+      } else {
+        figmaFormLoader.replaceChildren();
+      }
+    }
+    if (figmaFormStatus) {
+      figmaFormStatus.hidden = !figmaFormStatusText;
+      figmaFormStatus.textContent = figmaFormStatusText;
+    }
+    syncFigmaChromeHeight();
+  }
+
+  function dismissFigmaFormDialog() {
+    removeOverlay('figma-form-panel');
+    if (figmaFormRunning || !figmaEmptySkel) {
+      return;
+    }
+    figmaEmptySkel = false;
+    if (activePage()?.kind === 'figma' && pageLinks().length === 0) {
+      paintLinksPage();
+    }
+  }
+
+  function openFigmaFormDialog(purpose = 'form') {
+    if (figmaFormRunning || activePage()?.kind !== 'figma') {
+      return;
+    }
+    removeOverlay('figma-form-panel');
+    if (pageLinks().length === 0) {
+      figmaEmptySkel = true;
+      paintLinksPage();
+    }
+    const panel = el('div', 'review-mr-panel figma-form-panel');
+    panel.id = 'figma-form-panel';
+    /** @type {'mcp' | 'api'} */
+    let via = 'mcp';
+    const tabs = el('div', 'figma-form-tabs');
+    const mcpTab = el('button', 'history-btn review-filter', t('figmaFormMcp'));
+    const apiTab = el('button', 'history-btn review-filter', t('figmaFormApi'));
+    mcpTab.type = 'button';
+    apiTab.type = 'button';
+    const note = el('p', 'figma-form-note');
+    const show = (next) => {
+      via = next;
+      mcpTab.setAttribute('aria-pressed', next === 'mcp' ? 'true' : 'false');
+      apiTab.setAttribute('aria-pressed', next === 'api' ? 'true' : 'false');
+      note.textContent = t(next === 'mcp' ? 'figmaFormMcpBody' : 'figmaFormApiBody');
+    };
+    mcpTab.addEventListener('click', () => show('mcp'));
+    apiTab.addEventListener('click', () => show('api'));
+    tabs.append(mcpTab, apiTab);
+    const actions = el('div', 'review-mr-actions');
+    const cancel = el('button', 'review-btn', t('reviewCreatePageCancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => dismissFigmaFormDialog());
+    const go = el('button', 'review-btn is-primary', t('figmaFormContinue'));
+    go.type = 'button';
+    go.addEventListener('click', () => {
+      const page = activePage();
+      if (!page || page.kind !== 'figma' || figmaFormRunning) {
+        return;
+      }
+      vscode.postMessage({
+        type: purpose === 'refresh' ? 'figmaRefreshTags' : 'figmaFormTags',
+        pageId: page.id,
+        via,
+      });
+      removeOverlay('figma-form-panel');
+    });
+    actions.append(cancel, go);
+    panel.append(tabs, note, actions);
+    show('mcp');
+    mountSettingsOverlay(panel, () => dismissFigmaFormDialog());
+  }
+
+  figmaFormButton?.addEventListener('click', () => {
+    if (figmaFormRunning) {
+      return;
+    }
+    openFigmaFormDialog('form');
+  });
+
+  figmaRefreshButton?.addEventListener('click', () => {
+    if (figmaFormRunning || activePage()?.kind !== 'figma' || pageLinks().length === 0) {
+      return;
+    }
+    openFigmaFormDialog('refresh');
+  });
+
+  figmaResetButton?.addEventListener('click', () => {
+    const page = activePage();
+    if (!page || page.kind !== 'figma' || figmaFormRunning || pageLinks().length === 0) {
+      return;
+    }
+    vscode.postMessage({ type: 'clearFigmaLinks', pageId: page.id });
+  });
+
+  window.addEventListener('resize', () => {
+    syncFigmaChromeHeight();
+  });
+
+  function syncReviewFilters() {
+    const onReview = activePage()?.kind === 'review';
+    if (reviewFilters) {
+      reviewFilters.hidden = !onReview;
+    }
+    syncFigmaFilters();
+    const flags = currentReviewFilters();
+    setReviewFilterPressed(reviewFilterCheckout, flags.checkout);
+    setReviewFilterPressed(reviewFilterGeneral, flags.general);
+    setReviewFilterPressed(reviewFilterDiscussions, flags.discussions);
+    syncReviewTalk();
+  }
+
+  /** @param {'checkout' | 'general' | 'discussions'} key */
+  function postReviewFilter(key) {
+    const page = activePage();
+    if (!page || page.kind !== 'review' || reviewState?.loading) {
+      return;
+    }
+    const flags = currentReviewFilters();
+    flags[key] = !flags[key];
+    setReviewFilterPressed(
+      key === 'checkout' ? reviewFilterCheckout : key === 'general' ? reviewFilterGeneral : reviewFilterDiscussions,
+      flags[key],
+    );
+    vscode.postMessage({
+      type: 'reviewSetFilters',
+      pageId: page.id,
+      checkout: flags.checkout,
+      general: flags.general,
+      discussions: flags.discussions,
+    });
+  }
+
   function paintPage() {
     syncToolbarView();
+    syncReviewFilters();
     removeLinkPanelBackdrop();
     hideGroupDescTip();
     if (isProblemsPageOpen()) {
@@ -4462,8 +20111,26 @@
       paintProblemsPage();
       return;
     }
+    if (isDebugPageOpen()) {
+      closeGroupPanel(false);
+      paintDebugPage();
+      return;
+    }
     const page = activePage();
-    if (page?.kind === 'links') {
+    if (page?.kind !== 'review' && reviewFileView) {
+      reviewFileView = null;
+      mountReviewFile();
+    }
+    if (page?.kind !== 'review' && reviewFixesView) {
+      reviewFixesView = null;
+      mountReviewFixes();
+    }
+    if (page?.kind === 'review') {
+      closeGroupPanel(false);
+      paintReviewPage();
+      return;
+    }
+    if (isLinkMapKind(page?.kind)) {
       if (openGroupPanel?.mode === 'create') {
         // Keep create draft if host asked for it on this surface.
       } else if (openGroupPanel) {
@@ -4473,6 +20140,12 @@
       if (openGroupPanel) {
         mountGroupPanel();
       }
+      return;
+    }
+    if (page?.kind === 'scenarios') {
+      closeGroupPanel(false);
+      closeLinkPanel();
+      paintScenariosPage();
       return;
     }
     const folds = captureFolds();
@@ -4505,7 +20178,14 @@
 
     const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
     const noteMap = notesById();
+    const draftSet = new Set(pageDrafts[uiState.activePageId] || []);
+    let draftLineDrawn = false;
     for (const card of cards) {
+      if (draftSet.has(card.id) && !draftLineDrawn) {
+        const divider = el('div', 'cards-draft-divider', t('draftDivider'));
+        root.append(divider);
+        draftLineDrawn = true;
+      }
       if (card.kind === 'marker') {
         const group = byId[card.id];
         if (group) {
@@ -4798,32 +20478,195 @@
     el.style.opacity = '';
   }
 
+  /**
+   * Same editor the page menu uses: host fills Discord channel and bot status.
+   * @param {{ id: string, kind?: string }} page
+   */
+  function openPageChipSettings(page) {
+    if (page.kind === 'review') {
+      vscode.postMessage({ type: 'reviewOpenPageSettings', pageId: page.id });
+      return;
+    }
+    if (page.kind === 'scenarios') {
+      vscode.postMessage({ type: 'pageOpenSettings', pageId: page.id });
+      return;
+    }
+    vscode.postMessage({ type: 'pageOpenSettings', pageId: page.id });
+  }
+
+  /** Page chips in strip order. The problems tab and the batch-send button are excluded. */
+  function pageStripChips() {
+    if (!pager) {
+      return [];
+    }
+    return [...pager.querySelectorAll('.pager-chip[data-page-id]')];
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   * @returns {{ index: number, chip: HTMLElement, before: boolean } | null}
+   */
+  function pageInsertAt(clientX, clientY) {
+    const chips = pageStripChips();
+    if (!chips.length) {
+      return null;
+    }
+    let nearest = chips[0];
+    let nearestDist = Infinity;
+    for (const chip of chips) {
+      const rect = chip.getBoundingClientRect();
+      const dist = Math.abs(clientY - (rect.top + rect.height / 2));
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = chip;
+      }
+    }
+    const rowTop = nearest.getBoundingClientRect().top;
+    const row = chips.filter((chip) => Math.abs(chip.getBoundingClientRect().top - rowTop) < 6);
+    for (const chip of row) {
+      const rect = chip.getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) {
+        return { index: chips.indexOf(chip), chip, before: true };
+      }
+    }
+    const last = row[row.length - 1];
+    return { index: chips.indexOf(last) + 1, chip: last, before: false };
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function placePageDropCaret(clientX, clientY) {
+    if (!pager) {
+      return;
+    }
+    const slot = pageInsertAt(clientX, clientY);
+    if (!slot) {
+      pager.querySelector('.pager-drop-caret')?.remove();
+      return;
+    }
+    let caret = pager.querySelector('.pager-drop-caret');
+    if (!(caret instanceof HTMLElement)) {
+      caret = el('span', 'pager-drop-caret');
+      caret.setAttribute('aria-hidden', 'true');
+      pager.append(caret);
+    }
+    const chips = pageStripChips();
+    const rect = slot.chip.getBoundingClientRect();
+    const host = pager.getBoundingClientRect();
+    let x = slot.before ? rect.left : rect.right;
+    if (slot.before) {
+      const index = chips.indexOf(slot.chip);
+      const prev = index > 0 ? chips[index - 1] : null;
+      const prevRect = prev?.getBoundingClientRect();
+      if (prevRect && Math.abs(prevRect.top - rect.top) < 6) {
+        x = (prevRect.right + rect.left) / 2;
+      }
+    }
+    caret.style.left = x - host.left + 'px';
+    caret.style.top = rect.top - host.top + 'px';
+    caret.style.height = rect.height + 'px';
+  }
+
+  function clearPageDropCaret() {
+    pager?.querySelector('.pager-drop-caret')?.remove();
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function commitPageDrop(clientX, clientY) {
+    const from = pageDragId;
+    const slot = pageInsertAt(clientX, clientY);
+    if (!from || !slot || pageSkeletonKind()) {
+      return;
+    }
+    const ordered = pages().map((item) => item.id);
+    const fromIndex = ordered.indexOf(from);
+    let toIndex = slot.index;
+    if (fromIndex < 0 || toIndex < 0) {
+      return;
+    }
+    if (toIndex === fromIndex || toIndex === fromIndex + 1) {
+      return;
+    }
+    ordered.splice(fromIndex, 1);
+    if (fromIndex < toIndex) {
+      toIndex -= 1;
+    }
+    ordered.splice(toIndex, 0, from);
+    vscode.postMessage({ type: 'reorderPages', orderedIds: ordered });
+  }
+
+  function bindPagerDrag() {
+    if (!pager || pager.dataset.pageDragBound) {
+      return;
+    }
+    pager.dataset.pageDragBound = '1';
+    pager.addEventListener('dragover', (event) => {
+      if (!pageDragId || pageSkeletonKind()) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      placePageDropCaret(event.clientX, event.clientY);
+    });
+    pager.addEventListener('drop', (event) => {
+      if (!pageDragId || pageSkeletonKind()) {
+        return;
+      }
+      event.preventDefault();
+      commitPageDrop(event.clientX, event.clientY);
+      clearPageDropCaret();
+    });
+    pager.addEventListener('dragleave', (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && pager.contains(next)) {
+        return;
+      }
+      clearPageDropCaret();
+    });
+  }
+
   function renderPager() {
     if (!pager) {
       return;
     }
+    syncToolbarLockBeforePager();
+    bindPagerDrag();
     armScrollKeep();
     const focused = document.activeElement;
-    if (focused instanceof HTMLElement && pager.contains(focused)) {
+    if (
+      focused instanceof HTMLElement &&
+      pager.contains(focused) &&
+      !focused.closest('.pager-history')
+    ) {
       focused.blur();
     }
-    pager.textContent = '';
+    for (const child of [...pager.children]) {
+      if (!(child instanceof HTMLElement) || !child.classList.contains('pager-history')) {
+        child.remove();
+      }
+    }
     const list = pages();
     const problemsTab = showProblemsTab();
     if (!problemsTab) {
       problemsPageOpen = false;
     }
-    if (list.length === 0 && !problemsTab) {
-      pager.hidden = true;
-      return;
-    }
+    // Debug is always in the strip, even with no Syn3 pages.
     pager.hidden = false;
     const problemsOpen = isProblemsPageOpen();
+    const debugOpen = isDebugPageOpen();
     for (const page of list) {
       const chip = el(
         'button',
-        'pager-chip' + (page.id === uiState.activePageId && !problemsOpen ? ' active' : ''),
-        page.name,
+        'pager-chip' +
+          (page.id === uiState.activePageId && !problemsOpen && !debugOpen ? ' active' : ''),
       );
       chip.type = 'button';
       chip.draggable = true;
@@ -4831,11 +20674,49 @@
       chip.title =
         page.kind === 'links'
           ? page.name + ' (' + t('pageKindLinks') + ')'
-          : page.kind === 'notes'
-            ? page.name + ' (' + t('pageKindNotes') + ')'
-            : page.name + ' (' + t('pageKindFiles') + ')';
-      chip.addEventListener('click', () => setActivePage(page.id));
+          : page.kind === 'figma'
+            ? page.name + ' (' + t('pageKindFigma') + ')'
+            : page.kind === 'review'
+            ? page.name + ' (' + t('pageKindReview') + ')'
+            : page.kind === 'scenarios'
+              ? page.name + ' (' + t('pageKindScenarios') + ')'
+              : page.kind === 'notes'
+                ? page.name + ' (' + t('pageKindNotes') + ')'
+                : page.name + ' (' + t('pageKindFiles') + ')';
+      const chipLabel = el('span', 'pager-chip-label', page.name);
+      chip.append(chipLabel);
+      if (pagesFixed) {
+        const badge = el('span', 'pager-chip-lock');
+        const icon = lockClosedIcon();
+        // Codicon lock is not centered in the 16×16 box (ink sits right and low).
+        icon.setAttribute('viewBox', '2.5 1.75 13.5 13.5');
+        badge.append(icon);
+        chip.append(badge);
+      }
+      // draggable chips drop `click` in the webview (a child label is enough).
+      // A still press switches the page; a real drag still reorders.
+      trackPress(chip, (event) => {
+        if (pageSkeletonKind() && page.id === uiState.activePageId) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        const now = Date.now();
+        const again = pageChipClick.id === page.id && now - pageChipClick.at < 500;
+        pageChipClick = again ? { id: '', at: 0 } : { id: page.id, at: now };
+        setActivePage(page.id);
+        if (!again) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openPageChipSettings(page);
+      });
       chip.addEventListener('dragstart', (event) => {
+        if (pageSkeletonKind()) {
+          event.preventDefault();
+          return;
+        }
         pageDragId = page.id;
         event.dataTransfer?.setData(PAGE_MIME, page.id);
         if (event.dataTransfer) {
@@ -4846,54 +20727,34 @@
       chip.addEventListener('dragend', () => {
         pageDragId = null;
         chip.classList.remove('dragging');
-        pager.querySelectorAll('.pager-chip').forEach((node) => node.classList.remove('drop-before', 'drop-after'));
-      });
-      chip.addEventListener('dragover', (event) => {
-        if (!pageDragId || pageDragId === page.id) {
-          return;
-        }
-        event.preventDefault();
-        const rect = chip.getBoundingClientRect();
-        const before = event.clientX < rect.left + rect.width / 2;
-        chip.classList.toggle('drop-before', before);
-        chip.classList.toggle('drop-after', !before);
-      });
-      chip.addEventListener('dragleave', () => {
-        chip.classList.remove('drop-before', 'drop-after');
-      });
-      chip.addEventListener('drop', (event) => {
-        event.preventDefault();
-        chip.classList.remove('drop-before', 'drop-after');
-        const from = pageDragId || event.dataTransfer?.getData(PAGE_MIME);
-        if (!from || from === page.id) {
-          return;
-        }
-        const ordered = pages().map((item) => item.id);
-        const fromIndex = ordered.indexOf(from);
-        let toIndex = ordered.indexOf(page.id);
-        if (fromIndex < 0 || toIndex < 0) {
-          return;
-        }
-        const rect = chip.getBoundingClientRect();
-        if (event.clientX >= rect.left + rect.width / 2) {
-          toIndex += 1;
-        }
-        ordered.splice(fromIndex, 1);
-        if (fromIndex < toIndex) {
-          toIndex -= 1;
-        }
-        ordered.splice(toIndex, 0, from);
-        vscode.postMessage({ type: 'reorderPages', orderedIds: ordered });
+        clearPageDropCaret();
       });
       pager.append(chip);
     }
+    const spacer = el('span', 'pager-spacer');
+    spacer.setAttribute('aria-hidden', 'true');
+    const aux = el('div', 'pager-aux');
+    const debugChip = el(
+      'button',
+      'pager-chip debug-tab' + (debugOpen ? ' active' : ''),
+      t('tabDebug'),
+    );
+    debugChip.type = 'button';
+    debugChip.title = t('tabDebug');
+    debugChip.addEventListener('click', () => openDebugPage());
+    aux.append(debugChip);
     if (problemsTab) {
-      const chip = el('button', 'pager-chip problems-tab' + (problemsOpen ? ' active' : ''), t('tabProblems'));
+      const chip = el(
+        'button',
+        'pager-chip problems-tab' + (problemsOpen ? ' active' : ''),
+        t('tabProblems'),
+      );
       chip.type = 'button';
       chip.title = t('tabProblems');
       chip.addEventListener('click', () => openProblemsPage());
-      pager.append(chip);
+      aux.append(chip);
     }
+    pager.append(spacer, aux);
   }
 
   function renderGroup(group, byId) {
@@ -4984,11 +20845,7 @@
       }),
     );
     const labelWrap = el('span', 'group-text' + (group.alias ? ' has-alias' : ''));
-    if (group.alias) {
-      labelWrap.append(el('span', 'alias', group.alias));
-    }
-    const labelEl = el('span', 'label', group.label);
-    labelWrap.append(labelEl);
+    const labelEl = appendNameSlots(labelWrap, 'label', group.label, group.alias);
     header.append(labelWrap);
     header.append(lockButton(group));
     header.append(
@@ -5132,6 +20989,73 @@
         button.classList.remove('is-denied');
       }
     }, LOCK_DENY_MS);
+  }
+
+  /**
+   * Blink the review lock for 3s. Repeat clicks on that parent are dropped.
+   * @param {string} messageId
+   */
+  function flashReviewLock(messageId) {
+    const now = Date.now();
+    const until = lockDenyUntil.get(messageId) ?? 0;
+    if (now < until) {
+      return;
+    }
+    const mark = root.querySelector(
+      '.review-lock[data-review-lock="' + CSS.escape(messageId) + '"]',
+    );
+    if (!(mark instanceof HTMLElement)) {
+      return;
+    }
+    const ends = now + LOCK_DENY_MS;
+    lockDenyUntil.set(messageId, ends);
+    mark.dataset.denyToken = String(ends);
+    mark.classList.add('is-denied');
+    setTimeout(() => {
+      if (lockDenyUntil.get(messageId) === ends) {
+        lockDenyUntil.delete(messageId);
+      }
+      if (mark.dataset.denyToken === String(ends)) {
+        delete mark.dataset.denyToken;
+        mark.classList.remove('is-denied');
+      }
+    }, LOCK_DENY_MS);
+  }
+
+  /**
+   * Closed-lock glyph in front of a fixed review parent name.
+   * A click writes `lock: false` on that Discord parent.
+   * @param {string} messageId
+   * @param {string} pageId
+   */
+  function reviewLockMark(messageId, pageId) {
+    const mark = el('span', 'review-lock');
+    mark.dataset.reviewLock = messageId;
+    mark.title = t('reviewUnlock');
+    mark.setAttribute('role', 'button');
+    mark.setAttribute('aria-label', mark.title);
+    mark.append(lockClosedIcon());
+    mark.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      vscode.postMessage({
+        type: 'reviewSetLock',
+        pageId,
+        messageId,
+        locked: false,
+      });
+    });
+    mark.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const parent = (reviewState?.messages || []).find((item) => item.id === messageId);
+      if (parent?.isMr) {
+        openReviewContextMenu(event.clientX, event.clientY, pageId, messageId);
+      } else {
+        openReviewMessageContextMenu(event.clientX, event.clientY, pageId, messageId);
+      }
+    });
+    return mark;
   }
 
   function lockButton(group) {
@@ -5705,13 +21629,9 @@
     const colorAttr = tag === 'FONT' ? elNode.getAttribute('color') : null;
     const color = elNode.dataset.color || colorAttr || elNode.style?.color;
     if (color) {
-      const hex = color.startsWith('#')
-        ? color.length === 4
-          ? '#' + color[1] + color[1] + color[2] + color[2] + color[3] + color[3]
-          : color.slice(0, 7)
-        : toHex(color);
+      const hex = normalizeHex(color);
       if (hex) {
-        marks.color = hex.toLowerCase();
+        marks.color = hex;
       }
     }
     /** @type {NoteRun[]} */
@@ -5839,7 +21759,7 @@
         // Preview open is deferred with the note click: double-click edits
         // at this point, a drag selects text, a single click opens the URL.
       });
-      if (!editing) {
+      if (!editing && (figmaLinkPreviewEnabled || !isFigmaPreviewUrl(node.href))) {
         let previewGen = linkPreviewGen;
         node.addEventListener('mouseenter', () => {
           previewGen = linkPreviewGen;
@@ -7281,14 +23201,11 @@
     if (!color || typeof color !== 'string') {
       return null;
     }
-    const c = color.trim().toLowerCase();
-    if (/^#[0-9a-f]{6}$/.test(c)) {
-      return c;
+    const parsed = splitHexAlpha(color);
+    if (parsed) {
+      return hexWithAlpha(parsed.rgb, parsed.alpha);
     }
-    if (/^#[0-9a-f]{3}$/.test(c)) {
-      return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
-    }
-    const hex = toHex(c);
+    const hex = toHex(color);
     return hex ? hex.toLowerCase() : null;
   }
 
@@ -8707,7 +24624,7 @@
       linkPreviewHideTimer = null;
     }
     const url = link instanceof HTMLAnchorElement ? link.href : link.dataset.previewUrl || '';
-    if (!url) {
+    if (!url || (!figmaLinkPreviewEnabled && isFigmaPreviewUrl(url))) {
       return;
     }
     linkPreviewUrl = url;
@@ -8717,18 +24634,28 @@
       return;
     }
     const fromChip = !(link instanceof HTMLAnchorElement);
+    const figma = isFigmaPreviewUrl(url);
     const narrow = window.innerWidth < 100;
     linkPreviewEl.classList.toggle('is-narrow', narrow);
     linkPreviewEl.classList.toggle('is-link-chip', fromChip);
+    linkPreviewEl.classList.toggle('is-figma', figma);
+    linkPreviewEl.style.width = figma ? `${Math.round(figmaPreviewWidth())}px` : '';
     const rect = link.getBoundingClientRect();
-    const limit = fromChip ? Math.min(260, window.innerHeight - 16) : 128;
+    const limit = figma
+      ? figmaPreviewHeight()
+      : fromChip
+        ? Math.min(260, window.innerHeight - 16)
+        : 128;
     linkPreviewEl.style.top = Math.max(8, Math.min(window.innerHeight - limit, rect.bottom + 4)) + 'px';
     linkPreviewEl.hidden = false;
     const scroll = /** @type {HTMLElement} */ (linkPreviewEl.querySelector('.note-link-preview-scroll'));
-    scroll.replaceChildren(buildLinkPreviewSkeleton());
+    scroll.replaceChildren(buildLinkPreviewSkeleton(figma));
     updateLinkPreviewScrollbar();
     const requestId = String(++linkPreviewRequest);
     linkPreviewPendingId = requestId;
+    if (linkPreviewLoaderEl) {
+      linkPreviewLoaderRequestId = requestId;
+    }
     vscode.postMessage({ type: 'previewLink', url, requestId });
   }
 
@@ -8773,7 +24700,7 @@
       }
     });
     preview.addEventListener('mouseleave', () => {
-      if (preview.hidden || linkPreviewShownGen !== linkPreviewGen) {
+      if (preview.hidden || linkPreviewShownGen !== linkPreviewGen || linkPreviewPanning) {
         return;
       }
       scheduleHideLinkPreview();
@@ -8782,12 +24709,250 @@
     document.body.append(linkPreviewEl);
   }
 
-  function buildLinkPreviewSkeleton() {
+  /**
+   * @param {HTMLElement} loader
+   */
+  function armLinkPreviewLoader(loader) {
+    if (linkPreviewLoaderEl === loader) {
+      return;
+    }
+    clearLinkPreviewLoader();
+    linkPreviewLoaderRequestId = null;
+    linkPreviewLoaderEl = loader;
+    linkPreviewLoaderTimer = window.setTimeout(() => {
+      linkPreviewLoaderTimer = 0;
+      if (linkPreviewLoaderEl !== loader || !loader.isConnected) {
+        return;
+      }
+      loader.replaceChildren(reviewProgressIcon());
+      loader.hidden = false;
+    }, 180);
+  }
+
+  /** @param {HTMLElement} [only] */
+  function clearLinkPreviewLoader(only) {
+    if (only && linkPreviewLoaderEl && linkPreviewLoaderEl !== only) {
+      return;
+    }
+    if (linkPreviewLoaderTimer) {
+      window.clearTimeout(linkPreviewLoaderTimer);
+      linkPreviewLoaderTimer = 0;
+    }
+    if (linkPreviewLoaderEl) {
+      linkPreviewLoaderEl.hidden = true;
+      linkPreviewLoaderEl.replaceChildren();
+      linkPreviewLoaderEl = null;
+    }
+    linkPreviewLoaderRequestId = null;
+  }
+
+  /** 16:9 card: full webview width, never wider than 600px or taller than the webview. */
+  function figmaPreviewWidth() {
+    const byWidth = Math.min(600, Math.max(120, window.innerWidth - 16));
+    const byHeight = Math.max(120, ((window.innerHeight - 16) * 16) / 9);
+    return Math.min(byWidth, byHeight);
+  }
+
+  function figmaPreviewHeight() {
+    return (figmaPreviewWidth() * 9) / 16;
+  }
+
+  /**
+   * Fit a frame into the 16:9 card.
+   * A wider frame shows whole. A taller frame opens on the top, centered:
+   * the upper half covers the card when that half is wide enough, otherwise
+   * the top band that fills the card width.
+   * @param {number} iw
+   * @param {number} ih
+   * @param {number} width
+   * @param {number} height
+   */
+  function figmaPreviewFit(iw, ih, width, height) {
+    const contain = Math.min(width / iw, height / ih);
+    const topHalf = Math.max(width / iw, height / (ih * 0.5));
+    const tall = ih / iw > height / width;
+    const scale = tall ? topHalf : contain;
+    return clampFigmaPreviewPan(
+      {
+        iw,
+        ih,
+        scale,
+        x: (width - iw * scale) / 2,
+        y: tall ? 0 : (height - ih * scale) / 2,
+        min: contain,
+        max: Math.max(scale, contain * 12, 1),
+      },
+      width,
+      height,
+    );
+  }
+
+  /**
+   * @param {{ iw: number, ih: number, scale: number, x: number, y: number, min: number, max: number }} view
+   * @param {number} width
+   * @param {number} height
+   */
+  function clampFigmaPreviewPan(view, width, height) {
+    const dw = view.iw * view.scale;
+    const dh = view.ih * view.scale;
+    let x = view.x;
+    let y = view.y;
+    if (dw <= width + 0.5) {
+      x = (width - dw) / 2;
+    } else {
+      x = Math.min(0, Math.max(width - dw, x));
+    }
+    if (dh <= height + 0.5) {
+      y = (height - dh) / 2;
+    } else {
+      y = Math.min(0, Math.max(height - dh, y));
+    }
+    return { ...view, x, y };
+  }
+
+  /**
+   * Wheel zooms toward the cursor. A held button pans the frame.
+   * @param {HTMLElement} screen
+   * @param {HTMLImageElement} img
+   */
+  function bindFigmaPreviewScreen(screen, img) {
+    /** @type {{ iw: number, ih: number, scale: number, x: number, y: number, min: number, max: number } | null} */
+    let view = null;
+    const apply = () => {
+      if (!view) {
+        return;
+      }
+      img.style.width = `${view.iw}px`;
+      img.style.height = `${view.ih}px`;
+      img.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+    };
+    const fit = () => {
+      const iw = img.naturalWidth;
+      const ih = img.naturalHeight;
+      const width = screen.clientWidth;
+      const height = screen.clientHeight;
+      if (!iw || !ih || width < 2 || height < 2) {
+        return;
+      }
+      view = figmaPreviewFit(iw, ih, width, height);
+      apply();
+    };
+    const ready = () => {
+      requestAnimationFrame(() => {
+        fit();
+        if (!view) {
+          requestAnimationFrame(fit);
+        }
+      });
+    };
+    img.draggable = false;
+    if (img.complete && img.naturalWidth) {
+      ready();
+    } else {
+      img.addEventListener('load', ready, { once: true });
+    }
+    screen.addEventListener(
+      'wheel',
+      (event) => {
+        if (!view) {
+          return;
+        }
+        event.preventDefault();
+        const width = screen.clientWidth;
+        const height = screen.clientHeight;
+        const rect = screen.getBoundingClientRect();
+        const mx = event.clientX - rect.left;
+        const my = event.clientY - rect.top;
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? height : 1;
+        const next = view.scale * Math.exp(-event.deltaY * unit * 0.0016);
+        const scale = Math.min(view.max, Math.max(view.min, next));
+        const k = scale / view.scale;
+        view = clampFigmaPreviewPan(
+          {
+            ...view,
+            scale,
+            x: mx - (mx - view.x) * k,
+            y: my - (my - view.y) * k,
+          },
+          width,
+          height,
+        );
+        apply();
+      },
+      { passive: false },
+    );
+    screen.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !view || linkPreviewPanning) {
+        return;
+      }
+      event.preventDefault();
+      screen.setPointerCapture(event.pointerId);
+      screen.classList.add('is-panning');
+      linkPreviewPanning = true;
+      if (linkPreviewHideTimer) {
+        clearTimeout(linkPreviewHideTimer);
+        linkPreviewHideTimer = null;
+      }
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const originX = view.x;
+      const originY = view.y;
+      const move = (ev) => {
+        if (!view) {
+          return;
+        }
+        view = clampFigmaPreviewPan(
+          {
+            ...view,
+            x: originX + (ev.clientX - startX),
+            y: originY + (ev.clientY - startY),
+          },
+          screen.clientWidth,
+          screen.clientHeight,
+        );
+        apply();
+      };
+      const up = () => {
+        screen.removeEventListener('pointermove', move);
+        screen.removeEventListener('pointerup', up);
+        screen.removeEventListener('pointercancel', up);
+        screen.classList.remove('is-panning');
+        linkPreviewPanning = false;
+        requestAnimationFrame(() => {
+          const preview = linkPreviewEl;
+          if (!preview || preview.hidden || linkPreviewPanning) {
+            return;
+          }
+          if (!preview.matches(':hover')) {
+            scheduleHideLinkPreview();
+          }
+        });
+      };
+      screen.addEventListener('pointermove', move);
+      screen.addEventListener('pointerup', up);
+      screen.addEventListener('pointercancel', up);
+    });
+  }
+
+  /** @param {string} url */
+  function isFigmaPreviewUrl(url) {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return host === 'figma.com' || host.endsWith('.figma.com');
+    } catch {
+      return false;
+    }
+  }
+
+  /** @param {boolean} [figma] */
+  function buildLinkPreviewSkeleton(figma) {
     const frag = document.createDocumentFragment();
-    frag.append(el('div', 'note-link-preview-skel-image'));
-    const lines = el('div', 'note-link-preview-skel-lines');
-    lines.append(el('div', 'note-link-preview-skel-line'), el('div', 'note-link-preview-skel-line'));
-    frag.append(lines);
+    frag.append(el('div', 'note-link-preview-skel-image' + (figma ? ' is-screen' : '')));
+    if (!figma) {
+      const lines = el('div', 'note-link-preview-skel-lines');
+      lines.append(el('div', 'note-link-preview-skel-line'), el('div', 'note-link-preview-skel-line'));
+      frag.append(lines);
+    }
     return frag;
   }
 
@@ -8795,6 +24960,9 @@
    * @param {{ requestId: string, url: string, image?: string, description?: string, empty?: boolean }} message
    */
   function onPreviewLinkResult(message) {
+    if (linkPreviewLoaderRequestId && message.requestId === linkPreviewLoaderRequestId) {
+      clearLinkPreviewLoader();
+    }
     if (!linkPreviewEl || linkPreviewUrl !== message.url) {
       return;
     }
@@ -8811,7 +24979,15 @@
       const img = /** @type {HTMLImageElement} */ (el('img', 'note-link-preview-image'));
       img.src = message.image;
       img.alt = '';
-      scroll.append(img);
+      if (linkPreviewEl.classList.contains('is-figma')) {
+        img.classList.add('is-screen');
+        const screen = el('div', 'note-link-preview-screen');
+        screen.append(img);
+        scroll.append(screen);
+        bindFigmaPreviewScreen(screen, img);
+      } else {
+        scroll.append(img);
+      }
     }
     if (message.description) {
       scroll.append(el('div', 'note-link-preview-desc', message.description));
@@ -9858,10 +26034,7 @@
     const layout = activePage()?.layout || data.layout || 'chips';
     const name = layout === 'chips' && !item.isDir ? stripExtension(item.name) : item.name;
     const textWrap = el('span', 'item-text');
-    if (item.alias) {
-      textWrap.append(el('span', 'alias', item.alias));
-    }
-    textWrap.append(el('span', 'name', name));
+    appendNameSlots(textWrap, 'name', name, item.alias);
     node.append(item.isDir ? folderIcon() : fileIcon(item.name), textWrap);
     if (layout === 'list' && item.dir) {
       node.append(el('span', 'path', item.dir));
@@ -9882,10 +26055,7 @@
     const node = el('div', classes.join(' '));
     node.draggable = !locked;
     const textWrap = el('span', 'item-text');
-    if (cls.alias) {
-      textWrap.append(el('span', 'alias', cls.alias));
-    }
-    textWrap.append(el('span', 'name', cls.name));
+    appendNameSlots(textWrap, 'name', cls.name, cls.alias);
     node.append(classIcon(), textWrap, el('span', 'path', cls.fileName));
     bindClass(node, cls, groupId);
     return node;
@@ -9907,6 +26077,8 @@
     let pressAt = 0;
     let x = 0;
     let y = 0;
+    /** Squared pointer travel. dragstart coordinates are not trustworthy. */
+    let travel = 0;
 
     node.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) {
@@ -9926,18 +26098,23 @@
       moved = false;
       dragged = false;
       activated = false;
+      travel = 0;
       x = event.clientX;
       y = event.clientY;
     });
 
     node.addEventListener('pointermove', (event) => {
-      if (!tracking || moved || event.buttons === 0) {
+      if (!tracking || event.buttons === 0) {
         return;
       }
       const dx = event.clientX - x;
       const dy = event.clientY - y;
+      const dist = dx * dx + dy * dy;
+      if (dist > travel) {
+        travel = dist;
+      }
       // A 1px slip on a draggable header used to cancel the fold.
-      if (dx * dx + dy * dy >= 36) {
+      if (!moved && dist >= 36) {
         moved = true;
       }
     });
@@ -9967,9 +26144,12 @@
       (event) => {
         const dx = event.clientX - x;
         const dy = event.clientY - y;
-        // The first press after the panel takes focus can start a drag without
-        // leaving the point, and that drag eats the click. A real drag has moved.
-        if (dx * dx + dy * dy < 4) {
+        // dragstart clientX/clientY stay on the press point (or are 0) in the
+        // webview, so a real move looked like no move and the header never grabbed.
+        // Trust pointer travel. A focus-click still fires dragstart with none.
+        const reported = dx * dx + dy * dy;
+        const coordsLive = event.clientX !== 0 || event.clientY !== 0;
+        if (travel < 4 && !(coordsLive && reported >= 4)) {
           event.preventDefault();
           event.stopPropagation();
           return;
@@ -10474,6 +26654,7 @@
     clearDropHighlights();
     clearExpandForDrop();
     hideDropHint();
+    hideLinkTail();
   }
 
   /**
@@ -11023,7 +27204,7 @@
 
   /** @param {string | undefined} raw */
   function parseEntityLink(raw) {
-    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note)\/([^?\s#]+)$/.exec(
+    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(group|note|scenario)\/([^?\s#]+)$/.exec(
       String(raw || '').trim(),
     );
     if (!match) {
@@ -11035,7 +27216,7 @@
     }
     return {
       pageId: match[1],
-      kind: /** @type {'group' | 'note'} */ (match[2]),
+      kind: /** @type {'group' | 'note' | 'scenario'} */ (match[2]),
       ids,
       leaf: ids[ids.length - 1],
     };
@@ -11231,7 +27412,7 @@
       entityReveal = null;
       return;
     }
-    const switching = uiState.activePageId !== pageId || isProblemsPageOpen();
+    const switching = uiState.activePageId !== pageId || isAuxPageOpen();
     const needsAsk = chain.some((node) => node.locked);
     entityReveal = { pageId, chain, choice: null, alignTop: switching };
     const opened = switching && !needsAsk ? revealCollapsed(pageId, chain) : null;
@@ -11249,7 +27430,7 @@
     if (!job) {
       return;
     }
-    if (uiState.activePageId !== job.pageId || isProblemsPageOpen()) {
+    if (uiState.activePageId !== job.pageId || isAuxPageOpen()) {
       return;
     }
     if (!data || data.contentPageId !== job.pageId) {
@@ -11382,7 +27563,7 @@
       !!flashNodes &&
       Date.now() < flashUntil &&
       uiState.activePageId === entityAlignPageId &&
-      !isProblemsPageOpen()
+      !isAuxPageOpen()
     );
   }
 
@@ -11513,6 +27694,7 @@
 
   function clearDropHighlights() {
     hideDropEdge();
+    clearLinkDropCue();
     clearDropSlot();
     if (dropHighlight) {
       dropHighlight.section.classList.remove('drop-target', 'drop-into', 'drop-blocked', 'drop-edge-target');
@@ -11749,6 +27931,274 @@
     if (isProblemsPageOpen()) {
       paintProblemsPage();
     }
+  }
+
+  function debugReasonText(reason) {
+    if (!reason) {
+      return '';
+    }
+    if (i18nBag[reason]) {
+      return i18nBag[reason];
+    }
+    return reason;
+  }
+
+  /**
+   * @param {Record<number, number>} v
+   * @param {number} k
+   */
+  function debugDiffAt(v, k) {
+    return Object.prototype.hasOwnProperty.call(v, k) ? v[k] : -1;
+  }
+
+  /**
+   * Myers edit script. `eq` / `del` lines come from `a`, `add` lines from `b`.
+   * @param {string[]} a
+   * @param {string[]} b
+   * @returns {{ op: 'eq' | 'del' | 'add', text: string }[]}
+   */
+  function debugDiffScript(a, b) {
+    const n = a.length;
+    const m = b.length;
+    const max = n + m;
+    /** @type {Record<number, number>} */
+    let frontier = { 1: 0 };
+    /** @type {Record<number, number>[]} */
+    const trace = [];
+    let depth = 0;
+    let found = false;
+    for (let d = 0; d <= max; d += 1) {
+      trace.push({ ...frontier });
+      depth = d;
+      for (let k = -d; k <= d; k += 2) {
+        let x;
+        if (k === -d || (k !== d && debugDiffAt(frontier, k - 1) < debugDiffAt(frontier, k + 1))) {
+          x = debugDiffAt(frontier, k + 1);
+        } else {
+          x = debugDiffAt(frontier, k - 1) + 1;
+        }
+        let y = x - k;
+        while (x < n && y < m && a[x] === b[y]) {
+          x += 1;
+          y += 1;
+        }
+        frontier[k] = x;
+        if (x >= n && y >= m) {
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        break;
+      }
+    }
+    if (!found) {
+      return [];
+    }
+    return debugDiffBacktrack(trace, a, b, depth);
+  }
+
+  /**
+   * @param {Record<number, number>[]} trace
+   * @param {string[]} a
+   * @param {string[]} b
+   * @param {number} depth
+   * @returns {{ op: 'eq' | 'del' | 'add', text: string }[]}
+   */
+  function debugDiffBacktrack(trace, a, b, depth) {
+    let x = a.length;
+    let y = b.length;
+    /** @type {{ op: 'eq' | 'del' | 'add', text: string }[]} */
+    const script = [];
+    for (let d = depth; d >= 0; d -= 1) {
+      const frontier = trace[d];
+      const k = x - y;
+      const prevK =
+        k === -d || (k !== d && debugDiffAt(frontier, k - 1) < debugDiffAt(frontier, k + 1))
+          ? k + 1
+          : k - 1;
+      const prevX = debugDiffAt(frontier, prevK);
+      const prevY = prevX - prevK;
+      while (x > prevX && y > prevY) {
+        x -= 1;
+        y -= 1;
+        script.push({ op: 'eq', text: a[x] });
+      }
+      if (d > 0) {
+        if (x === prevX) {
+          y -= 1;
+          script.push({ op: 'add', text: b[y] });
+        } else {
+          x -= 1;
+          script.push({ op: 'del', text: a[x] });
+        }
+      }
+    }
+    script.reverse();
+    return script;
+  }
+
+  /**
+   * GitLab side-by-side rows. A replaced run is zipped onto the same height:
+   * old text on the left, new text on the right. Leftover deletions and
+   * insertions get an empty cell on the other side.
+   * @param {string} leftText
+   * @param {string} rightText
+   * @returns {{ left: string | null, right: string | null, kind: 'eq' | 'del' | 'add' | 'change' }[]}
+   */
+  function debugSideBySideRows(leftText, rightText) {
+    const a = String(leftText).split('\n');
+    const b = String(rightText).split('\n');
+    const script = debugDiffScript(a, b);
+    /** @type {{ left: string | null, right: string | null, kind: 'eq' | 'del' | 'add' | 'change' }[]} */
+    const rows = [];
+    let i = 0;
+    while (i < script.length) {
+      if (script[i].op === 'eq') {
+        rows.push({ left: script[i].text, right: script[i].text, kind: 'eq' });
+        i += 1;
+        continue;
+      }
+      /** @type {string[]} */
+      const dels = [];
+      /** @type {string[]} */
+      const adds = [];
+      while (i < script.length && script[i].op !== 'eq') {
+        if (script[i].op === 'del') {
+          dels.push(script[i].text);
+        } else {
+          adds.push(script[i].text);
+        }
+        i += 1;
+      }
+      const count = Math.max(dels.length, adds.length);
+      for (let k = 0; k < count; k += 1) {
+        const left = k < dels.length ? dels[k] : null;
+        const right = k < adds.length ? adds[k] : null;
+        let kind = /** @type {'eq' | 'del' | 'add' | 'change'} */ ('add');
+        if (left !== null && right !== null) {
+          kind = 'change';
+        } else if (left !== null) {
+          kind = 'del';
+        }
+        rows.push({ left, right, kind });
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * @param {HTMLElement} columns
+   * @param {{ left?: unknown, right?: unknown }} section
+   */
+  function appendDebugPlainColumns(columns, section) {
+    const leftCol = el('div', 'debug-column');
+    leftCol.append(el('div', 'debug-column-label', t('debugColWas')));
+    const leftPre = document.createElement('pre');
+    leftPre.textContent = JSON.stringify(section.left ?? {}, null, 2);
+    leftCol.append(leftPre);
+    const rightCol = el('div', 'debug-column');
+    rightCol.append(el('div', 'debug-column-label', t('debugColNow')));
+    const rightPre = document.createElement('pre');
+    rightPre.textContent = JSON.stringify(section.right ?? {}, null, 2);
+    rightCol.append(rightPre);
+    columns.append(leftCol, rightCol);
+  }
+
+  /**
+   * @param {string | null} text
+   * @param {string} mark
+   */
+  function debugDiffCell(text, mark) {
+    const cell = el('div', 'debug-diff-cell' + (mark ? ' ' + mark : ''));
+    if (text === null) {
+      cell.classList.add('is-empty');
+      return cell;
+    }
+    cell.textContent = text;
+    return cell;
+  }
+
+  /**
+   * @param {HTMLElement} columns
+   * @param {{ left?: unknown, right?: unknown }} section
+   */
+  function appendDebugDiffColumns(columns, section) {
+    const leftText = JSON.stringify(section.left ?? {}, null, 2);
+    const rightText = JSON.stringify(section.right ?? {}, null, 2);
+    const rows = debugSideBySideRows(leftText, rightText);
+    if (rows.length === 0 && (leftText !== '' || rightText !== '')) {
+      appendDebugPlainColumns(columns, section);
+      return;
+    }
+    columns.classList.add('debug-diff');
+    const scroll = el('div', 'debug-diff-scroll');
+    const head = el('div', 'debug-diff-head');
+    head.append(el('div', 'debug-column-label', t('debugColWas')));
+    head.append(el('div', 'debug-column-label', t('debugColNow')));
+    scroll.append(head);
+    for (const row of rows) {
+      const line = el('div', 'debug-diff-row');
+      const leftMark = row.kind === 'del' || row.kind === 'change' ? 'is-del' : '';
+      const rightMark = row.kind === 'add' || row.kind === 'change' ? 'is-add' : '';
+      line.append(debugDiffCell(row.left, leftMark), debugDiffCell(row.right, rightMark));
+      scroll.append(line);
+    }
+    columns.append(scroll);
+  }
+
+  function paintDebugPage() {
+    removeLinkPanelBackdrop();
+    preservingPageScroll(() => {
+      foldToken += 1;
+      isFolding = false;
+      setCollapseButton();
+      root.textContent = '';
+      root.className = 'map-page debug-page';
+      root.setAttribute('data-syn3-context', JSON.stringify({ webviewSection: 'debug' }));
+      clearDropHighlights();
+
+      const toolbar = el('div', 'debug-toolbar');
+      const refresh = el('button', '', t('debugRefresh'));
+      refresh.type = 'button';
+      refresh.disabled = debugDiffBusy;
+      refresh.addEventListener('click', () => requestDebugDiff(true));
+      toolbar.append(refresh);
+      if (debugDiffBusy) {
+        toolbar.append(el('span', 'debug-status', t('debugLoading')));
+      }
+      root.append(toolbar);
+
+      if (debugDiffBusy && !debugDiffSnapshot) {
+        return;
+      }
+
+      const sections = debugDiffSnapshot?.sections || [];
+      if (!debugDiffBusy && sections.length === 0) {
+        root.append(el('div', 'empty', t(workspaceCloudCanPush() ? 'debugDiffSame' : 'debugEmpty')));
+        return;
+      }
+
+      for (const section of sections) {
+        const block = el('section', 'debug-section');
+        block.append(el('div', 'debug-section-title', section.title || section.id));
+        if (section.reason) {
+          block.append(el('div', 'debug-section-reason', debugReasonText(section.reason)));
+        }
+        if (section.reason === 'debugDiffSame') {
+          root.append(block);
+          continue;
+        }
+        const columns = el('div', 'debug-columns');
+        if (section.reason) {
+          appendDebugPlainColumns(columns, section);
+        } else {
+          appendDebugDiffColumns(columns, section);
+        }
+        block.append(columns);
+        root.append(block);
+      }
+    });
   }
 
   function paintProblemsPage() {
@@ -12389,30 +28839,52 @@
   colorInput.tabIndex = -1;
   document.body.append(colorInput);
 
-  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft', id?: string, section?: HTMLElement } | null} */
+  /** @type {{ kind: 'marker' | 'note' | 'text' | 'link' | 'group-draft' | 'review' | 'figma-icon' | 'figma-chip', id?: string, pageId?: string, index?: number, section?: HTMLElement } | null} */
   let colorTarget = null;
 
   colorInput.addEventListener('input', () => {
-    if (colorTarget?.kind === 'text' || colorTarget?.kind === 'link' || colorTarget?.kind === 'group-draft') {
+    if (
+      colorTarget?.kind === 'text' ||
+      colorTarget?.kind === 'link' ||
+      colorTarget?.kind === 'group-draft' ||
+      colorTarget?.kind === 'figma-icon' ||
+      colorTarget?.kind === 'figma-chip'
+    ) {
       return;
     }
-    colorTarget?.section?.style.setProperty('--group-color', colorInput.value);
+    colorTarget?.section?.style.setProperty(
+      '--group-color',
+      pickerHex(colorInput.value, pendingPickerAlpha),
+    );
   });
   colorInput.addEventListener('change', () => {
+    const picked = pickerHex(colorInput.value, pendingPickerAlpha);
+    pendingPickerAlpha = 100;
     if (colorTarget) {
       if (colorTarget.kind === 'text') {
-        applyTextColor(colorInput.value);
+        applyTextColor(picked);
         liveTextColorSpans = null;
       } else if (colorTarget.kind === 'group-draft' && openGroupPanel?.mode === 'create') {
         openGroupPanel.colorTouched = true;
-        openGroupPanel.color = colorInput.value;
+        openGroupPanel.color = picked;
         mountGroupPanel();
       } else if (colorTarget.kind === 'link' && colorTarget.id) {
-        vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: colorInput.value });
+        vscode.postMessage({ type: 'updateLink', linkId: colorTarget.id, color: picked });
+      } else if (colorTarget.kind === 'figma-icon' && Number.isInteger(colorTarget.index)) {
+        setFigmaIconRowColor(colorTarget.index, picked);
+      } else if (colorTarget.kind === 'figma-chip' && colorTarget.id) {
+        commitFigmaChipColor(colorTarget.id, picked);
       } else if (colorTarget.kind === 'note' && colorTarget.id) {
-        vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: colorInput.value });
+        vscode.postMessage({ type: 'setColor', noteId: colorTarget.id, color: picked });
+      } else if (colorTarget.kind === 'review' && colorTarget.id && colorTarget.pageId) {
+        vscode.postMessage({
+          type: 'reviewUpdateMr',
+          pageId: colorTarget.pageId,
+          messageId: colorTarget.id,
+          color: picked,
+        });
       } else if (colorTarget.id) {
-        vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: colorInput.value });
+        vscode.postMessage({ type: 'setColor', markerId: colorTarget.id, color: picked });
       }
     }
     colorTarget = null;
@@ -12453,6 +28925,7 @@
    * @param {'marker' | 'note'} [kind]
    */
   function openColorPicker(id, bar, section, kind = 'marker') {
+    pendingPickerAlpha = 100;
     const rect = bar.getBoundingClientRect();
     colorInput.style.left = rect.left + 'px';
     colorInput.style.top = rect.bottom + 'px';
@@ -12694,6 +29167,7 @@
     if (lightSrc) {
       const light = document.createElement('img');
       light.className = 'type-glyph tone-light';
+      light.draggable = false;
       light.src = lightSrc;
       light.alt = '';
       wrap.append(light);
@@ -12701,6 +29175,7 @@
     if (darkSrc) {
       const dark = document.createElement('img');
       dark.className = 'type-glyph tone-dark';
+      dark.draggable = false;
       dark.src = darkSrc;
       dark.alt = '';
       wrap.append(dark);
@@ -12763,6 +29238,295 @@
       node.textContent = text;
     }
     return node;
+  }
+
+  /**
+   * 4px overlay for every scroller that is not the map window, a menu, or the link preview.
+   * Those three already paint their own bar. Native scrollbars stay hidden in map.css.
+   */
+  const THIN_SCROLL_SELECTOR = [
+    '.host-branch-list',
+    '.review-create-page-panel',
+    '.profile-settings-panel',
+    '.discord-gate-panel',
+    '.project-create-panel',
+    '.review-mr-people',
+    '.review-file-body',
+    '.review-path-nav-list',
+    '.link-panel',
+    '.figma-icon-scroll',
+    '.figma-icon-picker-list',
+    '.color-panel',
+    '.dir-popover-list',
+    '.toolbar-profile-list',
+    '.syn3-neurofix-list',
+    '.debug-column pre',
+    '.debug-diff-scroll',
+    'textarea.review-mr-title',
+    '.note-input .note-code',
+  ].join(',');
+
+  /**
+   * @typedef {{
+   *   el: HTMLElement,
+   *   vBar: HTMLElement,
+   *   vThumb: HTMLElement,
+   *   hBar: HTMLElement,
+   *   hThumb: HTMLElement,
+   *   key: string,
+   *   z: string,
+   *   borderTop: number,
+   *   borderRight: number,
+   *   borderBottom: number,
+   *   borderLeft: number,
+   * }} ThinScrollEntry
+   */
+
+  /** @type {Map<HTMLElement, ThinScrollEntry>} */
+  const thinScrolls = new Map();
+  let thinScrollFrame = 0;
+  let thinScrollRestack = false;
+
+  /** @param {boolean} [restack] */
+  function scheduleThinScroll(restack) {
+    if (restack) {
+      thinScrollRestack = true;
+    }
+    if (thinScrollFrame) {
+      return;
+    }
+    thinScrollFrame = requestAnimationFrame(() => {
+      thinScrollFrame = 0;
+      const restackNow = thinScrollRestack;
+      thinScrollRestack = false;
+      for (const entry of thinScrolls.values()) {
+        placeThinScroll(entry, restackNow);
+      }
+    });
+  }
+
+  /** @param {HTMLElement} node */
+  function overlayScrollZ(node) {
+    let z = 40;
+    let current = /** @type {HTMLElement | null} */ (node);
+    while (current && current !== document.body) {
+      const value = Number.parseInt(getComputedStyle(current).zIndex, 10);
+      if (!Number.isNaN(value)) {
+        z = Math.max(z, value);
+      }
+      current = current.parentElement;
+    }
+    return String(z + 1);
+  }
+
+  /** @param {HTMLElement} node */
+  function thinScrollShown(node) {
+    if (!node.isConnected) {
+      return false;
+    }
+    let current = /** @type {HTMLElement | null} */ (node);
+    while (current && current !== document.body) {
+      if (current.hidden) {
+        return false;
+      }
+      current = current.parentElement;
+    }
+    return true;
+  }
+
+  /**
+   * @param {ThinScrollEntry} entry
+   * @param {boolean} restack
+   */
+  function placeThinScroll(entry, restack) {
+    const node = entry.el;
+    if (!node.isConnected) {
+      releaseThinScroll(node);
+      return;
+    }
+    const shown = thinScrollShown(node);
+    const rect = node.getBoundingClientRect();
+    const maxY = node.scrollHeight - node.clientHeight;
+    const maxX = node.scrollWidth - node.clientWidth;
+    const key = [
+      shown ? 1 : 0,
+      Math.round(rect.top),
+      Math.round(rect.left),
+      Math.round(rect.right),
+      Math.round(rect.bottom),
+      node.scrollTop,
+      node.scrollLeft,
+      node.scrollHeight,
+      node.scrollWidth,
+      node.clientHeight,
+      node.clientWidth,
+    ].join(':');
+    if (!restack && key === entry.key) {
+      return;
+    }
+    entry.key = key;
+    if (restack || !entry.z) {
+      const style = getComputedStyle(node);
+      entry.borderTop = Number.parseFloat(style.borderTopWidth) || 0;
+      entry.borderRight = Number.parseFloat(style.borderRightWidth) || 0;
+      entry.borderBottom = Number.parseFloat(style.borderBottomWidth) || 0;
+      entry.borderLeft = Number.parseFloat(style.borderLeftWidth) || 0;
+      entry.z = overlayScrollZ(node);
+    }
+    if (!shown || rect.width < 1 || rect.height < 1) {
+      entry.vBar.hidden = true;
+      entry.hBar.hidden = true;
+      return;
+    }
+    const inset = 2;
+    const gap = maxX > 1 && maxY > 1 ? 4 : 0;
+    const trackTop = rect.top + entry.borderTop + inset;
+    const trackHeight = Math.max(0, node.clientHeight - inset * 2 - gap);
+    const trackLeft = rect.left + entry.borderLeft + inset;
+    const trackWidth = Math.max(0, node.clientWidth - inset * 2 - gap);
+    if (maxY <= 1 || trackHeight < 8) {
+      entry.vBar.hidden = true;
+    } else {
+      entry.vBar.hidden = false;
+      entry.vBar.style.zIndex = entry.z;
+      entry.vBar.style.top = trackTop + 'px';
+      entry.vBar.style.height = trackHeight + 'px';
+      entry.vBar.style.left = rect.right - entry.borderRight - 4 + 'px';
+      const thumbHeight = Math.max(16, Math.min(trackHeight, (node.clientHeight / node.scrollHeight) * trackHeight));
+      const travel = Math.max(0, trackHeight - thumbHeight);
+      entry.vThumb.style.height = thumbHeight + 'px';
+      entry.vThumb.style.transform = 'translateY(' + (node.scrollTop / maxY) * travel + 'px)';
+    }
+    if (maxX <= 1 || trackWidth < 8) {
+      entry.hBar.hidden = true;
+    } else {
+      entry.hBar.hidden = false;
+      entry.hBar.style.zIndex = entry.z;
+      entry.hBar.style.left = trackLeft + 'px';
+      entry.hBar.style.width = trackWidth + 'px';
+      entry.hBar.style.top = rect.bottom - entry.borderBottom - 4 + 'px';
+      const thumbWidth = Math.max(16, Math.min(trackWidth, (node.clientWidth / node.scrollWidth) * trackWidth));
+      const travel = Math.max(0, trackWidth - thumbWidth);
+      entry.hThumb.style.width = thumbWidth + 'px';
+      entry.hThumb.style.transform = 'translateX(' + (node.scrollLeft / maxX) * travel + 'px)';
+    }
+  }
+
+  /** @param {HTMLElement} node */
+  function releaseThinScroll(node) {
+    const entry = thinScrolls.get(node);
+    if (!entry) {
+      return;
+    }
+    entry.vBar.remove();
+    entry.hBar.remove();
+    thinScrolls.delete(node);
+  }
+
+  /** @param {HTMLElement} node */
+  function bindThinScroll(node) {
+    if (thinScrolls.has(node) || node === document.documentElement || node === document.body) {
+      return;
+    }
+    node.classList.add('syn3-thin-scroll');
+    const vBar = el('div', 'syn3-overlay-scroll');
+    vBar.hidden = true;
+    const vThumb = el('div', 'syn3-overlay-scroll-thumb');
+    vBar.append(vThumb);
+    const hBar = el('div', 'syn3-overlay-scroll is-x');
+    hBar.hidden = true;
+    const hThumb = el('div', 'syn3-overlay-scroll-thumb');
+    hBar.append(hThumb);
+    document.body.append(vBar, hBar);
+    const entry = {
+      el: node,
+      vBar,
+      vThumb,
+      hBar,
+      hThumb,
+      key: '',
+      z: '',
+      borderTop: 0,
+      borderRight: 0,
+      borderBottom: 0,
+      borderLeft: 0,
+    };
+    thinScrolls.set(node, entry);
+    placeThinScroll(entry, true);
+  }
+
+  /** @param {Node} node */
+  function scanThinScroll(node) {
+    if (!(node instanceof Element)) {
+      return;
+    }
+    if (node instanceof HTMLElement && node.matches(THIN_SCROLL_SELECTOR)) {
+      bindThinScroll(node);
+    }
+    for (const found of node.querySelectorAll(THIN_SCROLL_SELECTOR)) {
+      if (found instanceof HTMLElement) {
+        bindThinScroll(found);
+      }
+    }
+  }
+
+  /** @param {Node} node */
+  function forgetThinScroll(node) {
+    if (!(node instanceof Element)) {
+      return;
+    }
+    if (node instanceof HTMLElement) {
+      releaseThinScroll(node);
+    }
+    for (const found of node.querySelectorAll(THIN_SCROLL_SELECTOR)) {
+      if (found instanceof HTMLElement) {
+        releaseThinScroll(found);
+      }
+    }
+  }
+
+  function mountThinScroll() {
+    scanThinScroll(document.body);
+    new MutationObserver((records) => {
+      let restack = false;
+      for (const record of records) {
+        const target = record.target;
+        if (
+          target instanceof HTMLElement &&
+          (target.classList.contains('syn3-overlay-scroll') ||
+            target.classList.contains('syn3-overlay-scroll-thumb'))
+        ) {
+          continue;
+        }
+        if (record.type === 'attributes') {
+          restack = true;
+        }
+        for (const added of record.addedNodes) {
+          scanThinScroll(added);
+        }
+        for (const removed of record.removedNodes) {
+          forgetThinScroll(removed);
+        }
+      }
+      scheduleThinScroll(restack);
+    }).observe(document.body, {
+      attributeFilter: ['hidden', 'class', 'style'],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    document.addEventListener(
+      'input',
+      (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && thinScrolls.has(target)) {
+          scheduleThinScroll(false);
+        }
+      },
+      true,
+    );
+    window.addEventListener('scroll', () => scheduleThinScroll(false), { passive: true, capture: true });
+    window.addEventListener('resize', () => scheduleThinScroll(true));
   }
 
   const scrollbar = el('div', 'syn3-scrollbar');
@@ -12859,6 +29623,47 @@
     releaseScrollTrack(gen);
   }
 
+  /**
+   * The right-hand section stays on the first row while it fits.
+   * Flex layout drops the whole section to the next row when it does not.
+   * Menus of buttons on the left half of that row open inward.
+   */
+  function layoutToolbarExtra() {
+    const bar = document.querySelector('.history-bar');
+    const extra = bar?.querySelector(':scope > .toolbar-extra');
+    if (!(bar instanceof HTMLElement) || !(extra instanceof HTMLElement)) {
+      return;
+    }
+    const legacy = bar.querySelector(':scope > .toolbar-extra-row');
+    if (legacy instanceof HTMLElement) {
+      while (legacy.firstElementChild) {
+        extra.appendChild(legacy.firstElementChild);
+      }
+      legacy.remove();
+    }
+    const anchor = [...bar.children].find(
+      (node) =>
+        node instanceof HTMLElement &&
+        node !== extra &&
+        !node.classList.contains('toolbar-spacer') &&
+        !node.hidden &&
+        node.getBoundingClientRect().width > 0,
+    );
+    const wrapped = anchor instanceof HTMLElement && extra.offsetTop > anchor.offsetTop + 1;
+    const mid = bar.getBoundingClientRect().left + bar.clientWidth / 2;
+    for (const node of extra.children) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      if (!wrapped || node.hidden) {
+        node.classList.remove('menu-from-left');
+        continue;
+      }
+      const rect = node.getBoundingClientRect();
+      node.classList.toggle('menu-from-left', rect.width > 0 && rect.left + rect.width / 2 < mid);
+    }
+  }
+
   function updateScrollbar() {
     const doc = document.documentElement;
     const scrollHeight = doc.scrollHeight;
@@ -12885,9 +29690,22 @@
     },
     { passive: true },
   );
-  window.addEventListener('resize', updateScrollbar);
-  new ResizeObserver(updateScrollbar).observe(document.body);
-  updateScrollbar();
+  function onViewportResize() {
+    updateScrollbar();
+    layoutToolbarExtra();
+  }
+  window.addEventListener('resize', onViewportResize);
+  new ResizeObserver(onViewportResize).observe(document.body);
+  const toolbarBar = document.querySelector('.history-bar');
+  if (toolbarBar instanceof HTMLElement) {
+    new MutationObserver(layoutToolbarExtra).observe(toolbarBar, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['hidden'],
+    });
+  }
+  onViewportResize();
+  mountThinScroll();
 
   // HTML5 DnD blocks native wheel scrolling in the webview; scroll the map by hand.
   window.addEventListener(
@@ -12906,12 +29724,13 @@
   );
 
   /**
-   * Pager chips in strip order: Syn3 pages, then Problems when enabled.
-   * @returns {Array<{ kind: 'page', id: string } | { kind: 'problems' }>}
+   * Pager chips in strip order: Syn3 pages, Debug, then Problems when enabled.
+   * @returns {Array<{ kind: 'page', id: string } | { kind: 'debug' } | { kind: 'problems' }>}
    */
   function pagerSlots() {
-    /** @type {Array<{ kind: 'page', id: string } | { kind: 'problems' }>} */
+    /** @type {Array<{ kind: 'page', id: string } | { kind: 'debug' } | { kind: 'problems' }>} */
     const slots = pages().map((page) => ({ kind: 'page', id: page.id }));
+    slots.push({ kind: 'debug' });
     if (showProblemsTab()) {
       slots.push({ kind: 'problems' });
     }
@@ -12920,6 +29739,9 @@
 
   function currentPagerIndex() {
     const slots = pagerSlots();
+    if (isDebugPageOpen()) {
+      return slots.findIndex((slot) => slot.kind === 'debug');
+    }
     if (isProblemsPageOpen()) {
       return slots.findIndex((slot) => slot.kind === 'problems');
     }
@@ -12927,8 +29749,12 @@
     return slots.findIndex((slot) => slot.kind === 'page' && slot.id === pageId);
   }
 
-  /** @param {{ kind: 'page', id: string } | { kind: 'problems' }} slot */
+  /** @param {{ kind: 'page', id: string } | { kind: 'debug' } | { kind: 'problems' }} slot */
   function goToPagerSlot(slot) {
+    if (slot.kind === 'debug') {
+      openDebugPage();
+      return;
+    }
     if (slot.kind === 'problems') {
       openProblemsPage();
       return;
@@ -12978,5 +29804,13 @@
     { passive: false },
   );
 
-  vscode.postMessage({ type: 'ready', pageId: uiState.activePageId });
+  initWorkspaceCloudButtons();
+  // Unstyled buttons mean map.css never applied (service worker 404 on reload).
+  const toolbarProbe = document.querySelector('.history-btn');
+  const toolbarDisplay = toolbarProbe ? getComputedStyle(toolbarProbe).display : '';
+  if (toolbarDisplay !== 'inline-flex') {
+    vscode.postMessage({ type: 'assetsFailed', rev: bootRev });
+  } else {
+    vscode.postMessage({ type: 'ready', pageId: uiState.activePageId, rev: bootRev });
+  }
 })();

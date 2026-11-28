@@ -11,10 +11,13 @@ const TYPE_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Object,
 ]);
 
+export type MapNotice = (text: string, tone: 'error' | 'warning' | 'info') => void;
+
 export async function openClassAt(
   store: MarkerStore,
   def: ClassDef,
   viewColumn?: vscode.ViewColumn,
+  notice?: MapNotice,
 ): Promise<void> {
   const uri = store.toUri(def.relPath);
   const doc = await vscode.workspace.openTextDocument(uri);
@@ -37,7 +40,12 @@ export async function openClassAt(
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
   }
-  void vscode.window.showWarningMessage(`Syn3: class "${def.name}" not found in ${def.relPath}.`);
+  const missing = `Syn3: class "${def.name}" not found in ${def.relPath}.`;
+  if (notice) {
+    notice(missing, 'warning');
+    return;
+  }
+  void vscode.window.showWarningMessage(missing);
 }
 
 async function resolveClassRange(doc: vscode.TextDocument, def: ClassDef): Promise<vscode.Range | undefined> {
