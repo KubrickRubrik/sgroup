@@ -1,0 +1,171 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#boot,
+#status {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  text-align: center;
+}
+
+#status-text {
+  margin: 0;
+}
+
+#auth {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+
+#auth h1 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#auth label {
+  color: var(--vscode-descriptionForeground);
+}
+
+#key {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  font: inherit;
+}
+
+#login {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 4px 12px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: 2px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#login:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+#login:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.error {
+  margin: 0;
+  color: var(--vscode-errorForeground);
+}
+
+#list-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#banner {
+  padding: 8px 12px 0;
+}
+
+#list-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+#list {
+  height: 100%;
+  overflow: auto;
+  scrollbar-width: none;
+  overflow-anchor: none;
+}
+
+#list::-webkit-scrollbar {
+  display: none;
+}
+
+#chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 12px;
+}
+
+.chip {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  pointer-events: none;
+}
+
+#thumb {
+  width: 4px;
+  border-radius: 2px;
+  background: var(--vscode-scrollbarSlider-background);
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: beta-spin 0.7s linear infinite;
+}
+
+@keyframes beta-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

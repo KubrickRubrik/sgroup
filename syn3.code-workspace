@@ -1,0 +1,46 @@
+{
+  "folders": [
+    {
+      "name": "syn3",
+      "path": "extensions/syn3"
+    },
+    {
+      "name": "beta_fixes",
+      "path": "extensions/beta_fixes"
+    }
+  ],
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Run all",
+        "type": "extensionHost",
+        "request": "launch",
+        "args": [
+          "--extensionDevelopmentPath=${workspaceFolder:syn3}",
+          "--extensionDevelopmentPath=${workspaceFolder:beta_fixes}"
+        ],
+        "outFiles": [
+          "${workspaceFolder:syn3}/dist/**/*.js",
+          "${workspaceFolder:beta_fixes}/dist/**/*.js"
+        ],
+        "preLaunchTask": "compile extensions"
+      }
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "compile extensions",
+        "type": "shell",
+        "command": "npm run compile",
+        "options": {
+          "cwd": "${workspaceFolder:syn3}/../.."
+        },
+        "group": "build",
+        "problemMatcher": []
+      }
+    ]
+  }
+}

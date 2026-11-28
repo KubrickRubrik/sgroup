@@ -120,7 +120,7 @@ H:1
 Ревью ветки `feature/map`, локально `main`. Пункт про `reviewNeurofixButton`.
 
 Где
-`media/map.js` — обработчик `reviewNeurofixButton`.
+`extensions/syn3/media/map.js` — обработчик `reviewNeurofixButton`.
 
 Править
 нужно. Кнопка есть, а сценарий по ней мёртвый.

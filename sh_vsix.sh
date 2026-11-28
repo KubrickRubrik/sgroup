@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Сборка / установка .vsix для Syn3. Запуск: ./sh_vsix.sh
-# Новые артефакты: version/syn3-*.vsix. Старые version/syngroup-*.vsix тоже входят в baseline.
+# Сборка / установка .vsix одного расширения из extensions/.
+# Запуск: ./sh_vsix.sh [расширение] [package|patch|minor|major|install]
+# Расширение — папка (syn3, beta_fixes) или name из package.json (beta-fixes).
+# Артефакты: version/<name>-<version>.vsix. Для syn3 старые version/syngroup-*.vsix тоже входят в baseline.
 if [ -z "${BASH_VERSION:-}" ]; then
     exec /usr/bin/env bash "$0" "$@"
 fi
@@ -11,6 +13,9 @@ cd "$ROOT"
 VERSION_DIR="version"
 FORCE=0
 LAST_VSIX=""
+EXT=""
+EXT_DIR_NAME=""
+PKG_NAME=""
 
 read_with_exit() {
     local prompt_message="$1"
@@ -68,21 +73,29 @@ ask_yes() {
 }
 
 pkg_version() {
-    node -p "require('./package.json').version"
+    node -p "require(process.argv[1]).version" "$EXT/package.json"
 }
 
 list_vsix_versions() {
     local f base
+    local -a files=()
     shopt -s nullglob
-    for f in "$VERSION_DIR"/syn3-*.vsix "$VERSION_DIR"/syngroup-*.vsix; do
+    files=("$VERSION_DIR/${PKG_NAME}-"*.vsix)
+    if [[ "$PKG_NAME" == "syn3" ]]; then
+        files+=("$VERSION_DIR"/syngroup-*.vsix)
+    fi
+    shopt -u nullglob
+    for f in "${files[@]+"${files[@]}"}"; do
+        [[ -e "$f" ]] || continue
         base="$(basename "$f" .vsix)"
-        base="${base#syn3-}"
-        base="${base#syngroup-}"
+        base="${base#"${PKG_NAME}-"}"
+        if [[ "$PKG_NAME" == "syn3" ]]; then
+            base="${base#syngroup-}"
+        fi
         if [[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             printf '%s\n' "$base"
         fi
     done
-    shopt -u nullglob
 }
 
 max_vsix_version() {
@@ -98,11 +111,14 @@ version_eq() {
 }
 
 vsix_path() {
-    echo "${VERSION_DIR}/syn3-$1.vsix"
+    echo "${VERSION_DIR}/${PKG_NAME}-$1.vsix"
 }
 
 vsix_exists() {
-    [[ -f "$(vsix_path "$1")" || -f "${VERSION_DIR}/syngroup-$1.vsix" ]]
+    if [[ -f "$(vsix_path "$1")" ]]; then
+        return 0
+    fi
+    [[ "$PKG_NAME" == "syn3" && -f "${VERSION_DIR}/syngroup-$1.vsix" ]]
 }
 
 baseline_version() {
@@ -118,7 +134,7 @@ baseline_version() {
 
 set_pkg_version() {
     local ver="$1"
-    npm version "$ver" --no-git-tag-version --allow-same-version >/dev/null
+    npm version "$ver" --no-git-tag-version --allow-same-version -w "$PKG_NAME" >/dev/null
 }
 
 next_version() {
@@ -207,9 +223,13 @@ latest_vsix_file() {
     fi
     if [[ -f "$(vsix_path "$ver")" ]]; then
         vsix_path "$ver"
-    else
-        echo "${VERSION_DIR}/syngroup-$ver.vsix"
+        return
     fi
+    if [[ "$PKG_NAME" == "syn3" && -f "${VERSION_DIR}/syngroup-$ver.vsix" ]]; then
+        echo "${VERSION_DIR}/syngroup-$ver.vsix"
+        return
+    fi
+    return 1
 }
 
 # Оба экземпляра Cursor: обычный и Cursor-2 (--user-data-dir + свой extensions-dir).
@@ -324,7 +344,7 @@ NODE
 # started_ms — Date.now() до вызова CLI: старая папка с тем же номером версии не считается.
 wait_profile_install() {
     local ver="$1" started_ms="$2" user_data="$3" ext_dir="$4"
-    node - "$ROOT" "$ver" "$started_ms" "$user_data" "$ext_dir" <<'NODE'
+    node - "$ROOT" "$ver" "$started_ms" "$user_data" "$ext_dir" "$EXT/package.json" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -334,7 +354,7 @@ const started = Number(process.argv[4]);
 const userData = process.argv[5];
 const extDir = process.argv[6];
 const storage = path.join(userData, 'User/globalStorage/storage.json');
-const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const pkg = JSON.parse(fs.readFileSync(process.argv[7], 'utf8'));
 const extId = `${pkg.publisher}.${pkg.name}`;
 let file = path.join(extDir, 'extensions.json');
 if (fs.existsSync(storage)) {
@@ -384,8 +404,10 @@ install_vsix_into() {
     args+=(--install-extension "$ROOT/$file" --force)
     "${args[@]}"
     ver="$(basename "$file" .vsix)"
-    ver="${ver#syn3-}"
-    ver="${ver#syngroup-}"
+    ver="${ver#"${PKG_NAME}-"}"
+    if [[ "$PKG_NAME" == "syn3" ]]; then
+        ver="${ver#syngroup-}"
+    fi
     if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
         ver="$(pkg_version)"
     fi
@@ -467,10 +489,13 @@ package_vsix() {
     if vsix_exists "$ver"; then
         echo "⚠  Уже есть v${ver} в ${VERSION_DIR}/"
         confirm_overwrite "$ver" || exit 1
-        rm -f "$out" "${VERSION_DIR}/syngroup-${ver}.vsix"
+        rm -f "$out"
+        if [[ "$PKG_NAME" == "syn3" ]]; then
+            rm -f "${VERSION_DIR}/syngroup-${ver}.vsix"
+        fi
     fi
-    echo "→ npm run package  (v${ver})"
-    npm run package
+    echo "→ npm run package -w ${PKG_NAME}  (v${ver})"
+    npm run package -w "$PKG_NAME"
     if [[ ! -f "$out" ]]; then
         echo "Ошибка: ожидался файл $out" >&2
         ls -la "$VERSION_DIR"/ 2>/dev/null || true
@@ -499,15 +524,18 @@ bump_and_package() {
 usage() {
     cat <<'EOF'
 Использование:
-  ./sh_vsix.sh                 меню: package / patch / minor / major / install
-  ./sh_vsix.sh package         собрать текущую версию package.json
-  ./sh_vsix.sh patch|minor|major
-  ./sh_vsix.sh install         установить последний (или только что собранный) vsix
-  ./sh_vsix.sh --force package перезаписать существующий .vsix
+  ./sh_vsix.sh                              выбрать расширение и действие
+  ./sh_vsix.sh <расширение>                 меню для одного расширения
+  ./sh_vsix.sh <расширение> package         собрать текущую версию
+  ./sh_vsix.sh <расширение> patch|minor|major
+  ./sh_vsix.sh <расширение> install         установить последний vsix этого расширения
+  ./sh_vsix.sh --force <расширение> package перезаписать существующий .vsix
   ./sh_vsix.sh -h|--help
 
+Расширение — папка в extensions/ (syn3, beta_fixes) или name из package.json (beta-fixes).
+Порядок аргументов любой: ./sh_vsix.sh package syn3 тоже подходит.
 После сборки: install во все экземпляры Cursor (обычный и Cursor-2), затем Reload Window.
-Версии: baseline = max(package.json, max version/*.vsix); bump пропускает занятые.
+Версии: baseline = max(package.json, max version/<name>-*.vsix); bump пропускает занятые.
 EOF
 }
 
@@ -517,7 +545,11 @@ main_menu() {
     next_p="$(peek_next patch)"
     next_n="$(peek_next minor)"
     next_m="$(peek_next major)"
-    echo "Syn3 vsix"
+    if [[ "$EXT_DIR_NAME" == "$PKG_NAME" ]]; then
+        echo "${EXT_DIR_NAME} vsix"
+    else
+        echo "${EXT_DIR_NAME} vsix  (${PKG_NAME})"
+    fi
     if vsix_exists "$pkg"; then
         echo "  1) package — v${pkg} (уже есть в version/)"
     else
@@ -560,28 +592,157 @@ main_menu() {
     esac
 }
 
-ARGS=()
+extension_dirs() {
+    local d
+    shopt -s nullglob
+    for d in "$ROOT"/extensions/*; do
+        if [[ -d "$d" && -f "$d/package.json" ]]; then
+            basename "$d"
+        fi
+    done
+    shopt -u nullglob
+}
+
+extension_pkg_name() {
+    node -p "require(process.argv[1]).name" "$ROOT/extensions/$1/package.json"
+}
+
+# Список папок в EXT_DIRS. Без process substitution: `sh ./sh_vsix.sh` на macOS
+# это bash --posix, он не разбирает `< <(...)`.
+load_extension_dirs() {
+    local tmp d
+    tmp="$(mktemp "${TMPDIR:-/tmp}/vsix-ext.XXXXXX")" || return 1
+    extension_dirs > "$tmp" || { rm -f "$tmp"; return 1; }
+    EXT_DIRS=()
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && EXT_DIRS+=("$d")
+    done < "$tmp"
+    rm -f "$tmp"
+}
+
+extension_known() {
+    local key="$1" d name
+    [[ -n "$key" ]] || return 1
+    load_extension_dirs
+    for d in "${EXT_DIRS[@]+"${EXT_DIRS[@]}"}"; do
+        [[ -n "$d" ]] || continue
+        if [[ "$d" == "$key" ]]; then
+            return 0
+        fi
+        name="$(extension_pkg_name "$d")"
+        if [[ "$name" == "$key" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+load_extension() {
+    EXT="$ROOT/extensions/$EXT_DIR_NAME"
+    PKG_NAME="$(extension_pkg_name "$EXT_DIR_NAME")"
+}
+
+choose_extension() {
+    local d choice i
+    local -a dirs=()
+    load_extension_dirs
+    for d in "${EXT_DIRS[@]+"${EXT_DIRS[@]}"}"; do
+        [[ -n "$d" ]] && dirs+=("$d")
+    done
+    if [[ ${#dirs[@]} -eq 0 ]]; then
+        echo "Нет расширений в extensions/." >&2
+        exit 1
+    fi
+    if [[ -n "${EXT_KEY:-}" ]]; then
+        for d in "${dirs[@]}"; do
+            if [[ "$d" == "$EXT_KEY" || "$(extension_pkg_name "$d")" == "$EXT_KEY" ]]; then
+                EXT_DIR_NAME="$d"
+                load_extension
+                return
+            fi
+        done
+        echo "Неизвестное расширение: $EXT_KEY" >&2
+        printf '  %s\n' "${dirs[@]}" >&2
+        exit 1
+    fi
+    if [[ ${#dirs[@]} -eq 1 ]]; then
+        EXT_DIR_NAME="${dirs[0]}"
+        load_extension
+        return
+    fi
+    if [[ ! -t 0 ]]; then
+        echo "Укажи расширение: ${dirs[*]}" >&2
+        exit 1
+    fi
+    echo "Расширение:"
+    i=1
+    for d in "${dirs[@]}"; do
+        echo "  ${i}) ${d}"
+        i=$((i + 1))
+    done
+    echo "  q) выход"
+    choice="$(read_with_exit "Выбор: " true)" || exit 0
+    case "$choice" in
+        q|Q) exit 0 ;;
+    esac
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#dirs[@]} )); then
+        EXT_DIR_NAME="${dirs[$((choice - 1))]}"
+        load_extension
+        return
+    fi
+    for d in "${dirs[@]}"; do
+        if [[ "$d" == "$choice" || "$(extension_pkg_name "$d")" == "$choice" ]]; then
+            EXT_DIR_NAME="$d"
+            load_extension
+            return
+        fi
+    done
+    echo "Неизвестный выбор: $choice" >&2
+    exit 1
+}
+
+CMD=""
+EXT_KEY=""
+INSTALL_FILE=""
 for arg in "$@"; do
     case "$arg" in
         --force|-f) FORCE=1 ;;
-        *) ARGS+=("$arg") ;;
+        -h|--help|help) CMD=help ;;
+        package|pack|build) CMD=package ;;
+        patch|minor|major) CMD="$arg" ;;
+        install|i) CMD=install ;;
+        *)
+            if [[ -z "$EXT_KEY" ]] && extension_known "$arg"; then
+                EXT_KEY="$arg"
+            elif [[ "$CMD" == "install" && -z "$INSTALL_FILE" ]]; then
+                INSTALL_FILE="$arg"
+            else
+                echo "Неизвестный аргумент: $arg" >&2
+                usage >&2
+                exit 1
+            fi
+            ;;
     esac
 done
-set -- "${ARGS[@]+"${ARGS[@]}"}"
 
-case "${1:-}" in
+if [[ "$CMD" == "help" ]]; then
+    usage
+    exit 0
+fi
+choose_extension
+
+case "$CMD" in
     "" ) main_menu ;;
-    -h|--help|help) usage ;;
-    package|pack|build)
+    package)
         package_vsix
         after_build_flow
         ;;
     patch|minor|major)
-        bump_and_package "$1"
+        bump_and_package "$CMD"
         after_build_flow
         ;;
-    install|i)
-        if install_vsix "${2:-}"; then
+    install)
+        if install_vsix "${INSTALL_FILE:-}"; then
             echo
             reload_window || true
         fi

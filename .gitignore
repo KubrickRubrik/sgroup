@@ -3,4 +3,5 @@ dist/
 out/
 version/.reload-window
 .syn3/
+.beta/
 # *.vsix

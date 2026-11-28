@@ -9,16 +9,16 @@ alwaysApply: true
 
 Эмуляция уже есть:
 
-- Окно карты: нативный скролл `html` скрыт, бегунок `.syn3-scrollbar` ведёт `updateScrollbar` в `media/map.js`.
+- Окно карты: нативный скролл `html` скрыт, бегунок `.syn3-scrollbar` ведёт `updateScrollbar` в `extensions/syn3/media/map.js`.
 - Меню: `.syn3-menu-scroller` + `.syn3-menu-scrollbar`.
 - Превью ссылки: `.note-link-preview-scroll` + `.note-link-preview-bar`.
-- Остальные прокручиваемые блоки карты: селектор `THIN_SCROLL_SELECTOR` и `bindThinScroll` в `media/map.js`. Нативная полоса скрыта (`.syn3-thin-scroll`), поверх рисуется `.syn3-overlay-scroll`.
+- Остальные прокручиваемые блоки карты: селектор `THIN_SCROLL_SELECTOR` и `bindThinScroll` в `extensions/syn3/media/map.js`. Нативная полоса скрыта (`.syn3-thin-scroll`), поверх рисуется `.syn3-overlay-scroll`.
 - Окно настроек и страница инструкции — та же эмуляция в своём webview.
 
 Новый блок с `overflow: auto` или `scroll`:
 
 1. Скрыть нативную полосу (`scrollbar-width: none` и `::-webkit-scrollbar { display: none }`).
-2. Добавить селектор в `THIN_SCROLL_SELECTOR` (`media/map.js`) и в тот же список в `map.css`. Для окна настроек — в селектор `mountThinScroll` в `src/settingsPanel.ts`.
+2. Добавить селектор в `THIN_SCROLL_SELECTOR` (`extensions/syn3/media/map.js`) и в тот же список в `extensions/syn3/media/map.css`. Для окна настроек — в селектор `mountThinScroll` в `extensions/syn3/src/settingsPanel.ts`.
 3. Не вешать вторую полосу на `html` карты, `.syn3-menu-scroller` и `.note-link-preview-scroll` — у них своя эмуляция.
 
 Бегунок: ширина 4px, `border-radius: 2px`, цвет `var(--vscode-scrollbarSlider-background)`.

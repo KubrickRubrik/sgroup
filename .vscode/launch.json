@@ -2,11 +2,41 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Extension",
+      "name": "Run Syn3",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extensions/syn3"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/extensions/syn3/dist/**/*.js"
+      ],
+      "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Run beta_fixes",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extensions/beta_fixes"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/extensions/beta_fixes/dist/**/*.js"
+      ],
+      "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Run all",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extensions/syn3",
+        "--extensionDevelopmentPath=${workspaceFolder}/extensions/beta_fixes"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/extensions/syn3/dist/**/*.js",
+        "${workspaceFolder}/extensions/beta_fixes/dist/**/*.js"
+      ],
       "preLaunchTask": "npm: compile"
     }
   ]
