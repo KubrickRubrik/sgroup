@@ -18,12 +18,13 @@
 4. OAuth2 → URL Generator:
    - Scopes: `bot`
    - Bot Permissions:
-     1. View Channel
-     2. Read Message History
-     3. Send Messages
-     4. Create Public Threads
-     5. Send Messages in Threads
-     6. Attach Files
+     1. View Channel (Просмотр канала)
+     2. Read Message History (Читать историю сообщений)
+     3. Send Messages (Отправить сообщение)
+     4. Create Public Threads (Создавать публичные ветки)
+     5. Send Messages in Threads (Отправлять сообщения в ветках)
+     6. Attach Files (Прикреплять файлы)
+     7. Bypass Slowmode (Обход медленного режима)
 5. Открой сгенерированную ссылку и добавь бота на сервер.
 
 ### Message Content Intent (обязательно)
